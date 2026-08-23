@@ -1,6 +1,9 @@
 node_modules/
+.pnpm-store/
 dist/
 coverage/
+playwright-report/
+test-results/
 .vite/
 .idea/
 .vscode/*
@@ -13,4 +16,3 @@ src-tauri/gen/
 *.swp
 .DS_Store
 Thumbs.db
-
