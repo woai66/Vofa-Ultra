@@ -29,7 +29,22 @@ import {
   listSerialPorts,
   sendSerial,
 } from "../services/serialClient";
+import {
+  ackReplayBatch as ackReplayBatchClient,
+  closeReplay as closeReplayClient,
+  openReplay as openReplayClient,
+  pauseReplay as pauseReplayClient,
+  playReplay as playReplayClient,
+  selectReplayFilePath,
+  stopReplay as stopReplayClient,
+} from "../services/replayClient";
 import type { CaptureStatePayload, CaptureUiStatus } from "../types/capture";
+import type {
+  ReplayBatchPayload,
+  ReplayCaptureHeader,
+  ReplayStatePayload,
+  ReplayUiStatus,
+} from "../types/replay";
 import type {
   ConnectionStatus,
   DataSource,
@@ -86,6 +101,24 @@ let protocolParser: ProtocolParser = createProtocolParser(parserProtocol);
 let terminalDecoder = new TextDecoder();
 let terminalEntryId = 0;
 const channelBuffers = new Map<string, RingBuffer<DataPoint>>();
+let replayParserProtocol: ProtocolKind = "raw";
+let replayProtocolParser: ProtocolParser = createProtocolParser(replayParserProtocol);
+let replayRxDecoder = new TextDecoder();
+let replayTxDecoder = new TextDecoder();
+const replayChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
+let captureStopPromise: Promise<boolean> | null = null;
+
+type RuntimeTransitionStatus =
+  | "idle"
+  | "switching-source"
+  | "connecting"
+  | "disconnecting"
+  | "starting-capture"
+  | "stopping-capture"
+  | "selecting-replay"
+  | "opening-replay"
+  | "controlling-replay"
+  | "switching-workspace";
 
 export interface WorkbenchStore {
   isNativeRuntime: boolean;
@@ -112,6 +145,7 @@ export interface WorkbenchStore {
   workspaces: WorkspaceProfile[];
   activeWorkspaceId: string;
   workspaceTransitionStatus: "idle" | "switching" | "deleting";
+  runtimeTransitionStatus: RuntimeTransitionStatus;
   workspaceStorageStatus: "writable" | "newer-version";
   incompatibleStorageVersion: number | null;
   captureStatus: CaptureUiStatus;
@@ -123,6 +157,19 @@ export interface WorkbenchStore {
   captureDataBytes: number;
   captureRecordCount: number;
   captureMessage: string;
+  replayStatus: ReplayUiStatus;
+  replaySessionId: number;
+  replayGeneration: number;
+  replayRevision: number;
+  replayPath: string;
+  replayHeader?: ReplayCaptureHeader;
+  replayComplete: boolean;
+  replayPositionUs: number;
+  replayDurationUs: number;
+  replayDataBytes: number;
+  replayRecordCount: number;
+  replayNextSequence: number;
+  replayMessage: string;
   setRuntimeAvailability(nativeRuntime: boolean): void;
   setSource(source: DataSource): Promise<void>;
   setProtocol(protocol: ProtocolKind): void;
@@ -149,6 +196,14 @@ export interface WorkbenchStore {
   startCapture(): Promise<boolean>;
   stopCapture(): Promise<boolean>;
   handleCaptureState(payload: CaptureStatePayload): void;
+  openReplayFile(): Promise<boolean>;
+  openRecentCapture(): Promise<boolean>;
+  playReplay(): Promise<boolean>;
+  pauseReplay(): Promise<boolean>;
+  stopReplay(): Promise<boolean>;
+  closeReplay(): Promise<boolean>;
+  handleReplayState(payload: ReplayStatePayload): void;
+  handleReplayBatch(payload: ReplayBatchPayload): void;
   saveActiveWorkspace(name: string): void;
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
@@ -198,6 +253,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       workspaces: [INITIAL_WORKSPACE],
       activeWorkspaceId: INITIAL_WORKSPACE.id,
       workspaceTransitionStatus: "idle",
+      runtimeTransitionStatus: "idle",
       workspaceStorageStatus: "writable",
       incompatibleStorageVersion: null,
       captureStatus: "idle",
@@ -207,6 +263,18 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       captureDataBytes: 0,
       captureRecordCount: 0,
       captureMessage: "",
+      replayStatus: "idle",
+      replaySessionId: 0,
+      replayGeneration: 0,
+      replayRevision: 0,
+      replayPath: "",
+      replayComplete: false,
+      replayPositionUs: 0,
+      replayDurationUs: 0,
+      replayDataBytes: 0,
+      replayRecordCount: 0,
+      replayNextSequence: 1,
+      replayMessage: "",
 
       setRuntimeAvailability: (nativeRuntime) => {
         set((state) => ({
@@ -219,7 +287,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       setSource: async (source) => {
         if (
           get().workspaceTransitionStatus !== "idle" ||
-          isCaptureTransitioning(get().captureStatus)
+          get().runtimeTransitionStatus !== "idle" ||
+          isCaptureActive(get().captureStatus) ||
+          hasReplaySession(get())
         ) {
           return;
         }
@@ -230,25 +300,34 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (source === get().source) {
           return;
         }
-        if (get().connectionStatus === "connected" || get().connectionStatus === "connecting") {
-          const disconnected = await get().disconnect();
-          if (!disconnected) {
-            return;
-          }
+        if (!beginRuntimeTransition(get, set, "switching-source")) {
+          return;
         }
-        resetProtocolState(get().protocol);
-        set({
-          source,
-          channels: [],
-          connectionStatus: "disconnected",
-          statusMessage: source === "serial" ? "选择设备后连接" : "模拟数据源已就绪",
-        });
+        try {
+          if (get().connectionStatus === "connected" || get().connectionStatus === "connecting") {
+            const disconnected = await disconnectCurrentSource(get, set);
+            if (!disconnected) {
+              return;
+            }
+          }
+          resetProtocolState(get().protocol);
+          set({
+            source,
+            channels: [],
+            connectionStatus: "disconnected",
+            statusMessage: source === "serial" ? "选择设备后连接" : "模拟数据源已就绪",
+          });
+        } finally {
+          endRuntimeTransition(get, set, "switching-source");
+        }
       },
 
       setProtocol: (protocol) => {
         if (
           get().workspaceTransitionStatus !== "idle" ||
-          isCaptureActive(get().captureStatus)
+          get().runtimeTransitionStatus !== "idle" ||
+          isCaptureActive(get().captureStatus) ||
+          hasReplaySession(get())
         ) {
           return;
         }
@@ -259,7 +338,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       updateSerialConfig: (key, value) => {
         if (
           get().workspaceTransitionStatus !== "idle" ||
-          isCaptureActive(get().captureStatus)
+          get().runtimeTransitionStatus !== "idle" ||
+          isCaptureActive(get().captureStatus) ||
+          hasReplaySession(get())
         ) {
           return;
         }
@@ -269,7 +350,12 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       refreshPorts: async () => {
-        if (get().workspaceTransitionStatus !== "idle" || get().isRefreshingPorts) {
+        if (
+          get().workspaceTransitionStatus !== "idle" ||
+          get().runtimeTransitionStatus !== "idle" ||
+          get().isRefreshingPorts ||
+          hasReplaySession(get())
+        ) {
           return;
         }
         if (!get().isNativeRuntime) {
@@ -304,50 +390,77 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       connect: async () => {
-        if (hasCaptureToStop(get()) && !(await stopCurrentCapture(get, set))) {
-          set({ statusMessage: "结束录制失败，未连接数据源" });
+        if (!beginRuntimeTransition(get, set, "connecting")) {
           return;
         }
-        const state = get();
-        if (state.workspaceTransitionStatus !== "idle") {
-          return;
-        }
-        if (state.source === "simulator") {
-          set({
-            connectionStatus: "connected",
-            statusMessage: "模拟数据正在运行",
-            stats: { ...emptyStats(), startedAt: Date.now() },
-          });
-          return;
-        }
-        if (!state.serialConfig.portName) {
-          set({ connectionStatus: "error", statusMessage: "请先选择串口设备" });
-          return;
-        }
-
-        set({ connectionStatus: "connecting", statusMessage: `正在打开 ${state.serialConfig.portName}` });
         try {
-          const payload = await connectSerial(state.serialConfig);
-          get().handleSerialState(payload);
-          set({ stats: { ...emptyStats(), startedAt: Date.now() } });
-        } catch (error) {
-          set({ connectionStatus: "error", statusMessage: getErrorMessage(error) });
+          const hadReplaySession = hasReplaySession(get());
+          if (!(await closeCurrentReplay(get, set))) {
+            set({ statusMessage: "关闭回放失败，未连接数据源" });
+            return;
+          }
+          if (hadReplaySession) {
+            resetLiveView(get().protocol, set);
+          }
+          if (hasCaptureToStop(get()) && !(await stopCurrentCapture(get, set))) {
+            set({ statusMessage: "结束录制失败，未连接数据源" });
+            return;
+          }
+          const state = get();
+          if (state.workspaceTransitionStatus !== "idle") {
+            return;
+          }
+          if (state.source === "simulator") {
+            resetProtocolState(state.protocol);
+            set({
+              connectionStatus: "connected",
+              statusMessage: "模拟数据正在运行",
+              stats: { ...emptyStats(), startedAt: Date.now() },
+            });
+            return;
+          }
+          if (!state.serialConfig.portName) {
+            set({ connectionStatus: "error", statusMessage: "请先选择串口设备" });
+            return;
+          }
+
+          set({
+            connectionStatus: "connecting",
+            statusMessage: `正在打开 ${state.serialConfig.portName}`,
+          });
+          try {
+            const payload = await connectSerial(state.serialConfig);
+            get().handleSerialState(payload);
+            set({ stats: { ...emptyStats(), startedAt: Date.now() } });
+          } catch (error) {
+            set({ connectionStatus: "error", statusMessage: getErrorMessage(error) });
+          }
+        } finally {
+          endRuntimeTransition(get, set, "connecting");
         }
       },
 
       disconnect: async () => {
-        if (get().workspaceTransitionStatus !== "idle") {
+        if (!beginRuntimeTransition(get, set, "disconnecting")) {
           return false;
         }
-        if (!(await stopCurrentCapture(get, set))) {
-          set({ statusMessage: "结束录制失败，未断开数据源" });
-          return false;
+        try {
+          if (!(await stopCurrentCapture(get, set))) {
+            set({ statusMessage: "结束录制失败，未断开数据源" });
+            return false;
+          }
+          return disconnectCurrentSource(get, set);
+        } finally {
+          endRuntimeTransition(get, set, "disconnecting");
         }
-        return disconnectCurrentSource(get, set);
       },
 
       send: async (value, mode, lineEnding) => {
-        if (get().workspaceTransitionStatus !== "idle") {
+        if (
+          get().workspaceTransitionStatus !== "idle" ||
+          get().runtimeTransitionStatus !== "idle" ||
+          hasReplaySession(get())
+        ) {
           throw new Error("工作区切换期间无法发送数据");
         }
         const bytes = encodeOutbound(value, mode, lineEnding);
@@ -408,7 +521,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       handleSerialData: (payload) => {
         const state = get();
-        if (state.source !== "serial" || payload.generation !== state.serialGeneration) {
+        if (
+          hasReplaySession(state) ||
+          state.source !== "serial" ||
+          payload.generation !== state.serialGeneration
+        ) {
           return;
         }
         get().ingestBytes(decodeBase64(payload.data), payload.receivedAt);
@@ -416,7 +533,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       handleSerialState: (payload) => {
         const state = get();
-        if (state.source !== "serial" || payload.revision < state.serialStateRevision) {
+        if (
+          hasReplaySession(state) ||
+          state.source !== "serial" ||
+          payload.revision < state.serialStateRevision
+        ) {
           return;
         }
         if (payload.status === "error") {
@@ -445,7 +566,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       handleSerialTx: (payload) => {
         const state = get();
-        if (state.source === "serial" && payload.generation !== state.serialGeneration) {
+        if (
+          hasReplaySession(state) ||
+          (state.source === "serial" && payload.generation !== state.serialGeneration)
+        ) {
           return;
         }
         const bytes = decodeBase64(payload.data);
@@ -532,7 +656,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const state = get();
         if (
           state.workspaceTransitionStatus !== "idle" ||
-          isCaptureActive(state.captureStatus)
+          state.runtimeTransitionStatus !== "idle" ||
+          isCaptureActive(state.captureStatus) ||
+          hasReplaySession(state)
         ) {
           return false;
         }
@@ -545,6 +671,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return false;
         }
 
+        if (!beginRuntimeTransition(get, set, "starting-capture")) {
+          return false;
+        }
         set({ captureStatus: "starting", captureMessage: "正在创建捕获文件" });
         try {
           const payload = await startCaptureClient({
@@ -557,13 +686,25 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         } catch (error) {
           set({ captureStatus: "error", captureMessage: getErrorMessage(error) });
           return false;
+        } finally {
+          endRuntimeTransition(get, set, "starting-capture");
         }
       },
       stopCapture: async () => {
         if (!hasCaptureToStop(get())) {
           return true;
         }
-        return stopCurrentCapture(get, set);
+        if (captureStopPromise) {
+          return captureStopPromise;
+        }
+        if (!beginRuntimeTransition(get, set, "stopping-capture")) {
+          return false;
+        }
+        try {
+          return await stopCurrentCapture(get, set);
+        } finally {
+          endRuntimeTransition(get, set, "stopping-capture");
+        }
       },
       handleCaptureState: (payload) => {
         if (payload.revision < get().captureRevision) {
@@ -580,6 +721,237 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           captureRecordCount: payload.recordCount,
           captureMessage: payload.message ?? "",
         });
+      },
+      openReplayFile: async () => {
+        const state = get();
+        if (!state.isNativeRuntime) {
+          set({ replayStatus: "error", replayMessage: "浏览器预览不支持捕获文件回放" });
+          return false;
+        }
+        if (!beginRuntimeTransition(get, set, "selecting-replay")) {
+          return false;
+        }
+
+        try {
+          set({ replayStatus: state.replayStatus === "idle" ? "selecting" : state.replayStatus });
+          const path = await selectReplayFilePath();
+          if (!path) {
+            if (get().replayStatus === "selecting") {
+              set({ replayStatus: "idle" });
+            }
+            return false;
+          }
+          set({ runtimeTransitionStatus: "opening-replay" });
+          return await prepareAndOpenReplay(path, get, set);
+        } catch (error) {
+          setReplayActionError(set, error, state.replayStatus);
+          return false;
+        } finally {
+          endRuntimeTransition(get, set);
+        }
+      },
+      openRecentCapture: async () => {
+        const state = get();
+        if (!state.isNativeRuntime) {
+          set({ replayStatus: "error", replayMessage: "浏览器预览不支持捕获文件回放" });
+          return false;
+        }
+        if (!state.capturePath) {
+          set({ replayMessage: "还没有可回放的捕获文件" });
+          return false;
+        }
+        if (!beginRuntimeTransition(get, set, "opening-replay")) {
+          return false;
+        }
+
+        try {
+          if (!(await stopCurrentCapture(get, set))) {
+            set({ replayMessage: "捕获文件尚未完成，无法开始回放" });
+            return false;
+          }
+          return await prepareAndOpenReplay(get().capturePath, get, set);
+        } catch (error) {
+          setReplayActionError(set, error, state.replayStatus);
+          return false;
+        } finally {
+          endRuntimeTransition(get, set, "opening-replay");
+        }
+      },
+      playReplay: async () => {
+        const state = get();
+        if (
+          !state.replayHeader ||
+          !["ready", "paused", "completed"].includes(state.replayStatus) ||
+          !beginRuntimeTransition(get, set, "controlling-replay")
+        ) {
+          return false;
+        }
+
+        const shouldResetView = state.replayStatus === "ready" || state.replayStatus === "completed";
+        const previousGeneration = state.replayGeneration;
+        const previousNextSequence = state.replayNextSequence;
+        set({ replayStatus: "starting", replayMessage: "正在启动 1× 回放" });
+        try {
+          const payload = await playReplayClient(state.replaySessionId);
+          get().handleReplayState(payload);
+          if (shouldResetView) {
+            resetReplayView(payload.header?.protocol ?? state.replayHeader.protocol, set);
+          }
+          set({
+            replayNextSequence:
+              payload.generation === previousGeneration ? previousNextSequence : 1,
+          });
+          try {
+            await ackReplayBatchClient(payload.sessionId, payload.generation, 0);
+          } catch (error) {
+            await recoverReplayAfterAckFailure(
+              payload.sessionId,
+              payload.generation,
+              error,
+              get,
+              set,
+            );
+            return false;
+          }
+          return payload.status === "playing";
+        } catch (error) {
+          setReplayActionError(set, error, state.replayStatus);
+          return false;
+        } finally {
+          endRuntimeTransition(get, set, "controlling-replay");
+        }
+      },
+      pauseReplay: async () => {
+        const state = get();
+        if (
+          state.replayStatus !== "playing" ||
+          !beginRuntimeTransition(get, set, "controlling-replay")
+        ) {
+          return false;
+        }
+        set({ replayStatus: "pausing", replayMessage: "正在暂停回放" });
+        try {
+          const payload = await pauseReplayClient(state.replaySessionId, state.replayGeneration);
+          get().handleReplayState(payload);
+          return payload.status === "paused";
+        } catch (error) {
+          setReplayActionError(set, error, state.replayStatus);
+          return false;
+        } finally {
+          endRuntimeTransition(get, set, "controlling-replay");
+        }
+      },
+      stopReplay: async () => {
+        const state = get();
+        if (
+          !isReplayRunning(state.replayStatus) ||
+          !beginRuntimeTransition(get, set, "controlling-replay")
+        ) {
+          return state.replayStatus === "ready";
+        }
+        set({ replayStatus: "stopping", replayMessage: "正在停止回放" });
+        try {
+          const payload = await stopReplayClient(state.replaySessionId, state.replayGeneration);
+          get().handleReplayState(payload);
+          return payload.status === "ready";
+        } catch (error) {
+          setReplayActionError(set, error, state.replayStatus);
+          return false;
+        } finally {
+          endRuntimeTransition(get, set, "controlling-replay");
+        }
+      },
+      closeReplay: async () => {
+        if (!hasReplaySession(get())) {
+          return true;
+        }
+        if (!beginRuntimeTransition(get, set, "controlling-replay")) {
+          return false;
+        }
+        try {
+          return await closeCurrentReplay(get, set);
+        } finally {
+          endRuntimeTransition(get, set, "controlling-replay");
+        }
+      },
+      handleReplayState: (payload) => {
+        const state = get();
+        if (payload.revision < state.replayRevision) {
+          return;
+        }
+        if (
+          ["pausing", "stopping", "closing"].includes(state.replayStatus) &&
+          payload.status === "playing" &&
+          payload.sessionId === state.replaySessionId &&
+          payload.generation === state.replayGeneration
+        ) {
+          return;
+        }
+        const keepLatestRunPosition =
+          payload.sessionId === state.replaySessionId &&
+          payload.generation === state.replayGeneration &&
+          payload.status === "playing";
+        set({
+          replayStatus: payload.status,
+          replaySessionId: payload.sessionId,
+          replayGeneration: payload.generation,
+          replayRevision: payload.revision,
+          replayPath: payload.path,
+          replayHeader: payload.header,
+          replayComplete: payload.complete,
+          replayPositionUs: keepLatestRunPosition
+            ? Math.max(state.replayPositionUs, payload.positionUs)
+            : payload.positionUs,
+          replayDurationUs: payload.durationUs,
+          replayDataBytes: payload.dataBytes,
+          replayRecordCount: payload.recordCount,
+          replayMessage: payload.message ?? "",
+          statusMessage: replayStatusMessage(payload),
+        });
+      },
+      handleReplayBatch: (payload) => {
+        let accepted = false;
+        set((state) => {
+          if (
+            !isReplayReceiving(state.replayStatus) ||
+            payload.sessionId !== state.replaySessionId ||
+            payload.generation !== state.replayGeneration ||
+            payload.sequence !== state.replayNextSequence ||
+            !state.replayHeader
+          ) {
+            return state;
+          }
+          accepted = true;
+          return ingestReplayBatch(state, payload);
+        });
+        if (accepted) {
+          void ackReplayBatchClient(
+            payload.sessionId,
+            payload.generation,
+            payload.sequence,
+          ).catch(async (error: unknown) => {
+            const state = get();
+            if (
+              state.replaySessionId !== payload.sessionId ||
+              state.replayGeneration !== payload.generation ||
+              state.replayNextSequence !== payload.sequence + 1 ||
+              !beginRuntimeTransition(get, set, "controlling-replay")
+            ) {
+              return;
+            }
+            try {
+              await recoverReplayAfterAckFailure(
+                payload.sessionId,
+                payload.generation,
+                error,
+                get,
+                set,
+              );
+            } finally {
+              endRuntimeTransition(get, set, "controlling-replay");
+            }
+          });
+        }
       },
       saveActiveWorkspace: (name) => {
         const state = get();
@@ -634,6 +1006,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const state = get();
         if (
           state.workspaceTransitionStatus !== "idle" ||
+          state.runtimeTransitionStatus !== "idle" ||
           state.isRefreshingPorts ||
           isCaptureTransitioning(state.captureStatus)
         ) {
@@ -643,17 +1016,22 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!target) {
           throw new Error("要应用的工作区不存在");
         }
+        if (!beginRuntimeTransition(get, set, "switching-workspace")) {
+          return false;
+        }
         set({ workspaceTransitionStatus: "switching" });
         try {
           return await applyWorkspaceSnapshot(id, get, set);
         } finally {
           set({ workspaceTransitionStatus: "idle" });
+          endRuntimeTransition(get, set, "switching-workspace");
         }
       },
       deleteWorkspace: async (id) => {
         const state = get();
         if (
           state.workspaceTransitionStatus !== "idle" ||
+          state.runtimeTransitionStatus !== "idle" ||
           state.isRefreshingPorts ||
           isCaptureTransitioning(state.captureStatus)
         ) {
@@ -669,6 +1047,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
         const deletedName = state.workspaces[index]?.name ?? "";
         const nextWorkspace = state.workspaces[index + 1] ?? state.workspaces[index - 1];
+        if (!beginRuntimeTransition(get, set, "switching-workspace")) {
+          return false;
+        }
         set({ workspaceTransitionStatus: "deleting" });
         try {
           if (
@@ -684,6 +1065,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return true;
         } finally {
           set({ workspaceTransitionStatus: "idle" });
+          endRuntimeTransition(get, set, "switching-workspace");
         }
       },
       importWorkspace: (imported) => {
@@ -811,23 +1193,159 @@ function hasCaptureToStop(state: WorkbenchStore): boolean {
   );
 }
 
+function hasReplaySession(state: WorkbenchStore): boolean {
+  return state.replaySessionId > 0 && state.replayStatus !== "idle";
+}
+
+function isReplayRunning(status: ReplayUiStatus): boolean {
+  return ["starting", "playing", "pausing", "paused", "stopping"].includes(status);
+}
+
+function isReplayReceiving(status: ReplayUiStatus): boolean {
+  return status === "playing";
+}
+
+function beginRuntimeTransition(
+  get: WorkbenchGet,
+  set: WorkbenchSet,
+  status: Exclude<RuntimeTransitionStatus, "idle">,
+): boolean {
+  if (
+    get().runtimeTransitionStatus !== "idle" ||
+    get().workspaceTransitionStatus !== "idle"
+  ) {
+    return false;
+  }
+  set({ runtimeTransitionStatus: status });
+  return true;
+}
+
+function endRuntimeTransition(
+  get: WorkbenchGet,
+  set: WorkbenchSet,
+  expected?: Exclude<RuntimeTransitionStatus, "idle">,
+): void {
+  if (!expected || get().runtimeTransitionStatus === expected) {
+    set({ runtimeTransitionStatus: "idle" });
+  }
+}
+
 async function stopCurrentCapture(get: WorkbenchGet, set: WorkbenchSet): Promise<boolean> {
   const state = get();
   if (!hasCaptureToStop(state)) {
     return true;
   }
-  if (!state.isNativeRuntime || state.captureStatus === "stopping") {
+  if (captureStopPromise) {
+    return captureStopPromise;
+  }
+  if (!state.isNativeRuntime) {
     return false;
   }
 
   set({ captureStatus: "stopping", captureMessage: "正在完成捕获文件" });
+  const pending = (async () => {
+    try {
+      const payload = await stopCaptureClient();
+      get().handleCaptureState(payload);
+      return payload.status !== "recording" && payload.status !== "stopping";
+    } catch (error) {
+      set({ captureStatus: "error", captureMessage: getErrorMessage(error) });
+      return false;
+    }
+  })();
+  captureStopPromise = pending;
   try {
-    const payload = await stopCaptureClient();
-    get().handleCaptureState(payload);
-    return payload.status !== "recording" && payload.status !== "stopping";
-  } catch (error) {
-    set({ captureStatus: "error", captureMessage: getErrorMessage(error) });
+    return await pending;
+  } finally {
+    if (captureStopPromise === pending) {
+      captureStopPromise = null;
+    }
+  }
+}
+
+async function prepareAndOpenReplay(
+  path: string,
+  get: WorkbenchGet,
+  set: WorkbenchSet,
+): Promise<boolean> {
+  if (!(await stopCurrentCapture(get, set))) {
+    set({ replayMessage: "捕获文件尚未完成，无法打开回放" });
     return false;
+  }
+  if (get().connectionStatus !== "disconnected") {
+    const disconnected = await disconnectCurrentSource(get, set);
+    if (!disconnected) {
+      set({ replayMessage: "断开数据源失败，未打开回放文件" });
+      return false;
+    }
+  }
+
+  if (!hasReplaySession(get())) {
+    set({ replayStatus: "loading" });
+  }
+  set({ statusMessage: "正在检查捕获文件" });
+  const payload = await openReplayClient(path);
+  get().handleReplayState(payload);
+  return payload.status === "loading" || payload.status === "ready";
+}
+
+async function closeCurrentReplay(get: WorkbenchGet, set: WorkbenchSet): Promise<boolean> {
+  const state = get();
+  if (!hasReplaySession(state)) {
+    return true;
+  }
+
+  set({ replayStatus: "closing", replayMessage: "正在关闭回放" });
+  try {
+    const payload = await closeReplayClient(state.replaySessionId);
+    get().handleReplayState(payload);
+    return payload.status === "idle";
+  } catch (error) {
+    setReplayActionError(set, error, state.replayStatus);
+    return false;
+  }
+}
+
+function setReplayActionError(
+  set: WorkbenchSet,
+  error: unknown,
+  fallbackStatus: ReplayUiStatus = "error",
+): void {
+  const message = getErrorMessage(error);
+  set({
+    replayStatus: fallbackStatus,
+    replayMessage: message,
+    statusMessage: message,
+  });
+}
+
+async function recoverReplayAfterAckFailure(
+  sessionId: number,
+  generation: number,
+  error: unknown,
+  get: WorkbenchGet,
+  set: WorkbenchSet,
+): Promise<void> {
+  const state = get();
+  if (state.replaySessionId !== sessionId || state.replayGeneration !== generation) {
+    return;
+  }
+
+  const ackMessage = `回放确认失败：${getErrorMessage(error)}`;
+  try {
+    const payload = await stopReplayClient(sessionId, generation);
+    get().handleReplayState(payload);
+    const message = `${ackMessage}，已停止回放`;
+    set({ replayMessage: message, statusMessage: message });
+  } catch (stopError) {
+    const latest = get();
+    if (latest.replaySessionId !== sessionId || latest.replayGeneration !== generation) {
+      return;
+    }
+    setReplayActionError(
+      set,
+      new Error(`${ackMessage}；停止回放失败：${getErrorMessage(stopError)}`),
+    );
   }
 }
 
@@ -874,6 +1392,10 @@ async function applyWorkspaceSnapshot(
   const target = get().workspaces.find((workspace) => workspace.id === id);
   if (!target) {
     throw new Error("要应用的工作区不存在");
+  }
+  if (!(await closeCurrentReplay(get, set))) {
+    set({ statusMessage: `关闭回放失败，未切换到“${target.name}”` });
+    return false;
   }
   if (!(await stopCurrentCapture(get, set))) {
     set({ statusMessage: `结束录制失败，未切换到“${target.name}”` });
@@ -931,10 +1453,121 @@ function resetProtocolState(protocol: ProtocolKind): void {
   channelBuffers.clear();
 }
 
+function resetLiveView(protocol: ProtocolKind, set: WorkbenchSet): void {
+  resetProtocolState(protocol);
+  set({
+    channels: [],
+    terminalEntries: [],
+    terminalPaused: false,
+    chartPaused: false,
+    stats: emptyStats(),
+  });
+}
+
+function ensureReplayParser(protocol: ProtocolKind): void {
+  if (replayParserProtocol !== protocol) {
+    resetReplayProtocolState(protocol);
+  }
+}
+
+function resetReplayProtocolState(protocol: ProtocolKind): void {
+  replayParserProtocol = protocol;
+  replayProtocolParser = createProtocolParser(protocol);
+  replayRxDecoder = new TextDecoder();
+  replayTxDecoder = new TextDecoder();
+  replayChannelBuffers.clear();
+}
+
+function resetReplayView(protocol: ProtocolKind, set: WorkbenchSet): void {
+  resetReplayProtocolState(protocol);
+  set({
+    channels: [],
+    terminalEntries: [],
+    terminalPaused: false,
+    chartPaused: false,
+    stats: emptyStats(),
+  });
+}
+
+function ingestReplayBatch(
+  state: WorkbenchStore,
+  payload: ReplayBatchPayload,
+): Partial<WorkbenchStore> {
+  const header = state.replayHeader;
+  if (!header) {
+    return {};
+  }
+  ensureReplayParser(header.protocol);
+
+  let channels = state.channels;
+  const terminalEntries: TerminalEntry[] = [];
+  let rxBytes = 0;
+  let txBytes = 0;
+  let rxFrames = 0;
+
+  for (const record of payload.records) {
+    const bytes = Uint8Array.from(record.data);
+    const timestamp = header.startedAtUnixMs + record.timestampUs / 1_000;
+    if (record.direction === "rx") {
+      rxBytes += bytes.length;
+      const frames = replayProtocolParser.push(bytes, timestamp);
+      rxFrames += frames.length;
+      if (!state.chartPaused) {
+        channels = appendFrames(
+          channels,
+          frames,
+          state.channelVisibility,
+          replayChannelBuffers,
+        );
+      }
+      if (!state.terminalPaused) {
+        terminalEntries.push(
+          createTerminalEntry(
+            "rx",
+            bytes,
+            timestamp,
+            replayRxDecoder.decode(bytes, { stream: true }),
+          ),
+        );
+      }
+    } else {
+      txBytes += bytes.length;
+      if (!state.terminalPaused) {
+        terminalEntries.push(
+          createTerminalEntry(
+            "tx",
+            bytes,
+            timestamp,
+            replayTxDecoder.decode(bytes, { stream: true }),
+          ),
+        );
+      }
+    }
+  }
+
+  return {
+    channels,
+    terminalEntries:
+      terminalEntries.length > 0
+        ? appendManyBounded(state.terminalEntries, terminalEntries, MAX_TERMINAL_ENTRIES)
+        : state.terminalEntries,
+    stats: {
+      ...state.stats,
+      rxBytes: state.stats.rxBytes + rxBytes,
+      txBytes: state.stats.txBytes + txBytes,
+      rxFrames: state.stats.rxFrames + rxFrames,
+      startedAt: state.stats.startedAt ?? Date.now(),
+    },
+    replayPositionUs: Math.max(state.replayPositionUs, payload.endUs),
+    replayNextSequence: state.replayNextSequence + 1,
+  };
+}
+
 function appendFrames(
   channels: ChannelSeries[],
   frames: ParsedFrame[],
   channelVisibility: Record<string, boolean>,
+  buffers: Map<string, RingBuffer<DataPoint>> = channelBuffers,
 ): ChannelSeries[] {
   if (frames.length === 0) {
     return channels;
@@ -950,10 +1583,10 @@ function appendFrames(
       }
 
       const channelId = `channel-${index}`;
-      let buffer = channelBuffers.get(channelId);
+      let buffer = buffers.get(channelId);
       if (!buffer) {
         buffer = new RingBuffer<DataPoint>(MAX_POINTS_PER_CHANNEL);
-        channelBuffers.set(channelId, buffer);
+        buffers.set(channelId, buffer);
       }
       buffer.push({ x: frame.timestamp / 1_000, y: value });
 
@@ -1007,6 +1640,38 @@ function appendBounded<T>(items: T[], item: T, limit: number): T[] {
     return [...items, item];
   }
   return [...items.slice(items.length - limit + 1), item];
+}
+
+function appendManyBounded<T>(items: T[], additions: T[], limit: number): T[] {
+  if (additions.length >= limit) {
+    return additions.slice(-limit);
+  }
+  const keep = Math.max(0, limit - additions.length);
+  return [...items.slice(-keep), ...additions];
+}
+
+function replayStatusMessage(payload: ReplayStatePayload): string {
+  if (payload.message) {
+    return payload.message;
+  }
+  switch (payload.status) {
+    case "loading":
+      return "正在检查捕获文件";
+    case "ready":
+      return payload.complete ? "捕获文件已就绪" : "不完整捕获的有效记录已就绪";
+    case "playing":
+      return "正在以 1× 速度回放";
+    case "paused":
+      return "回放已暂停";
+    case "stopping":
+      return "正在停止回放";
+    case "completed":
+      return "回放已完成";
+    case "error":
+      return "回放发生未知错误";
+    case "idle":
+      return "回放已关闭";
+  }
 }
 
 function emptyStats(): TransferStats {

@@ -1,6 +1,6 @@
 # 架构说明
 
-本文描述 v0.1.0 基础以及已落地的 v0.2 工作区增量。架构目标不是追求模块数量，而是让串口生命周期、
+本文描述 v0.1.0 基础以及已落地的 v0.2 工作区、录制和回放增量。架构目标不是追求模块数量，而是让串口生命周期、
 数据所有权和故障语义足够清楚，使后续记录回放、协议扩展和插件系统可以增量加入。
 
 ## 总体结构
@@ -10,6 +10,9 @@ flowchart TB
     Device[串口设备] <--> Worker[Rust 串口 worker]
     Worker -->|Base64 RX / 状态事件| Bridge[Tauri 命令与事件边界]
     Worker -->|原始 RX / TX| Recorder[有界 VUCAP writer]
+    CaptureFile[VUCAP 文件] --> Replayer[有界 replay worker]
+    Replayer -->|批次事件| Bridge
+    Store -->|ACK| Replayer
     Bridge --> Store[Zustand 工作台状态]
     Store --> Parsers[增量协议解析器]
     Parsers --> Buffers[有界通道与终端缓冲]
@@ -79,7 +82,8 @@ worker 使用原子取消标记，断开不需要向可能已满的 TX 队列阻
 
 ## 安全边界
 
-- capability 仅启用 `core:default`，未开放文件系统、进程、Shell 或 opener 权限。
+- capability 仅启用 `core:default` 和 `dialog:allow-open`；Rust 持有选中文件路径，WebView 不具备通用文件系统、
+  进程、Shell 或 opener 权限。
 - CSP 默认只允许自身资源，并显式禁用 `base-uri`、`object-src` 和 `frame-src`。
 - 窗口保持不透明和系统装饰，避免透明窗口带来的可读性与平台兼容问题。
 - 主 WebView 不执行动态字符串代码；协议扩展不能依赖 `eval` 或 `new Function`。
@@ -120,6 +124,20 @@ writer 线程负责格式编码、定期进度事件、flush、同步和完成 f
 磁盘写入错误、writer panic 或队列溢出会把 capture 状态置为 `error` 并留下无 footer 的未完成文件，串口连接
 继续运行。主动停止、断开和工作区切换则串行等待 writer 收尾。格式 reader 逐条读取并限制头部与单条记录为
 64 KiB，可区分未知版本、损坏、截断和正常完成；详见 [VUCAP 捕获文件格式](capture-format.md)。
+
+## 有界历史回放
+
+回放是独立的非持久化运行模式，不加入工作区 `DataSource`。打开文件后，Rust worker 先流式扫描并验证版本、
+footer 统计和时间戳单调性；缺少 footer 或尾部截断只开放已验证的完整记录前缀，其他损坏进入 `error`。
+扫描不建立索引，播放时重新打开文件并只保留 `CaptureReader`、一个 lookahead record 和一个待确认批次。
+
+每个批次最多 128 KiB、128 条记录或 16 ms 捕获跨度，同时最多存在一个未 ACK 批次。`sessionId + generation +
+sequence` 共同隔离停止、重播和迟到事件；新 generation 先等待 `sequence=0` 启动 ACK，再以单调时钟按 1×
+调度。暂停、停止和关闭通过可唤醒控制通道打断定时或 ACK 等待，不依赖不可中断的长时间 sleep。
+
+前端使用独立增量协议 parser、RX decoder 和流式 TX decoder，一批数据只提交一次 Zustand 更新。RX 进入协议、
+波形、终端和统计，TX 只进入终端和统计；显示时间由捕获起始 Unix 时间加相对微秒时间计算。播放不会修改
+工作区协议，连接、录制、回放和工作区切换由同一个同步占用的运行事务状态串行化。
 
 ## 故障语义
 

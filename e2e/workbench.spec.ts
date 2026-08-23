@@ -203,14 +203,20 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
   ).toBe(futureValue);
 });
 
-test("浏览器预览显示录制状态但不开放文件写入", async ({ page }) => {
+test("浏览器预览显示会话状态但不开放文件操作", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "记录", exact: true }).click();
 
-  await expect(page.getByRole("heading", { name: "采集记录" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "会话记录" })).toBeVisible();
   await expect(page.getByRole("button", { name: "开始录制" })).toBeDisabled();
   await expect(page.getByText("仅桌面应用支持文件录制")).toBeVisible();
   await expect(page.getByLabel("录制状态")).toContainText("未录制");
+
+  await page.getByRole("tab", { name: "回放" }).click();
+  await expect(page.getByRole("button", { name: "打开捕获文件" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "回放最近录制" })).toBeDisabled();
+  await expect(page.getByText("仅桌面应用支持捕获文件回放")).toBeVisible();
+  await expect(page.getByLabel("回放状态")).toContainText("未打开文件");
 
   const dimensions = await page.evaluate(() => ({
     viewportWidth: window.innerWidth,

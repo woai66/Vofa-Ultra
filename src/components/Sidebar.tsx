@@ -57,14 +57,25 @@ function ConnectionPanel() {
   const workspaceTransitionStatus = useWorkbenchStore(
     (state) => state.workspaceTransitionStatus,
   );
+  const runtimeTransitionStatus = useWorkbenchStore(
+    (state) => state.runtimeTransitionStatus,
+  );
   const captureStatus = useWorkbenchStore((state) => state.captureStatus);
+  const replayStatus = useWorkbenchStore((state) => state.replayStatus);
+  const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
 
   const isConnected = connectionStatus === "connected";
   const isTransitioning = workspaceTransitionStatus !== "idle";
+  const isRuntimeTransitioning = runtimeTransitionStatus !== "idle";
   const isCaptureTransitioning = captureStatus === "starting" || captureStatus === "stopping";
   const isRecording = captureStatus === "recording";
-  const isBusy = connectionStatus === "connecting" || isTransitioning || isCaptureTransitioning;
-  const configDisabled = isConnected || isTransitioning || isRecording || isCaptureTransitioning;
+  const isReplayLoaded = replaySessionId > 0 && replayStatus !== "idle";
+  const isBusy =
+    connectionStatus === "connecting" ||
+    isTransitioning ||
+    isRuntimeTransitioning ||
+    isCaptureTransitioning;
+  const configDisabled = isConnected || isBusy || isRecording || isReplayLoaded;
 
   return (
     <div className="sidebar-panel">
@@ -82,7 +93,7 @@ function ConnectionPanel() {
           <button
             type="button"
             data-active={source === "serial"}
-            disabled={!isNativeRuntime || isTransitioning || isRecording || isCaptureTransitioning}
+            disabled={!isNativeRuntime || configDisabled}
             title={isNativeRuntime ? "使用本机串口" : "浏览器预览不可访问串口"}
             onClick={() => void setSource("serial")}
           >
@@ -91,7 +102,7 @@ function ConnectionPanel() {
           <button
             type="button"
             data-active={source === "simulator"}
-            disabled={isTransitioning || isRecording || isCaptureTransitioning}
+            disabled={configDisabled}
             onClick={() => void setSource("simulator")}
           >
             模拟器
@@ -260,7 +271,7 @@ function ConnectionPanel() {
               role="radio"
               aria-checked={protocol === id}
               data-active={protocol === id}
-              disabled={isTransitioning || isRecording || isCaptureTransitioning}
+              disabled={configDisabled}
               onClick={() => setProtocol(id)}
             >
               <span className="protocol-dot" />
@@ -285,7 +296,15 @@ function ConnectionPanel() {
           onClick={() => void (isConnected ? disconnect() : connect())}
         >
           {isConnected ? <CircleStop size={17} /> : <Play size={17} />}
-          {isBusy ? "连接中" : isConnected ? "断开连接" : source === "serial" ? "连接设备" : "启动模拟"}
+          {isBusy
+            ? "处理中"
+            : isConnected
+              ? "断开连接"
+              : isReplayLoaded
+                ? "退出回放并连接"
+                : source === "serial"
+                  ? "连接设备"
+                  : "启动模拟"}
         </button>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CircleGauge, Database, Disc3, Radio, Rows3 } from "lucide-react";
+import { CircleGauge, CirclePlay, Database, Disc3, Radio, Rows3 } from "lucide-react";
 import { useWorkbenchStore } from "../store/workbenchStore";
 
 export function StatusBar() {
@@ -11,6 +11,11 @@ export function StatusBar() {
   const channels = useWorkbenchStore((state) => state.channels);
   const captureStatus = useWorkbenchStore((state) => state.captureStatus);
   const captureDataBytes = useWorkbenchStore((state) => state.captureDataBytes);
+  const replayStatus = useWorkbenchStore((state) => state.replayStatus);
+  const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
+  const replayHeader = useWorkbenchStore((state) => state.replayHeader);
+  const replayPositionUs = useWorkbenchStore((state) => state.replayPositionUs);
+  const replayDurationUs = useWorkbenchStore((state) => state.replayDurationUs);
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -20,26 +25,45 @@ export function StatusBar() {
 
   const elapsedSeconds = stats.startedAt ? Math.max((now - stats.startedAt) / 1_000, 1) : 1;
   const receiveRate = stats.rxBytes / elapsedSeconds;
+  const replayLoaded = replaySessionId > 0 && replayStatus !== "idle";
+  const activeProtocol = replayHeader?.protocol ?? protocol;
 
   return (
     <footer className="status-bar">
-      <div className="status-item connection-status" data-status={connectionStatus}>
+      <div
+        className="status-item connection-status"
+        data-status={replayLoaded ? "connected" : connectionStatus}
+      >
         <span className="status-dot" />
-        <span>{connectionLabel(connectionStatus)}</span>
+        <span>{replayLoaded ? "回放" : connectionLabel(connectionStatus)}</span>
       </div>
       <div className="status-item">
         <Radio size={13} />
-        <span>{source === "simulator" ? "Simulator" : serialConfig.portName || "No port"}</span>
+        <span>
+          {replayLoaded
+            ? "VUCAP"
+            : source === "simulator"
+              ? "Simulator"
+              : serialConfig.portName || "No port"}
+        </span>
       </div>
       <div className="status-item">
         <CircleGauge size={13} />
-        <span>{protocolName(protocol)}</span>
+        <span>{protocolName(activeProtocol)}</span>
       </div>
       <div className="status-spacer" />
       {captureStatus === "recording" && (
         <div className="status-item capture-status-item">
           <Disc3 size={13} />
           <span>REC {formatBytes(captureDataBytes)}</span>
+        </div>
+      )}
+      {replayLoaded && (
+        <div className="status-item replay-status-item">
+          <CirclePlay size={13} />
+          <span>
+            1× {formatDuration(replayPositionUs)} / {formatDuration(replayDurationUs)}
+          </span>
         </div>
       )}
       <div className="status-item" title="接收速率">
@@ -90,4 +114,11 @@ function formatBytes(value: number): string {
     return `${(value / 1_024).toFixed(1)} KB`;
   }
   return `${(value / 1_048_576).toFixed(1)} MB`;
+}
+
+function formatDuration(microseconds: number): string {
+  const totalSeconds = Math.floor(microseconds / 1_000_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 }

@@ -19,6 +19,9 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const activeWorkspace = useWorkbenchStore(selectActiveWorkspace);
   const workspaceDirty = useWorkbenchStore(selectIsWorkspaceDirty);
+  const replayStatus = useWorkbenchStore((state) => state.replayStatus);
+  const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
+  const replayPath = useWorkbenchStore((state) => state.replayPath);
   const [theme, setTheme] = useState<ThemeMode>(() => {
     const savedTheme = localStorage.getItem("vofa-ultra-theme");
     if (savedTheme === "dark" || savedTheme === "light") {
@@ -28,6 +31,8 @@ export default function App() {
   });
 
   useWorkbenchRuntime();
+
+  const replayLoaded = replaySessionId > 0 && replayStatus !== "idle";
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -60,10 +65,12 @@ export default function App() {
             <Menu size={18} />
           </button>
           <div className="workspace-title">
-            <strong>实时工作台</strong>
+            <strong>{replayLoaded ? "会话回放" : "实时工作台"}</strong>
             <span>
-              {activeWorkspace?.name ?? "工作区不可用"}
-              {workspaceDirty ? " · 未保存" : ""}
+              {replayLoaded
+                ? replayPath.split(/[\\/]/).pop() || "捕获文件"
+                : activeWorkspace?.name ?? "工作区不可用"}
+              {!replayLoaded && workspaceDirty ? " · 未保存" : ""}
             </span>
           </div>
           <div className="workspace-header-meta">

@@ -1,9 +1,14 @@
 mod capture;
+mod replay;
 mod serial;
 
 use capture::{
     abort_capture, append_simulator_capture, get_capture_state, start_capture, stop_capture,
     CaptureState,
+};
+use replay::{
+    ack_replay_batch, close_replay, get_replay_state, open_replay, pause_replay, play_replay,
+    stop_replay, ReplayState,
 };
 use serial::{
     connect_serial, disconnect_serial, get_serial_state, list_serial_ports, send_serial,
@@ -14,7 +19,9 @@ use serial::{
 pub fn run() {
     tauri::Builder::default()
         .manage(CaptureState::default())
+        .manage(ReplayState::default())
         .manage(SerialState::default())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             list_serial_ports,
             get_serial_state,
@@ -26,6 +33,13 @@ pub fn run() {
             stop_capture,
             abort_capture,
             append_simulator_capture,
+            get_replay_state,
+            open_replay,
+            play_replay,
+            pause_replay,
+            stop_replay,
+            close_replay,
+            ack_replay_batch,
         ])
         .run(tauri::generate_context!())
         .expect("启动 Vofa-Ultra 失败");

@@ -31,14 +31,19 @@ describe("App", () => {
     expect(screen.getByRole("status")).toHaveTextContent("工作区已保存");
   });
 
-  it("浏览器预览明确禁用文件录制", async () => {
+  it("浏览器预览明确禁用录制和回放文件操作", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "记录" }));
 
-    expect(screen.getByRole("heading", { name: "采集记录" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "会话记录" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开始录制" })).toBeDisabled();
     expect(screen.getByText("仅桌面应用支持文件录制")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "回放" }));
+    expect(screen.getByRole("button", { name: "打开捕获文件" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "回放最近录制" })).toBeDisabled();
+    expect(screen.getByText("仅桌面应用支持捕获文件回放")).toBeInTheDocument();
   });
 });

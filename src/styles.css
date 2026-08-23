@@ -256,6 +256,37 @@ textarea:disabled {
   border-bottom: 1px solid var(--border);
 }
 
+.session-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-0);
+  gap: 4px;
+}
+
+.session-tabs button {
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.session-tabs button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.session-tabs button[data-active="true"] {
+  border-color: var(--border);
+  background: var(--surface-1);
+  color: var(--text);
+}
+
 .capture-state {
   display: flex;
   min-height: 76px;
@@ -278,10 +309,27 @@ textarea:disabled {
   background: var(--danger);
 }
 
+.capture-state[data-status="playing"] .capture-state-dot {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+  background: var(--accent);
+}
+
 .capture-state[data-status="starting"] .capture-state-dot,
-.capture-state[data-status="stopping"] .capture-state-dot {
+.capture-state[data-status="stopping"] .capture-state-dot,
+.capture-state[data-status="selecting"] .capture-state-dot,
+.capture-state[data-status="loading"] .capture-state-dot,
+.capture-state[data-status="pausing"] .capture-state-dot,
+.capture-state[data-status="closing"] .capture-state-dot {
   border-color: var(--amber);
   background: var(--amber);
+}
+
+.capture-state[data-status="ready"] .capture-state-dot,
+.capture-state[data-status="paused"] .capture-state-dot,
+.capture-state[data-status="completed"] .capture-state-dot {
+  border-color: var(--cyan);
+  background: var(--cyan);
 }
 
 .capture-state[data-status="error"] .capture-state-dot {
@@ -343,6 +391,14 @@ textarea:disabled {
   white-space: nowrap;
 }
 
+.capture-metrics[data-wide="true"] {
+  grid-template-columns: 1.5fr 0.75fr 0.75fr;
+}
+
+.capture-metrics[data-wide="true"] > div:first-child strong {
+  font-size: 9px;
+}
+
 .capture-action-section {
   align-items: stretch;
 }
@@ -363,6 +419,80 @@ textarea:disabled {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 10px;
   overflow-wrap: anywhere;
+}
+
+.capture-file-section strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replay-progress {
+  display: block;
+  width: 100%;
+  height: 3px;
+  border: 0;
+  background: var(--surface-2);
+  appearance: none;
+}
+
+.replay-progress::-webkit-progress-bar {
+  background: var(--surface-2);
+}
+
+.replay-progress::-webkit-progress-value {
+  background: var(--accent);
+}
+
+.replay-progress::-moz-progress-bar {
+  background: var(--accent);
+}
+
+.replay-open-section,
+.replay-control-section {
+  align-items: stretch;
+}
+
+.replay-open-button,
+.replay-recent-button {
+  width: 100%;
+  margin: 0;
+}
+
+.replay-integrity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  color: var(--amber);
+  font-size: 10px;
+  gap: 6px;
+}
+
+.replay-integrity[data-complete="true"] {
+  color: var(--accent);
+}
+
+.replay-integrity span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.replay-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px 36px;
+  gap: 6px;
+}
+
+.replay-controls .primary-button,
+.replay-control-button {
+  width: 100%;
+  height: 36px;
+}
+
+.replay-control-button {
+  border-color: var(--border);
+  background: var(--surface-1);
 }
 
 .capture-feedback {
@@ -1672,10 +1802,22 @@ textarea:focus {
   .sidebar select,
   .connection-action-area .primary-button,
   .capture-action-button,
+  .replay-open-button,
+  .replay-recent-button,
+  .replay-controls .primary-button,
+  .replay-control-button,
   .workspace-save-actions button,
   .workspace-footer-actions button,
   .toggle-row {
     height: 44px;
+  }
+
+  .session-tabs button {
+    height: 44px;
+  }
+
+  .replay-controls {
+    grid-template-columns: minmax(0, 1fr) 44px 44px;
   }
 
   .workspace-row {

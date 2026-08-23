@@ -8,6 +8,10 @@ import {
   isTauriRuntime,
   subscribeToSerialEvents,
 } from "../services/serialClient";
+import {
+  getReplayState,
+  subscribeToReplayEvents,
+} from "../services/replayClient";
 import { startSimulator } from "../services/simulator";
 import { useWorkbenchStore } from "../store/workbenchStore";
 
@@ -22,6 +26,8 @@ export function useWorkbenchRuntime(): void {
   const handleSerialState = useWorkbenchStore((state) => state.handleSerialState);
   const handleSerialTx = useWorkbenchStore((state) => state.handleSerialTx);
   const handleCaptureState = useWorkbenchStore((state) => state.handleCaptureState);
+  const handleReplayState = useWorkbenchStore((state) => state.handleReplayState);
+  const handleReplayBatch = useWorkbenchStore((state) => state.handleReplayBatch);
 
   useEffect(() => {
     const nativeRuntime = isTauriRuntime();
@@ -89,6 +95,37 @@ export function useWorkbenchRuntime(): void {
       dispose();
     };
   }, [handleCaptureState]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let dispose: () => void = () => undefined;
+
+    void subscribeToReplayEvents({
+      onState: handleReplayState,
+      onBatch: handleReplayBatch,
+    })
+      .then(async (unlisten) => {
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+        dispose = unlisten;
+        if (isTauriRuntime()) {
+          const snapshot = await getReplayState();
+          if (!cancelled) {
+            handleReplayState(snapshot);
+          }
+        }
+      })
+      .catch((error: unknown) => {
+        console.error("初始化回放事件监听失败", error);
+      });
+
+    return () => {
+      cancelled = true;
+      dispose();
+    };
+  }, [handleReplayBatch, handleReplayState]);
 
   useEffect(() => {
     if (source !== "simulator" || connectionStatus !== "connected") {
