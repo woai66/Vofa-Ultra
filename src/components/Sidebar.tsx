@@ -28,12 +28,22 @@ import { WorkspacePanel } from "./WorkspacePanel";
 interface SidebarProps {
   activePanel: SidebarPanel;
   theme: ThemeMode;
+  onClose(): void;
   onThemeChange(theme: ThemeMode): void;
 }
 
-export function Sidebar({ activePanel, theme, onThemeChange }: SidebarProps) {
+export function Sidebar({ activePanel, theme, onClose, onThemeChange }: SidebarProps) {
   return (
     <aside className="sidebar">
+      <button
+        className="icon-button sidebar-close"
+        type="button"
+        aria-label="关闭侧栏"
+        title="关闭侧栏"
+        onClick={onClose}
+      >
+        <X size={18} />
+      </button>
       {activePanel === "connection" && <ConnectionPanel />}
       {activePanel === "channels" && <ChannelPanel />}
       {activePanel === "capture" && <CapturePanel />}

@@ -18,6 +18,17 @@
 vofa-NEXT 的 [Issue #11](https://github.com/Horldsence/vofa-NEXT/issues/11) 强化了“采集继续、视口独立暂停”
 这一方向。Vofa-Ultra 从首版就把它作为状态模型的一部分。
 
+### 命令工作流不依赖节点图
+
+vofa-NEXT 把命令发送器列为核心显示控件；其
+[Issue #9](https://github.com/Horldsence/vofa-NEXT/issues/9) 也显示自动应答和命令类工作流是高频需求，但相关实现
+受到后端图编译器性能与维护重构影响。Vofa-Ultra 先把有界历史和可取消周期发送做成独立基础能力，直接复用统一
+发送队列、TX 回执和录制链路，不要求用户先创建节点图。自动应答、脚本和任意变量表达式不混入这一基础层。
+
+[PR #13](https://github.com/Horldsence/vofa-NEXT/pull/13) 暴露过文本拖选与行选择抢占导致复制错误的问题。Vofa-Ultra
+的终端继续保留浏览器原生文本选择；命令历史导航只在输入框第一行或最后一行接管对应方向键，不改变终端记录的
+选择语义。
+
 ## 明确舍弃的做法
 
 ### 基础流程不依赖节点图

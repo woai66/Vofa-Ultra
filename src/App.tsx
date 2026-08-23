@@ -51,7 +51,12 @@ export default function App() {
   return (
     <div className="app-shell" data-sidebar-open={sidebarOpen}>
       <ActivityRail activePanel={sidebarPanel} onSelect={selectSidebarPanel} />
-      <Sidebar activePanel={sidebarPanel} theme={theme} onThemeChange={setTheme} />
+      <Sidebar
+        activePanel={sidebarPanel}
+        theme={theme}
+        onClose={() => setSidebarOpen(false)}
+        onThemeChange={setTheme}
+      />
 
       <main className="workspace">
         <header className="workspace-header">

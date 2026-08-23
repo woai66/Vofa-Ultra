@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { Sidebar } from "./Sidebar";
@@ -47,9 +47,29 @@ describe("Sidebar 串口恢复界面", () => {
     cleanup();
   });
 
+  it("提供侧栏关闭动作", () => {
+    const onClose = vi.fn();
+    render(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={onClose}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭侧栏" }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it("显示恢复阶段、尝试次数和诊断工具", () => {
     render(
-      <Sidebar activePanel="connection" theme="dark" onThemeChange={vi.fn()} />,
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
     );
 
     expect(screen.getByRole("checkbox", { name: "自动重连" })).toBeChecked();
@@ -79,7 +99,12 @@ describe("Sidebar 串口恢复界面", () => {
     });
 
     render(
-      <Sidebar activePanel="connection" theme="dark" onThemeChange={vi.fn()} />,
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
     );
 
     expect(screen.getByRole("button", { name: "取消连接" })).toBeEnabled();
@@ -101,7 +126,12 @@ describe("Sidebar 串口恢复界面", () => {
     });
 
     render(
-      <Sidebar activePanel="connection" theme="dark" onThemeChange={vi.fn()} />,
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
     );
 
     expect(screen.getByRole("button", { name: "正在取消" })).toBeDisabled();

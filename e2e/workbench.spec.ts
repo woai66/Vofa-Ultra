@@ -58,10 +58,45 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   });
 });
 
+test("有界命令历史与可取消周期发送形成完整工作流", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+
+  const input = page.getByRole("textbox", { name: "发送内容" });
+  await input.fill("PING");
+  await page.getByRole("button", { name: "展开周期发送设置" }).click();
+  await page.getByRole("spinbutton", { name: "发送间隔（毫秒）" }).fill("20");
+  await page.getByRole("spinbutton", { name: "发送次数" }).fill("3");
+  await page.getByRole("button", { name: "启动" }).click();
+
+  const taskStatus = page.getByRole("status", { name: "周期发送状态" });
+  await expect(taskStatus).toContainText("已完成 3 次发送", { timeout: 5_000 });
+  await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(3);
+  await page.getByRole("button", { name: "命令历史，1 条" }).click();
+  await expect(page.getByRole("dialog", { name: "命令历史" })).toContainText("×3");
+  await page.getByRole("button", { name: "命令历史，1 条" }).click();
+
+  await page.getByRole("button", { name: "持续" }).click();
+  await page.getByRole("button", { name: "启动" }).click();
+  await expect(taskStatus).toContainText("运行中");
+  await expect
+    .poll(() => page.locator('.terminal-line[data-direction="tx"]').count())
+    .toBeGreaterThan(3);
+  await input.fill("CHANGED");
+  await page.getByRole("button", { name: "停止", exact: true }).click();
+  await expect(taskStatus).toContainText("已手动停止");
+
+  const stoppedStatus = await taskStatus.textContent();
+  await page.waitForTimeout(120);
+  await expect(taskStatus).toHaveText(stoppedStatus ?? "");
+});
+
 test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
   await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
   await expect
     .poll(() =>
@@ -69,6 +104,28 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
     )
     .toBeLessThanOrEqual(0);
   await expect(page.getByRole("heading", { name: "实时波形" })).toBeVisible();
+  const sendFormat = page.getByRole("group", { name: "发送格式" });
+  const lineEnding = page.getByRole("combobox", { name: "行尾" });
+  await expect(sendFormat).toBeVisible();
+  await expect(lineEnding).toBeVisible();
+  await page.getByRole("button", { name: "HEX", exact: true }).last().click();
+  await lineEnding.selectOption("crlf");
+  await page.getByRole("textbox", { name: "发送内容" }).fill("AA");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await page.getByRole("button", { name: "命令历史，1 条" }).click();
+  await page
+    .getByRole("dialog", { name: "命令历史" })
+    .getByRole("button", { name: /AA/ })
+    .click();
+  await expect(sendFormat.getByRole("button", { name: "HEX" })).toHaveAttribute(
+    "data-active",
+    "true",
+  );
+  await expect(lineEnding).toHaveValue("crlf");
+  await sendFormat.getByRole("button", { name: "文本" }).click();
+  await lineEnding.selectOption("none");
+  await page.getByRole("button", { name: "展开周期发送设置" }).click();
+  await expect(page.locator(".command-workflow")).toBeVisible();
 
   const dimensions = await page.evaluate(() => ({
     viewportWidth: window.innerWidth,
@@ -76,7 +133,9 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   }));
   expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth);
 
-  const undersizedTargets = await page.locator("button, select, textarea").evaluateAll((elements) =>
+  const undersizedTargets = await page
+    .locator('button, select, textarea, input[type="number"]')
+    .evaluateAll((elements) =>
     elements
       .map((element) => {
         const rect = element.getBoundingClientRect();
@@ -99,13 +158,28 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
           : null;
       })
       .filter(Boolean),
-  );
+    );
   expect(undersizedTargets).toEqual([]);
 
   await page.screenshot({
     path: testInfo.outputPath("mobile-workbench.png"),
     fullPage: true,
   });
+});
+
+test("中窄屏关闭侧栏后活动导航保持可操作", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".sidebar")).toHaveCSS("visibility", "hidden");
+  await expect
+    .poll(() =>
+      page.locator(".sidebar").evaluate((element) => element.getBoundingClientRect().right),
+    )
+    .toBeLessThanOrEqual(0);
+
+  await page.getByRole("button", { name: "通道" }).click();
+  await expect(page.getByRole("heading", { name: "数据通道" })).toBeVisible();
 });
 
 test("命名工作区可保存、切换、导出并重新导入", async ({ page }, testInfo) => {

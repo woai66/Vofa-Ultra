@@ -1,6 +1,14 @@
 import { create, type StoreApi } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 import { decodeBase64, encodeOutbound, formatHex } from "../core/codec";
+import {
+  appendCommandHistory,
+  CommandScheduler,
+  commandHistoryPayloadBytes,
+  createInitialCommandTaskSnapshot,
+  type CommandTaskStopReason,
+  type PreparedCommand,
+} from "../core/commandWorkflow";
 import { createProtocolParser, type ProtocolParser } from "../core/protocols";
 import { RingBuffer } from "../core/ringBuffer";
 import {
@@ -67,6 +75,8 @@ import type {
 } from "../types/serial";
 import type {
   ChannelSeries,
+  CommandHistoryEntry,
+  CommandTaskSnapshot,
   DataPoint,
   ParsedFrame,
   TerminalEntry,
@@ -128,6 +138,8 @@ let captureStopPromise: Promise<boolean> | null = null;
 let serialRecoveryCoordinator: SerialReconnectCoordinator | null = null;
 let serialConnectOperation = 0;
 let serialRecoverySettingOperation = 0;
+let commandScheduler: CommandScheduler | null = null;
+let commandSendInFlight = false;
 
 type RuntimeTransitionStatus =
   | "idle"
@@ -160,6 +172,9 @@ export interface WorkbenchStore {
   displayMode: DisplayMode;
   sendMode: DisplayMode;
   lineEnding: LineEnding;
+  commandHistory: CommandHistoryEntry[];
+  commandTask: CommandTaskSnapshot;
+  isSendingCommand: boolean;
   terminalPaused: boolean;
   terminalAutoScroll: boolean;
   chartPaused: boolean;
@@ -205,6 +220,15 @@ export interface WorkbenchStore {
   clearSerialDiagnostics(): void;
   getSerialDiagnostics(): SerialDiagnosticsReport;
   send(value: string, mode: DisplayMode, lineEnding: LineEnding): Promise<void>;
+  startPeriodicSend(
+    value: string,
+    mode: DisplayMode,
+    lineEnding: LineEnding,
+    intervalMs: number,
+    repeatCount: number | null,
+  ): void;
+  stopPeriodicSend(): void;
+  clearCommandHistory(): void;
   ingestBytes(bytes: Uint8Array, timestamp?: number): void;
   handleSerialData(payload: SerialDataPayload): void;
   handleSerialState(payload: SerialStatePayload): void;
@@ -274,6 +298,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       displayMode: INITIAL_WORKSPACE_CONFIG.displayMode,
       sendMode: INITIAL_WORKSPACE_CONFIG.sendMode,
       lineEnding: INITIAL_WORKSPACE_CONFIG.lineEnding,
+      commandHistory: [],
+      commandTask: createInitialCommandTaskSnapshot(),
+      isSendingCommand: false,
       terminalPaused: false,
       terminalAutoScroll: INITIAL_WORKSPACE_CONFIG.terminalAutoScroll,
       chartPaused: false,
@@ -306,6 +333,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       replayMessage: "",
 
       setRuntimeAvailability: (nativeRuntime) => {
+        if (!nativeRuntime && get().isNativeRuntime) {
+          stopCurrentCommandTask("source-change");
+        }
         set((state) => ({
           isNativeRuntime: nativeRuntime,
           source: nativeRuntime ? state.source : "simulator",
@@ -329,6 +359,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (source === get().source) {
           return;
         }
+        stopCurrentCommandTask("source-change");
         if (!beginRuntimeTransition(get, set, "switching-source")) {
           return;
         }
@@ -429,6 +460,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!beginRuntimeTransition(get, set, "connecting")) {
           return;
         }
+        stopCurrentCommandTask("connection-change");
         const operation = ++serialConnectOperation;
         try {
           await getSerialRecoveryCoordinator().cancel("manual-connect", true);
@@ -508,6 +540,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!beginRuntimeTransition(get, set, "disconnecting")) {
           return false;
         }
+        stopCurrentCommandTask("connection-change");
         try {
           await getSerialRecoveryCoordinator().cancel("manual-disconnect", true);
           if (!(await stopCurrentCapture(get, set))) {
@@ -593,34 +626,40 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       send: async (value, mode, lineEnding) => {
-        if (
-          get().workspaceTransitionStatus !== "idle" ||
-          get().runtimeTransitionStatus !== "idle" ||
-          hasReplaySession(get())
-        ) {
-          throw new Error("工作区切换期间无法发送数据");
-        }
         const bytes = encodeOutbound(value, mode, lineEnding);
         if (bytes.length === 0) {
           return;
         }
-        if (bytes.length > MAX_SEND_BYTES) {
-          throw new Error(`单次发送不能超过 ${MAX_SEND_BYTES / 1024} KiB，请拆分后重试`);
-        }
-        if (get().connectionStatus !== "connected") {
-          throw new Error("请先连接数据源");
-        }
+        assertCommandSize(bytes);
+        await executePreparedCommand({ value, mode, lineEnding, bytes }, "manual", get, set);
+      },
 
-        if (get().source === "serial") {
-          await sendSerial(bytes);
-        } else {
-          get().handleSerialTx({
-            data: bytesToBase64(bytes),
-            byteCount: bytes.length,
-            transmittedAt: Date.now(),
-            generation: get().serialGeneration,
-          });
+      startPeriodicSend: (value, mode, lineEnding, intervalMs, repeatCount) => {
+        if (value.length === 0) {
+          throw new Error("发送内容不能为空");
         }
+        const bytes = encodeOutbound(value, mode, lineEnding);
+        if (bytes.length === 0) {
+          throw new Error("发送内容不能为空");
+        }
+        assertCommandSize(bytes);
+        assertCommandCanStart(get());
+        getCommandScheduler().start({
+          value,
+          mode,
+          lineEnding,
+          bytes,
+          intervalMs,
+          repeatCount,
+        });
+      },
+
+      stopPeriodicSend: () => {
+        stopCurrentCommandTask("user");
+      },
+
+      clearCommandHistory: () => {
+        set({ commandHistory: [] });
       },
 
       ingestBytes: (bytes, timestamp = Date.now()) => {
@@ -676,6 +715,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           payload.revision <= state.serialStateRevision
         ) {
           return;
+        }
+        if (payload.status !== "connected") {
+          stopCurrentCommandTask("connection-lost");
         }
         const previousStatus = state.connectionStatus;
         if (payload.status === "error") {
@@ -874,6 +916,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!beginRuntimeTransition(get, set, "selecting-replay")) {
           return false;
         }
+        stopCurrentCommandTask("replay-open");
 
         try {
           await getSerialRecoveryCoordinator().cancel("replay-open", true);
@@ -907,6 +950,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!beginRuntimeTransition(get, set, "opening-replay")) {
           return false;
         }
+        stopCurrentCommandTask("replay-open");
 
         try {
           await getSerialRecoveryCoordinator().cancel("replay-open", true);
@@ -1278,6 +1322,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 );
 
 export function disposeWorkbenchRuntime(): void {
+  stopCurrentCommandTask("runtime-dispose");
   if (!serialRecoveryCoordinator) {
     return;
   }
@@ -1383,6 +1428,111 @@ function assertWorkspaceStorageWritable(state: WorkbenchStore): void {
 type WorkbenchGet = StoreApi<WorkbenchStore>["getState"];
 type WorkbenchSet = StoreApi<WorkbenchStore>["setState"];
 
+function getCommandScheduler(): CommandScheduler {
+  if (commandScheduler) {
+    return commandScheduler;
+  }
+
+  commandScheduler = new CommandScheduler({
+    now: Date.now,
+    setTimer: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+    clearTimer: (timer) => globalThis.clearTimeout(timer as ReturnType<typeof setTimeout>),
+    send: (command) =>
+      executePreparedCommand(
+        command,
+        "scheduler",
+        useWorkbenchStore.getState,
+        useWorkbenchStore.setState,
+      ),
+    onSnapshot: (commandTask) => {
+      useWorkbenchStore.setState({ commandTask });
+    },
+  });
+  return commandScheduler;
+}
+
+function stopCurrentCommandTask(reason: CommandTaskStopReason): boolean {
+  return commandScheduler?.stop(reason) ?? false;
+}
+
+function assertCommandCanStart(state: WorkbenchStore): void {
+  assertCommandCanSend(state);
+  if (commandSendInFlight || state.isSendingCommand) {
+    throw new Error("请等待当前发送完成后再启动周期任务");
+  }
+  if (getCommandScheduler().isActive()) {
+    throw new Error("已有发送任务正在运行或停止中");
+  }
+}
+
+function assertCommandCanSend(state: WorkbenchStore): void {
+  if (
+    state.workspaceTransitionStatus !== "idle" ||
+    state.runtimeTransitionStatus !== "idle" ||
+    hasReplaySession(state)
+  ) {
+    throw new Error("当前运行事务中无法发送数据");
+  }
+  if (state.connectionStatus !== "connected") {
+    throw new Error("请先连接数据源");
+  }
+}
+
+function assertCommandSize(bytes: Uint8Array): void {
+  if (bytes.length > MAX_SEND_BYTES) {
+    throw new Error(`单次发送不能超过 ${MAX_SEND_BYTES / 1024} KiB，请拆分后重试`);
+  }
+}
+
+async function executePreparedCommand(
+  command: PreparedCommand,
+  origin: "manual" | "scheduler",
+  get: WorkbenchGet,
+  set: WorkbenchSet,
+): Promise<void> {
+  const state = get();
+  assertCommandCanSend(state);
+  assertCommandSize(command.bytes);
+  if (origin === "manual" && getCommandScheduler().isActive()) {
+    throw new Error("周期发送运行中，请先停止任务");
+  }
+  if (commandSendInFlight) {
+    throw new Error("上一次发送尚未完成");
+  }
+
+  commandSendInFlight = true;
+  set({ isSendingCommand: true });
+  try {
+    if (state.source === "serial") {
+      await sendSerial(command.bytes);
+    } else {
+      get().handleSerialTx({
+        data: bytesToBase64(command.bytes),
+        byteCount: command.bytes.length,
+        transmittedAt: Date.now(),
+        generation: get().serialGeneration,
+      });
+    }
+    const sentAt = Date.now();
+    set((latest) => ({
+      isSendingCommand: false,
+      commandHistory: appendCommandHistory(latest.commandHistory, {
+        value: command.value,
+        mode: command.mode,
+        lineEnding: command.lineEnding,
+        payloadBytes: commandHistoryPayloadBytes(command.value),
+        encodedBytes: command.bytes.length,
+        sentAt,
+      }),
+    }));
+  } catch (error) {
+    set({ isSendingCommand: false });
+    throw error;
+  } finally {
+    commandSendInFlight = false;
+  }
+}
+
 function isCaptureTransitioning(status: CaptureUiStatus): boolean {
   return status === "starting" || status === "stopping";
 }
@@ -1473,6 +1623,7 @@ async function prepareAndOpenReplay(
   get: WorkbenchGet,
   set: WorkbenchSet,
 ): Promise<boolean> {
+  stopCurrentCommandTask("replay-open");
   if (!(await stopCurrentCapture(get, set))) {
     set({ replayMessage: "捕获文件尚未完成，无法打开回放" });
     return false;
@@ -1626,6 +1777,7 @@ async function applyWorkspaceSnapshot(
   get: WorkbenchGet,
   set: WorkbenchSet,
 ): Promise<boolean> {
+  stopCurrentCommandTask("workspace-change");
   await getSerialRecoveryCoordinator().cancel("workspace-change", true);
   const target = get().workspaces.find((workspace) => workspace.id === id);
   if (!target) {

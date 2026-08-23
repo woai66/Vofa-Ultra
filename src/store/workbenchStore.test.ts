@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
 import { createDefaultWorkspaceConfig, createWorkspaceProfile } from "../core/workspaces";
 import {
   enqueueSimulatorCapture,
@@ -19,6 +20,7 @@ import {
   connectSerial,
   disconnectSerial,
   listSerialPorts,
+  sendSerial,
 } from "../services/serialClient";
 import type { CaptureStatePayload } from "../types/capture";
 import type {
@@ -41,6 +43,7 @@ vi.mock("../services/serialClient", async (importOriginal) => {
     connectSerial: vi.fn(),
     disconnectSerial: vi.fn(),
     listSerialPorts: vi.fn(),
+    sendSerial: vi.fn(),
   };
 });
 
@@ -65,6 +68,7 @@ const cancelSerialConnectMock = vi.mocked(cancelSerialConnect);
 const connectSerialMock = vi.mocked(connectSerial);
 const disconnectSerialMock = vi.mocked(disconnectSerial);
 const listSerialPortsMock = vi.mocked(listSerialPorts);
+const sendSerialMock = vi.mocked(sendSerial);
 const enqueueSimulatorCaptureMock = vi.mocked(enqueueSimulatorCapture);
 const startCaptureMock = vi.mocked(startCapture);
 const stopCaptureMock = vi.mocked(stopCapture);
@@ -90,6 +94,11 @@ function deferred<T>(): Deferred<T> {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 const TEST_REPLAY_HEADER: ReplayCaptureHeader = {
@@ -131,6 +140,7 @@ function replayState(
 
 describe("workbenchStore", () => {
   beforeEach(async () => {
+    useWorkbenchStore.getState().stopPeriodicSend();
     await useWorkbenchStore.getState().setSerialRecoveryEnabled(false);
     useWorkbenchStore.getState().clearSerialDiagnostics();
     cancelSerialConnectMock.mockReset().mockResolvedValue({
@@ -147,6 +157,7 @@ describe("workbenchStore", () => {
       revision: 0,
     });
     listSerialPortsMock.mockReset();
+    sendSerialMock.mockReset().mockResolvedValue(undefined);
     enqueueSimulatorCaptureMock.mockReset().mockReturnValue(true);
     startCaptureMock.mockReset();
     stopCaptureMock.mockReset();
@@ -183,6 +194,9 @@ describe("workbenchStore", () => {
       isCancellingSerialConnection: false,
       channels: [],
       terminalEntries: [],
+      commandHistory: [],
+      commandTask: createInitialCommandTaskSnapshot(),
+      isSendingCommand: false,
       terminalPaused: false,
       chartPaused: false,
       stats: { rxBytes: 0, txBytes: 0, rxFrames: 0 },
@@ -220,6 +234,187 @@ describe("workbenchStore", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("仅在成功发送后记录会话历史并合并连续重复项", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+
+    await useWorkbenchStore.getState().send("PING", "text", "lf");
+    await useWorkbenchStore.getState().send("PING", "text", "lf");
+
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([
+      expect.objectContaining({
+        value: "PING",
+        mode: "text",
+        lineEnding: "lf",
+        encodedBytes: 5,
+        repeatCount: 2,
+      }),
+    ]);
+
+    await useWorkbenchStore.getState().send("PING", "text", "none");
+    expect(useWorkbenchStore.getState().commandHistory).toHaveLength(2);
+  });
+
+  it("发送失败不写入历史且释放发送互斥状态", async () => {
+    sendSerialMock.mockRejectedValueOnce(new Error("TX 队列已满"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 1,
+    });
+
+    await expect(
+      useWorkbenchStore.getState().send("PING", "text", "none"),
+    ).rejects.toThrow("TX 队列已满");
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      commandHistory: [],
+      isSendingCommand: false,
+    });
+
+    await expect(
+      useWorkbenchStore.getState().send("PING", "text", "none"),
+    ).resolves.toBeUndefined();
+    expect(useWorkbenchStore.getState().commandHistory).toHaveLength(1);
+  });
+
+  it("有限周期发送串行完成并把重复命令压缩为一条历史", async () => {
+    vi.useFakeTimers();
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+
+    useWorkbenchStore.getState().startPeriodicSend("PING", "text", "none", 20, 3);
+    await vi.advanceTimersByTimeAsync(40);
+
+    expect(useWorkbenchStore.getState().commandTask).toMatchObject({
+      status: "completed",
+      sentCount: 3,
+      repeatCount: 3,
+    });
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([
+      expect.objectContaining({ value: "PING", repeatCount: 3 }),
+    ]);
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.filter((entry) => entry.direction === "tx"),
+    ).toHaveLength(3);
+  });
+
+  it("持续任务可立即停止且不会再产生定时发送", async () => {
+    vi.useFakeTimers();
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+
+    useWorkbenchStore.getState().startPeriodicSend("PING", "text", "none", 20, null);
+    await flushPromises();
+    expect(useWorkbenchStore.getState().commandTask.sentCount).toBe(1);
+
+    useWorkbenchStore.getState().stopPeriodicSend();
+    const stoppedCount = useWorkbenchStore.getState().commandTask.sentCount;
+    expect(useWorkbenchStore.getState().commandTask.status).toBe("stopped");
+    await vi.advanceTimersByTimeAsync(200);
+    expect(useWorkbenchStore.getState().commandTask.sentCount).toBe(stoppedCount);
+  });
+
+  it("断开数据源和串口故障都会停止持续任务", async () => {
+    vi.useFakeTimers();
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    useWorkbenchStore.getState().startPeriodicSend("SIM", "text", "none", 20, null);
+    await flushPromises();
+
+    await expect(useWorkbenchStore.getState().disconnect()).resolves.toBe(true);
+    expect(useWorkbenchStore.getState().commandTask).toMatchObject({
+      status: "stopped",
+      sentCount: 1,
+    });
+
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 4,
+      serialStateRevision: 10,
+      runtimeTransitionStatus: "idle",
+    });
+    useWorkbenchStore.getState().startPeriodicSend("SERIAL", "text", "none", 20, null);
+    await flushPromises();
+    useWorkbenchStore.getState().handleSerialState({
+      status: "error",
+      portName: "COM3",
+      message: "设备已移除",
+      errorCode: "read-failed",
+      generation: 4,
+      revision: 11,
+    });
+
+    expect(useWorkbenchStore.getState().commandTask.status).toBe("stopped");
+    expect(useWorkbenchStore.getState().commandTask.message).toContain("连接已中断");
+  });
+
+  it("切换工作区、打开回放和运行时卸载都会停止任务", async () => {
+    vi.useFakeTimers();
+    const target = createWorkspaceProfile(
+      "任务目标工作区",
+      createDefaultWorkspaceConfig("simulator"),
+      "command-target",
+      200,
+    );
+    useWorkbenchStore.setState((state) => ({
+      source: "simulator",
+      connectionStatus: "connected",
+      workspaces: [...state.workspaces, target],
+    }));
+    useWorkbenchStore.getState().startPeriodicSend("WORKSPACE", "text", "none", 20, null);
+    await flushPromises();
+
+    await expect(useWorkbenchStore.getState().switchWorkspace(target.id)).resolves.toBe(true);
+    expect(useWorkbenchStore.getState().commandTask.message).toContain("工作区已切换");
+
+    openReplayMock.mockResolvedValue(replayState("ready"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "simulator",
+      connectionStatus: "connected",
+      capturePath: "C:\\captures\\session.vucap",
+      runtimeTransitionStatus: "idle",
+    });
+    useWorkbenchStore.getState().startPeriodicSend("REPLAY", "text", "none", 20, null);
+    await flushPromises();
+    await expect(useWorkbenchStore.getState().openRecentCapture()).resolves.toBe(true);
+    expect(useWorkbenchStore.getState().commandTask.message).toContain("回放流程");
+
+    useWorkbenchStore.setState({
+      replayStatus: "idle",
+      replaySessionId: 0,
+      replayHeader: undefined,
+      source: "simulator",
+      connectionStatus: "connected",
+      runtimeTransitionStatus: "idle",
+    });
+    useWorkbenchStore.getState().startPeriodicSend("DISPOSE", "text", "none", 20, null);
+    await flushPromises();
+    disposeWorkbenchRuntime();
+    expect(useWorkbenchStore.getState().commandTask.message).toContain("运行环境已卸载");
+  });
+
+  it("周期任务拒绝空草稿，即使配置了行尾", () => {
+    useWorkbenchStore.setState({ connectionStatus: "connected" });
+
+    expect(() =>
+      useWorkbenchStore.getState().startPeriodicSend("", "text", "lf", 1_000, 1),
+    ).toThrow("不能为空");
   });
 
   it("切换数据源时清空上一数据源的通道", async () => {
@@ -1222,6 +1417,32 @@ describe("workbenchStore", () => {
     });
   });
 
+  it("进入回放文件选择时立即停止周期任务且取消后不恢复", async () => {
+    vi.useFakeTimers();
+    const selection = deferred<string | null>();
+    selectReplayFilePathMock.mockReturnValue(selection.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    useWorkbenchStore.getState().startPeriodicSend("PING", "text", "none", 20, null);
+    await flushPromises();
+
+    const opening = useWorkbenchStore.getState().openReplayFile();
+    expect(useWorkbenchStore.getState().commandTask).toMatchObject({
+      status: "stopped",
+      sentCount: 1,
+    });
+    expect(useWorkbenchStore.getState().commandTask.message).toContain("回放流程");
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(useWorkbenchStore.getState().commandTask.sentCount).toBe(1);
+    selection.resolve(null);
+    await expect(opening).resolves.toBe(false);
+    expect(useWorkbenchStore.getState().commandTask.status).toBe("stopped");
+  });
+
   it("选择文件后断开实时数据源但不修改工作区协议", async () => {
     selectReplayFilePathMock.mockResolvedValue("C:\\captures\\session.vucap");
     openReplayMock.mockResolvedValue(replayState("ready"));
@@ -1738,6 +1959,21 @@ describe("workbenchStore", () => {
 
     useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("1,2\n"), 1_000);
 
+    expect(storageWrite).not.toHaveBeenCalled();
+    storageWrite.mockRestore();
+  });
+
+  it("命令历史与任务状态不会写入持久化存储", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    storageWrite.mockClear();
+
+    await useWorkbenchStore.getState().send("PRIVATE", "text", "none");
+
+    expect(useWorkbenchStore.getState().commandHistory).toHaveLength(1);
     expect(storageWrite).not.toHaveBeenCalled();
     storageWrite.mockRestore();
   });

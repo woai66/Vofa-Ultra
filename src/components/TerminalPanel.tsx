@@ -5,19 +5,43 @@ import {
   CirclePause,
   Download,
   Eraser,
+  History,
   Play,
   Send,
+  Square,
   TerminalSquare,
+  Timer,
+  Trash2,
 } from "lucide-react";
+import {
+  MAX_COMMAND_INTERVAL_MS,
+  MAX_COMMAND_REPEAT_COUNT,
+  MIN_COMMAND_INTERVAL_MS,
+} from "../core/commandWorkflow";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { DisplayMode, LineEnding } from "../types/serial";
-import type { TerminalEntry } from "../types/workbench";
+import type {
+  CommandHistoryEntry,
+  CommandTaskSnapshot,
+  TerminalEntry,
+} from "../types/workbench";
+
+type RepeatMode = "count" | "continuous";
+
+interface CommandDraft {
+  value: string;
+  mode: DisplayMode;
+  lineEnding: LineEnding;
+}
 
 export function TerminalPanel() {
   const entries = useWorkbenchStore((state) => state.terminalEntries);
   const displayMode = useWorkbenchStore((state) => state.displayMode);
   const sendMode = useWorkbenchStore((state) => state.sendMode);
   const lineEnding = useWorkbenchStore((state) => state.lineEnding);
+  const commandHistory = useWorkbenchStore((state) => state.commandHistory);
+  const commandTask = useWorkbenchStore((state) => state.commandTask);
+  const isSendingCommand = useWorkbenchStore((state) => state.isSendingCommand);
   const terminalPaused = useWorkbenchStore((state) => state.terminalPaused);
   const terminalAutoScroll = useWorkbenchStore((state) => state.terminalAutoScroll);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
@@ -29,11 +53,31 @@ export function TerminalPanel() {
   const setLineEnding = useWorkbenchStore((state) => state.setLineEnding);
   const setTerminalPaused = useWorkbenchStore((state) => state.setTerminalPaused);
   const clearTerminal = useWorkbenchStore((state) => state.clearTerminal);
+  const clearCommandHistory = useWorkbenchStore((state) => state.clearCommandHistory);
   const send = useWorkbenchStore((state) => state.send);
+  const startPeriodicSend = useWorkbenchStore((state) => state.startPeriodicSend);
+  const stopPeriodicSend = useWorkbenchStore((state) => state.stopPeriodicSend);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const historyCursorRef = useRef<number | null>(null);
+  const historyDraftRef = useRef<CommandDraft | null>(null);
   const [message, setMessage] = useState("");
   const [sendError, setSendError] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [workflowOpen, setWorkflowOpen] = useState(false);
+  const [intervalText, setIntervalText] = useState("1000");
+  const [repeatMode, setRepeatMode] = useState<RepeatMode>("count");
+  const [repeatCountText, setRepeatCountText] = useState("10");
   const hasPayload = message.length > 0 || lineEnding !== "none";
+  const taskActive = commandTask.status === "running" || commandTask.status === "stopping";
+  const workflowVisible = workflowOpen || taskActive;
+  const canStartPeriodic =
+    connectionStatus === "connected" &&
+    message.length > 0 &&
+    !isWorkspaceTransitioning &&
+    !isSendingCommand &&
+    !taskActive;
   const rowVirtualizer = useVirtualizer({
     count: entries.length,
     getScrollElement: () => viewportRef.current,
@@ -47,23 +91,138 @@ export function TerminalPanel() {
     }
   }, [entries.length, rowVirtualizer, terminalAutoScroll, terminalPaused]);
 
+  useEffect(() => {
+    if (["running", "stopping", "error"].includes(commandTask.status)) {
+      setWorkflowOpen(true);
+    }
+  }, [commandTask.status]);
+
+  useEffect(() => {
+    if (!historyOpen) {
+      return undefined;
+    }
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!composerRef.current?.contains(event.target as Node)) {
+        setHistoryOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [historyOpen]);
+
+  const resetHistoryNavigation = () => {
+    historyCursorRef.current = null;
+    historyDraftRef.current = null;
+  };
+
+  const applyDraft = (draft: CommandDraft) => {
+    setMessage(draft.value);
+    setSendMode(draft.mode);
+    setLineEnding(draft.lineEnding);
+  };
+
+  const recallHistory = (index: number) => {
+    const entry = commandHistory[index];
+    if (!entry) {
+      return;
+    }
+    if (historyCursorRef.current === null) {
+      historyDraftRef.current = { value: message, mode: sendMode, lineEnding };
+    }
+    historyCursorRef.current = index;
+    applyDraft(entry);
+  };
+
+  const navigateHistory = (direction: "previous" | "next"): boolean => {
+    if (commandHistory.length === 0) {
+      return false;
+    }
+    const cursor = historyCursorRef.current;
+    if (direction === "previous") {
+      if (cursor === null) {
+        historyDraftRef.current = { value: message, mode: sendMode, lineEnding };
+        historyCursorRef.current = commandHistory.length - 1;
+      } else {
+        historyCursorRef.current = Math.max(0, cursor - 1);
+      }
+      const entry = commandHistory[historyCursorRef.current];
+      if (entry) {
+        applyDraft(entry);
+      }
+      return true;
+    }
+    if (cursor === null) {
+      return false;
+    }
+    if (cursor < commandHistory.length - 1) {
+      historyCursorRef.current = cursor + 1;
+      const entry = commandHistory[historyCursorRef.current];
+      if (entry) {
+        applyDraft(entry);
+      }
+    } else {
+      const draft = historyDraftRef.current;
+      resetHistoryNavigation();
+      if (draft) {
+        applyDraft(draft);
+      }
+    }
+    return true;
+  };
+
   const submit = async () => {
-    if (!hasPayload) {
+    if (!hasPayload || taskActive || isSendingCommand) {
       return;
     }
     setSendError("");
     try {
       await send(message, sendMode, lineEnding);
       setMessage("");
+      resetHistoryNavigation();
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const startTask = () => {
+    setSendError("");
+    try {
+      startPeriodicSend(
+        message,
+        sendMode,
+        lineEnding,
+        Number(intervalText),
+        repeatMode === "continuous" ? null : Number(repeatCountText),
+      );
+      setWorkflowOpen(true);
     } catch (error) {
       setSendError(error instanceof Error ? error.message : String(error));
     }
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) {
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void submit();
+      return;
+    }
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+      return;
+    }
+    const textarea = event.currentTarget;
+    if (textarea.selectionStart !== textarea.selectionEnd) {
+      return;
+    }
+    const onFirstLine = message.lastIndexOf("\n", textarea.selectionStart - 1) < 0;
+    const onLastLine = message.indexOf("\n", textarea.selectionEnd) < 0;
+    if (
+      (event.key === "ArrowUp" && onFirstLine && navigateHistory("previous")) ||
+      (event.key === "ArrowDown" && onLastLine && navigateHistory("next"))
+    ) {
+      event.preventDefault();
     }
   };
 
@@ -164,75 +323,301 @@ export function TerminalPanel() {
         )}
       </div>
 
-      <div className="send-composer">
-        <div className="send-options">
-          <div className="segmented-control compact-segments" role="group" aria-label="发送格式">
-            <button
-              type="button"
-              data-active={sendMode === "text"}
-              disabled={isWorkspaceTransitioning}
-              onClick={() => setSendMode("text")}
-            >
-              文本
-            </button>
-            <button
-              type="button"
-              data-active={sendMode === "hex"}
-              disabled={isWorkspaceTransitioning}
-              onClick={() => setSendMode("hex")}
-            >
-              HEX
-            </button>
+      <div ref={composerRef} className="send-composer" data-workflow-open={workflowVisible}>
+        <div className="send-main-row">
+          <div className="send-options">
+            <div className="segmented-control compact-segments" role="group" aria-label="发送格式">
+              <button
+                type="button"
+                data-active={sendMode === "text"}
+                disabled={isWorkspaceTransitioning}
+                onClick={() => {
+                  resetHistoryNavigation();
+                  setSendMode("text");
+                }}
+              >
+                文本
+              </button>
+              <button
+                type="button"
+                data-active={sendMode === "hex"}
+                disabled={isWorkspaceTransitioning}
+                onClick={() => {
+                  resetHistoryNavigation();
+                  setSendMode("hex");
+                }}
+              >
+                HEX
+              </button>
+            </div>
+            <div className="send-line-ending-field">
+              <label className="send-field-caption" htmlFor="send-line-ending">
+                行尾
+              </label>
+              <select
+                id="send-line-ending"
+                name="send-line-ending"
+                aria-label="行尾"
+                value={lineEnding}
+                disabled={isWorkspaceTransitioning}
+                onChange={(event) => {
+                  resetHistoryNavigation();
+                  setLineEnding(event.target.value as LineEnding);
+                }}
+              >
+                <option value="none">无行尾</option>
+                <option value="lf">LF</option>
+                <option value="crlf">CRLF</option>
+              </select>
+            </div>
           </div>
-          <div className="send-line-ending-field">
-            <label className="send-field-caption" htmlFor="send-line-ending">
-              行尾
+          <div className="send-payload-field">
+            <label className="send-field-caption" htmlFor="send-payload">
+              发送内容
             </label>
-            <select
-              id="send-line-ending"
-              name="send-line-ending"
-              aria-label="行尾"
-              value={lineEnding}
-              disabled={isWorkspaceTransitioning}
-              onChange={(event) => setLineEnding(event.target.value as LineEnding)}
-            >
-              <option value="none">无行尾</option>
-              <option value="lf">LF</option>
-              <option value="crlf">CRLF</option>
-            </select>
+            <textarea
+              ref={textareaRef}
+              id="send-payload"
+              name="send-payload"
+              aria-label="发送内容"
+              rows={1}
+              value={message}
+              spellCheck={false}
+              placeholder={sendMode === "hex" ? "01 03 00 00 00 02 C4 0B" : "输入要发送的内容"}
+              onChange={(event) => {
+                setMessage(event.target.value);
+                resetHistoryNavigation();
+              }}
+              onKeyDown={handleKeyDown}
+            />
           </div>
+          <button
+            className="icon-button composer-icon-button command-history-trigger"
+            type="button"
+            aria-label={`命令历史，${commandHistory.length} 条`}
+            title="命令历史"
+            aria-expanded={historyOpen}
+            disabled={commandHistory.length === 0}
+            onClick={() => setHistoryOpen((open) => !open)}
+          >
+            <History size={16} />
+            {commandHistory.length > 0 && (
+              <span className="command-count-badge">{Math.min(commandHistory.length, 99)}</span>
+            )}
+          </button>
+          <button
+            className="icon-button composer-icon-button command-workflow-trigger"
+            type="button"
+            aria-label={workflowOpen ? "收起周期发送设置" : "展开周期发送设置"}
+            title={workflowOpen ? "收起周期发送设置" : "周期发送设置"}
+            aria-expanded={workflowVisible}
+            data-active={workflowVisible}
+            disabled={taskActive}
+            onClick={() => setWorkflowOpen((open) => !open)}
+          >
+            <Timer size={16} />
+          </button>
+          {taskActive ? (
+            <button
+              className="primary-button send-button"
+              type="button"
+              data-action="stop"
+              disabled={commandTask.status === "stopping"}
+              onClick={stopPeriodicSend}
+            >
+              <Square size={15} />
+              {commandTask.status === "stopping" ? "停止中" : "停止"}
+            </button>
+          ) : (
+            <button
+              className="primary-button send-button"
+              type="button"
+              disabled={
+                connectionStatus !== "connected" ||
+                !hasPayload ||
+                isWorkspaceTransitioning ||
+                isSendingCommand
+              }
+              onClick={() => void submit()}
+            >
+              <Send size={16} />
+              发送
+            </button>
+          )}
         </div>
-        <div className="send-payload-field">
-          <label className="send-field-caption" htmlFor="send-payload">
-            发送内容
-          </label>
-          <textarea
-            id="send-payload"
-            name="send-payload"
-            aria-label="发送内容"
-            rows={1}
-            value={message}
-            spellCheck={false}
-            placeholder={sendMode === "hex" ? "01 03 00 00 00 02 C4 0B" : "输入要发送的内容"}
-            onChange={(event) => setMessage(event.target.value)}
-            onKeyDown={handleKeyDown}
-          />
-        </div>
-        <button
-          className="primary-button send-button"
-          type="button"
-          disabled={
-            connectionStatus !== "connected" || !hasPayload || isWorkspaceTransitioning
-          }
-          onClick={() => void submit()}
-        >
-          <Send size={16} />
-          发送
-        </button>
-        {sendError && <span className="send-error">{sendError}</span>}
+
+        {workflowVisible && (
+          <div className="command-workflow" aria-label="周期发送设置">
+            <div className="command-interval-field">
+              <label className="send-field-caption" htmlFor="command-interval">
+                间隔
+              </label>
+              <input
+                id="command-interval"
+                type="number"
+                inputMode="numeric"
+                aria-label="发送间隔（毫秒）"
+                min={MIN_COMMAND_INTERVAL_MS}
+                max={MAX_COMMAND_INTERVAL_MS}
+                step={1}
+                value={intervalText}
+                disabled={taskActive}
+                onChange={(event) => setIntervalText(event.target.value)}
+              />
+              <span>ms</span>
+              <small title="下一次发送在上一次完成后开始计时">非实时</small>
+            </div>
+            <div
+              className="segmented-control compact-segments command-repeat-mode"
+              role="group"
+              aria-label="发送次数模式"
+            >
+              <button
+                type="button"
+                data-active={repeatMode === "count"}
+                disabled={taskActive}
+                onClick={() => setRepeatMode("count")}
+              >
+                次数
+              </button>
+              <button
+                type="button"
+                data-active={repeatMode === "continuous"}
+                disabled={taskActive}
+                onClick={() => setRepeatMode("continuous")}
+              >
+                持续
+              </button>
+            </div>
+            {repeatMode === "count" && (
+              <div className="command-repeat-count-field">
+                <label className="send-field-caption" htmlFor="command-repeat-count">
+                  次数
+                </label>
+                <input
+                  id="command-repeat-count"
+                  type="number"
+                  inputMode="numeric"
+                  aria-label="发送次数"
+                  min={1}
+                  max={MAX_COMMAND_REPEAT_COUNT}
+                  step={1}
+                  value={repeatCountText}
+                  disabled={taskActive}
+                  onChange={(event) => setRepeatCountText(event.target.value)}
+                />
+              </div>
+            )}
+            <div
+              className="command-task-status"
+              data-status={commandTask.status}
+              role={commandTask.status === "error" ? "alert" : "status"}
+              aria-label="周期发送状态"
+            >
+              <span className="command-task-dot" />
+              <span>{formatTaskSummary(commandTask)}</span>
+            </div>
+            {!taskActive && (
+              <button
+                className="primary-button command-task-button"
+                type="button"
+                disabled={!canStartPeriodic}
+                onClick={startTask}
+              >
+                <Play size={15} />
+                启动
+              </button>
+            )}
+          </div>
+        )}
+
+        {historyOpen && (
+          <div className="command-history-popover" role="dialog" aria-label="命令历史">
+            <div className="command-history-header">
+              <div>
+                <History size={14} />
+                <strong>命令历史</strong>
+                <span>{commandHistory.length}/100</span>
+              </div>
+              <button
+                className="icon-button compact"
+                type="button"
+                aria-label="清空命令历史"
+                title="清空命令历史"
+                onClick={() => {
+                  clearCommandHistory();
+                  resetHistoryNavigation();
+                  setHistoryOpen(false);
+                  textareaRef.current?.focus();
+                }}
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+            <div className="command-history-list">
+              {commandHistory
+                .map((entry, index) => ({ entry, index }))
+                .reverse()
+                .map(({ entry, index }) => (
+                  <button
+                    key={`${entry.sentAt}-${index}`}
+                    type="button"
+                    onClick={() => {
+                      recallHistory(index);
+                      setHistoryOpen(false);
+                      textareaRef.current?.focus();
+                    }}
+                  >
+                    <code>{historyPreview(entry)}</code>
+                    <span>
+                      {entry.mode.toUpperCase()} · {lineEndingLabel(entry.lineEnding)} · {entry.encodedBytes} B
+                      {entry.repeatCount > 1 ? ` · ×${entry.repeatCount}` : ""}
+                    </span>
+                  </button>
+                ))}
+            </div>
+          </div>
+        )}
+
+        {sendError && (
+          <span className="send-error" role="alert">
+            {sendError}
+          </span>
+        )}
       </div>
     </section>
   );
+}
+
+function formatTaskSummary(task: CommandTaskSnapshot): string {
+  if (task.status === "idle") {
+    return "等待启动";
+  }
+  const progress =
+    task.repeatCount === null ? `${task.sentCount} 次` : `${task.sentCount}/${task.repeatCount}`;
+  if (task.status === "running") {
+    return `运行中 · ${progress} · ${task.intervalMs} ms`;
+  }
+  if (task.status === "stopping") {
+    return `停止中 · ${progress}`;
+  }
+  return `${task.message} · ${progress}`;
+}
+
+function historyPreview(entry: CommandHistoryEntry): string {
+  const value = entry.value.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+  return value || `<${lineEndingLabel(entry.lineEnding)}>`;
+}
+
+function lineEndingLabel(lineEnding: LineEnding): string {
+  switch (lineEnding) {
+    case "lf":
+      return "LF";
+    case "crlf":
+      return "CRLF";
+    default:
+      return "无行尾";
+  }
 }
 
 function formatTime(timestamp: number): string {
