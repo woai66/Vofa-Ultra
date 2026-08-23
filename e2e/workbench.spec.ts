@@ -202,3 +202,19 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
     await page.evaluate(() => localStorage.getItem("vofa-ultra-workbench")),
   ).toBe(futureValue);
 });
+
+test("浏览器预览显示录制状态但不开放文件写入", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "记录", exact: true }).click();
+
+  await expect(page.getByRole("heading", { name: "采集记录" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "开始录制" })).toBeDisabled();
+  await expect(page.getByText("仅桌面应用支持文件录制")).toBeVisible();
+  await expect(page.getByLabel("录制状态")).toContainText("未录制");
+
+  const dimensions = await page.evaluate(() => ({
+    viewportWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+  }));
+  expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth);
+});

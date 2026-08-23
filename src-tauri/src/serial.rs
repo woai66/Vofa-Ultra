@@ -10,6 +10,8 @@ use serde::Serialize;
 use serialport::{DataBits, FlowControl, Parity, SerialPortType, StopBits};
 use tauri::{AppHandle, Emitter, State};
 
+use crate::capture::{CaptureDirection, CaptureRecorderHandle, CaptureState};
+
 const READ_BUFFER_SIZE: usize = 16 * 1024;
 const SERIAL_TIMEOUT_MS: u64 = 20;
 const WRITE_QUEUE_CAPACITY: usize = 256;
@@ -127,17 +129,33 @@ struct PendingWrite {
     offset: usize,
 }
 
-#[derive(Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SerialConfig {
-    port_name: String,
-    baud_rate: u32,
-    data_bits: u8,
-    parity: String,
-    stop_bits: u8,
-    flow_control: String,
-    dtr: bool,
-    rts: bool,
+    pub(crate) port_name: String,
+    pub(crate) baud_rate: u32,
+    pub(crate) data_bits: u8,
+    pub(crate) parity: String,
+    pub(crate) stop_bits: u8,
+    pub(crate) flow_control: String,
+    pub(crate) dtr: bool,
+    pub(crate) rts: bool,
+}
+
+impl SerialConfig {
+    pub(crate) fn validate(&self, require_port_name: bool) -> Result<(), String> {
+        if require_port_name && self.port_name.trim().is_empty() {
+            return Err("串口名称不能为空".to_owned());
+        }
+        if self.baud_rate == 0 {
+            return Err("波特率必须大于 0".to_owned());
+        }
+        parse_data_bits(self.data_bits)?;
+        parse_parity(&self.parity)?;
+        parse_stop_bits(self.stop_bits)?;
+        parse_flow_control(&self.flow_control)?;
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]
@@ -233,6 +251,7 @@ pub fn get_serial_state(state: State<'_, SerialState>) -> Result<SerialStatePayl
 pub fn connect_serial(
     app: AppHandle,
     state: State<'_, SerialState>,
+    capture_state: State<'_, CaptureState>,
     config: SerialConfig,
 ) -> Result<SerialStatePayload, String> {
     let _transition = state
@@ -243,6 +262,9 @@ pub fn connect_serial(
 
     let port_name = config.port_name.clone();
     let generation = begin_connection(&app, &state.shared, &port_name)?;
+    config.validate(true).map_err(|message| {
+        fail_connection(&app, &state.shared, generation, &port_name, message)
+    })?;
     let data_bits = parse_data_bits(config.data_bits).map_err(|message| {
         fail_connection(&app, &state.shared, generation, &port_name, message)
     })?;
@@ -304,6 +326,7 @@ pub fn connect_serial(
     let worker_shared = Arc::clone(&state.shared);
     let worker_app = app.clone();
     let worker_port_name = port_name.clone();
+    let recorder = capture_state.recorder_handle();
     let join_handle = match thread::Builder::new()
         .name("vofa-serial-worker".to_owned())
         .spawn(move || {
@@ -316,6 +339,7 @@ pub fn connect_serial(
                 command_rx,
                 start_rx,
                 worker_cancel,
+                recorder,
             );
         }) {
         Ok(join_handle) => join_handle,
@@ -526,6 +550,7 @@ fn run_serial_worker(
     command_rx: mpsc::Receiver<WorkerCommand>,
     start_rx: mpsc::Receiver<()>,
     cancel: Arc<AtomicBool>,
+    recorder: CaptureRecorderHandle,
 ) {
     if start_rx.recv().is_err() {
         return;
@@ -554,6 +579,7 @@ fn run_serial_worker(
             let remaining = pending.data.len() - pending.offset;
             let chunk_length = remaining.min(WRITE_CHUNK_SIZE).min(write_budget);
             let chunk_end = pending.offset + chunk_length;
+            let capture_session_id = recorder.active_session_id();
 
             match port.write(&pending.data[pending.offset..chunk_end]) {
                 Ok(0) => {
@@ -561,8 +587,18 @@ fn run_serial_worker(
                     break 'worker;
                 }
                 Ok(byte_count) => {
-                    pending.offset += byte_count;
+                    let written_start = pending.offset;
+                    let written_end = written_start + byte_count;
+                    pending.offset = written_end;
                     write_budget -= byte_count;
+                    if let Some(session_id) = capture_session_id {
+                        let _ = recorder.append_for_session(
+                            &app,
+                            session_id,
+                            CaptureDirection::Tx,
+                            &pending.data[written_start..written_end],
+                        );
+                    }
 
                     if pending.offset == pending.data.len() {
                         let completed = pending_write.take().expect("待发送数据应当存在");
@@ -594,8 +630,17 @@ fn run_serial_worker(
             break;
         }
 
+        let capture_session_id = recorder.active_session_id();
         match port.read(&mut read_buffer) {
             Ok(byte_count) if byte_count > 0 => {
+                if let Some(session_id) = capture_session_id {
+                    let _ = recorder.append_for_session(
+                        &app,
+                        session_id,
+                        CaptureDirection::Rx,
+                        &read_buffer[..byte_count],
+                    );
+                }
                 let _ = app.emit(
                     "serial://data",
                     SerialDataPayload {
@@ -736,6 +781,29 @@ mod tests {
         assert!(parse_parity("mark").is_err());
         assert!(parse_stop_bits(3).is_err());
         assert!(parse_flow_control("magic").is_err());
+    }
+
+    #[test]
+    fn validates_serial_config_and_rejects_unknown_fields() {
+        let valid = SerialConfig {
+            port_name: "COM3".to_owned(),
+            baud_rate: 115_200,
+            data_bits: 8,
+            parity: "none".to_owned(),
+            stop_bits: 1,
+            flow_control: "none".to_owned(),
+            dtr: true,
+            rts: true,
+        };
+        assert!(valid.validate(true).is_ok());
+
+        let mut invalid = valid.clone();
+        invalid.baud_rate = 0;
+        assert!(invalid.validate(true).is_err());
+
+        let json = serde_json::to_string(&valid).unwrap();
+        let json = json.replace("}", ",\"futureOption\":true}");
+        assert!(serde_json::from_str::<SerialConfig>(&json).is_err());
     }
 
     #[test]

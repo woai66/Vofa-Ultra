@@ -1,5 +1,9 @@
 import { useEffect } from "react";
 import {
+  getCaptureState,
+  subscribeToCaptureEvents,
+} from "../services/captureClient";
+import {
   getSerialState,
   isTauriRuntime,
   subscribeToSerialEvents,
@@ -17,6 +21,7 @@ export function useWorkbenchRuntime(): void {
   const handleSerialData = useWorkbenchStore((state) => state.handleSerialData);
   const handleSerialState = useWorkbenchStore((state) => state.handleSerialState);
   const handleSerialTx = useWorkbenchStore((state) => state.handleSerialTx);
+  const handleCaptureState = useWorkbenchStore((state) => state.handleCaptureState);
 
   useEffect(() => {
     const nativeRuntime = isTauriRuntime();
@@ -56,6 +61,34 @@ export function useWorkbenchRuntime(): void {
       dispose();
     };
   }, [handleSerialData, handleSerialState, handleSerialTx, refreshPorts, setRuntimeAvailability]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let dispose: () => void = () => undefined;
+
+    void subscribeToCaptureEvents({ onState: handleCaptureState })
+      .then(async (unlisten) => {
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+        dispose = unlisten;
+        if (isTauriRuntime()) {
+          const snapshot = await getCaptureState();
+          if (!cancelled) {
+            handleCaptureState(snapshot);
+          }
+        }
+      })
+      .catch((error: unknown) => {
+        console.error("初始化捕获状态监听失败", error);
+      });
+
+    return () => {
+      cancelled = true;
+      dispose();
+    };
+  }, [handleCaptureState]);
 
   useEffect(() => {
     if (source !== "simulator" || connectionStatus !== "connected") {

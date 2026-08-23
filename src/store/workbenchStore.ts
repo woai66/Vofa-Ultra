@@ -17,12 +17,19 @@ import {
   restoreWorkspaceProfiles,
 } from "../core/workspaces";
 import {
+  abortCapture as abortCaptureClient,
+  enqueueSimulatorCapture,
+  startCapture as startCaptureClient,
+  stopCapture as stopCaptureClient,
+} from "../services/captureClient";
+import {
   connectSerial,
   disconnectSerial,
   isTauriRuntime,
   listSerialPorts,
   sendSerial,
 } from "../services/serialClient";
+import type { CaptureStatePayload, CaptureUiStatus } from "../types/capture";
 import type {
   ConnectionStatus,
   DataSource,
@@ -107,6 +114,15 @@ export interface WorkbenchStore {
   workspaceTransitionStatus: "idle" | "switching" | "deleting";
   workspaceStorageStatus: "writable" | "newer-version";
   incompatibleStorageVersion: number | null;
+  captureStatus: CaptureUiStatus;
+  captureSessionId: number;
+  captureRevision: number;
+  capturePath: string;
+  captureStartedAt?: number;
+  captureEndedAt?: number;
+  captureDataBytes: number;
+  captureRecordCount: number;
+  captureMessage: string;
   setRuntimeAvailability(nativeRuntime: boolean): void;
   setSource(source: DataSource): Promise<void>;
   setProtocol(protocol: ProtocolKind): void;
@@ -130,6 +146,9 @@ export interface WorkbenchStore {
   clearTerminal(): void;
   clearChart(): void;
   resetStats(): void;
+  startCapture(): Promise<boolean>;
+  stopCapture(): Promise<boolean>;
+  handleCaptureState(payload: CaptureStatePayload): void;
   saveActiveWorkspace(name: string): void;
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
@@ -181,6 +200,13 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       workspaceTransitionStatus: "idle",
       workspaceStorageStatus: "writable",
       incompatibleStorageVersion: null,
+      captureStatus: "idle",
+      captureSessionId: 0,
+      captureRevision: 0,
+      capturePath: "",
+      captureDataBytes: 0,
+      captureRecordCount: 0,
+      captureMessage: "",
 
       setRuntimeAvailability: (nativeRuntime) => {
         set((state) => ({
@@ -191,7 +217,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       setSource: async (source) => {
-        if (get().workspaceTransitionStatus !== "idle") {
+        if (
+          get().workspaceTransitionStatus !== "idle" ||
+          isCaptureTransitioning(get().captureStatus)
+        ) {
           return;
         }
         if (source === "serial" && !get().isNativeRuntime) {
@@ -217,7 +246,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       setProtocol: (protocol) => {
-        if (get().workspaceTransitionStatus !== "idle") {
+        if (
+          get().workspaceTransitionStatus !== "idle" ||
+          isCaptureActive(get().captureStatus)
+        ) {
           return;
         }
         resetProtocolState(protocol);
@@ -225,7 +257,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       updateSerialConfig: (key, value) => {
-        if (get().workspaceTransitionStatus !== "idle") {
+        if (
+          get().workspaceTransitionStatus !== "idle" ||
+          isCaptureActive(get().captureStatus)
+        ) {
           return;
         }
         set((state) => ({
@@ -269,6 +304,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       connect: async () => {
+        if (hasCaptureToStop(get()) && !(await stopCurrentCapture(get, set))) {
+          set({ statusMessage: "结束录制失败，未连接数据源" });
+          return;
+        }
         const state = get();
         if (state.workspaceTransitionStatus !== "idle") {
           return;
@@ -298,6 +337,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       disconnect: async () => {
         if (get().workspaceTransitionStatus !== "idle") {
+          return false;
+        }
+        if (!(await stopCurrentCapture(get, set))) {
+          set({ statusMessage: "结束录制失败，未断开数据源" });
           return false;
         }
         return disconnectCurrentSource(get, set);
@@ -332,6 +375,14 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       ingestBytes: (bytes, timestamp = Date.now()) => {
         const state = get();
+        if (state.source === "simulator" && state.captureStatus === "recording") {
+          enqueueSimulatorCapture(
+            state.captureSessionId,
+            "rx",
+            bytes,
+            handleCaptureQueueError,
+          );
+        }
         ensureParser(state.protocol);
         const frames = protocolParser.push(bytes, timestamp);
         const nextChannels = state.chartPaused
@@ -375,6 +426,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             serialStateRevision: payload.revision,
             statusMessage: payload.message ?? "串口发生未知错误",
           });
+          if (hasCaptureToStop(state)) {
+            void stopCurrentCapture(get, set);
+          }
           return;
         }
         set({
@@ -384,6 +438,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           statusMessage:
             payload.message ?? serialStatusMessage(payload.status, payload.portName),
         });
+        if (payload.status === "disconnected" && hasCaptureToStop(state)) {
+          void stopCurrentCapture(get, set);
+        }
       },
 
       handleSerialTx: (payload) => {
@@ -392,6 +449,14 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return;
         }
         const bytes = decodeBase64(payload.data);
+        if (state.source === "simulator" && state.captureStatus === "recording") {
+          enqueueSimulatorCapture(
+            state.captureSessionId,
+            "tx",
+            bytes,
+            handleCaptureQueueError,
+          );
+        }
         const entry = state.terminalPaused
           ? null
           : createTerminalEntry(
@@ -463,6 +528,59 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         set({ channels: [] });
       },
       resetStats: () => set({ stats: emptyStats() }),
+      startCapture: async () => {
+        const state = get();
+        if (
+          state.workspaceTransitionStatus !== "idle" ||
+          isCaptureActive(state.captureStatus)
+        ) {
+          return false;
+        }
+        if (!state.isNativeRuntime) {
+          set({ captureStatus: "error", captureMessage: "浏览器预览不支持文件录制" });
+          return false;
+        }
+        if (state.connectionStatus !== "connected") {
+          set({ captureStatus: "error", captureMessage: "请先连接数据源再开始录制" });
+          return false;
+        }
+
+        set({ captureStatus: "starting", captureMessage: "正在创建捕获文件" });
+        try {
+          const payload = await startCaptureClient({
+            source: state.source,
+            protocol: state.protocol,
+            serialConfig: state.serialConfig,
+          });
+          get().handleCaptureState(payload);
+          return payload.status === "recording";
+        } catch (error) {
+          set({ captureStatus: "error", captureMessage: getErrorMessage(error) });
+          return false;
+        }
+      },
+      stopCapture: async () => {
+        if (!hasCaptureToStop(get())) {
+          return true;
+        }
+        return stopCurrentCapture(get, set);
+      },
+      handleCaptureState: (payload) => {
+        if (payload.revision < get().captureRevision) {
+          return;
+        }
+        set({
+          captureStatus: payload.status,
+          captureSessionId: payload.sessionId,
+          captureRevision: payload.revision,
+          capturePath: payload.path,
+          captureStartedAt: payload.startedAtUnixMs,
+          captureEndedAt: payload.endedAtUnixMs,
+          captureDataBytes: payload.dataBytes,
+          captureRecordCount: payload.recordCount,
+          captureMessage: payload.message ?? "",
+        });
+      },
       saveActiveWorkspace: (name) => {
         const state = get();
         assertWorkspaceIdle(state);
@@ -514,7 +632,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
       switchWorkspace: async (id) => {
         const state = get();
-        if (state.workspaceTransitionStatus !== "idle" || state.isRefreshingPorts) {
+        if (
+          state.workspaceTransitionStatus !== "idle" ||
+          state.isRefreshingPorts ||
+          isCaptureTransitioning(state.captureStatus)
+        ) {
           return false;
         }
         const target = state.workspaces.find((workspace) => workspace.id === id);
@@ -530,7 +652,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
       deleteWorkspace: async (id) => {
         const state = get();
-        if (state.workspaceTransitionStatus !== "idle" || state.isRefreshingPorts) {
+        if (
+          state.workspaceTransitionStatus !== "idle" ||
+          state.isRefreshingPorts ||
+          isCaptureTransitioning(state.captureStatus)
+        ) {
           return false;
         }
         assertWorkspaceStorageWritable(state);
@@ -670,6 +796,57 @@ function assertWorkspaceStorageWritable(state: WorkbenchStore): void {
 type WorkbenchGet = StoreApi<WorkbenchStore>["getState"];
 type WorkbenchSet = StoreApi<WorkbenchStore>["setState"];
 
+function isCaptureTransitioning(status: CaptureUiStatus): boolean {
+  return status === "starting" || status === "stopping";
+}
+
+function isCaptureActive(status: CaptureUiStatus): boolean {
+  return status === "starting" || status === "recording" || status === "stopping";
+}
+
+function hasCaptureToStop(state: WorkbenchStore): boolean {
+  return (
+    isCaptureActive(state.captureStatus) ||
+    (state.captureStatus === "error" && state.captureSessionId > 0)
+  );
+}
+
+async function stopCurrentCapture(get: WorkbenchGet, set: WorkbenchSet): Promise<boolean> {
+  const state = get();
+  if (!hasCaptureToStop(state)) {
+    return true;
+  }
+  if (!state.isNativeRuntime || state.captureStatus === "stopping") {
+    return false;
+  }
+
+  set({ captureStatus: "stopping", captureMessage: "正在完成捕获文件" });
+  try {
+    const payload = await stopCaptureClient();
+    get().handleCaptureState(payload);
+    return payload.status !== "recording" && payload.status !== "stopping";
+  } catch (error) {
+    set({ captureStatus: "error", captureMessage: getErrorMessage(error) });
+    return false;
+  }
+}
+
+function handleCaptureQueueError(error: Error): void {
+  const state = useWorkbenchStore.getState();
+  if (state.captureStatus !== "recording") {
+    return;
+  }
+  useWorkbenchStore.setState({
+    captureStatus: "error",
+    captureMessage: error.message,
+  });
+  void abortCaptureClient(error.message)
+    .then((payload) => useWorkbenchStore.getState().handleCaptureState(payload))
+    .catch((abortError) => {
+      useWorkbenchStore.setState({ captureMessage: getErrorMessage(abortError) });
+    });
+}
+
 async function disconnectCurrentSource(
   get: WorkbenchGet,
   set: WorkbenchSet,
@@ -697,6 +874,10 @@ async function applyWorkspaceSnapshot(
   const target = get().workspaces.find((workspace) => workspace.id === id);
   if (!target) {
     throw new Error("要应用的工作区不存在");
+  }
+  if (!(await stopCurrentCapture(get, set))) {
+    set({ statusMessage: `结束录制失败，未切换到“${target.name}”` });
+    return false;
   }
   if (get().connectionStatus !== "disconnected") {
     const disconnected = await disconnectCurrentSource(get, set);

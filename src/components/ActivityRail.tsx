@@ -1,6 +1,13 @@
-import { AudioWaveform, Cable, Folders, Settings, SlidersHorizontal } from "lucide-react";
+import {
+  AudioWaveform,
+  Cable,
+  Database,
+  Folders,
+  Settings,
+  SlidersHorizontal,
+} from "lucide-react";
 
-export type SidebarPanel = "connection" | "channels" | "workspaces" | "settings";
+export type SidebarPanel = "connection" | "channels" | "capture" | "workspaces" | "settings";
 
 interface ActivityRailProps {
   activePanel: SidebarPanel;
@@ -10,6 +17,7 @@ interface ActivityRailProps {
 const RAIL_ITEMS = [
   { id: "connection" as const, label: "连接", icon: Cable },
   { id: "channels" as const, label: "通道", icon: SlidersHorizontal },
+  { id: "capture" as const, label: "记录", icon: Database },
   { id: "workspaces" as const, label: "工作区", icon: Folders },
   { id: "settings" as const, label: "设置", icon: Settings },
 ];

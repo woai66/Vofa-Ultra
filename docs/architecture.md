@@ -9,11 +9,13 @@
 flowchart TB
     Device[串口设备] <--> Worker[Rust 串口 worker]
     Worker -->|Base64 RX / 状态事件| Bridge[Tauri 命令与事件边界]
+    Worker -->|原始 RX / TX| Recorder[有界 VUCAP writer]
     Bridge --> Store[Zustand 工作台状态]
     Store --> Parsers[增量协议解析器]
     Parsers --> Buffers[有界通道与终端缓冲]
     Buffers --> Views[uPlot 波形与虚拟终端]
     Simulator[模拟数据源] --> Store
+    Store -->|有界模拟器记录队列| Recorder
     Views -->|发送命令| Store
     Store -->|有界 TX| Bridge
 ```
@@ -104,6 +106,21 @@ Zustand store 同时持有当前工作副本和最多 32 个命名快照，避�
 保持只读，旧客户端不会覆写未来格式。实时 RX 更新会复用未变化的配置引用，跳过重复 JSON 序列化和
 `localStorage` 写入。
 
+## 原始会话录制
+
+`.vucap` 记录平面独立于 Zustand、终端虚拟列表和波形环形缓冲。原生串口 worker 在 Base64 事件之前投递 RX，
+每次 `write` 成功后投递实际写入的 TX 字节分片；投递只使用按记录数和 payload 字节数双重限制的 `try_send`，
+不会等待磁盘。连续 TX record 按顺序拼接后才是线上的 TX 字节流，record 边界不表示一次发送命令。独立
+writer 线程负责格式编码、定期进度事件、flush、同步和完成 footer。
+
+录制开始时冻结数据源、协议、串口参数、Unix 起始时间和单调时钟基准。记录只保存相对单调微秒时间，避免
+系统时钟跳变影响后续回放排序。Tauri 模拟器通过前端 1 MiB 有界队列串行调用同一 recorder；浏览器预览不
+模拟文件落盘。暂停终端或波形只影响视图缓存，不影响录制。
+
+磁盘写入错误、writer panic 或队列溢出会把 capture 状态置为 `error` 并留下无 footer 的未完成文件，串口连接
+继续运行。主动停止、断开和工作区切换则串行等待 writer 收尾。格式 reader 逐条读取并限制头部与单条记录为
+64 KiB，可区分未知版本、损坏、截断和正常完成；详见 [VUCAP 捕获文件格式](capture-format.md)。
+
 ## 故障语义
 
 - 端口打开或参数配置失败：命令返回可读错误，状态进入 `error`。
@@ -116,8 +133,8 @@ Zustand store 同时持有当前工作副本和最多 32 个命名快照，避�
 
 1. Vitest 覆盖字节编解码、跨 chunk 协议解析、环形缓冲和状态 revision。
 2. React 组件测试覆盖主要空状态、工作区命名和操作入口。
-3. Playwright 覆盖模拟器端到端链路、TX 回显、Canvas 有效像素、工作区文件往返、虚拟列表、窄屏溢出和
-   短窗口布局。
+3. Playwright 覆盖模拟器端到端链路、TX 回显、Canvas 有效像素、工作区文件往返、录制入口权限、虚拟列表、
+   窄屏溢出和短窗口布局。
 4. GitHub Actions 在三个桌面系统检查 Rust，在 Node.js 22 上执行前端检查和浏览器验收。
 5. 正式发布前必须补充真实串口的长稳、拔插、流控和高波特率测试。
 

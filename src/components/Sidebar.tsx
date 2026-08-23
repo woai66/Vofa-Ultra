@@ -14,6 +14,7 @@ import { BAUD_RATES } from "../types/serial";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { ChartWindowSeconds } from "../types/workspace";
 import type { SidebarPanel } from "./ActivityRail";
+import { CapturePanel } from "./CapturePanel";
 import { WorkspacePanel } from "./WorkspacePanel";
 
 interface SidebarProps {
@@ -27,6 +28,7 @@ export function Sidebar({ activePanel, theme, onThemeChange }: SidebarProps) {
     <aside className="sidebar">
       {activePanel === "connection" && <ConnectionPanel />}
       {activePanel === "channels" && <ChannelPanel />}
+      {activePanel === "capture" && <CapturePanel />}
       <div className="workspace-panel-host" hidden={activePanel !== "workspaces"}>
         <WorkspacePanel />
       </div>
@@ -55,11 +57,14 @@ function ConnectionPanel() {
   const workspaceTransitionStatus = useWorkbenchStore(
     (state) => state.workspaceTransitionStatus,
   );
+  const captureStatus = useWorkbenchStore((state) => state.captureStatus);
 
   const isConnected = connectionStatus === "connected";
   const isTransitioning = workspaceTransitionStatus !== "idle";
-  const isBusy = connectionStatus === "connecting" || isTransitioning;
-  const configDisabled = isConnected || isTransitioning;
+  const isCaptureTransitioning = captureStatus === "starting" || captureStatus === "stopping";
+  const isRecording = captureStatus === "recording";
+  const isBusy = connectionStatus === "connecting" || isTransitioning || isCaptureTransitioning;
+  const configDisabled = isConnected || isTransitioning || isRecording || isCaptureTransitioning;
 
   return (
     <div className="sidebar-panel">
@@ -77,7 +82,7 @@ function ConnectionPanel() {
           <button
             type="button"
             data-active={source === "serial"}
-            disabled={!isNativeRuntime || isTransitioning}
+            disabled={!isNativeRuntime || isTransitioning || isRecording || isCaptureTransitioning}
             title={isNativeRuntime ? "使用本机串口" : "浏览器预览不可访问串口"}
             onClick={() => void setSource("serial")}
           >
@@ -86,7 +91,7 @@ function ConnectionPanel() {
           <button
             type="button"
             data-active={source === "simulator"}
-            disabled={isTransitioning}
+            disabled={isTransitioning || isRecording || isCaptureTransitioning}
             onClick={() => void setSource("simulator")}
           >
             模拟器
@@ -255,7 +260,7 @@ function ConnectionPanel() {
               role="radio"
               aria-checked={protocol === id}
               data-active={protocol === id}
-              disabled={isTransitioning}
+              disabled={isTransitioning || isRecording || isCaptureTransitioning}
               onClick={() => setProtocol(id)}
             >
               <span className="protocol-dot" />

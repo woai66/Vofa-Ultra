@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CircleGauge, Database, Radio, Rows3 } from "lucide-react";
+import { CircleGauge, Database, Disc3, Radio, Rows3 } from "lucide-react";
 import { useWorkbenchStore } from "../store/workbenchStore";
 
 export function StatusBar() {
@@ -9,6 +9,8 @@ export function StatusBar() {
   const serialConfig = useWorkbenchStore((state) => state.serialConfig);
   const stats = useWorkbenchStore((state) => state.stats);
   const channels = useWorkbenchStore((state) => state.channels);
+  const captureStatus = useWorkbenchStore((state) => state.captureStatus);
+  const captureDataBytes = useWorkbenchStore((state) => state.captureDataBytes);
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -34,6 +36,12 @@ export function StatusBar() {
         <span>{protocolName(protocol)}</span>
       </div>
       <div className="status-spacer" />
+      {captureStatus === "recording" && (
+        <div className="status-item capture-status-item">
+          <Disc3 size={13} />
+          <span>REC {formatBytes(captureDataBytes)}</span>
+        </div>
+      )}
       <div className="status-item" title="接收速率">
         <Database size={13} />
         <span>{formatBytes(receiveRate)}/s</span>

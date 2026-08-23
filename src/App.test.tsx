@@ -30,4 +30,15 @@ describe("App", () => {
     expect(screen.getByText("实验台 A", { selector: ".workspace-title span" })).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("工作区已保存");
   });
+
+  it("浏览器预览明确禁用文件录制", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "记录" }));
+
+    expect(screen.getByRole("heading", { name: "采集记录" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开始录制" })).toBeDisabled();
+    expect(screen.getByText("仅桌面应用支持文件录制")).toBeInTheDocument();
+  });
 });

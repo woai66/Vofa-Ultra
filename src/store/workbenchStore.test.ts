@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultWorkspaceConfig, createWorkspaceProfile } from "../core/workspaces";
+import {
+  enqueueSimulatorCapture,
+  startCapture,
+  stopCapture,
+} from "../services/captureClient";
 import { listSerialPorts } from "../services/serialClient";
 import {
   selectIsWorkspaceDirty,
@@ -11,11 +16,24 @@ vi.mock("../services/serialClient", async (importOriginal) => {
   return { ...actual, listSerialPorts: vi.fn() };
 });
 
+vi.mock("../services/captureClient", () => ({
+  abortCapture: vi.fn(),
+  enqueueSimulatorCapture: vi.fn(() => true),
+  startCapture: vi.fn(),
+  stopCapture: vi.fn(),
+}));
+
 const listSerialPortsMock = vi.mocked(listSerialPorts);
+const enqueueSimulatorCaptureMock = vi.mocked(enqueueSimulatorCapture);
+const startCaptureMock = vi.mocked(startCapture);
+const stopCaptureMock = vi.mocked(stopCapture);
 
 describe("workbenchStore", () => {
   beforeEach(async () => {
     listSerialPortsMock.mockReset();
+    enqueueSimulatorCaptureMock.mockReset().mockReturnValue(true);
+    startCaptureMock.mockReset();
+    stopCaptureMock.mockReset();
     localStorage.clear();
     useWorkbenchStore.persist.clearStorage();
     const config = createDefaultWorkspaceConfig("simulator");
@@ -40,6 +58,15 @@ describe("workbenchStore", () => {
       workspaceTransitionStatus: "idle",
       workspaceStorageStatus: "writable",
       incompatibleStorageVersion: null,
+      captureStatus: "idle",
+      captureSessionId: 0,
+      captureRevision: 0,
+      capturePath: "",
+      captureStartedAt: undefined,
+      captureEndedAt: undefined,
+      captureDataBytes: 0,
+      captureRecordCount: 0,
+      captureMessage: "",
     });
     useWorkbenchStore.getState().clearChart();
   });
@@ -363,6 +390,161 @@ describe("workbenchStore", () => {
       isRefreshingPorts: false,
       ports: [{ name: "COM7", kind: "usb" }],
       serialConfig: { portName: "COM7" },
+    });
+  });
+
+  it("开始录制时冻结数据源、协议和串口参数", async () => {
+    startCaptureMock.mockResolvedValue({
+      status: "recording",
+      sessionId: 7,
+      revision: 3,
+      path: "C:\\captures\\session.vucap",
+      startedAtUnixMs: 1_000,
+      dataBytes: 0,
+      recordCount: 0,
+    });
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      connectionStatus: "connected",
+      protocol: "justfloat",
+      serialConfig: {
+        ...useWorkbenchStore.getState().serialConfig,
+        portName: "COM7",
+        baudRate: 921_600,
+      },
+    });
+
+    expect(await useWorkbenchStore.getState().startCapture()).toBe(true);
+    expect(startCaptureMock).toHaveBeenCalledWith({
+      source: "simulator",
+      protocol: "justfloat",
+      serialConfig: expect.objectContaining({ portName: "COM7", baudRate: 921_600 }),
+    });
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureStatus: "recording",
+      captureSessionId: 7,
+      capturePath: "C:\\captures\\session.vucap",
+    });
+
+    useWorkbenchStore.getState().setProtocol("raw");
+    expect(useWorkbenchStore.getState().protocol).toBe("justfloat");
+  });
+
+  it("暂停视图时仍把模拟器原始 RX 和 TX 送入录制队列", () => {
+    useWorkbenchStore.setState({
+      captureStatus: "recording",
+      captureSessionId: 4,
+      terminalPaused: true,
+      chartPaused: true,
+      connectionStatus: "connected",
+    });
+    const rxBytes = new Uint8Array([1, 2, 3]);
+    const txBytes = new Uint8Array([4, 5]);
+
+    useWorkbenchStore.getState().ingestBytes(rxBytes, 1_000);
+    useWorkbenchStore.getState().handleSerialTx({
+      data: btoa(String.fromCharCode(...txBytes)),
+      byteCount: txBytes.length,
+      transmittedAt: 1_001,
+      generation: 0,
+    });
+
+    expect(enqueueSimulatorCaptureMock).toHaveBeenNthCalledWith(
+      1,
+      4,
+      "rx",
+      rxBytes,
+      expect.any(Function),
+    );
+    expect(enqueueSimulatorCaptureMock).toHaveBeenNthCalledWith(
+      2,
+      4,
+      "tx",
+      txBytes,
+      expect.any(Function),
+    );
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      channels: [],
+      terminalEntries: [],
+      stats: { rxBytes: 3, txBytes: 2 },
+    });
+  });
+
+  it("工作区切换先完成录制并忽略迟到状态", async () => {
+    const target = createWorkspaceProfile(
+      "目标工作区",
+      createDefaultWorkspaceConfig("simulator"),
+      "target",
+      200,
+    );
+    stopCaptureMock.mockResolvedValue({
+      status: "idle",
+      sessionId: 9,
+      revision: 6,
+      path: "C:\\captures\\complete.vucap",
+      startedAtUnixMs: 1_000,
+      endedAtUnixMs: 2_000,
+      dataBytes: 128,
+      recordCount: 4,
+      message: "捕获文件已完成",
+    });
+    useWorkbenchStore.setState((state) => ({
+      workspaces: [...state.workspaces, target],
+      isNativeRuntime: true,
+      connectionStatus: "connected",
+      captureStatus: "recording",
+      captureSessionId: 9,
+      captureRevision: 5,
+    }));
+
+    expect(await useWorkbenchStore.getState().switchWorkspace(target.id)).toBe(true);
+    expect(stopCaptureMock).toHaveBeenCalledOnce();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      activeWorkspaceId: target.id,
+      captureStatus: "idle",
+      captureRevision: 6,
+      captureDataBytes: 128,
+    });
+
+    useWorkbenchStore.getState().handleCaptureState({
+      status: "recording",
+      sessionId: 9,
+      revision: 5,
+      path: "late.vucap",
+      dataBytes: 64,
+      recordCount: 2,
+    });
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureStatus: "idle",
+      captureRevision: 6,
+      captureDataBytes: 128,
+    });
+  });
+
+  it("录制尚未收尾时不提前断开数据源", async () => {
+    stopCaptureMock.mockResolvedValue({
+      status: "stopping",
+      sessionId: 11,
+      revision: 8,
+      path: "C:\\captures\\pending.vucap",
+      startedAtUnixMs: 1_000,
+      dataBytes: 64,
+      recordCount: 2,
+      message: "正在完成捕获文件",
+    });
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      connectionStatus: "connected",
+      captureStatus: "recording",
+      captureSessionId: 11,
+      captureRevision: 7,
+    });
+
+    await expect(useWorkbenchStore.getState().disconnect()).resolves.toBe(false);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connected",
+      captureStatus: "stopping",
+      statusMessage: "结束录制失败，未断开数据源",
     });
   });
 
