@@ -13,7 +13,10 @@ import {
   subscribeToReplayEvents,
 } from "../services/replayClient";
 import { startSimulator } from "../services/simulator";
-import { useWorkbenchStore } from "../store/workbenchStore";
+import {
+  disposeWorkbenchRuntime,
+  useWorkbenchStore,
+} from "../store/workbenchStore";
 
 export function useWorkbenchRuntime(): void {
   const source = useWorkbenchStore((state) => state.source);
@@ -65,6 +68,7 @@ export function useWorkbenchRuntime(): void {
     return () => {
       cancelled = true;
       dispose();
+      disposeWorkbenchRuntime();
     };
   }, [handleSerialData, handleSerialState, handleSerialTx, refreshPorts, setRuntimeAvailability]);
 

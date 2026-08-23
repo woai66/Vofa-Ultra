@@ -4,6 +4,11 @@ import { decodeBase64, encodeOutbound, formatHex } from "../core/codec";
 import { createProtocolParser, type ProtocolParser } from "../core/protocols";
 import { RingBuffer } from "../core/ringBuffer";
 import {
+  isRecoveryActivePhase,
+  SERIAL_RECOVERY_DELAYS_MS,
+  SerialReconnectCoordinator,
+} from "../core/serialRecovery";
+import {
   areWorkspaceConfigsEqual,
   assertWorkspaceNameAvailable,
   captureWorkspaceConfig,
@@ -23,6 +28,7 @@ import {
   stopCapture as stopCaptureClient,
 } from "../services/captureClient";
 import {
+  cancelSerialConnect,
   connectSerial,
   disconnectSerial,
   isTauriRuntime,
@@ -53,7 +59,9 @@ import type {
   ProtocolKind,
   SerialConfig,
   SerialDataPayload,
+  SerialDiagnosticsReport,
   SerialPortInfo,
+  SerialRecoverySnapshot,
   SerialStatePayload,
   SerialTxPayload,
 } from "../types/serial";
@@ -76,6 +84,16 @@ const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY = 2_048;
 const MAX_SEND_BYTES = 64 * 1024;
 const WORKBENCH_STORAGE_VERSION = 1;
+const APP_VERSION = "0.1.0";
+const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
+  enabled: false,
+  phase: "off",
+  attempt: 0,
+  maxAttempts: SERIAL_RECOVERY_DELAYS_MS.length,
+  message: "自动重连未启用",
+  diagnosticEventCount: 0,
+  diagnosticDroppedEvents: 0,
+};
 const INITIAL_NATIVE_RUNTIME = isTauriRuntime();
 const INITIAL_WORKSPACE_CONFIG = createDefaultWorkspaceConfig(
   INITIAL_NATIVE_RUNTIME ? "serial" : "simulator",
@@ -107,6 +125,9 @@ let replayRxDecoder = new TextDecoder();
 let replayTxDecoder = new TextDecoder();
 const replayChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
 let captureStopPromise: Promise<boolean> | null = null;
+let serialRecoveryCoordinator: SerialReconnectCoordinator | null = null;
+let serialConnectOperation = 0;
+let serialRecoverySettingOperation = 0;
 
 type RuntimeTransitionStatus =
   | "idle"
@@ -131,6 +152,8 @@ export interface WorkbenchStore {
   ports: SerialPortInfo[];
   isRefreshingPorts: boolean;
   serialConfig: SerialConfig;
+  serialRecovery: SerialRecoverySnapshot;
+  isCancellingSerialConnection: boolean;
   channels: ChannelSeries[];
   channelVisibility: Record<string, boolean>;
   terminalEntries: TerminalEntry[];
@@ -177,6 +200,10 @@ export interface WorkbenchStore {
   refreshPorts(): Promise<void>;
   connect(): Promise<void>;
   disconnect(): Promise<boolean>;
+  setSerialRecoveryEnabled(enabled: boolean): Promise<void>;
+  cancelSerialConnection(): Promise<void>;
+  clearSerialDiagnostics(): void;
+  getSerialDiagnostics(): SerialDiagnosticsReport;
   send(value: string, mode: DisplayMode, lineEnding: LineEnding): Promise<void>;
   ingestBytes(bytes: Uint8Array, timestamp?: number): void;
   handleSerialData(payload: SerialDataPayload): void;
@@ -239,6 +266,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       ports: [],
       isRefreshingPorts: false,
       serialConfig: { ...INITIAL_WORKSPACE_CONFIG.serialConfig },
+      serialRecovery: { ...INITIAL_SERIAL_RECOVERY },
+      isCancellingSerialConnection: false,
       channels: [],
       channelVisibility: {},
       terminalEntries: [],
@@ -304,6 +333,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return;
         }
         try {
+          await getSerialRecoveryCoordinator().cancel("source-change", true);
           if (get().connectionStatus === "connected" || get().connectionStatus === "connecting") {
             const disconnected = await disconnectCurrentSource(get, set);
             if (!disconnected) {
@@ -326,6 +356,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (
           get().workspaceTransitionStatus !== "idle" ||
           get().runtimeTransitionStatus !== "idle" ||
+          isRecoveryActivePhase(get().serialRecovery.phase) ||
           isCaptureActive(get().captureStatus) ||
           hasReplaySession(get())
         ) {
@@ -339,6 +370,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (
           get().workspaceTransitionStatus !== "idle" ||
           get().runtimeTransitionStatus !== "idle" ||
+          isRecoveryActivePhase(get().serialRecovery.phase) ||
           isCaptureActive(get().captureStatus) ||
           hasReplaySession(get())
         ) {
@@ -354,6 +386,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           get().workspaceTransitionStatus !== "idle" ||
           get().runtimeTransitionStatus !== "idle" ||
           get().isRefreshingPorts ||
+          isRecoveryActivePhase(get().serialRecovery.phase) ||
           hasReplaySession(get())
         ) {
           return;
@@ -390,13 +423,24 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       connect: async () => {
+        if (get().isCancellingSerialConnection) {
+          return;
+        }
         if (!beginRuntimeTransition(get, set, "connecting")) {
           return;
         }
+        const operation = ++serialConnectOperation;
         try {
+          await getSerialRecoveryCoordinator().cancel("manual-connect", true);
+          if (operation !== serialConnectOperation) {
+            return;
+          }
           const hadReplaySession = hasReplaySession(get());
           if (!(await closeCurrentReplay(get, set))) {
             set({ statusMessage: "关闭回放失败，未连接数据源" });
+            return;
+          }
+          if (operation !== serialConnectOperation) {
             return;
           }
           if (hadReplaySession) {
@@ -404,6 +448,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           }
           if (hasCaptureToStop(get()) && !(await stopCurrentCapture(get, set))) {
             set({ statusMessage: "结束录制失败，未连接数据源" });
+            return;
+          }
+          if (operation !== serialConnectOperation) {
             return;
           }
           const state = get();
@@ -424,19 +471,36 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             return;
           }
 
+          const selectedPort = state.ports.find(
+            (port) => port.name === state.serialConfig.portName,
+          );
+          getSerialRecoveryCoordinator().prepareManualConnection(
+            state.serialConfig,
+            selectedPort,
+          );
           set({
             connectionStatus: "connecting",
             statusMessage: `正在打开 ${state.serialConfig.portName}`,
           });
           try {
             const payload = await connectSerial(state.serialConfig);
+            if (operation !== serialConnectOperation) {
+              return;
+            }
             get().handleSerialState(payload);
             set({ stats: { ...emptyStats(), startedAt: Date.now() } });
           } catch (error) {
-            set({ connectionStatus: "error", statusMessage: getErrorMessage(error) });
+            if (
+              operation === serialConnectOperation &&
+              get().connectionStatus === "connecting"
+            ) {
+              set({ connectionStatus: "error", statusMessage: getErrorMessage(error) });
+            }
           }
         } finally {
-          endRuntimeTransition(get, set, "connecting");
+          if (operation === serialConnectOperation) {
+            endRuntimeTransition(get, set, "connecting");
+          }
         }
       },
 
@@ -445,6 +509,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return false;
         }
         try {
+          await getSerialRecoveryCoordinator().cancel("manual-disconnect", true);
           if (!(await stopCurrentCapture(get, set))) {
             set({ statusMessage: "结束录制失败，未断开数据源" });
             return false;
@@ -453,6 +518,78 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         } finally {
           endRuntimeTransition(get, set, "disconnecting");
         }
+      },
+
+      setSerialRecoveryEnabled: async (enabled) => {
+        const operation = ++serialRecoverySettingOperation;
+        const state = get();
+        if (enabled && (!state.isNativeRuntime || state.source !== "serial")) {
+          set({ statusMessage: "自动重连仅适用于桌面串口数据源" });
+          return;
+        }
+        const selectedPort = state.ports.find(
+          (port) => port.name === state.serialConfig.portName,
+        );
+        try {
+          await getSerialRecoveryCoordinator().setEnabled(enabled, {
+            status: state.connectionStatus,
+            generation: state.serialGeneration,
+            config: state.serialConfig,
+            port: selectedPort,
+          });
+        } catch (error) {
+          if (operation === serialRecoverySettingOperation) {
+            set({ statusMessage: `取消串口连接失败：${getErrorMessage(error)}` });
+          }
+        }
+      },
+
+      cancelSerialConnection: async () => {
+        const state = get();
+        const recoveryActive = isRecoveryActivePhase(state.serialRecovery.phase);
+        const manualConnecting =
+          state.source === "serial" && state.connectionStatus === "connecting";
+        if (state.isCancellingSerialConnection || (!recoveryActive && !manualConnecting)) {
+          return;
+        }
+
+        const recoveryWasConnecting = state.serialRecovery.phase === "connecting";
+        serialConnectOperation += 1;
+        set({
+          isCancellingSerialConnection: true,
+          runtimeTransitionStatus:
+            state.runtimeTransitionStatus === "connecting"
+              ? "idle"
+              : state.runtimeTransitionStatus,
+          statusMessage: recoveryActive ? "正在取消自动重连" : "正在取消串口连接",
+        });
+        try {
+          await getSerialRecoveryCoordinator().cancel("user-cancelled", true);
+          if (manualConnecting && !recoveryWasConnecting) {
+            await cancelPendingSerialConnection();
+          } else if (!recoveryWasConnecting) {
+            set({ statusMessage: "自动重连已取消" });
+          }
+        } catch (error) {
+          set({ statusMessage: `取消串口连接失败：${getErrorMessage(error)}` });
+        } finally {
+          set({ isCancellingSerialConnection: false });
+        }
+      },
+
+      clearSerialDiagnostics: () => {
+        getSerialRecoveryCoordinator().clearDiagnostics();
+      },
+
+      getSerialDiagnostics: () => {
+        const state = get();
+        return getSerialRecoveryCoordinator().exportDiagnostics({
+          appVersion: APP_VERSION,
+          connectionStatus: state.connectionStatus,
+          generation: state.serialGeneration,
+          revision: state.serialStateRevision,
+          serialConfig: state.serialConfig,
+        });
       },
 
       send: async (value, mode, lineEnding) => {
@@ -536,10 +673,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (
           hasReplaySession(state) ||
           state.source !== "serial" ||
-          payload.revision < state.serialStateRevision
+          payload.revision <= state.serialStateRevision
         ) {
           return;
         }
+        const previousStatus = state.connectionStatus;
         if (payload.status === "error") {
           set({
             connectionStatus: "error",
@@ -547,7 +685,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             serialStateRevision: payload.revision,
             statusMessage: payload.message ?? "串口发生未知错误",
           });
-          if (hasCaptureToStop(state)) {
+          const recoveryOwnsCaptureBoundary = getSerialRecoveryCoordinator().observeState(
+            payload,
+            previousStatus,
+          );
+          if (!recoveryOwnsCaptureBoundary && hasCaptureToStop(state)) {
             void stopCurrentCapture(get, set);
           }
           return;
@@ -559,6 +701,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           statusMessage:
             payload.message ?? serialStatusMessage(payload.status, payload.portName),
         });
+        getSerialRecoveryCoordinator().observeState(payload, previousStatus);
         if (payload.status === "disconnected" && hasCaptureToStop(state)) {
           void stopCurrentCapture(get, set);
         }
@@ -733,6 +876,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
 
         try {
+          await getSerialRecoveryCoordinator().cancel("replay-open", true);
           set({ replayStatus: state.replayStatus === "idle" ? "selecting" : state.replayStatus });
           const path = await selectReplayFilePath();
           if (!path) {
@@ -765,6 +909,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
 
         try {
+          await getSerialRecoveryCoordinator().cancel("replay-open", true);
           if (!(await stopCurrentCapture(get, set))) {
             set({ replayMessage: "捕获文件尚未完成，无法开始回放" });
             return false;
@@ -1132,6 +1277,66 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
   ),
 );
 
+export function disposeWorkbenchRuntime(): void {
+  if (!serialRecoveryCoordinator) {
+    return;
+  }
+  const state = useWorkbenchStore.getState();
+  const recoveryWasConnecting = state.serialRecovery.phase === "connecting";
+  const manualConnecting =
+    state.source === "serial" &&
+    state.connectionStatus === "connecting" &&
+    !recoveryWasConnecting;
+  serialConnectOperation += 1;
+  void (async () => {
+    await serialRecoveryCoordinator?.cancel("runtime-dispose", true);
+    if (manualConnecting) {
+      await cancelPendingSerialConnection();
+    }
+  })().catch(() => undefined);
+}
+
+function getSerialRecoveryCoordinator(): SerialReconnectCoordinator {
+  if (serialRecoveryCoordinator) {
+    return serialRecoveryCoordinator;
+  }
+
+  serialRecoveryCoordinator = new SerialReconnectCoordinator({
+    now: Date.now,
+    setTimer: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+    clearTimer: (timer) => globalThis.clearTimeout(timer),
+    listPorts: listSerialPorts,
+    connect: connectSerial,
+    cancelPendingConnection: async () => {
+      await cancelPendingSerialConnection();
+    },
+    prepareCaptureBoundary: () =>
+      stopCurrentCapture(useWorkbenchStore.getState, useWorkbenchStore.setState),
+    applyBackendState: (payload) => {
+      useWorkbenchStore.getState().handleSerialState(payload);
+    },
+    updatePorts: (ports) => {
+      useWorkbenchStore.setState({ ports });
+    },
+    updatePortName: (portName) => {
+      useWorkbenchStore.setState((state) => ({
+        serialConfig: { ...state.serialConfig, portName },
+      }));
+    },
+    resetStreamAfterReconnect: () => {
+      const state = useWorkbenchStore.getState();
+      resetLiveStreamBoundary(state.protocol);
+      useWorkbenchStore.setState({
+        stats: { ...emptyStats(), startedAt: Date.now() },
+      });
+    },
+    onSnapshot: (serialRecovery) => {
+      useWorkbenchStore.setState({ serialRecovery });
+    },
+  });
+  return serialRecoveryCoordinator;
+}
+
 export function selectActiveWorkspace(state: WorkbenchStore): WorkspaceProfile | undefined {
   return state.workspaces.find((workspace) => workspace.id === state.activeWorkspaceId);
 }
@@ -1365,6 +1570,38 @@ function handleCaptureQueueError(error: Error): void {
     });
 }
 
+async function cancelPendingSerialConnection(): Promise<SerialStatePayload> {
+  const cancelled = await cancelSerialConnect();
+  const payload =
+    cancelled.status === "connected" ? await disconnectSerial() : cancelled;
+  applyCancelledSerialState(payload);
+  return payload;
+}
+
+function applyCancelledSerialState(payload: SerialStatePayload): void {
+  const state = useWorkbenchStore.getState();
+  if (
+    state.source === "serial" &&
+    !hasReplaySession(state) &&
+    payload.status !== "connecting" &&
+    payload.revision === state.serialStateRevision &&
+    state.connectionStatus === "connecting"
+  ) {
+    useWorkbenchStore.setState({
+      connectionStatus: payload.status,
+      serialGeneration: payload.generation,
+      serialStateRevision: payload.revision,
+      statusMessage: payload.message ?? serialStatusMessage(payload.status, payload.portName),
+      runtimeTransitionStatus:
+        state.runtimeTransitionStatus === "connecting"
+          ? "idle"
+          : state.runtimeTransitionStatus,
+    });
+    return;
+  }
+  state.handleSerialState(payload);
+}
+
 async function disconnectCurrentSource(
   get: WorkbenchGet,
   set: WorkbenchSet,
@@ -1389,6 +1626,7 @@ async function applyWorkspaceSnapshot(
   get: WorkbenchGet,
   set: WorkbenchSet,
 ): Promise<boolean> {
+  await getSerialRecoveryCoordinator().cancel("workspace-change", true);
   const target = get().workspaces.find((workspace) => workspace.id === id);
   if (!target) {
     throw new Error("要应用的工作区不存在");
@@ -1451,6 +1689,12 @@ function resetProtocolState(protocol: ProtocolKind): void {
   protocolParser = createProtocolParser(protocol);
   terminalDecoder = new TextDecoder();
   channelBuffers.clear();
+}
+
+function resetLiveStreamBoundary(protocol: ProtocolKind): void {
+  parserProtocol = protocol;
+  protocolParser = createProtocolParser(protocol);
+  terminalDecoder = new TextDecoder();
 }
 
 function resetLiveView(protocol: ProtocolKind, set: WorkbenchSet): void {

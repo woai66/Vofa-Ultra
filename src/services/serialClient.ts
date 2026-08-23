@@ -33,6 +33,11 @@ export async function connectSerial(config: SerialConfig): Promise<SerialStatePa
   return invoke<SerialStatePayload>("connect_serial", { config });
 }
 
+export async function cancelSerialConnect(): Promise<SerialStatePayload> {
+  requireTauriRuntime();
+  return invoke<SerialStatePayload>("cancel_serial_connect");
+}
+
 export async function disconnectSerial(): Promise<SerialStatePayload> {
   requireTauriRuntime();
   return invoke<SerialStatePayload>("disconnect_serial");

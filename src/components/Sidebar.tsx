@@ -1,6 +1,7 @@
 import {
   Cable,
   CircleStop,
+  Download,
   Gauge,
   Moon,
   Play,
@@ -8,9 +9,16 @@ import {
   RotateCcw,
   Settings,
   Sun,
+  Trash2,
+  X,
 } from "lucide-react";
+import { isRecoveryActivePhase } from "../core/serialRecovery";
 import type { ThemeMode } from "../App";
-import { BAUD_RATES } from "../types/serial";
+import {
+  BAUD_RATES,
+  type SerialDiagnosticsReport,
+  type SerialRecoveryPhase,
+} from "../types/serial";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { ChartWindowSeconds } from "../types/workspace";
 import type { SidebarPanel } from "./ActivityRail";
@@ -48,12 +56,28 @@ function ConnectionPanel() {
   const ports = useWorkbenchStore((state) => state.ports);
   const isRefreshingPorts = useWorkbenchStore((state) => state.isRefreshingPorts);
   const config = useWorkbenchStore((state) => state.serialConfig);
+  const serialRecovery = useWorkbenchStore((state) => state.serialRecovery);
+  const isCancellingSerialConnection = useWorkbenchStore(
+    (state) => state.isCancellingSerialConnection,
+  );
   const setSource = useWorkbenchStore((state) => state.setSource);
   const setProtocol = useWorkbenchStore((state) => state.setProtocol);
   const updateConfig = useWorkbenchStore((state) => state.updateSerialConfig);
   const refreshPorts = useWorkbenchStore((state) => state.refreshPorts);
   const connect = useWorkbenchStore((state) => state.connect);
   const disconnect = useWorkbenchStore((state) => state.disconnect);
+  const setSerialRecoveryEnabled = useWorkbenchStore(
+    (state) => state.setSerialRecoveryEnabled,
+  );
+  const cancelSerialConnection = useWorkbenchStore(
+    (state) => state.cancelSerialConnection,
+  );
+  const clearSerialDiagnostics = useWorkbenchStore(
+    (state) => state.clearSerialDiagnostics,
+  );
+  const getSerialDiagnostics = useWorkbenchStore(
+    (state) => state.getSerialDiagnostics,
+  );
   const workspaceTransitionStatus = useWorkbenchStore(
     (state) => state.workspaceTransitionStatus,
   );
@@ -70,8 +94,13 @@ function ConnectionPanel() {
   const isCaptureTransitioning = captureStatus === "starting" || captureStatus === "stopping";
   const isRecording = captureStatus === "recording";
   const isReplayLoaded = replaySessionId > 0 && replayStatus !== "idle";
+  const recoveryActive = isRecoveryActivePhase(serialRecovery.phase);
+  const canCancelConnection =
+    source === "serial" && (connectionStatus === "connecting" || recoveryActive);
+  const showCancelAction = canCancelConnection || isCancellingSerialConnection;
   const isBusy =
     connectionStatus === "connecting" ||
+    recoveryActive ||
     isTransitioning ||
     isRuntimeTransitioning ||
     isCaptureTransitioning;
@@ -250,6 +279,66 @@ function ConnectionPanel() {
         </section>
       )}
 
+      {source === "serial" && (
+        <section className="sidebar-section recovery-section" aria-label="串口恢复">
+          <label className="toggle-row recovery-toggle">
+            <span>自动重连</span>
+            <input
+              type="checkbox"
+              checked={serialRecovery.enabled}
+              disabled={isCancellingSerialConnection}
+              onChange={(event) => void setSerialRecoveryEnabled(event.target.checked)}
+            />
+          </label>
+          <div
+            className="recovery-state"
+            data-phase={serialRecovery.phase}
+            aria-live="polite"
+          >
+            <span className="status-dot" />
+            <div>
+              <strong>{recoveryPhaseLabel(serialRecovery.phase)}</strong>
+              <span>{serialRecovery.message}</span>
+            </div>
+            {serialRecovery.attempt > 0 && (
+              <code>
+                {serialRecovery.attempt}/{serialRecovery.maxAttempts}
+              </code>
+            )}
+          </div>
+          <div className="recovery-diagnostics">
+            <span>
+              诊断事件 <strong>{serialRecovery.diagnosticEventCount}</strong>
+              {serialRecovery.diagnosticDroppedEvents > 0
+                ? ` · 丢弃 ${serialRecovery.diagnosticDroppedEvents}`
+                : ""}
+            </span>
+            <div>
+              <button
+                className="icon-button compact"
+                type="button"
+                aria-label="导出串口诊断"
+                title="导出串口诊断"
+                disabled={serialRecovery.diagnosticEventCount === 0}
+                onClick={() => downloadSerialDiagnostics(getSerialDiagnostics())}
+              >
+                <Download size={14} />
+              </button>
+              <button
+                className="icon-button compact"
+                type="button"
+                aria-label="清空串口诊断"
+                title="清空串口诊断"
+                disabled={serialRecovery.diagnosticEventCount === 0}
+                onClick={clearSerialDiagnostics}
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
       <section className="sidebar-section">
         <span className="field-label" id="protocol-parser-label">协议解析</span>
         <div
@@ -292,19 +381,38 @@ function ConnectionPanel() {
         <button
           className="primary-button connect-button"
           type="button"
-          disabled={isBusy}
-          onClick={() => void (isConnected ? disconnect() : connect())}
+          data-action={showCancelAction ? "cancel" : "primary"}
+          disabled={isCancellingSerialConnection || (!canCancelConnection && isBusy)}
+          onClick={() =>
+            void (canCancelConnection
+              ? cancelSerialConnection()
+              : isConnected
+                ? disconnect()
+                : connect())
+          }
         >
-          {isConnected ? <CircleStop size={17} /> : <Play size={17} />}
-          {isBusy
-            ? "处理中"
-            : isConnected
-              ? "断开连接"
-              : isReplayLoaded
-                ? "退出回放并连接"
-                : source === "serial"
-                  ? "连接设备"
-                  : "启动模拟"}
+          {showCancelAction ? (
+            <X size={17} />
+          ) : isConnected ? (
+            <CircleStop size={17} />
+          ) : (
+            <Play size={17} />
+          )}
+          {isCancellingSerialConnection
+            ? "正在取消"
+            : canCancelConnection
+              ? recoveryActive
+                ? "取消重连"
+                : "取消连接"
+              : isBusy
+                ? "处理中"
+                : isConnected
+                  ? "断开连接"
+                  : isReplayLoaded
+                    ? "退出回放并连接"
+                    : source === "serial"
+                      ? "连接设备"
+                      : "启动模拟"}
         </button>
       </div>
     </div>
@@ -443,4 +551,37 @@ function formatChannelValue(value: number): string {
     return value.toExponential(2);
   }
   return value.toFixed(3);
+}
+
+function recoveryPhaseLabel(phase: SerialRecoveryPhase): string {
+  switch (phase) {
+    case "armed":
+      return "恢复待命";
+    case "waiting":
+      return "等待重试";
+    case "scanning":
+      return "查找设备";
+    case "connecting":
+      return "恢复连接";
+    case "blocked":
+      return "恢复暂停";
+    case "exhausted":
+      return "重试结束";
+    case "idle":
+      return "等待连接";
+    default:
+      return "自动重连关闭";
+  }
+}
+
+function downloadSerialDiagnostics(report: SerialDiagnosticsReport): void {
+  const blob = new Blob([JSON.stringify(report, null, 2)], {
+    type: "application/json;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `vofa-ultra-serial-diagnostics-${report.generatedAt}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }

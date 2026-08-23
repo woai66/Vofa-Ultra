@@ -1,12 +1,23 @@
 import { useEffect, useState } from "react";
-import { CircleGauge, CirclePlay, Database, Disc3, Radio, Rows3 } from "lucide-react";
+import {
+  CircleGauge,
+  CirclePlay,
+  Database,
+  Disc3,
+  Radio,
+  RefreshCw,
+  Rows3,
+} from "lucide-react";
+import { isRecoveryActivePhase } from "../core/serialRecovery";
 import { useWorkbenchStore } from "../store/workbenchStore";
+import type { SerialRecoveryPhase } from "../types/serial";
 
 export function StatusBar() {
   const source = useWorkbenchStore((state) => state.source);
   const protocol = useWorkbenchStore((state) => state.protocol);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
   const serialConfig = useWorkbenchStore((state) => state.serialConfig);
+  const serialRecovery = useWorkbenchStore((state) => state.serialRecovery);
   const stats = useWorkbenchStore((state) => state.stats);
   const channels = useWorkbenchStore((state) => state.channels);
   const captureStatus = useWorkbenchStore((state) => state.captureStatus);
@@ -27,6 +38,7 @@ export function StatusBar() {
   const receiveRate = stats.rxBytes / elapsedSeconds;
   const replayLoaded = replaySessionId > 0 && replayStatus !== "idle";
   const activeProtocol = replayHeader?.protocol ?? protocol;
+  const recoveryActive = source === "serial" && isRecoveryActivePhase(serialRecovery.phase);
 
   return (
     <footer className="status-bar">
@@ -56,6 +68,18 @@ export function StatusBar() {
         <div className="status-item capture-status-item">
           <Disc3 size={13} />
           <span>REC {formatBytes(captureDataBytes)}</span>
+        </div>
+      )}
+      {recoveryActive && (
+        <div className="status-item recovery-status-item" title={serialRecovery.message}>
+          <RefreshCw
+            size={13}
+            className={serialRecovery.phase === "waiting" ? undefined : "spin"}
+          />
+          <span>
+            {recoveryStatusLabel(serialRecovery.phase)} {serialRecovery.attempt}/
+            {serialRecovery.maxAttempts}
+          </span>
         </div>
       )}
       {replayLoaded && (
@@ -92,6 +116,17 @@ function connectionLabel(status: string): string {
       return "故障";
     default:
       return "未连接";
+  }
+}
+
+function recoveryStatusLabel(phase: SerialRecoveryPhase): string {
+  switch (phase) {
+    case "waiting":
+      return "RETRY";
+    case "scanning":
+      return "SCAN";
+    default:
+      return "RECONNECT";
   }
 }
 

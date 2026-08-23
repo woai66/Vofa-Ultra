@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
@@ -224,3 +224,220 @@ test("浏览器预览显示会话状态但不开放文件操作", async ({ page 
   }));
   expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth);
 });
+
+test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await installTauriSerialMock(page);
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
+  await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
+  await page.getByRole("checkbox", { name: "自动重连" }).check();
+  await page.getByRole("button", { name: "连接设备" }).click();
+  await expect(page.getByText("自动重连已待命")).toBeVisible();
+
+  await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { loseDevice(): void };
+    };
+    testWindow.__TAURI_TEST__.loseDevice();
+  });
+  await expect(page.getByRole("button", { name: "取消重连" })).toBeEnabled();
+  await expect(page.getByLabel("串口恢复")).toContainText("等待重试");
+
+  await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { restoreDevice(): void };
+    };
+    testWindow.__TAURI_TEST__.restoreDevice();
+  });
+  await expect(page.getByText("自动重连已待命")).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByLabel("串口设备")).toHaveValue("COM19");
+  await expect(page.getByText("COM19", { exact: true })).toBeVisible();
+  expect(pageErrors).toEqual([]);
+
+  await page.screenshot({
+    path: testInfo.outputPath("serial-recovery.png"),
+    fullPage: true,
+  });
+});
+
+async function installTauriSerialMock(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    type Callback = (data: unknown) => unknown;
+    type InvokeArgs = Record<string, unknown> | undefined;
+    const callbacks = new Map<number, Callback>();
+    const listeners = new Map<string, number[]>();
+    let nextCallbackId = 1;
+    let ports = [
+      {
+        name: "COM3",
+        kind: "usb",
+        product: "Telemetry",
+        serialNumber: "DEVICE-001",
+        vendorId: 0x1234,
+        productId: 0x5678,
+      },
+    ];
+    let serialState = {
+      status: "disconnected",
+      portName: "",
+      generation: 0,
+      revision: 0,
+    };
+
+    const emit = (event: string, payload: unknown) => {
+      for (const callbackId of listeners.get(event) ?? []) {
+        callbacks.get(callbackId)?.({ event, id: callbackId, payload });
+      }
+    };
+    const emitSerialState = () => emit("serial://state", { ...serialState });
+
+    const invoke = async (command: string, args: InvokeArgs): Promise<unknown> => {
+      if (command === "plugin:event|listen") {
+        const event = String(args?.event);
+        const handler = Number(args?.handler);
+        listeners.set(event, [...(listeners.get(event) ?? []), handler]);
+        return handler;
+      }
+      if (command === "plugin:event|unlisten") {
+        const event = String(args?.event);
+        const eventId = Number(args?.eventId);
+        listeners.set(
+          event,
+          (listeners.get(event) ?? []).filter((id) => id !== eventId),
+        );
+        return undefined;
+      }
+      if (command === "list_serial_ports") {
+        return ports.map((port) => ({ ...port }));
+      }
+      if (command === "get_serial_state") {
+        return { ...serialState };
+      }
+      if (command === "connect_serial") {
+        const config = args?.config as { portName: string };
+        const generation = serialState.generation + 1;
+        serialState = {
+          status: "connecting",
+          portName: config.portName,
+          generation,
+          revision: serialState.revision + 1,
+        };
+        emitSerialState();
+        await new Promise((resolve) => window.setTimeout(resolve, 25));
+        if (serialState.generation !== generation || serialState.status !== "connecting") {
+          return { ...serialState };
+        }
+        serialState = {
+          ...serialState,
+          status: "connected",
+          revision: serialState.revision + 1,
+        };
+        emitSerialState();
+        return { ...serialState };
+      }
+      if (command === "cancel_serial_connect") {
+        if (serialState.status === "connecting") {
+          serialState = {
+            ...serialState,
+            status: "disconnected",
+            generation: serialState.generation + 1,
+            revision: serialState.revision + 1,
+          };
+          emitSerialState();
+        }
+        return { ...serialState };
+      }
+      if (command === "disconnect_serial") {
+        serialState = {
+          ...serialState,
+          status: "disconnected",
+          revision: serialState.revision + 1,
+        };
+        emitSerialState();
+        return { ...serialState };
+      }
+      if (command === "get_capture_state") {
+        return {
+          status: "idle",
+          sessionId: 0,
+          revision: 0,
+          path: "",
+          dataBytes: 0,
+          recordCount: 0,
+        };
+      }
+      if (command === "get_replay_state") {
+        return {
+          status: "idle",
+          sessionId: 0,
+          generation: 0,
+          revision: 0,
+          path: "",
+          complete: false,
+          positionUs: 0,
+          durationUs: 0,
+          dataBytes: 0,
+          recordCount: 0,
+        };
+      }
+      return undefined;
+    };
+
+    const testWindow = window as unknown as {
+      __TAURI_INTERNALS__: Record<string, unknown>;
+      __TAURI_EVENT_PLUGIN_INTERNALS__: Record<string, unknown>;
+      __TAURI_TEST__: Record<string, () => void>;
+    };
+    testWindow.__TAURI_INTERNALS__ = {
+      invoke,
+      transformCallback: (callback: Callback, once = false) => {
+        const id = nextCallbackId;
+        nextCallbackId += 1;
+        callbacks.set(id, (data) => {
+          if (once) {
+            callbacks.delete(id);
+          }
+          return callback(data);
+        });
+        return id;
+      },
+      unregisterCallback: (id: number) => callbacks.delete(id),
+    };
+    testWindow.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+      unregisterListener: (_event: string, id: number) => callbacks.delete(id),
+    };
+    testWindow.__TAURI_TEST__ = {
+      loseDevice: () => {
+        ports = [];
+        serialState = {
+          ...serialState,
+          status: "error",
+          revision: serialState.revision + 1,
+          errorCode: "read-failed",
+          message: "设备已移除",
+        } as typeof serialState;
+        emitSerialState();
+      },
+      restoreDevice: () => {
+        ports = [
+          {
+            name: "COM19",
+            kind: "usb",
+            product: "Telemetry",
+            serialNumber: "DEVICE-001",
+            vendorId: 0x1234,
+            productId: 0x5678,
+          },
+        ];
+      },
+    };
+  });
+}

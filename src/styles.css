@@ -504,6 +504,10 @@ textarea:disabled {
   color: var(--danger);
 }
 
+.recovery-status-item {
+  color: var(--amber);
+}
+
 .capture-status-item svg {
   animation: capture-pulse 1.4s ease-in-out infinite;
 }
@@ -632,6 +636,93 @@ textarea:focus {
 
 .connection-fields {
   gap: 7px;
+}
+
+.recovery-section {
+  gap: 9px;
+}
+
+.recovery-toggle {
+  height: 30px;
+  padding: 0;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.recovery-state {
+  display: grid;
+  min-width: 0;
+  align-items: start;
+  grid-template-columns: 7px minmax(0, 1fr) auto;
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+
+.recovery-state .status-dot {
+  margin-top: 4px;
+}
+
+.recovery-state[data-phase="armed"] .status-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.recovery-state[data-phase="waiting"] .status-dot,
+.recovery-state[data-phase="scanning"] .status-dot,
+.recovery-state[data-phase="connecting"] .status-dot {
+  background: var(--amber);
+}
+
+.recovery-state[data-phase="blocked"] .status-dot,
+.recovery-state[data-phase="exhausted"] .status-dot {
+  background: var(--danger);
+}
+
+.recovery-state > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.recovery-state strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.recovery-state span:last-child {
+  color: var(--text-subtle);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.recovery-state code {
+  color: var(--amber);
+  font-size: 10px;
+}
+
+.recovery-diagnostics {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-subtle);
+  font-size: 10px;
+  gap: 8px;
+}
+
+.recovery-diagnostics > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.recovery-diagnostics > div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
 }
 
 .field-grid {
@@ -827,6 +918,17 @@ textarea:focus {
 .primary-button:hover:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent);
+}
+
+.connect-button[data-action="cancel"] {
+  border-color: var(--amber);
+  background: transparent;
+  color: var(--amber);
+}
+
+.connect-button[data-action="cancel"]:hover:not(:disabled) {
+  border-color: var(--amber);
+  background: var(--surface-hover);
 }
 
 .secondary-button {

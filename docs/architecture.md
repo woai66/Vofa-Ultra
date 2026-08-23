@@ -1,7 +1,7 @@
 # 架构说明
 
-本文描述 v0.1.0 基础以及已落地的 v0.2 工作区、录制和回放增量。架构目标不是追求模块数量，而是让串口生命周期、
-数据所有权和故障语义足够清楚，使后续记录回放、协议扩展和插件系统可以增量加入。
+本文描述 v0.1.0 基础以及已落地的 v0.2 工作区、录制、回放和串口恢复增量。架构目标不是追求模块数量，而是让
+串口生命周期、数据所有权和故障语义足够清楚，使后续协议扩展和插件系统可以增量加入。
 
 ## 总体结构
 
@@ -14,6 +14,8 @@ flowchart TB
     Replayer -->|批次事件| Bridge
     Store -->|ACK| Replayer
     Bridge --> Store[Zustand 工作台状态]
+    Store --> Recovery[串口恢复协调器]
+    Recovery -->|扫描 / 重连 / 取消| Bridge
     Store --> Parsers[增量协议解析器]
     Parsers --> Buffers[有界通道与终端缓冲]
     Buffers --> Views[uPlot 波形与虚拟终端]
@@ -30,14 +32,16 @@ flowchart TB
 
 ## 串口生命周期
 
-`connect_serial`、`disconnect_serial` 通过独立生命周期锁串行执行。每个 worker 都有 generation，所有状态
-变化都带单调递增的 revision。
+`connect_serial` 把可能阻塞的设备打开和配置放入阻塞任务，避免占用 Tauri 异步执行线程；连接和断开通过独立
+生命周期锁串行执行。每个连接请求都有 request token，每个 worker 都有 generation，所有状态变化都带单调递增
+的 revision。
 
 ```mermaid
 stateDiagram-v2
     [*] --> disconnected
     disconnected --> connecting: connect
     connecting --> connected: 端口打开且 worker 已注册
+    connecting --> disconnected: cancel
     connecting --> error: 打开或配置失败
     connected --> disconnected: 主动断开
     connected --> error: 读写或线程失败
@@ -45,11 +49,37 @@ stateDiagram-v2
     error --> disconnected: 主动断开
 ```
 
-连接过程先打开并配置端口，再创建一个等待启动信号的线程。worker 注册到权威状态后才发布 `connected` 并
-解除启动屏障，因此前端收到连接事件时已经可以安全发送或断开。
+连接命令在派发阻塞任务前登记 request token；任务取得生命周期锁后只有 token 仍为当前请求，才推进 generation
+并发布 `connecting`。设备打开、DTR / RTS 配置和 worker 注册前后都会同时校验 token 与 generation。连接过程创建
+一个等待启动信号的线程，worker 注册到权威状态后才发布 `connected` 并解除启动屏障，因此前端收到连接事件时
+已经可以安全发送或断开。
 
-命令返回值与异步事件都包含 revision。前端只接受不早于当前 revision 的状态，避免较慢的命令响应覆盖较新的
-拔插或读写错误。
+`cancel_serial_connect` 只需要短暂取得共享状态锁，不等待可能正在打开设备的生命周期锁。取消会清除 request
+token；已经进入 `connecting` 时还会推进 generation 并发布 `disconnected`。排队、设备打开、线路配置或 worker
+注册阶段的迟到结果因此都不能重新发布 `connecting` / `connected` 或注册旧 worker。
+
+命令返回值与异步事件都包含 revision。前端事件订阅只接受严格更新的 revision，避免重复事件重置恢复协调器，
+也避免较慢的命令响应覆盖较新的拔插或读写错误。唯一例外是取消命令返回的权威稳定快照：当 revision 相同且本地
+仍处于乐观 `connecting` 时，用它恢复连接与事务状态，但不再次驱动恢复协调器。错误状态另外携带稳定
+`errorCode`，面向 UI、恢复策略和诊断报告；原始错误文本只用于当前界面提示，不作为程序控制条件。
+
+## 可控串口恢复与诊断
+
+自动重连由前端恢复协调器管理，默认关闭，只能在当前桌面应用运行期显式启用，不写入工作区或 Zustand 持久化
+字段。一次手动连接成功后，仅当端口同时具有 USB VID、PID 和非空序列号时才进入待命；恢复目标不包含旧端口名。
+身份缺失时保持阻塞状态，不退化为按端口名或同型号设备猜测。
+
+意外运行故障会先等待当前捕获文件完成收尾，再按 `0 / 0.5 / 1 / 2 / 4 / 8 / 16 / 30 / 30 / 30` 秒执行最多
+十次恢复。每次尝试重新枚举端口，只连接唯一精确匹配 VID、PID 和序列号的设备，因此同一设备改用新端口名仍可
+恢复。无匹配设备会进入下一次退避；多个匹配候选、身份不完整或录制收尾失败都会停止自动选择并明确提示用户。
+
+恢复协调器用 epoch 隔离迟到的枚举和连接 Promise。手动连接、断开、切换数据源或工作区、打开回放和运行时卸载
+都会取消当前 epoch；正在连接时还会调用后端取消命令。恢复成功后重置协议 parser、流式 `TextDecoder` 和统计
+起点，保留已有波形与终端历史。
+
+诊断使用 256 条内存环，JSON 导出上限为 128 KiB。报告只包含稳定错误码、相对时间、重试计数、generation、
+revision 和脱敏串口参数；不包含端口名、USB 序列号、原始错误、绝对路径或 RX / TX 数据。大小超限时从最旧事件
+开始裁剪，并保留丢弃计数。
 
 ## Worker 调度与边界
 
@@ -143,16 +173,17 @@ sequence` 共同隔离停止、重播和迟到事件；新 generation 先等待 
 
 - 端口打开或参数配置失败：命令返回可读错误，状态进入 `error`。
 - 队列满或单次发送过大：只拒绝当前发送，不破坏现有连接。
-- 设备移除或读写失败：worker 发布 `error` 并停止，下一次连接会先回收旧线程。
+- 设备移除或读写失败：worker 发布带稳定错误码的 `error` 并停止；已待命的恢复协调器按身份开始有界重试，下一次
+  连接会先回收旧线程。
 - worker panic：`join` 错误不会静默丢弃，权威状态进入 `error`。
 - 浏览器预览：串口入口禁用，只允许使用模拟器。
 
 ## 验证层次
 
-1. Vitest 覆盖字节编解码、跨 chunk 协议解析、环形缓冲和状态 revision。
-2. React 组件测试覆盖主要空状态、工作区命名和操作入口。
+1. Vitest 覆盖字节编解码、跨 chunk 协议解析、环形缓冲、状态 revision、恢复退避、身份匹配和迟到结果隔离。
+2. React 组件测试覆盖主要空状态、工作区命名、恢复控制和操作入口。
 3. Playwright 覆盖模拟器端到端链路、TX 回显、Canvas 有效像素、工作区文件往返、录制入口权限、虚拟列表、
-   窄屏溢出和短窗口布局。
+   窄屏溢出、短窗口布局和同一 USB 设备跨端口名恢复。
 4. GitHub Actions 在三个桌面系统执行 rustfmt、Clippy 和 Rust 测试，在 Node.js 22 上执行前端检查和浏览器
    验收。
 5. 正式发布前必须补充真实串口的长稳、拔插、流控和高波特率测试。

@@ -3,6 +3,25 @@ export type DataSource = "serial" | "simulator";
 export type ProtocolKind = "firewater" | "justfloat" | "raw";
 export type DisplayMode = "text" | "hex";
 export type LineEnding = "none" | "lf" | "crlf";
+export type SerialErrorCode =
+  | "invalid-config"
+  | "open-failed"
+  | "dtr-failed"
+  | "rts-failed"
+  | "worker-start-failed"
+  | "read-failed"
+  | "write-failed"
+  | "worker-panic"
+  | "unknown";
+export type SerialRecoveryPhase =
+  | "off"
+  | "idle"
+  | "armed"
+  | "waiting"
+  | "scanning"
+  | "connecting"
+  | "blocked"
+  | "exhausted";
 
 export interface SerialPortInfo {
   name: string;
@@ -42,8 +61,65 @@ export interface SerialStatePayload {
   status: ConnectionStatus;
   portName: string;
   message?: string;
+  errorCode?: SerialErrorCode;
   generation: number;
   revision: number;
+}
+
+export interface SerialReconnectTarget {
+  kind: "usb";
+  vendorId: number;
+  productId: number;
+  serialNumber: string;
+}
+
+export interface SerialRecoverySnapshot {
+  enabled: boolean;
+  phase: SerialRecoveryPhase;
+  attempt: number;
+  maxAttempts: number;
+  nextAttemptAt?: number;
+  message: string;
+  diagnosticEventCount: number;
+  diagnosticDroppedEvents: number;
+}
+
+export interface SerialDiagnosticEvent {
+  sequence: number;
+  elapsedMs: number;
+  kind: string;
+  attempt?: number;
+  delayMs?: number;
+  generation?: number;
+  revision?: number;
+  errorCode?: SerialErrorCode;
+  candidateCount?: number;
+  outcome?: string;
+}
+
+export interface SerialDiagnosticsReport {
+  format: "vofa-ultra.serial-diagnostics";
+  schemaVersion: 1;
+  generatedAt: number;
+  appVersion: string;
+  connection: {
+    status: ConnectionStatus;
+    recoveryPhase: SerialRecoveryPhase;
+    attempt: number;
+    generation: number;
+    revision: number;
+  };
+  serial: Omit<SerialConfig, "portName">;
+  target?: {
+    kind: "usb";
+    vendorId: number;
+    productId: number;
+    serialPresent: true;
+    matchPolicy: "usb-serial";
+  };
+  eventCount: number;
+  droppedEvents: number;
+  events: SerialDiagnosticEvent[];
 }
 
 export const DEFAULT_SERIAL_CONFIG: SerialConfig = {

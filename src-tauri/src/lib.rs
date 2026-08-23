@@ -11,8 +11,8 @@ use replay::{
     stop_replay, ReplayState,
 };
 use serial::{
-    connect_serial, disconnect_serial, get_serial_state, list_serial_ports, send_serial,
-    SerialState,
+    cancel_serial_connect, connect_serial, disconnect_serial, get_serial_state, list_serial_ports,
+    send_serial, SerialState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -26,6 +26,7 @@ pub fn run() {
             list_serial_ports,
             get_serial_state,
             connect_serial,
+            cancel_serial_connect,
             disconnect_serial,
             send_serial,
             get_capture_state,
