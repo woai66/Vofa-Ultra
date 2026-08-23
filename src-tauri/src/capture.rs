@@ -1,7 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, ErrorKind, Read, Write};
-use std::path::{Path, PathBuf};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -130,8 +130,12 @@ impl std::fmt::Display for CaptureReadError {
         match self {
             Self::Io(error) => write!(formatter, "读取捕获文件失败: {error}"),
             Self::InvalidMagic => formatter.write_str("捕获文件 magic 不匹配"),
-            Self::FutureVersion(version) => write!(formatter, "捕获文件版本 {version} 高于当前支持版本"),
-            Self::UnsupportedVersion(version) => write!(formatter, "不支持的捕获文件版本: {version}"),
+            Self::FutureVersion(version) => {
+                write!(formatter, "捕获文件版本 {version} 高于当前支持版本")
+            }
+            Self::UnsupportedVersion(version) => {
+                write!(formatter, "不支持的捕获文件版本: {version}")
+            }
             Self::HeaderTooLarge(size) => write!(formatter, "捕获文件头超过 64 KiB: {size} 字节"),
             Self::RecordTooLarge(size) => write!(formatter, "捕获记录超过 64 KiB: {size} 字节"),
             Self::InvalidHeader(message) => write!(formatter, "捕获文件头无效: {message}"),
@@ -254,7 +258,9 @@ impl<R: Read> CaptureReader<R> {
         read_exact_section(&mut self.reader, &mut footer, "结束标记")?;
 
         if footer[..7].iter().any(|byte| *byte != 0) {
-            return Err(CaptureReadError::Corrupt("结束标记保留字段必须为 0".to_owned()));
+            return Err(CaptureReadError::Corrupt(
+                "结束标记保留字段必须为 0".to_owned(),
+            ));
         }
         let data_bytes = u64::from_le_bytes(footer[7..15].try_into().expect("字节计数字段固定"));
         let record_count = u64::from_le_bytes(footer[15..23].try_into().expect("记录计数字段固定"));
@@ -393,8 +399,15 @@ impl Drop for CaptureState {
                 .shared
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let should_finish = matches!(shared.status, CaptureStatus::Recording | CaptureStatus::Stopping);
-            (shared.worker.take(), should_finish, shared.finalizing.take())
+            let should_finish = matches!(
+                shared.status,
+                CaptureStatus::Recording | CaptureStatus::Stopping
+            );
+            (
+                shared.worker.take(),
+                should_finish,
+                shared.finalizing.take(),
+            )
         };
 
         if let Some(finalizing) = finalizing {
@@ -616,8 +629,7 @@ impl WriterControl {
     }
 
     fn mark_completed(&self) {
-        self.phase
-            .store(WRITER_PHASE_COMPLETED, Ordering::Release);
+        self.phase.store(WRITER_PHASE_COMPLETED, Ordering::Release);
     }
 
     fn is_aborted(&self) -> bool {
@@ -629,7 +641,7 @@ fn clear_finalizing_state(shared: &mut SharedCaptureState, session_id: u64) {
     let matches_session = shared
         .finalizing
         .as_ref()
-        .map_or(false, |finalizing| finalizing.session_id == session_id);
+        .is_some_and(|finalizing| finalizing.session_id == session_id);
     if matches_session {
         shared.finalizing = None;
     }
@@ -773,9 +785,7 @@ fn finalize_worker_in_background(
                         WorkerFinalization::Finish => worker.finish_and_join(),
                         WorkerFinalization::Abort => worker.abort_and_join(),
                     }))
-                    .map_err(|panic| {
-                        format!("录制收尾线程异常退出: {}", panic_message(panic))
-                    })
+                    .map_err(|panic| format!("录制收尾线程异常退出: {}", panic_message(panic)))
                     .and_then(|result| result)
                 });
             if let Err(message) = result {
@@ -836,12 +846,10 @@ impl ByteBudget {
             if next > self.capacity {
                 return None;
             }
-            match self.used.compare_exchange_weak(
-                used,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            match self
+                .used
+                .compare_exchange_weak(used, next, Ordering::AcqRel, Ordering::Acquire)
+            {
                 Ok(_) => {
                     return Some(ByteReservation {
                         budget: Arc::clone(self),
@@ -928,18 +936,14 @@ impl CaptureCore {
                                     Ok(()) => Ok(()),
                                     Err(mpsc::TrySendError::Full(_)) => {
                                         let message = "录制写入队列已满，录制已中止".to_owned();
-                                        event = Some(fail_active_capture(
-                                            &mut shared,
-                                            message.clone(),
-                                        ));
+                                        event =
+                                            Some(fail_active_capture(&mut shared, message.clone()));
                                         Err(message)
                                     }
                                     Err(mpsc::TrySendError::Disconnected(_)) => {
                                         let message = "录制写入线程已停止，录制已中止".to_owned();
-                                        event = Some(fail_active_capture(
-                                            &mut shared,
-                                            message.clone(),
-                                        ));
+                                        event =
+                                            Some(fail_active_capture(&mut shared, message.clone()));
                                         Err(message)
                                     }
                                 }
@@ -1095,7 +1099,10 @@ fn start_capture_blocking(
             .shared
             .lock()
             .map_err(|_| "录制状态锁已损坏".to_owned())?;
-        if matches!(shared.status, CaptureStatus::Recording | CaptureStatus::Stopping) {
+        if matches!(
+            shared.status,
+            CaptureStatus::Recording | CaptureStatus::Stopping
+        ) {
             return Err("已有录制任务正在进行".to_owned());
         }
         if shared.finalizing.is_some() {
@@ -1119,7 +1126,10 @@ fn start_capture_blocking(
             .shared
             .lock()
             .map_err(|_| "录制状态锁已损坏".to_owned())?;
-        if matches!(shared.status, CaptureStatus::Recording | CaptureStatus::Stopping) {
+        if matches!(
+            shared.status,
+            CaptureStatus::Recording | CaptureStatus::Stopping
+        ) {
             return Err("已有录制任务正在进行".to_owned());
         }
         shared.worker.take()
@@ -1153,17 +1163,17 @@ fn start_capture_blocking(
     };
     header.validate()?;
     let header_bytes = encode_header(&header)?;
-    let (file, path) = create_capture_file(&app, started_at_unix_ms, session_id).map_err(|message| {
-        publish_start_error(
-            &app,
-            &state.core,
-            session_id,
-            started_at_unix_ms,
-            String::new(),
-            message.clone(),
-        );
-        message
-    })?;
+    let (file, path) =
+        create_capture_file(&app, started_at_unix_ms, session_id).inspect_err(|message| {
+            publish_start_error(
+                &app,
+                &state.core,
+                session_id,
+                started_at_unix_ms,
+                String::new(),
+                message.clone(),
+            );
+        })?;
     let path_text = path.to_string_lossy().into_owned();
 
     let (sender, receiver) = mpsc::sync_channel(WRITER_QUEUE_RECORDS);
@@ -1304,12 +1314,7 @@ pub fn stop_capture(
         } else {
             WorkerFinalization::Abort
         };
-        finalize_worker_in_background(
-            app.clone(),
-            Arc::clone(&state.core),
-            worker,
-            finalization,
-        );
+        finalize_worker_in_background(app.clone(), Arc::clone(&state.core), worker, finalization);
     }
 
     snapshot_capture_state(&state)
@@ -1340,7 +1345,7 @@ pub fn abort_capture(
         let has_finalizing = finalizing_control.is_some();
         let finalizing_aborted = finalizing_control
             .as_ref()
-            .map_or(false, |control| control.request_abort());
+            .is_some_and(|control| control.request_abort());
         let mut worker = None;
         let mut worker_aborted = false;
         if !has_finalizing {
@@ -1355,7 +1360,10 @@ pub fn abort_capture(
         }
         let inconsistent_active = !has_finalizing
             && !worker_aborted
-            && matches!(shared.status, CaptureStatus::Recording | CaptureStatus::Stopping);
+            && matches!(
+                shared.status,
+                CaptureStatus::Recording | CaptureStatus::Stopping
+            );
         let should_abort = finalizing_aborted || worker_aborted || inconsistent_active;
         let payload = if should_abort {
             shared.status = CaptureStatus::Error;
@@ -1508,7 +1516,10 @@ fn write_record<W: Write>(writer: &mut W, record: &QueuedRecord) -> io::Result<(
     let payload_size = u32::try_from(record.payload.len())
         .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "录制数据过长"))?;
     if record.payload.len() > MAX_CAPTURE_RECORD_BYTES {
-        return Err(io::Error::new(ErrorKind::InvalidInput, "录制数据超过 64 KiB"));
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "录制数据超过 64 KiB",
+        ));
     }
 
     writer.write_all(&[RECORD_TAG, record.direction.code()])?;
@@ -1526,7 +1537,8 @@ fn write_footer<W: Write>(writer: &mut W, data_bytes: u64, record_count: u64) ->
 }
 
 fn encode_header(header: &CaptureHeader) -> Result<Vec<u8>, String> {
-    let bytes = serde_json::to_vec(header).map_err(|error| format!("序列化录制文件头失败: {error}"))?;
+    let bytes =
+        serde_json::to_vec(header).map_err(|error| format!("序列化录制文件头失败: {error}"))?;
     if bytes.len() > MAX_CAPTURE_HEADER_BYTES {
         return Err(format!(
             "录制文件头不能超过 {} KiB",
@@ -1846,7 +1858,10 @@ mod tests {
 
         clear_finalizing_state(&mut shared, 6);
         assert_eq!(
-            shared.finalizing.as_ref().map(|finalizing| finalizing.session_id),
+            shared
+                .finalizing
+                .as_ref()
+                .map(|finalizing| finalizing.session_id),
             Some(7)
         );
 
@@ -1892,8 +1907,7 @@ mod tests {
         oversized_record.push(CaptureDirection::Rx.code());
         oversized_record.extend_from_slice(&0_u16.to_le_bytes());
         oversized_record.extend_from_slice(&0_u64.to_le_bytes());
-        oversized_record
-            .extend_from_slice(&((MAX_CAPTURE_RECORD_BYTES + 1) as u32).to_le_bytes());
+        oversized_record.extend_from_slice(&((MAX_CAPTURE_RECORD_BYTES + 1) as u32).to_le_bytes());
         let mut reader = CaptureReader::new(Cursor::new(oversized_record)).unwrap();
         assert!(matches!(
             reader.next(),

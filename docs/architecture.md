@@ -153,7 +153,8 @@ sequence` 共同隔离停止、重播和迟到事件；新 generation 先等待 
 2. React 组件测试覆盖主要空状态、工作区命名和操作入口。
 3. Playwright 覆盖模拟器端到端链路、TX 回显、Canvas 有效像素、工作区文件往返、录制入口权限、虚拟列表、
    窄屏溢出和短窗口布局。
-4. GitHub Actions 在三个桌面系统检查 Rust，在 Node.js 22 上执行前端检查和浏览器验收。
+4. GitHub Actions 在三个桌面系统执行 rustfmt、Clippy 和 Rust 测试，在 Node.js 22 上执行前端检查和浏览器
+   验收。
 5. 正式发布前必须补充真实串口的长稳、拔插、流控和高波特率测试。
 
 ## 扩展原则

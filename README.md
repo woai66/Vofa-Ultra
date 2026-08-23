@@ -40,7 +40,7 @@ pnpm dev
 
 ### 桌面应用
 
-需要 Node.js 22、pnpm 11、Rust 1.77.2 或更高版本，以及
+需要 Node.js 22、pnpm 11、Rust 1.88.0 或更高版本，以及
 [Tauri 2 平台依赖](https://v2.tauri.app/start/prerequisites/)。
 
 ```bash
@@ -48,8 +48,8 @@ pnpm install
 pnpm tauri dev
 ```
 
-首次 Rust 构建会生成 `src-tauri/Cargo.lock`。桌面应用发布前应提交该锁文件，并在目标平台完成一次真实
-串口连接、收发、拔插和重连验证。
+仓库已提交 `src-tauri/Cargo.lock`，桌面构建应使用锁定依赖。正式发布前仍需在目标平台完成真实串口连接、
+收发、拔插和重连验证。
 
 ## 协议输入
 
@@ -98,7 +98,9 @@ Tauri 桌面应用连接数据源后，可在“记录”面板开始录制。�
 ```bash
 pnpm check
 pnpm test:e2e
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
 `pnpm check` 会依次执行 ESLint、TypeScript 类型检查、Vitest 和生产构建。Playwright 会验证模拟数据链路、

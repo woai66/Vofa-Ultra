@@ -1,6 +1,6 @@
 use std::fs::File;
-use std::path::{Path, PathBuf};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -287,9 +287,7 @@ struct ReplayAck {
 
 impl ReplayAck {
     fn matches(self, session_id: u64, generation: u64, sequence: u64) -> bool {
-        self.session_id == session_id
-            && self.generation == generation
-            && self.sequence == sequence
+        self.session_id == session_id && self.generation == generation && self.sequence == sequence
     }
 }
 
@@ -776,13 +774,7 @@ impl ReplayCore {
         }
     }
 
-    fn publish_open_error(
-        &self,
-        app: &AppHandle,
-        session_id: u64,
-        path: String,
-        message: String,
-    ) {
+    fn publish_open_error(&self, app: &AppHandle, session_id: u64, path: String, message: String) {
         let payload = self.shared.lock().ok().map(|mut shared| {
             shared.status = ReplayStatus::Error;
             shared.session_id = session_id;
@@ -1000,9 +992,7 @@ fn scan_capture(
                 return ScanResult::Ready(accumulator.finish(true, None));
             }
             Some(Err(error @ CaptureReadError::Truncated(_))) => {
-                let message = format!(
-                    "捕获文件未正常结束，将回放已验证的完整记录前缀（{error}）"
-                );
+                let message = format!("捕获文件未正常结束，将回放已验证的完整记录前缀（{error}）");
                 return ScanResult::Ready(accumulator.finish(false, Some(message)));
             }
             Some(Err(error)) => return ScanResult::Failed(error.to_string()),
@@ -1043,9 +1033,7 @@ fn poll_scan_control(
                 reply_control(command, Err(format!("捕获文件正在扫描，暂时无法{action}")));
             }
             Err(mpsc::TryRecvError::Empty) => return Ok(false),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                return Err("回放控制通道意外关闭".to_owned())
-            }
+            Err(mpsc::TryRecvError::Disconnected) => return Err("回放控制通道意外关闭".to_owned()),
         }
     }
 }
@@ -1492,11 +1480,7 @@ impl ReplayRuntime {
             }
 
             match self.ack_receiver.recv_timeout(WORKER_POLL_INTERVAL) {
-                Ok(ack) if ack.matches(
-                    self.session_id,
-                    self.generation,
-                    self.next_sequence,
-                ) => {
+                Ok(ack) if ack.matches(self.session_id, self.generation, self.next_sequence) => {
                     let batch = self
                         .pending_batch
                         .take()
@@ -1506,8 +1490,7 @@ impl ReplayRuntime {
                         .next_sequence
                         .checked_add(1)
                         .ok_or_else(|| "回放批次序号已耗尽".to_owned())?;
-                    let should_emit = self.last_position_event.elapsed()
-                        >= POSITION_EVENT_INTERVAL;
+                    let should_emit = self.last_position_event.elapsed() >= POSITION_EVENT_INTERVAL;
                     self.core.update_position(
                         &self.app,
                         self.session_id,
@@ -1577,17 +1560,15 @@ impl ReplayRuntime {
         let generation = self.generation;
         let position_us = self.position_us;
         let message = self.summary.message.clone();
-        let result = self.core.publish_transition(
-            &self.app,
-            self.session_id,
-            move |shared| {
+        let result = self
+            .core
+            .publish_transition(&self.app, self.session_id, move |shared| {
                 shared.status = ReplayStatus::Playing;
                 shared.generation = generation;
                 shared.position_us = position_us;
                 shared.message = message;
                 Ok(())
-            },
-        );
+            });
         reply_transition(command, result)?;
         Ok(RuntimeControl::Continue)
     }
@@ -1611,17 +1592,15 @@ impl ReplayRuntime {
         let generation = self.generation;
         let position_us = self.position_us;
         let message = self.summary.message.clone();
-        let result = self.core.publish_transition(
-            &self.app,
-            self.session_id,
-            move |shared| {
+        let result = self
+            .core
+            .publish_transition(&self.app, self.session_id, move |shared| {
                 shared.status = ReplayStatus::Paused;
                 shared.generation = generation;
                 shared.position_us = position_us;
                 shared.message = message;
                 Ok(())
-            },
-        );
+            });
         reply_transition(command, result)?;
         Ok(RuntimeControl::Continue)
     }
@@ -1643,15 +1622,14 @@ impl ReplayRuntime {
         self.anchor = None;
         self.mode = ReplayStatus::Stopping;
         let generation = self.generation;
-        if let Err(message) = self.core.publish_transition(
-            &self.app,
-            self.session_id,
-            move |shared| {
-                shared.status = ReplayStatus::Stopping;
-                shared.generation = generation;
-                Ok(())
-            },
-        ) {
+        if let Err(message) =
+            self.core
+                .publish_transition(&self.app, self.session_id, move |shared| {
+                    shared.status = ReplayStatus::Stopping;
+                    shared.generation = generation;
+                    Ok(())
+                })
+        {
             reply_control(command, Err(message.clone()));
             return Err(message);
         }
@@ -1661,16 +1639,14 @@ impl ReplayRuntime {
         self.position_us = 0;
         self.mode = ReplayStatus::Ready;
         let message = self.summary.message.clone();
-        let result = self.core.publish_transition(
-            &self.app,
-            self.session_id,
-            move |shared| {
+        let result = self
+            .core
+            .publish_transition(&self.app, self.session_id, move |shared| {
                 shared.status = ReplayStatus::Ready;
                 shared.position_us = 0;
                 shared.message = message;
                 Ok(())
-            },
-        );
+            });
         reply_transition(command, result)?;
         Ok(RuntimeControl::Continue)
     }
@@ -1689,16 +1665,13 @@ impl ReplayRuntime {
         self.waiting_start_ack = false;
         let position_us = self.position_us;
         let message = self.summary.message.clone();
-        self.core.publish_transition(
-            &self.app,
-            self.session_id,
-            move |shared| {
+        self.core
+            .publish_transition(&self.app, self.session_id, move |shared| {
                 shared.status = ReplayStatus::Completed;
                 shared.position_us = position_us;
                 shared.message = message;
                 Ok(())
-            },
-        )?;
+            })?;
         Ok(())
     }
 
@@ -1710,10 +1683,9 @@ impl ReplayRuntime {
         self.anchor = None;
         self.waiting_start_ack = false;
         let generation = self.generation;
-        let result = self.core.publish_transition(
-            &self.app,
-            self.session_id,
-            move |shared| {
+        let result = self
+            .core
+            .publish_transition(&self.app, self.session_id, move |shared| {
                 shared.status = ReplayStatus::Idle;
                 shared.generation = generation;
                 shared.path.clear();
@@ -1725,8 +1697,7 @@ impl ReplayRuntime {
                 shared.record_count = 0;
                 shared.message = None;
                 Ok(())
-            },
-        );
+            });
         if let Some(command) = command {
             reply_control(command, result.clone());
         }
@@ -1865,6 +1836,9 @@ mod tests {
 
         assert!(json.get("header").is_none());
         assert!(json.get("message").is_none());
-        assert_eq!(json.get("complete").and_then(|value| value.as_bool()), Some(false));
+        assert_eq!(
+            json.get("complete").and_then(|value| value.as_bool()),
+            Some(false)
+        );
     }
 }

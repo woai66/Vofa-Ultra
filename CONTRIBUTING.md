@@ -11,7 +11,7 @@
 
 ## 开发环境
 
-需要 Node.js 22、pnpm 11。桌面端还需要 Rust 1.77.2 或更高版本，以及
+需要 Node.js 22、pnpm 11。桌面端还需要 Rust 1.88.0 或更高版本，以及
 [Tauri 2 平台依赖](https://v2.tauri.app/start/prerequisites/)。
 
 ```bash
@@ -64,7 +64,9 @@ docs: document protocol limits
 ```bash
 pnpm check
 pnpm test:e2e
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
 涉及真实串口时，还需记录操作系统、适配器芯片、参数、测试时长，以及连接、收发、拔插和重连结果。烧录和

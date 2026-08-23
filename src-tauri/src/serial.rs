@@ -217,12 +217,8 @@ pub fn list_serial_ports() -> Result<Vec<SerialPortInfoDto>, String> {
                     SerialPortType::BluetoothPort => {
                         ("bluetooth".to_owned(), None, None, None, None, None)
                     }
-                    SerialPortType::PciPort => {
-                        ("pci".to_owned(), None, None, None, None, None)
-                    }
-                    SerialPortType::Unknown => {
-                        ("unknown".to_owned(), None, None, None, None, None)
-                    }
+                    SerialPortType::PciPort => ("pci".to_owned(), None, None, None, None, None),
+                    SerialPortType::Unknown => ("unknown".to_owned(), None, None, None, None, None),
                 };
 
             SerialPortInfoDto {
@@ -262,21 +258,17 @@ pub fn connect_serial(
 
     let port_name = config.port_name.clone();
     let generation = begin_connection(&app, &state.shared, &port_name)?;
-    config.validate(true).map_err(|message| {
-        fail_connection(&app, &state.shared, generation, &port_name, message)
-    })?;
-    let data_bits = parse_data_bits(config.data_bits).map_err(|message| {
-        fail_connection(&app, &state.shared, generation, &port_name, message)
-    })?;
-    let parity = parse_parity(&config.parity).map_err(|message| {
-        fail_connection(&app, &state.shared, generation, &port_name, message)
-    })?;
-    let stop_bits = parse_stop_bits(config.stop_bits).map_err(|message| {
-        fail_connection(&app, &state.shared, generation, &port_name, message)
-    })?;
-    let flow_control = parse_flow_control(&config.flow_control).map_err(|message| {
-        fail_connection(&app, &state.shared, generation, &port_name, message)
-    })?;
+    config
+        .validate(true)
+        .map_err(|message| fail_connection(&app, &state.shared, generation, &port_name, message))?;
+    let data_bits = parse_data_bits(config.data_bits)
+        .map_err(|message| fail_connection(&app, &state.shared, generation, &port_name, message))?;
+    let parity = parse_parity(&config.parity)
+        .map_err(|message| fail_connection(&app, &state.shared, generation, &port_name, message))?;
+    let stop_bits = parse_stop_bits(config.stop_bits)
+        .map_err(|message| fail_connection(&app, &state.shared, generation, &port_name, message))?;
+    let flow_control = parse_flow_control(&config.flow_control)
+        .map_err(|message| fail_connection(&app, &state.shared, generation, &port_name, message))?;
     let hardware_flow_control = matches!(flow_control, FlowControl::Hardware);
 
     let mut port = serialport::new(&config.port_name, config.baud_rate)
@@ -307,16 +299,15 @@ pub fn connect_serial(
             )
         })?;
     if !hardware_flow_control {
-        port.write_request_to_send(config.rts)
-            .map_err(|error| {
-                fail_connection(
-                    &app,
-                    &state.shared,
-                    generation,
-                    &port_name,
-                    format!("设置 RTS 失败: {error}"),
-                )
-            })?;
+        port.write_request_to_send(config.rts).map_err(|error| {
+            fail_connection(
+                &app,
+                &state.shared,
+                generation,
+                &port_name,
+                format!("设置 RTS 失败: {error}"),
+            )
+        })?;
     }
 
     let (command_tx, command_rx) = mpsc::sync_channel(WRITE_QUEUE_CAPACITY);
@@ -482,11 +473,7 @@ fn stop_current_worker(
                 return Err(message);
             }
             let port_name = shared.port_name.clone();
-            shared.transition(
-                SerialStatus::Error,
-                port_name,
-                Some(message.clone()),
-            )
+            shared.transition(SerialStatus::Error, port_name, Some(message.clone()))
         };
         emit_state(app, payload);
         return Err(message);
@@ -506,11 +493,7 @@ fn begin_connection(
             .map_err(|_| "串口状态锁已损坏".to_owned())?;
         shared.generation = shared.generation.wrapping_add(1).max(1);
         let generation = shared.generation;
-        let payload = shared.transition(
-            SerialStatus::Connecting,
-            port_name.to_owned(),
-            None,
-        );
+        let payload = shared.transition(SerialStatus::Connecting, port_name.to_owned(), None);
         (generation, payload)
     };
     emit_state(app, payload);
@@ -663,13 +646,7 @@ fn run_serial_worker(
         }
     }
 
-    finish_worker(
-        &app,
-        &shared_state,
-        generation,
-        port_name,
-        terminal_error,
-    );
+    finish_worker(&app, &shared_state, generation, port_name, terminal_error);
 }
 
 fn finish_worker(
@@ -809,16 +786,8 @@ mod tests {
     #[test]
     fn state_revision_is_monotonic() {
         let mut shared = SharedSerialState::default();
-        let connecting = shared.transition(
-            SerialStatus::Connecting,
-            "COM3".to_owned(),
-            None,
-        );
-        let connected = shared.transition(
-            SerialStatus::Connected,
-            "COM3".to_owned(),
-            None,
-        );
+        let connecting = shared.transition(SerialStatus::Connecting, "COM3".to_owned(), None);
+        let connected = shared.transition(SerialStatus::Connected, "COM3".to_owned(), None);
 
         assert!(connected.revision > connecting.revision);
         assert_eq!(connected.status, "connected");
