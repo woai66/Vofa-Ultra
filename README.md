@@ -1,35 +1,92 @@
 # Vofa-Ultra
 
-Vofa-Ultra 是面向嵌入式开发与数据采集场景的现代化跨平台串口工具。项目借鉴 VOFA+ 与
-[vofa-NEXT](https://github.com/Horldsence/vofa-NEXT) 的优秀设计，同时把稳定性、可诊断性、性能边界和
-渐进式复杂度作为首要约束。
+面向嵌入式调试与实时数据采集的现代化跨平台串口工作台。
 
-> 项目处于早期开发阶段，尚未发布稳定版本。
+Vofa-Ultra 学习 VOFA+ 与
+[vofa-NEXT](https://github.com/Horldsence/vofa-NEXT) 的产品思路，但采用独立实现。项目优先保证串口
+生命周期可靠、数据链路可诊断、内存边界明确，并在基础收发稳定之后再引入高级编排能力。
 
-## 设计目标
+> 当前版本为可运行的 v0.1.0 MVP，尚未发布稳定安装包。真实串口仍需在具备 Rust 工具链和串口硬件的
+> 环境中验证。
 
-- 串口连接、收发、记录与错误恢复可靠且可观测。
-- 原生支持 FireWater、JustFloat，并提供可扩展的协议解码接口。
-- 大数据量下保持界面流畅，所有缓存都有明确上限。
-- 工作台布局紧凑、可扫描，常用操作无需进入多层设置。
-- Windows、macOS 与 Linux 使用一致的配置和项目文件。
-- 从第一天开始具备自动测试、持续集成和可复现发布流程。
+![Vofa-Ultra 实时串口工作台](docs/images/workbench.png)
 
-## 计划中的首个版本
+## 当前能力
 
-- 串口枚举、连接参数、连接与断开。
-- 文本 / HEX 收发、时间戳、收发统计和日志导出。
-- FireWater / JustFloat 数据解析与实时波形。
-- 内置模拟数据源，无硬件也能验证完整数据链路。
-- 中英文界面、明暗主题与工作区配置持久化。
+- 枚举串口，配置波特率、数据位、校验位、停止位、流控、DTR 与 RTS。
+- 后台串口线程负责收发；连接生命周期串行化，TX 队列、单次发送和所有 UI 缓存均有硬上限。
+- 文本 / HEX 收发、LF / CRLF 行尾、毫秒时间戳、吞吐统计和终端日志导出。
+- FireWater 文本帧与 JustFloat 浮点帧增量解析，支持任意分包和跨 chunk 帧尾。
+- uPlot 实时波形、最多 16 通道、时间窗切换、通道显隐和独立暂停。
+- 内置模拟数据源，无串口硬件也能贯通协议、波形、终端和发送流程。
+- 终端虚拟列表、明暗主题，以及桌面与窄屏响应式布局。
+- Vitest 单元 / 组件测试、Playwright 浏览器验收和跨平台 GitHub Actions 配置。
 
-## 技术方案
+## 快速开始
 
-Vofa-Ultra 使用 Tauri 2 + Rust 承担设备 I/O 与数据处理，React + TypeScript 构建桌面工作台。架构按
-传输、协议、数据缓冲和视图订阅分层，避免 UI 直接持有串口资源，也避免在功能尚未稳定前拆分过多模块。
+### 浏览器预览
 
-详细架构与开发说明会随首个 MVP 一并补充。
+浏览器预览只能使用模拟数据源，适合开发界面与协议逻辑。
+
+```bash
+pnpm install
+pnpm dev
+```
+
+打开 <http://127.0.0.1:1420>，点击“启动模拟”即可看到三通道实时数据。
+
+### 桌面应用
+
+需要 Node.js 22、pnpm 11、Rust 1.77.2 或更高版本，以及
+[Tauri 2 平台依赖](https://v2.tauri.app/start/prerequisites/)。
+
+```bash
+pnpm install
+pnpm tauri dev
+```
+
+首次 Rust 构建会生成 `src-tauri/Cargo.lock`。桌面应用发布前应提交该锁文件，并在目标平台完成一次真实
+串口连接、收发、拔插和重连验证。
+
+## 协议输入
+
+FireWater 每行是一帧，支持纯数值和命名通道：
+
+```text
+1.25,-2,3
+temperature:23.5,voltage:3.30
+```
+
+JustFloat 每帧由若干个小端序 `float32` 组成，以 `00 00 80 7F` 结尾。Raw Data 模式只进入终端，
+不生成波形通道。
+
+## 质量检查
+
+```bash
+pnpm check
+pnpm test:e2e
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+`pnpm check` 会依次执行 ESLint、TypeScript 类型检查、Vitest 和生产构建。Playwright 会验证模拟数据链路、
+Canvas 有效像素、发送记录和 390 px 窄屏无页面级横向溢出。
+
+## 设计取舍
+
+- [架构说明](docs/architecture.md)：线程模型、状态机、缓存边界与安全边界。
+- [竞品与开源调研](docs/competitive-analysis.md)：从 VOFA+ / vofa-NEXT 继承什么、舍弃什么。
+- [路线图](docs/roadmap.md)：从稳定串口核心到记录回放、协议扩展和正式发布。
+- [贡献指南](CONTRIBUTING.md)：本地开发、分支、提交和 PR 约定。
+- [安全策略](SECURITY.md)：漏洞报告方式与日志脱敏要求。
+
+本项目没有复制 vofa-NEXT 源码。参考项目当前许可证与 README 标注存在不一致，任何后续贡献都必须保持
+来源清晰，禁止直接移植许可证不兼容的实现。
+
+## 参与贡献
+
+欢迎提交可复现的问题和边界清晰的 PR。串口相关问题请附操作系统、适配器型号、串口参数和脱敏后的日志，
+不要公开设备序列号或其他敏感标识。
 
 ## 许可证
 
-[MIT](./LICENSE)
+[MIT](LICENSE)

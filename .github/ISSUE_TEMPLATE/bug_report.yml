@@ -1,0 +1,69 @@
+name: 缺陷报告
+description: 提交可复现的错误或行为回归
+title: "fix: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告问题。公开内容请先删除设备序列号、密钥和业务数据。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题概述
+      description: 简要说明实际行为和影响。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 选择……
+        2. 配置……
+        3. 执行……
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - 浏览器预览
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Vofa-Ultra 版本或 commit
+    validations:
+      required: true
+
+  - type: textarea
+    id: serial
+    attributes:
+      label: 串口环境
+      description: 适配器芯片、波特率、数据位、校验、停止位和流控；无硬件时填写“不适用”。
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志或截图
+      description: 不要包含设备序列号、凭据、私钥或未公开载荷。
