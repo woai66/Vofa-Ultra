@@ -4,6 +4,7 @@ import uPlot, { type AlignedData, type Options } from "uplot";
 import type { ThemeMode } from "../App";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { ChannelSeries } from "../types/workbench";
+import type { ChartWindowSeconds } from "../types/workspace";
 
 interface WaveformPanelProps {
   theme: ThemeMode;
@@ -15,6 +16,9 @@ export function WaveformPanel({ theme }: WaveformPanelProps) {
   const chartWindowSeconds = useWorkbenchStore((state) => state.chartWindowSeconds);
   const setChartPaused = useWorkbenchStore((state) => state.setChartPaused);
   const setChartWindowSeconds = useWorkbenchStore((state) => state.setChartWindowSeconds);
+  const isWorkspaceTransitioning = useWorkbenchStore(
+    (state) => state.workspaceTransitionStatus !== "idle",
+  );
   const clearChart = useWorkbenchStore((state) => state.clearChart);
 
   return (
@@ -36,9 +40,10 @@ export function WaveformPanel({ theme }: WaveformPanelProps) {
             {[5, 15, 30, 60].map((seconds) => (
               <button
                 key={seconds}
-                type="button"
-                data-active={chartWindowSeconds === seconds}
-                onClick={() => setChartWindowSeconds(seconds)}
+              type="button"
+              data-active={chartWindowSeconds === seconds}
+              disabled={isWorkspaceTransitioning}
+              onClick={() => setChartWindowSeconds(seconds as ChartWindowSeconds)}
               >
                 {seconds}s
               </button>

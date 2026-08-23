@@ -12,7 +12,9 @@ import {
 import type { ThemeMode } from "../App";
 import { BAUD_RATES } from "../types/serial";
 import { useWorkbenchStore } from "../store/workbenchStore";
+import type { ChartWindowSeconds } from "../types/workspace";
 import type { SidebarPanel } from "./ActivityRail";
+import { WorkspacePanel } from "./WorkspacePanel";
 
 interface SidebarProps {
   activePanel: SidebarPanel;
@@ -25,6 +27,9 @@ export function Sidebar({ activePanel, theme, onThemeChange }: SidebarProps) {
     <aside className="sidebar">
       {activePanel === "connection" && <ConnectionPanel />}
       {activePanel === "channels" && <ChannelPanel />}
+      <div className="workspace-panel-host" hidden={activePanel !== "workspaces"}>
+        <WorkspacePanel />
+      </div>
       {activePanel === "settings" && (
         <SettingsPanel theme={theme} onThemeChange={onThemeChange} />
       )}
@@ -47,9 +52,14 @@ function ConnectionPanel() {
   const refreshPorts = useWorkbenchStore((state) => state.refreshPorts);
   const connect = useWorkbenchStore((state) => state.connect);
   const disconnect = useWorkbenchStore((state) => state.disconnect);
+  const workspaceTransitionStatus = useWorkbenchStore(
+    (state) => state.workspaceTransitionStatus,
+  );
 
   const isConnected = connectionStatus === "connected";
-  const isBusy = connectionStatus === "connecting";
+  const isTransitioning = workspaceTransitionStatus !== "idle";
+  const isBusy = connectionStatus === "connecting" || isTransitioning;
+  const configDisabled = isConnected || isTransitioning;
 
   return (
     <div className="sidebar-panel">
@@ -62,12 +72,12 @@ function ConnectionPanel() {
       </div>
 
       <section className="sidebar-section">
-        <label className="field-label">数据源</label>
-        <div className="segmented-control" role="group" aria-label="数据源">
+        <span className="field-label" id="data-source-label">数据源</span>
+        <div className="segmented-control" role="group" aria-labelledby="data-source-label">
           <button
             type="button"
             data-active={source === "serial"}
-            disabled={!isNativeRuntime}
+            disabled={!isNativeRuntime || isTransitioning}
             title={isNativeRuntime ? "使用本机串口" : "浏览器预览不可访问串口"}
             onClick={() => void setSource("serial")}
           >
@@ -76,6 +86,7 @@ function ConnectionPanel() {
           <button
             type="button"
             data-active={source === "simulator"}
+            disabled={isTransitioning}
             onClick={() => void setSource("simulator")}
           >
             模拟器
@@ -94,7 +105,7 @@ function ConnectionPanel() {
               type="button"
               aria-label="刷新串口列表"
               title="刷新串口列表"
-              disabled={isRefreshingPorts || isConnected}
+              disabled={isRefreshingPorts || configDisabled}
               onClick={() => void refreshPorts()}
             >
               <RefreshCw size={15} className={isRefreshingPorts ? "spin" : undefined} />
@@ -103,10 +114,13 @@ function ConnectionPanel() {
           <select
             id="serial-port"
             value={config.portName}
-            disabled={isConnected}
+            disabled={configDisabled}
             onChange={(event) => updateConfig("portName", event.target.value)}
           >
             {ports.length === 0 && <option value="">未发现设备</option>}
+            {config.portName && !ports.some((port) => port.name === config.portName) && (
+              <option value={config.portName}>{config.portName} · 当前不可用</option>
+            )}
             {ports.map((port) => (
               <option key={port.name} value={port.name}>
                 {port.name}
@@ -126,7 +140,7 @@ function ConnectionPanel() {
             step={1}
             list="baud-rate-presets"
             value={config.baudRate}
-            disabled={isConnected}
+            disabled={configDisabled}
             onChange={(event) => updateConfig("baudRate", Number(event.target.value))}
           />
           <datalist id="baud-rate-presets">
@@ -140,7 +154,7 @@ function ConnectionPanel() {
               <span className="field-label">数据位</span>
               <select
                 value={config.dataBits}
-                disabled={isConnected}
+                disabled={configDisabled}
                 onChange={(event) =>
                   updateConfig("dataBits", Number(event.target.value) as 5 | 6 | 7 | 8)
                 }
@@ -156,7 +170,7 @@ function ConnectionPanel() {
               <span className="field-label">校验</span>
               <select
                 value={config.parity}
-                disabled={isConnected}
+                disabled={configDisabled}
                 onChange={(event) =>
                   updateConfig("parity", event.target.value as "none" | "odd" | "even")
                 }
@@ -170,7 +184,7 @@ function ConnectionPanel() {
               <span className="field-label">停止位</span>
               <select
                 value={config.stopBits}
-                disabled={isConnected}
+                disabled={configDisabled}
                 onChange={(event) => updateConfig("stopBits", Number(event.target.value) as 1 | 2)}
               >
                 <option value={1}>1</option>
@@ -183,7 +197,7 @@ function ConnectionPanel() {
             <span className="field-label">流控</span>
             <select
               value={config.flowControl}
-              disabled={isConnected}
+              disabled={configDisabled}
               onChange={(event) =>
                 updateConfig(
                   "flowControl",
@@ -203,7 +217,7 @@ function ConnectionPanel() {
               <input
                 type="checkbox"
                 checked={config.dtr}
-                disabled={isConnected}
+                disabled={configDisabled}
                 onChange={(event) => updateConfig("dtr", event.target.checked)}
               />
             </label>
@@ -212,7 +226,7 @@ function ConnectionPanel() {
               <input
                 type="checkbox"
                 checked={config.rts}
-                disabled={isConnected}
+                disabled={configDisabled}
                 onChange={(event) => updateConfig("rts", event.target.checked)}
               />
             </label>
@@ -221,8 +235,12 @@ function ConnectionPanel() {
       )}
 
       <section className="sidebar-section">
-        <label className="field-label">协议解析</label>
-        <div className="protocol-list" role="radiogroup" aria-label="协议解析">
+        <span className="field-label" id="protocol-parser-label">协议解析</span>
+        <div
+          className="protocol-list"
+          role="radiogroup"
+          aria-labelledby="protocol-parser-label"
+        >
           {(
             [
               ["firewater", "FireWater", "文本帧"],
@@ -237,6 +255,7 @@ function ConnectionPanel() {
               role="radio"
               aria-checked={protocol === id}
               data-active={protocol === id}
+              disabled={isTransitioning}
               onClick={() => setProtocol(id)}
             >
               <span className="protocol-dot" />
@@ -272,6 +291,9 @@ function ChannelPanel() {
   const channels = useWorkbenchStore((state) => state.channels);
   const toggleChannel = useWorkbenchStore((state) => state.toggleChannel);
   const clearChart = useWorkbenchStore((state) => state.clearChart);
+  const isTransitioning = useWorkbenchStore(
+    (state) => state.workspaceTransitionStatus !== "idle",
+  );
 
   return (
     <div className="sidebar-panel">
@@ -300,6 +322,7 @@ function ChannelPanel() {
               type="button"
               data-visible={channel.visible}
               aria-pressed={channel.visible}
+              disabled={isTransitioning}
               onClick={() => toggleChannel(channel.id)}
             >
               <span className="channel-swatch" style={{ backgroundColor: channel.color }} />
@@ -323,6 +346,9 @@ function SettingsPanel({ theme, onThemeChange }: Pick<SidebarProps, "theme" | "o
   const terminalAutoScroll = useWorkbenchStore((state) => state.terminalAutoScroll);
   const setTerminalAutoScroll = useWorkbenchStore((state) => state.setTerminalAutoScroll);
   const resetStats = useWorkbenchStore((state) => state.resetStats);
+  const isTransitioning = useWorkbenchStore(
+    (state) => state.workspaceTransitionStatus !== "idle",
+  );
 
   return (
     <div className="sidebar-panel">
@@ -334,8 +360,12 @@ function SettingsPanel({ theme, onThemeChange }: Pick<SidebarProps, "theme" | "o
         <Settings size={20} />
       </div>
       <section className="sidebar-section">
-        <label className="field-label">外观</label>
-        <div className="segmented-control icon-segments" role="group" aria-label="外观主题">
+        <span className="field-label" id="appearance-label">外观</span>
+        <div
+          className="segmented-control icon-segments"
+          role="group"
+          aria-labelledby="appearance-label"
+        >
           <button type="button" data-active={theme === "dark"} onClick={() => onThemeChange("dark")}>
             <Moon size={15} /> 深色
           </button>
@@ -351,7 +381,10 @@ function SettingsPanel({ theme, onThemeChange }: Pick<SidebarProps, "theme" | "o
         <select
           id="chart-window-setting"
           value={chartWindowSeconds}
-          onChange={(event) => setChartWindowSeconds(Number(event.target.value))}
+          disabled={isTransitioning}
+          onChange={(event) =>
+            setChartWindowSeconds(Number(event.target.value) as ChartWindowSeconds)
+          }
         >
           <option value={5}>5 秒</option>
           <option value={15}>15 秒</option>
@@ -363,6 +396,7 @@ function SettingsPanel({ theme, onThemeChange }: Pick<SidebarProps, "theme" | "o
           <input
             type="checkbox"
             checked={terminalAutoScroll}
+            disabled={isTransitioning}
             onChange={(event) => setTerminalAutoScroll(event.target.checked)}
           />
         </label>

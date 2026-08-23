@@ -107,3 +107,98 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
     fullPage: true,
   });
 });
+
+test("命名工作区可保存、切换、导出并重新导入", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "工作区" }).click();
+  await expect(page.getByRole("heading", { name: "工作区" })).toBeVisible();
+
+  const nameInput = page.getByRole("textbox", { name: "工作区名称" });
+  await nameInput.fill("面板草稿");
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("button", { name: "工作区" }).click();
+  await expect(nameInput).toHaveValue("面板草稿");
+
+  await nameInput.fill("台架副本");
+  await page.getByRole("button", { name: "另存为" }).click();
+  await expect(page.locator(".workspace-title span")).toContainText("台架副本");
+
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("radio", { name: /JustFloat/ }).click();
+  await expect(page.locator(".workspace-title span")).toContainText("未保存");
+  await page.getByRole("button", { name: "工作区" }).click();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出当前" }).click();
+  const download = await downloadPromise;
+  const downloadPath = testInfo.outputPath("workspace.json");
+  await download.saveAs(downloadPath);
+
+  await page.getByLabel("导入工作区文件").setInputFiles(downloadPath);
+  await expect(page.getByText("台架副本 (2)", { exact: true })).toBeVisible();
+  await expect(page.locator(".workspace-title span")).toContainText("台架副本");
+
+  await nameInput.fill("未保存改名");
+  await page.getByRole("button", { name: "默认工作区 模拟器 · FireWater" }).click();
+  await expect(page.getByRole("heading", { name: "放弃未保存更改？" })).toBeVisible();
+  await page.getByRole("button", { name: "取消" }).click();
+  await expect(nameInput).toHaveValue("未保存改名");
+
+  await page.getByRole("button", { name: "默认工作区 模拟器 · FireWater" }).click();
+  await page.getByRole("button", { name: "放弃并切换" }).click();
+  await expect(page.locator(".workspace-title span")).toContainText("默认工作区");
+  await expect(page.locator(".workspace-select:focus")).toContainText("默认工作区");
+  await page.getByRole("button", { name: "台架副本 模拟器 · JustFloat" }).click();
+  await expect(page.locator(".workspace-title span")).toContainText("台架副本");
+  await expect(page.locator(".workspace-select:focus")).toContainText("台架副本");
+
+  await page.getByRole("button", { name: "删除工作区 台架副本 (2)" }).click();
+  await expect(page.getByRole("heading", { name: "删除工作区？" })).toBeVisible();
+  await page.getByRole("button", { name: "确认删除" }).click();
+  await expect(page.getByText("台架副本 (2)", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".workspace-select:focus")).toContainText("台架副本");
+
+  await page.reload();
+  await expect(page.locator(".workspace-title span")).toContainText("台架副本");
+  await page.getByRole("button", { name: "工作区" }).click();
+  await expect(
+    page.getByRole("button", { name: "台架副本 模拟器 · JustFloat" }),
+  ).toBeVisible();
+});
+
+test("短窗口仍可操作发送栏", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 520 });
+  await page.goto("/");
+
+  await expect(page.getByRole("textbox", { name: "发送内容" })).toBeInViewport();
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeInViewport();
+  const dimensions = await page.evaluate(() => ({
+    viewportHeight: window.innerHeight,
+    documentHeight: document.documentElement.scrollHeight,
+  }));
+  expect(dimensions.documentHeight).toBeLessThanOrEqual(dimensions.viewportHeight);
+});
+
+test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
+  const futureValue = JSON.stringify({
+    version: 2,
+    state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
+  });
+  await page.addInitScript((value) => {
+    localStorage.setItem("vofa-ultra-workbench", value);
+  }, futureValue);
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "工作区" }).click();
+  await expect(page.getByRole("alert")).toContainText("版本 2 的较新配置");
+  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();
+
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("radio", { name: /JustFloat/ }).click();
+  expect(
+    await page.evaluate(() => localStorage.getItem("vofa-ultra-workbench")),
+  ).toBe(futureValue);
+});

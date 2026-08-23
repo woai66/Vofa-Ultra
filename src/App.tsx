@@ -6,12 +6,19 @@ import { StatusBar } from "./components/StatusBar";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { WaveformPanel } from "./components/WaveformPanel";
 import { useWorkbenchRuntime } from "./hooks/useWorkbenchRuntime";
+import {
+  selectActiveWorkspace,
+  selectIsWorkspaceDirty,
+  useWorkbenchStore,
+} from "./store/workbenchStore";
 
 export type ThemeMode = "dark" | "light";
 
 export default function App() {
   const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>("connection");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const activeWorkspace = useWorkbenchStore(selectActiveWorkspace);
+  const workspaceDirty = useWorkbenchStore(selectIsWorkspaceDirty);
   const [theme, setTheme] = useState<ThemeMode>(() => {
     const savedTheme = localStorage.getItem("vofa-ultra-theme");
     if (savedTheme === "dark" || savedTheme === "light") {
@@ -54,7 +61,10 @@ export default function App() {
           </button>
           <div className="workspace-title">
             <strong>实时工作台</strong>
-            <span>默认工作区</span>
+            <span>
+              {activeWorkspace?.name ?? "工作区不可用"}
+              {workspaceDirty ? " · 未保存" : ""}
+            </span>
           </div>
           <div className="workspace-header-meta">
             <span className="build-label">Vofa-Ultra</span>

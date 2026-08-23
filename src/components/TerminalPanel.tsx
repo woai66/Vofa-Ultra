@@ -16,16 +16,21 @@ import type { TerminalEntry } from "../types/workbench";
 export function TerminalPanel() {
   const entries = useWorkbenchStore((state) => state.terminalEntries);
   const displayMode = useWorkbenchStore((state) => state.displayMode);
+  const sendMode = useWorkbenchStore((state) => state.sendMode);
+  const lineEnding = useWorkbenchStore((state) => state.lineEnding);
   const terminalPaused = useWorkbenchStore((state) => state.terminalPaused);
   const terminalAutoScroll = useWorkbenchStore((state) => state.terminalAutoScroll);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
+  const isWorkspaceTransitioning = useWorkbenchStore(
+    (state) => state.workspaceTransitionStatus !== "idle",
+  );
   const setDisplayMode = useWorkbenchStore((state) => state.setDisplayMode);
+  const setSendMode = useWorkbenchStore((state) => state.setSendMode);
+  const setLineEnding = useWorkbenchStore((state) => state.setLineEnding);
   const setTerminalPaused = useWorkbenchStore((state) => state.setTerminalPaused);
   const clearTerminal = useWorkbenchStore((state) => state.clearTerminal);
   const send = useWorkbenchStore((state) => state.send);
   const viewportRef = useRef<HTMLDivElement>(null);
-  const [sendMode, setSendMode] = useState<DisplayMode>("text");
-  const [lineEnding, setLineEnding] = useState<LineEnding>("none");
   const [message, setMessage] = useState("");
   const [sendError, setSendError] = useState("");
   const hasPayload = message.length > 0 || lineEnding !== "none";
@@ -74,10 +79,20 @@ export function TerminalPanel() {
         </div>
         <div className="panel-actions">
           <div className="segmented-control compact-segments" role="group" aria-label="接收显示格式">
-            <button type="button" data-active={displayMode === "text"} onClick={() => setDisplayMode("text")}>
+            <button
+              type="button"
+              data-active={displayMode === "text"}
+              disabled={isWorkspaceTransitioning}
+              onClick={() => setDisplayMode("text")}
+            >
               TEXT
             </button>
-            <button type="button" data-active={displayMode === "hex"} onClick={() => setDisplayMode("hex")}>
+            <button
+              type="button"
+              data-active={displayMode === "hex"}
+              disabled={isWorkspaceTransitioning}
+              onClick={() => setDisplayMode("hex")}
+            >
               HEX
             </button>
           </div>
@@ -152,10 +167,20 @@ export function TerminalPanel() {
       <div className="send-composer">
         <div className="send-options">
           <div className="segmented-control compact-segments" role="group" aria-label="发送格式">
-            <button type="button" data-active={sendMode === "text"} onClick={() => setSendMode("text")}>
+            <button
+              type="button"
+              data-active={sendMode === "text"}
+              disabled={isWorkspaceTransitioning}
+              onClick={() => setSendMode("text")}
+            >
               文本
             </button>
-            <button type="button" data-active={sendMode === "hex"} onClick={() => setSendMode("hex")}>
+            <button
+              type="button"
+              data-active={sendMode === "hex"}
+              disabled={isWorkspaceTransitioning}
+              onClick={() => setSendMode("hex")}
+            >
               HEX
             </button>
           </div>
@@ -168,6 +193,7 @@ export function TerminalPanel() {
               name="send-line-ending"
               aria-label="行尾"
               value={lineEnding}
+              disabled={isWorkspaceTransitioning}
               onChange={(event) => setLineEnding(event.target.value as LineEnding)}
             >
               <option value="none">无行尾</option>
@@ -195,7 +221,9 @@ export function TerminalPanel() {
         <button
           className="primary-button send-button"
           type="button"
-          disabled={connectionStatus !== "connected" || !hasPayload}
+          disabled={
+            connectionStatus !== "connected" || !hasPayload || isWorkspaceTransitioning
+          }
           onClick={() => void submit()}
         >
           <Send size={16} />
