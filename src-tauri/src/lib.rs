@@ -1,5 +1,6 @@
 mod capture;
 mod capture_export;
+mod extensions;
 mod numeric_log;
 mod replay;
 mod serial;
@@ -11,6 +12,10 @@ use capture::{
 use capture_export::{
     cancel_capture_export, clear_capture_export, get_capture_export_state, start_capture_export,
     CaptureExportState,
+};
+use extensions::{
+    activate_extension, deactivate_extension, get_extension_state, inspect_extension,
+    push_extension_batch, reset_extension, ExtensionState,
 };
 use numeric_log::{
     abort_numeric_log, append_numeric_log, get_numeric_log_state, start_numeric_log,
@@ -30,6 +35,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(CaptureState::default())
         .manage(CaptureExportState::default())
+        .manage(ExtensionState::default())
         .manage(NumericLogState::default())
         .manage(ReplayState::default())
         .manage(SerialState::default())
@@ -51,6 +57,12 @@ pub fn run() {
             start_capture_export,
             cancel_capture_export,
             clear_capture_export,
+            inspect_extension,
+            activate_extension,
+            get_extension_state,
+            deactivate_extension,
+            reset_extension,
+            push_extension_batch,
             get_numeric_log_state,
             start_numeric_log,
             append_numeric_log,

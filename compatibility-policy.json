@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "workspace": {
     "fileFormat": "vofa-ultra.workspace",
     "writeVersion": 4,
@@ -21,7 +21,14 @@
   "protocols": {
     "stableWireIds": ["firewater", "justfloat", "raw"],
     "wireIdEvolution": "append-only",
-    "runtimePluginAbi": "unsupported"
+    "runtimePluginAbi": {
+      "identifier": "vux-wasm-v1-experimental",
+      "status": "experimental",
+      "packageFormat": "vofa-ultra-extension",
+      "schemaVersion": 1,
+      "apiVersion": 1,
+      "futureVersionBehavior": "reject"
+    }
   },
   "deprecation": {
     "minimumNoticeMinorReleases": 2,

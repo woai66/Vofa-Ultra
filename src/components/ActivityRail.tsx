@@ -3,6 +3,7 @@ import {
   Cable,
   Database,
   Folders,
+  Puzzle,
   Settings,
   SlidersHorizontal,
   Workflow,
@@ -13,6 +14,7 @@ export type SidebarPanel =
   | "connection"
   | "channels"
   | "processing"
+  | "extensions"
   | "automation"
   | "capture"
   | "workspaces"
@@ -27,6 +29,7 @@ const RAIL_ITEMS = [
   { id: "connection" as const, label: "连接", icon: Cable },
   { id: "channels" as const, label: "通道", icon: SlidersHorizontal },
   { id: "processing" as const, label: "处理", icon: Workflow },
+  { id: "extensions" as const, label: "扩展", icon: Puzzle },
   { id: "automation" as const, label: "自动化", icon: Zap },
   { id: "capture" as const, label: "记录", icon: Database },
   { id: "workspaces" as const, label: "工作区", icon: Folders },

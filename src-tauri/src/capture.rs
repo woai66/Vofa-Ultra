@@ -2190,7 +2190,6 @@ mod tests {
     struct ProtocolCompatibility {
         stable_wire_ids: Vec<String>,
         wire_id_evolution: String,
-        runtime_plugin_abi: String,
     }
 
     fn sample_header() -> CaptureHeader {
@@ -2267,7 +2266,7 @@ mod tests {
             .map(String::as_str)
             .collect::<Vec<_>>();
 
-        assert_eq!(policy.schema_version, 1);
+        assert_eq!(policy.schema_version, 2);
         assert_eq!(policy.capture.file_format, "VUCAP");
         assert_eq!(policy.capture.write_version, CAPTURE_VERSION);
         assert_eq!(
@@ -2277,7 +2276,6 @@ mod tests {
         assert_eq!(policy.capture.future_version_behavior, "reject");
         assert_eq!(stable_wire_ids, SUPPORTED_CAPTURE_PROTOCOLS);
         assert_eq!(policy.protocols.wire_id_evolution, "append-only");
-        assert_eq!(policy.protocols.runtime_plugin_abi, "unsupported");
     }
 
     fn queued_record(

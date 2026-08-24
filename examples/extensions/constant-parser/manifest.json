@@ -1,0 +1,12 @@
+{
+  "id": "io.vofa.constant-parser",
+  "version": "1.0.0",
+  "name": "Constant parser",
+  "description": "Minimal VUX ABI v1 example that emits one constant channel",
+  "license": "MIT",
+  "apiVersion": 1,
+  "kind": "protocol-parser",
+  "capabilities": [
+    "live-rx.read"
+  ]
+}

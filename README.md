@@ -14,6 +14,7 @@ Vofa-Ultra 学习 VOFA+ 与
 ## 文档入口
 
 - [用户手册](docs/user-guide.md)：从模拟器和真实串口连接，到处理、录制、回放、导出与工作区。
+- [实验性 Wasm 扩展](docs/extensions.md)：`.vux` 包、ABI、资源边界、授权和信任模型。
 - [故障排查矩阵](docs/troubleshooting.md)：按症状定位连接、解析、文件、3D 渲染和性能问题。
 - [硬件兼容性清单](docs/hardware-compatibility.md)：只记录带完整环境、参数和结果证据的真实设备测试。
 
@@ -27,6 +28,7 @@ Vofa-Ultra 学习 VOFA+ 与
 - 会话级有界命令历史、安全命令变量，以及有限次数或持续运行的可取消周期发送。
 - 默认关闭的有界 RX 自动应答，支持 TEXT/HEX 字节触发、跨分片匹配、冷却和手动发送优先。
 - FireWater 文本帧与 JustFloat 浮点帧增量解析，使用静态内置注册表和合规夹具验证任意分包与错误恢复。
+- 桌面端实验性 `.vux` Wasm 协议解析扩展，零 import、显式实时 RX 授权、独立通道和有界故障隔离。
 - FireWater / JustFloat 解析健康度，按稳定原因统计成功、丢弃与重同步，并区分实时和回放数据流。
 - uPlot 实时波形、最多 16 个基础通道与 16 个派生通道、时间窗切换、通道显隐、独立暂停和双游标测量。
 - 可选的有界数据处理 DAG，提供缩放偏移、限幅、EMA、移动平均、双路运算和独立输出路由。
@@ -119,10 +121,14 @@ temperature:23.5,voltage:3.30
 
 JustFloat 每帧由若干个小端序 `float32` 组成，以 `00 00 80 7F` 结尾。Raw Data 模式只进入终端，
 不生成波形通道。两种结构化协议的解析结果限制为 1 到 16 个有限数值；仓库内新增解析器须遵循
-[内置协议贡献契约](docs/protocols.md)。当前没有动态协议插件或稳定 ABI。
+[内置协议贡献契约](docs/protocols.md)。
 
-已发布协议 wire ID 采用追加策略并保持原含义；稳定范围仅覆盖持久标识和文档化解析行为，不等于存在运行时
-插件 ABI。版本与弃用规则见[兼容性与弃用政策](docs/compatibility.md)。
+桌面端另提供实验性的 [`vux-wasm-v1`](docs/extensions.md) 实时附加解析器。它异步消费 RX 副本并输出独立
+`extension:*` 波形，不替换当前内置协议，也不进入基础 `rxFrames`、协议健康度、处理图、姿态、数值日志、
+VUCAP 或回放。需要只观察扩展结果时可把基础协议选为 Raw；这仍不是稳定插件 ABI 或完整第三方生态。
+
+已发布内置协议 wire ID 采用追加策略并保持原含义；稳定范围仅覆盖持久标识和文档化解析行为。实验性扩展的
+版本状态和弃用规则见[兼容性与弃用政策](docs/compatibility.md)。
 
 “通道”面板会显示当前结构化协议的成功帧、丢弃帧、重同步次数和最近失败原因。统计在波形或终端暂停时仍继续，
 实时采集与回放相互隔离；切换协议、数据源、连接流、工作区或回放时间线会重置对应统计。清空统计不会丢弃正在
@@ -323,7 +329,7 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 `pnpm check` 会依次执行 ESLint、TypeScript 类型检查、Vitest、工具脚本测试和生产构建。构建会验证姿态视图
 保持动态加载、Three.js 不进入首屏静态依赖图；首屏上限为 650 KiB / gzip 200 KiB，姿态模块上限为
 650 KiB / gzip 180 KiB。
-`pnpm benchmark` 以单 worker 运行固定工作量的协议、处理图和 2000 点饱和 Store 场景，再严格核对场景集合、
+`pnpm benchmark` 以单 worker 运行固定工作量的协议、处理图、扩展同步分批复制和 2000 点饱和 Store 场景，再严格核对场景集合、
 中位数和最少样本数。Linux CI 是绝对预算的权威环境，本地结果用于诊断；原始报告和摘要写入
 `artifacts/performance/`。方法与预算维护规则见[性能基准](docs/performance.md)。
 `package.json` 是界面和诊断报告的版本来源；`pnpm check:package` 使用 `cargo metadata` 核对 npm、Tauri、Cargo
@@ -342,6 +348,7 @@ Canvas 有效像素、处理图派生通道与工作区 v4 往返、实时 RX �
 
 - [架构说明](docs/architecture.md)：线程模型、状态机、缓存边界与安全边界。
 - [内置协议贡献契约](docs/protocols.md)：注册表、解析边界、兼容策略和合规夹具。
+- [实验性 Wasm 协议扩展](docs/extensions.md)：包格式、ABI、资源上限、会话授权和信任边界。
 - [兼容性与弃用政策](docs/compatibility.md)：工作区、VUCAP、协议 wire ID、版本矩阵和弃用门禁。
 - [性能基准](docs/performance.md)：固定工作量、预算依据、报告和调整规则。
 - [安全命令模板](docs/command-templates.md)：变量语法、定宽编码、调度语义和资源上限。

@@ -30,9 +30,10 @@ interface WaveformPanelProps {
 export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelProps) {
   const rawChannels = useWorkbenchStore((state) => state.channels);
   const processedChannels = useWorkbenchStore((state) => state.processedChannels);
+  const extensionChannels = useWorkbenchStore((state) => state.extensionChannels);
   const channels = useMemo(
-    () => [...rawChannels, ...processedChannels],
-    [processedChannels, rawChannels],
+    () => [...rawChannels, ...processedChannels, ...extensionChannels],
+    [extensionChannels, processedChannels, rawChannels],
   );
   const chartPaused = useWorkbenchStore((state) => state.chartPaused);
   const chartWindowSeconds = useWorkbenchStore((state) => state.chartWindowSeconds);

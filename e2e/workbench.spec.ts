@@ -709,7 +709,7 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
   await page.goto("/");
 
   const navigationButtons = page.getByRole("navigation", { name: "工作台导航" }).getByRole("button");
-  await expect(navigationButtons).toHaveCount(7);
+  await expect(navigationButtons).toHaveCount(8);
   const bounds = await navigationButtons.evaluateAll((buttons) =>
     buttons.map((button) => {
       const rect = button.getBoundingClientRect();
@@ -760,6 +760,78 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
     path: testInfo.outputPath("mobile-320-measurement.png"),
     fullPage: true,
   });
+});
+
+test("390 px 扩展授权控件保持触控尺寸和长文本省略", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "扩展", exact: true }).click();
+  await page.evaluate(async () => {
+    type WorkbenchStoreHandle = {
+      getState(): { extensionState: { revision: number } };
+      setState(state: Record<string, unknown>): void;
+    };
+    const moduleUrl = performance
+      .getEntriesByType("resource")
+      .map((entry) => entry.name)
+      .find((name) => name.includes("/src/store/workbenchStore.ts"));
+    if (!moduleUrl) {
+      throw new Error("找不到页面当前使用的工作台 Store 模块");
+    }
+    const module = await import(/* @vite-ignore */ moduleUrl);
+    const store = module.useWorkbenchStore as WorkbenchStoreHandle;
+    store.setState({
+      isNativeRuntime: true,
+      connectionStatus: "connected",
+      replaySessionId: 0,
+      extensionInspection: {
+        format: "vofa-ultra-extension",
+        schemaVersion: 1,
+        manifest: {
+          id: "io.vofa.reference-parser-with-a-long-identifier",
+          version: "1.2.3-alpha.1234567890.abcdefghijklmnopqrstuvwxyz.9876543210",
+          name: "Reference telemetry parser with a deliberately long display name",
+          description: "用于验证窄屏长文本、省略和扩展授权布局。",
+          license: "Apache-2.0 OR MIT",
+          apiVersion: 1,
+          kind: "protocol-parser",
+          capabilities: ["live-rx.read"],
+        },
+        packageSha256: "a".repeat(64),
+        moduleSha256: "b".repeat(64),
+        packageBytes: 1_572_864,
+        moduleBytes: 1_048_576,
+      },
+      extensionPackagePath:
+        "C:\\extensions\\reference-telemetry-parser-with-a-very-long-file-name.vux",
+      extensionMessage: "格式与运行时校验通过，等待授权",
+    });
+  });
+
+  await expect(page.getByRole("heading", { name: "协议扩展" })).toBeVisible();
+  const version = page.locator(".extension-title-row span");
+  const versionLayout = await version.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    overflow: getComputedStyle(element).overflow,
+    textOverflow: getComputedStyle(element).textOverflow,
+    title: element.getAttribute("title"),
+  }));
+  expect(versionLayout.scrollWidth).toBeGreaterThan(versionLayout.clientWidth);
+  expect(versionLayout.overflow).toBe("hidden");
+  expect(versionLayout.textOverflow).toBe("ellipsis");
+  expect(versionLayout.title).toContain("1.2.3-alpha");
+
+  const touchTargets = await page
+    .locator(".extension-consent, .extension-actions button")
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return { width: rect.width, height: rect.height };
+      }),
+    );
+  expect(touchTargets.every((target) => target.width >= 44 && target.height >= 44)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
 test("命名工作区可保存、切换、导出并重新导入", async ({ page }, testInfo) => {

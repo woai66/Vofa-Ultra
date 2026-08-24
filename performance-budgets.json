@@ -35,6 +35,13 @@
       "minimumSamples": 15,
       "workAmount": 192,
       "workUnit": "frames"
+    },
+    {
+      "id": "扩展同步入口 > 512 KiB RX 分批复制",
+      "maxMedianMs": 1,
+      "minimumSamples": 15,
+      "workAmount": 524288,
+      "workUnit": "bytes"
     }
   ]
 }

@@ -32,6 +32,9 @@ export function useWorkbenchRuntime(): void {
   const protocol = useWorkbenchStore((state) => state.protocol);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
   const setRuntimeAvailability = useWorkbenchStore((state) => state.setRuntimeAvailability);
+  const initializeExtensionRuntime = useWorkbenchStore(
+    (state) => state.initializeExtensionRuntime,
+  );
   const refreshPorts = useWorkbenchStore((state) => state.refreshPorts);
   const ingestBytes = useWorkbenchStore((state) => state.ingestBytes);
   const handleSerialData = useWorkbenchStore((state) => state.handleSerialData);
@@ -77,6 +80,7 @@ export function useWorkbenchRuntime(): void {
 
     if (nativeRuntime) {
       void refreshPorts();
+      void initializeExtensionRuntime();
     }
 
     return () => {
@@ -84,7 +88,14 @@ export function useWorkbenchRuntime(): void {
       dispose();
       disposeWorkbenchRuntime();
     };
-  }, [handleSerialData, handleSerialState, handleSerialTx, refreshPorts, setRuntimeAvailability]);
+  }, [
+    handleSerialData,
+    handleSerialState,
+    handleSerialTx,
+    initializeExtensionRuntime,
+    refreshPorts,
+    setRuntimeAvailability,
+  ]);
 
   useEffect(() => {
     let cancelled = false;

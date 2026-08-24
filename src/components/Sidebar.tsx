@@ -38,6 +38,7 @@ import type { SidebarPanel } from "./ActivityRail";
 import { CapturePanel } from "./CapturePanel";
 import { AutomationPanel } from "./AutomationPanel";
 import { ProcessingPanel } from "./ProcessingPanel";
+import { ExtensionPanel } from "./ExtensionPanel";
 import { WorkspacePanel } from "./WorkspacePanel";
 
 interface SidebarProps {
@@ -62,6 +63,7 @@ export function Sidebar({ activePanel, theme, onClose, onThemeChange }: SidebarP
       {activePanel === "connection" && <ConnectionPanel />}
       {activePanel === "channels" && <ChannelPanel />}
       {activePanel === "processing" && <ProcessingPanel />}
+      {activePanel === "extensions" && <ExtensionPanel />}
       {activePanel === "automation" && <AutomationPanel />}
       {activePanel === "capture" && <CapturePanel />}
       <div className="workspace-panel-host" hidden={activePanel !== "workspaces"}>
@@ -443,9 +445,11 @@ function ConnectionPanel() {
 function ChannelPanel() {
   const channels = useWorkbenchStore((state) => state.channels);
   const processedChannels = useWorkbenchStore((state) => state.processedChannels);
+  const extensionChannels = useWorkbenchStore((state) => state.extensionChannels);
   const activeProtocol = useWorkbenchStore(selectActiveProtocol);
   const protocolHealth = useWorkbenchStore(selectActiveProtocolHealth);
   const toggleChannel = useWorkbenchStore((state) => state.toggleChannel);
+  const toggleExtensionChannel = useWorkbenchStore((state) => state.toggleExtensionChannel);
   const clearChart = useWorkbenchStore((state) => state.clearChart);
   const clearProtocolHealth = useWorkbenchStore((state) => state.clearProtocolHealth);
   const isTransitioning = useWorkbenchStore(
@@ -463,7 +467,8 @@ function ChannelPanel() {
       </div>
       <div className="channel-summary">
         <span>基础 {channels.length}</span>
-        <strong>派生 {processedChannels.length}</strong>
+        <span>派生 {processedChannels.length}</span>
+        <strong>扩展 {extensionChannels.length}</strong>
       </div>
       <ProtocolHealthSection
         protocol={activeProtocol}
@@ -471,7 +476,9 @@ function ChannelPanel() {
         onClear={clearProtocolHealth}
       />
       <section className="channel-list" aria-label="数据通道列表">
-        {channels.length === 0 && processedChannels.length === 0 ? (
+        {channels.length === 0 &&
+        processedChannels.length === 0 &&
+        extensionChannels.length === 0 ? (
           <div className="sidebar-empty">
             <AudioEmptyIcon />
             <span>暂无可显示通道</span>
@@ -498,6 +505,17 @@ function ChannelPanel() {
                 onToggle={() => toggleChannel(channel.id)}
               />
             ))}
+            {extensionChannels.length > 0 && (
+              <span className="channel-group-label">扩展通道</span>
+            )}
+            {extensionChannels.map((channel) => (
+              <ChannelRow
+                key={channel.id}
+                channel={channel}
+                disabled={isTransitioning}
+                onToggle={() => toggleExtensionChannel(channel.id)}
+              />
+            ))}
           </>
         )}
       </section>
@@ -505,7 +523,7 @@ function ChannelPanel() {
         className="secondary-button"
         type="button"
         onClick={clearChart}
-        disabled={channels.length + processedChannels.length === 0}
+        disabled={channels.length + processedChannels.length + extensionChannels.length === 0}
       >
         <RotateCcw size={16} />
         清空波形

@@ -1,7 +1,8 @@
 # 内置协议贡献契约
 
-Vofa-Ultra 的协议扩展点面向随仓库构建、评审和测试的内置协议。当前不提供运行时注册、第三方脚本、Wasm、
-动态包加载或稳定插件 ABI；协议代码与应用拥有相同权限，因此必须先通过本仓库的输入边界和回归测试。
+本文只定义随仓库构建、评审和测试的内置协议。内置协议代码与应用拥有相同权限，因此必须先通过本仓库的输入
+边界和回归测试。桌面端另有[实验性 Wasm 实时附加解析器](extensions.md)，但它不注册新的持久 `protocol` wire ID、
+不替换内置 parser，也不属于本文的稳定兼容承诺；当前没有 JavaScript、原生动态库或稳定插件 ABI。
 
 ## 注册模型
 
@@ -17,8 +18,8 @@ Vofa-Ultra 的协议扩展点面向随仓库构建、评审和测试的内置协
 新增协议时必须追加新的 ID，不能重命名、删除或复用已有 ID。工作区 v1/v2 和 VUCAP v1 都会持久化该字符串；
 改变含义会让旧文件被静默误读。旧版本拒绝未知 ID 是预期的前向不兼容行为。
 
-当前稳定承诺覆盖这些持久 wire ID 和本文的解析行为，不代表 TypeScript 模块或运行时插件 ABI 稳定。完整版本
-矩阵与弃用门禁见[兼容性与弃用政策](compatibility.md)。
+当前稳定承诺覆盖这些持久 wire ID 和本文的解析行为，不代表 TypeScript 模块或实验性 Wasm ABI 稳定。完整
+版本矩阵与弃用门禁见[兼容性与弃用政策](compatibility.md)。
 
 Rust 的 `SUPPORTED_CAPTURE_PROTOCOLS` 必须独立更新。它不是前端注册表的生成副本，而是 Tauri 对 WebView 和外部
 VUCAP 输入的信任边界。`replaySeekMode` 的 `record-boundary` 只适用于 record 本身就是安全起点的协议，

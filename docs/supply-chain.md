@@ -19,6 +19,11 @@ CI 在生成前执行 `pnpm install --frozen-lockfile` 和目标级 `cargo fetch
 许可证聚合网站，也不会用网络结果覆盖包自身声明。required 包、许可证元数据或冻结 Cargo 图缺失时直接失败；
 未安装的真实 optional 包不会进入该目标的清单。
 
+宿主内置的 Wasmi 运行时及其锁定 Cargo 依赖属于上述闭包，会进入对应目标的 SBOM 和 NOTICE。用户运行时选择的
+`.vux` 文件不属于应用构建输入，因此不进入宿主 SBOM、`THIRD_PARTY_NOTICES`、`SHA256SUMS` 或 GitHub
+provenance；扩展源码、编译器、间接依赖、许可证正文和发布者身份均由扩展发布者负责。manifest 的 `license`
+只是作者声明，宿主门禁不会把它当作已审核 SPDX 证据。详见[实验性 Wasm 扩展](extensions.md)。
+
 ## 产物
 
 当前目标会生成三份文件：

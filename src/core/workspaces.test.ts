@@ -26,7 +26,7 @@ describe("工作区文件", () => {
       "schemaVersion",
       "workspace",
     ]);
-    expect(compatibilityPolicy.schemaVersion).toBe(1);
+    expect(compatibilityPolicy.schemaVersion).toBe(2);
     expect(compatibilityPolicy.workspace).toEqual({
       fileFormat: WORKSPACE_FILE_FORMAT,
       writeVersion: WORKSPACE_SCHEMA_VERSION,
@@ -36,7 +36,14 @@ describe("工作区文件", () => {
     expect(compatibilityPolicy.protocols).toEqual({
       stableWireIds: [...PROTOCOL_IDS],
       wireIdEvolution: "append-only",
-      runtimePluginAbi: "unsupported",
+      runtimePluginAbi: {
+        identifier: "vux-wasm-v1-experimental",
+        status: "experimental",
+        packageFormat: "vofa-ultra-extension",
+        schemaVersion: 1,
+        apiVersion: 1,
+        futureVersionBehavior: "reject",
+      },
     });
     expect(Object.keys(compatibilityPolicy.capture).sort()).toEqual([
       "fileFormat",

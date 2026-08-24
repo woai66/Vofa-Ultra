@@ -8,11 +8,19 @@ import {
   compileProcessingGraph,
   ProcessingGraphRuntime,
 } from "../src/core/processingGraph";
+import {
+  copyExtensionInputBatches,
+  MAX_EXTENSION_BATCH_BYTES,
+  MAX_EXTENSION_QUEUE_BYTES,
+} from "../src/core/extensionCoordinator";
 import type { ParsedFrame } from "../src/types/workbench";
 
 const MEBIBYTE = 1024 * 1024;
 const PROTOCOL_CHUNK_BYTES = 4_093;
 const PROCESSING_FRAME_COUNT = 4_096;
+const EXTENSION_BENCHMARK_BYTES = 512 * 1024;
+const EXTENSION_BENCHMARK_BATCH_BYTES = 64 * 1024;
+const EXTENSION_BENCHMARK_BATCHES = 8;
 const BENCHMARK_OPTIONS = {
   time: 1_000,
   iterations: 15,
@@ -73,6 +81,7 @@ const processingFrames: ParsedFrame[] = Array.from(
     timestamp: frameIndex,
   }),
 );
+const maximumExtensionInput = new Uint8Array(EXTENSION_BENCHMARK_BYTES).fill(0x5a);
 
 describe("协议与数据处理热路径", () => {
   bench(
@@ -120,6 +129,33 @@ describe("协议与数据处理热路径", () => {
         PROCESSING_FRAME_COUNT,
         "处理图完成帧数",
       );
+    },
+    BENCHMARK_OPTIONS,
+  );
+});
+
+describe("扩展同步入口", () => {
+  bench(
+    "512 KiB RX 分批复制",
+    () => {
+      requireEqual(
+        MAX_EXTENSION_QUEUE_BYTES,
+        EXTENSION_BENCHMARK_BYTES,
+        "扩展队列字节上限",
+      );
+      requireEqual(
+        MAX_EXTENSION_BATCH_BYTES,
+        EXTENSION_BENCHMARK_BATCH_BYTES,
+        "扩展批次字节上限",
+      );
+      const batches = copyExtensionInputBatches(maximumExtensionInput);
+      requireEqual(batches.length, EXTENSION_BENCHMARK_BATCHES, "扩展批次数");
+      requireEqual(
+        batches.reduce((total, batch) => total + batch.length, 0),
+        EXTENSION_BENCHMARK_BYTES,
+        "扩展复制字节数",
+      );
+      requireEqual(batches[0]?.[0] ?? -1, 0x5a, "扩展复制内容");
     },
     BENCHMARK_OPTIONS,
   );

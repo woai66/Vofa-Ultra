@@ -30,6 +30,7 @@ import {
   type CommandTaskStopReason,
   type PreparedCommand,
 } from "../core/commandWorkflow";
+import { ExtensionCoordinator } from "../core/extensionCoordinator";
 import {
   createProtocolParser,
   getProtocolDefinition,
@@ -93,6 +94,15 @@ import {
   listSerialPorts,
   sendSerial,
 } from "../services/serialClient";
+import {
+  activateExtension as activateExtensionClient,
+  deactivateExtension as deactivateExtensionClient,
+  getExtensionState as getExtensionStateClient,
+  inspectExtension as inspectExtensionClient,
+  pushExtensionBatch,
+  resetExtension as resetExtensionClient,
+  selectExtensionPackagePath,
+} from "../services/extensionClient";
 import {
   ackReplayBatch as ackReplayBatchClient,
   closeReplay as closeReplayClient,
@@ -171,6 +181,14 @@ import type {
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AutoResponderRule, AutoResponderSnapshot } from "../types/automation";
+import {
+  LIVE_RX_CAPABILITY,
+  type ExtensionBatchPayload,
+  type ExtensionInspectionPayload,
+  type ExtensionOperation,
+  type ExtensionQueueSnapshot,
+  type ExtensionStatePayload,
+} from "../types/extensions";
 
 const MAX_POINTS_PER_CHANNEL = 2_000;
 const MAX_TERMINAL_ENTRIES = 800;
@@ -213,6 +231,7 @@ let terminalDecoder = new TextDecoder();
 let terminalEntryId = 0;
 const channelBuffers = new Map<string, RingBuffer<DataPoint>>();
 const processingChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
+const extensionChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
 let liveProcessingRuntime = new ProcessingGraphRuntime(
   INITIAL_WORKSPACE_CONFIG.processingGraph,
 );
@@ -234,6 +253,8 @@ let commandScheduler: CommandScheduler | null = null;
 let autoResponderRuntime: AutoResponderRuntime | null = null;
 const commandSendArbiter = new CommandSendArbiter();
 let captureExportDialogOperation = 0;
+let extensionOperation = 0;
+let extensionCoordinator: ExtensionCoordinator | null = null;
 
 type RuntimeTransitionStatus =
   | "idle"
@@ -265,6 +286,15 @@ export interface WorkbenchStore {
   channels: ChannelSeries[];
   processedChannels: ChannelSeries[];
   channelVisibility: Record<string, boolean>;
+  extensionChannels: ChannelSeries[];
+  extensionChannelVisibility: Record<string, boolean>;
+  extensionInspection: ExtensionInspectionPayload | null;
+  extensionPackagePath: string;
+  extensionAuthorizationRevision: number;
+  extensionState: ExtensionStatePayload;
+  extensionOperation: ExtensionOperation;
+  extensionMessage: string;
+  extensionQueue: ExtensionQueueSnapshot;
   processingGraph: ProcessingGraphConfig;
   processingStatus: Readonly<ProcessingGraphSnapshot>;
   attitudeConfig: AttitudeConfig;
@@ -394,6 +424,12 @@ export interface WorkbenchStore {
   clearChart(): void;
   resetStats(): void;
   clearProtocolHealth(): void;
+  initializeExtensionRuntime(): Promise<void>;
+  inspectExtensionPackage(): Promise<boolean>;
+  activateInspectedExtension(authorized: boolean): Promise<boolean>;
+  deactivateExtension(): Promise<boolean>;
+  resetExtension(): Promise<boolean>;
+  toggleExtensionChannel(channelId: string): void;
   startCapture(): Promise<boolean>;
   stopCapture(): Promise<boolean>;
   addCaptureMarker(label: string, color: CaptureMarkerColor): boolean;
@@ -464,6 +500,15 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       channels: [],
       processedChannels: [],
       channelVisibility: {},
+      extensionChannels: [],
+      extensionChannelVisibility: {},
+      extensionInspection: null,
+      extensionPackagePath: "",
+      extensionAuthorizationRevision: 0,
+      extensionState: createIdleExtensionState(),
+      extensionOperation: "idle",
+      extensionMessage: "选择 .vux 扩展包后检查",
+      extensionQueue: createIdleExtensionQueue(),
       processingGraph: cloneProcessingGraph(INITIAL_WORKSPACE_CONFIG.processingGraph),
       processingStatus: liveProcessingRuntime.getSnapshot(),
       attitudeConfig: parseAttitudeConfig(INITIAL_WORKSPACE_CONFIG.attitudeConfig),
@@ -544,11 +589,281 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       replayNextSequence: 1,
       replayMessage: "",
 
+      initializeExtensionRuntime: async () => {
+        if (!get().isNativeRuntime) {
+          return;
+        }
+        const operation = ++extensionOperation;
+        set({ extensionOperation: "initializing", extensionMessage: "正在校准扩展运行时" });
+        try {
+          const snapshot = await getExtensionStateClient();
+          if (operation !== extensionOperation) {
+            if (snapshot.sessionId > 0 && snapshot.status !== "idle") {
+              void deactivateExtensionClient(snapshot.sessionId).catch(() => undefined);
+            }
+            return;
+          }
+          let settled = snapshot;
+          if (snapshot.sessionId > 0 && snapshot.status !== "idle") {
+            settled = await deactivateExtensionClient(snapshot.sessionId);
+          }
+          if (operation !== extensionOperation) {
+            return;
+          }
+          getExtensionCoordinator().deactivate();
+          set({
+            extensionState: settled,
+            extensionOperation: "idle",
+            extensionMessage: "扩展运行时已就绪",
+            extensionChannels: [],
+            extensionChannelVisibility: {},
+            extensionQueue: createIdleExtensionQueue(),
+          });
+        } catch (error) {
+          if (operation === extensionOperation) {
+            set({
+              extensionOperation: "idle",
+              extensionMessage: `初始化扩展运行时失败：${getErrorMessage(error)}`,
+            });
+          }
+        }
+      },
+      inspectExtensionPackage: async () => {
+        const state = get();
+        if (!state.isNativeRuntime) {
+          set({ extensionMessage: "浏览器预览不支持协议扩展" });
+          return false;
+        }
+        if (state.extensionOperation !== "idle" || state.extensionState.status === "active") {
+          return false;
+        }
+        const operation = ++extensionOperation;
+        set({ extensionOperation: "selecting", extensionMessage: "正在选择扩展包" });
+        try {
+          const path = await selectExtensionPackagePath();
+          if (operation !== extensionOperation) {
+            return false;
+          }
+          if (!path) {
+            set({ extensionOperation: "idle", extensionMessage: state.extensionMessage });
+            return false;
+          }
+          set({
+            extensionOperation: "inspecting",
+            extensionPackagePath: path,
+            extensionInspection: null,
+            extensionMessage: "正在校验扩展包格式与模块",
+          });
+          const inspection = await inspectExtensionClient(path);
+          if (operation !== extensionOperation) {
+            return false;
+          }
+          set({
+            extensionInspection: inspection,
+            extensionOperation: "idle",
+            extensionMessage: "格式与运行时校验通过，等待授权",
+          });
+          return true;
+        } catch (error) {
+          if (operation === extensionOperation) {
+            set({
+              extensionInspection: null,
+              extensionPackagePath: "",
+              extensionOperation: "idle",
+              extensionMessage: `检查扩展包失败：${getErrorMessage(error)}`,
+            });
+          }
+          return false;
+        }
+      },
+      activateInspectedExtension: async (authorized) => {
+        const state = get();
+        if (!authorized) {
+          set({ extensionMessage: "启用前需要授权读取实时接收数据" });
+          return false;
+        }
+        if (
+          !state.isNativeRuntime ||
+          state.extensionOperation !== "idle" ||
+          state.extensionState.status === "active" ||
+          !state.extensionInspection ||
+          !state.extensionPackagePath ||
+          state.connectionStatus !== "connected" ||
+          hasReplaySession(state)
+        ) {
+          return false;
+        }
+        const operation = ++extensionOperation;
+        const inspection = state.extensionInspection;
+        const path = state.extensionPackagePath;
+        let activatedSessionId = 0;
+        set({ extensionOperation: "activating", extensionMessage: "正在启用协议扩展" });
+        try {
+          const payload = await activateExtensionClient(
+            path,
+            inspection.packageSha256,
+            [LIVE_RX_CAPABILITY],
+          );
+          activatedSessionId = payload.sessionId;
+          if (operation !== extensionOperation) {
+            if (payload.sessionId > 0) {
+              void deactivateExtensionClient(payload.sessionId).catch(() => undefined);
+            }
+            return false;
+          }
+          if (
+            payload.status !== "active" ||
+            payload.packageSha256 !== inspection.packageSha256 ||
+            payload.manifest?.id !== inspection.manifest.id
+          ) {
+            throw new Error("扩展启用结果与已检查的扩展包不一致");
+          }
+          extensionChannelBuffers.clear();
+          getExtensionCoordinator().activate(payload);
+          set({
+            extensionState: payload,
+            extensionOperation: "idle",
+            extensionMessage: payload.message ?? "协议扩展已启用",
+            extensionChannels: [],
+            extensionChannelVisibility: {},
+          });
+          return true;
+        } catch (error) {
+          if (operation === extensionOperation) {
+            getExtensionCoordinator().deactivate();
+            if (activatedSessionId > 0) {
+              void deactivateExtensionClient(activatedSessionId).catch(() => undefined);
+            }
+            set({
+              extensionOperation: "idle",
+              extensionMessage: `启用扩展失败：${getErrorMessage(error)}`,
+            });
+          }
+          return false;
+        }
+      },
+      deactivateExtension: async () => {
+        const state = get();
+        if (state.extensionOperation !== "idle") {
+          return false;
+        }
+        if (state.extensionState.status === "idle" && state.extensionState.sessionId === 0) {
+          return true;
+        }
+        const operation = ++extensionOperation;
+        const sessionId = state.extensionState.sessionId;
+        set({ extensionOperation: "deactivating", extensionMessage: "正在停用协议扩展" });
+        try {
+          await getExtensionCoordinator().suspend();
+          const payload = sessionId > 0
+            ? await deactivateExtensionClient(sessionId)
+            : createIdleExtensionState(state.extensionState.revision + 1);
+          if (operation !== extensionOperation) {
+            return false;
+          }
+          extensionChannelBuffers.clear();
+          set({
+            extensionState: payload,
+            extensionOperation: "idle",
+            extensionMessage: payload.message ?? "协议扩展已停用",
+            extensionChannels: [],
+            extensionChannelVisibility: {},
+          });
+          return payload.status === "idle";
+        } catch (error) {
+          if (operation === extensionOperation) {
+            getExtensionCoordinator().deactivate();
+            set({
+              extensionState: createExtensionFrontendFault(
+                state.extensionState,
+                "deactivation-failed",
+                getErrorMessage(error),
+              ),
+              extensionOperation: "idle",
+              extensionMessage: `停用扩展失败：${getErrorMessage(error)}`,
+            });
+          }
+          return false;
+        }
+      },
+      resetExtension: async () => {
+        const state = get();
+        if (state.extensionOperation !== "idle" || state.extensionState.status !== "active") {
+          return false;
+        }
+        const operation = ++extensionOperation;
+        const sessionId = state.extensionState.sessionId;
+        const generation = state.extensionState.generation;
+        set({ extensionOperation: "resetting", extensionMessage: "正在重置扩展解析状态" });
+        try {
+          await getExtensionCoordinator().suspend();
+          if (operation !== extensionOperation) {
+            return false;
+          }
+          const payload = await resetExtensionClient(sessionId, generation);
+          if (operation !== extensionOperation) {
+            return false;
+          }
+          extensionChannelBuffers.clear();
+          getExtensionCoordinator().activate(payload);
+          set({
+            extensionState: payload,
+            extensionOperation: "idle",
+            extensionMessage: payload.message ?? "扩展解析状态已重置",
+            extensionChannels: [],
+          });
+          return payload.status === "active";
+        } catch (error) {
+          if (operation === extensionOperation) {
+            getExtensionCoordinator().deactivate();
+            const message = getErrorMessage(error);
+            set({
+              extensionState: createExtensionFrontendFault(
+                state.extensionState,
+                "reset-failed",
+                message,
+              ),
+              extensionOperation: "idle",
+              extensionMessage: `重置扩展失败：${message}`,
+            });
+            if (sessionId > 0) {
+              void deactivateExtensionClient(sessionId).catch(() => undefined);
+            }
+          }
+          return false;
+        }
+      },
+      toggleExtensionChannel: (channelId) => {
+        if (!channelId.startsWith("extension:") || get().workspaceTransitionStatus !== "idle") {
+          return;
+        }
+        set((state) => {
+          const channel = state.extensionChannels.find((candidate) => candidate.id === channelId);
+          if (!channel) {
+            return state;
+          }
+          const visible = !channel.visible;
+          const visibility = { ...state.extensionChannelVisibility };
+          if (visible) {
+            delete visibility[channelId];
+          } else {
+            visibility[channelId] = false;
+          }
+          return {
+            extensionChannelVisibility: visibility,
+            extensionChannels: state.extensionChannels.map((candidate) =>
+              candidate.id === channelId ? { ...candidate, visible } : candidate,
+            ),
+          };
+        });
+      },
+
       setRuntimeAvailability: (nativeRuntime) => {
         const state = get();
         const switchedToBrowserSimulator = !nativeRuntime && state.source !== "simulator";
         if (!nativeRuntime && state.isNativeRuntime) {
           stopCurrentCommandWorkflows("source-change");
+          revokeExtensionForBoundary(get, set, "运行环境已切换，扩展会话已撤销");
         }
         if (switchedToBrowserSimulator) {
           resetLiveStreamBoundary(state.protocol);
@@ -603,6 +918,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               return;
             }
           }
+          revokeExtensionForBoundary(get, set, "数据源已切换，扩展会话已撤销");
           resetProtocolState(get().protocol);
           set((state) => ({
             source,
@@ -633,6 +949,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
         if (protocol !== get().protocol) {
           getAutoResponderRuntime().stop("protocol-change");
+          revokeExtensionForBoundary(get, set, "基础协议已切换，扩展会话已撤销");
         }
         resetProtocolState(protocol);
         set((state) => ({
@@ -741,6 +1058,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             return;
           }
           if (state.source === "simulator") {
+            revokeExtensionForBoundary(get, set, "连接边界已变化，扩展会话已撤销");
             resetProtocolState(state.protocol);
             set({
               connectionStatus: "connected",
@@ -755,6 +1073,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             return;
           }
 
+          revokeExtensionForBoundary(get, set, "连接边界已变化，扩展会话已撤销");
           const selectedPort = state.ports.find(
             (port) => port.name === state.serialConfig.portName,
           );
@@ -801,7 +1120,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             set({ statusMessage: "结束录制失败，未断开数据源" });
             return false;
           }
-          return disconnectCurrentSource(get, set);
+          const disconnected = await disconnectCurrentSource(get, set);
+          if (disconnected) {
+            revokeExtensionForBoundary(get, set, "连接已断开，扩展会话已撤销");
+          }
+          return disconnected;
         } finally {
           endRuntimeTransition(get, set, "disconnecting");
         }
@@ -1004,6 +1327,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         ) {
           getAutoResponderRuntime().ingest(bytes, timestamp);
         }
+        if (latest.extensionState.status === "active" && !hasReplaySession(latest)) {
+          getExtensionCoordinator().enqueue(bytes, timestamp);
+        }
       },
 
       handleSerialData: (payload) => {
@@ -1029,6 +1355,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
         if (payload.status !== "connected") {
           stopCurrentCommandWorkflows("connection-lost");
+          revokeExtensionForBoundary(get, set, "实时连接已结束，扩展会话已撤销");
         }
         const previousStatus = state.connectionStatus;
         if (payload.status === "error") {
@@ -1196,9 +1523,12 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         replayChannelBuffers.clear();
         processingChannelBuffers.clear();
         replayProcessingChannelBuffers.clear();
+        extensionChannelBuffers.clear();
+        getExtensionCoordinator().discardPendingOutputs();
         set((state) => ({
           channels: [],
           processedChannels: [],
+          extensionChannels: [],
           chartDataRevision: state.chartDataRevision + 1,
         }));
       },
@@ -2238,6 +2568,12 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 export function disposeWorkbenchRuntime(): void {
   stopCurrentCommandWorkflows("runtime-dispose");
   const state = useWorkbenchStore.getState();
+  revokeExtensionForBoundary(
+    useWorkbenchStore.getState,
+    useWorkbenchStore.setState,
+    "运行环境已卸载，扩展会话已撤销",
+    true,
+  );
   resetLiveStreamBoundary(state.protocol);
   useWorkbenchStore.setState({
     attitudeSample: null,
@@ -2291,6 +2627,11 @@ function getSerialRecoveryCoordinator(): SerialReconnectCoordinator {
     resetStreamAfterReconnect: () => {
       const state = useWorkbenchStore.getState();
       getAutoResponderRuntime().stop("stream-reset");
+      revokeExtensionForBoundary(
+        useWorkbenchStore.getState,
+        useWorkbenchStore.setState,
+        "串口已重新连接，扩展会话已撤销",
+      );
       resetLiveStreamBoundary(state.protocol);
       useWorkbenchStore.setState({
         processingStatus: liveProcessingRuntime.getSnapshot(),
@@ -2361,6 +2702,166 @@ function assertWorkspaceStorageWritable(state: WorkbenchStore): void {
 
 type WorkbenchGet = StoreApi<WorkbenchStore>["getState"];
 type WorkbenchSet = StoreApi<WorkbenchStore>["setState"];
+
+function getExtensionCoordinator(): ExtensionCoordinator {
+  if (extensionCoordinator) {
+    return extensionCoordinator;
+  }
+  extensionCoordinator = new ExtensionCoordinator({
+    pushBatch: pushExtensionBatch,
+    onBatch: handleExtensionBatch,
+    onFault: handleExtensionCoordinatorFault,
+    onQueueChange: (extensionQueue) => {
+      useWorkbenchStore.setState({ extensionQueue });
+    },
+  });
+  return extensionCoordinator;
+}
+
+function revokeExtensionForBoundary(
+  get: WorkbenchGet,
+  set: WorkbenchSet,
+  message: string,
+  clearInspection = false,
+): void {
+  const state = get();
+  const hasRuntimeState =
+    state.extensionState.status !== "idle" ||
+    state.extensionState.sessionId > 0 ||
+    state.extensionOperation !== "idle" ||
+    state.extensionChannels.length > 0 ||
+    state.extensionQueue.active ||
+    state.extensionQueue.inFlight;
+  const hasAuthorizationContext = state.extensionInspection !== null;
+  if (!hasRuntimeState && !hasAuthorizationContext && !clearInspection) {
+    return;
+  }
+
+  const extensionAuthorizationRevision = state.extensionAuthorizationRevision + 1;
+  if (!hasRuntimeState && !clearInspection) {
+    set({
+      extensionAuthorizationRevision,
+      extensionMessage: message,
+    });
+    return;
+  }
+
+  const sessionId = state.extensionState.sessionId;
+  extensionOperation += 1;
+  extensionChannelBuffers.clear();
+  getExtensionCoordinator().deactivate();
+  set({
+    extensionState: createIdleExtensionState(state.extensionState.revision + 1, message),
+    extensionAuthorizationRevision,
+    extensionOperation: "idle",
+    extensionMessage: message,
+    extensionChannels: [],
+    extensionChannelVisibility: {},
+    extensionQueue: createIdleExtensionQueue(),
+    ...(clearInspection
+      ? { extensionInspection: null, extensionPackagePath: "" }
+      : {}),
+  });
+
+  if (state.isNativeRuntime && sessionId > 0) {
+    void deactivateExtensionClient(sessionId).catch((error: unknown) => {
+      if (get().extensionState.status === "idle") {
+        set({ extensionMessage: `${message}；后端撤销失败：${getErrorMessage(error)}` });
+      }
+    });
+  }
+}
+
+function handleExtensionBatch(payload: ExtensionBatchPayload, appendFrames: boolean): void {
+  useWorkbenchStore.setState((state) => {
+    if (
+      state.extensionState.status !== "active" ||
+      state.extensionState.sessionId !== payload.sessionId ||
+      state.extensionState.generation !== payload.generation ||
+      state.extensionState.nextSequence !== payload.sequence ||
+      hasReplaySession(state)
+    ) {
+      return state;
+    }
+    const manifest = state.extensionState.manifest;
+    const extensionChannels = state.chartPaused || !manifest || !appendFrames
+      ? state.extensionChannels
+      : appendExtensionFrames(
+          state.extensionChannels,
+          payload,
+          manifest.id,
+          state.extensionChannelVisibility,
+        );
+    return {
+      extensionChannels,
+      extensionState: {
+        ...state.extensionState,
+        nextSequence: payload.sequence + 1,
+        processedBytes: state.extensionState.processedBytes + payload.acceptedBytes,
+        emittedFrames: state.extensionState.emittedFrames + payload.frames.length,
+      },
+    };
+  });
+}
+
+function handleExtensionCoordinatorFault(error: Error, sessionId: number): void {
+  const state = useWorkbenchStore.getState();
+  if (state.extensionState.status !== "active" || state.extensionState.sessionId !== sessionId) {
+    return;
+  }
+  const message = error.message;
+  useWorkbenchStore.setState({
+    extensionState: createExtensionFrontendFault(
+      state.extensionState,
+      message.includes("队列已满") ? "frontend-queue-overflow" : "frontend-runtime-fault",
+      message,
+    ),
+    extensionOperation: "idle",
+    extensionMessage: message,
+  });
+  if (state.isNativeRuntime && sessionId > 0) {
+    void deactivateExtensionClient(sessionId).catch(() => undefined);
+  }
+}
+
+function createIdleExtensionState(revision = 0, message?: string): ExtensionStatePayload {
+  return {
+    status: "idle",
+    sessionId: 0,
+    generation: 0,
+    revision,
+    nextSequence: 1,
+    authorizedCapabilities: [],
+    processedBytes: 0,
+    emittedFrames: 0,
+    message,
+  };
+}
+
+function createExtensionFrontendFault(
+  state: ExtensionStatePayload,
+  faultCode: string,
+  message: string,
+): ExtensionStatePayload {
+  return {
+    ...state,
+    status: "error",
+    generation: state.generation + 1,
+    nextSequence: 1,
+    authorizedCapabilities: [],
+    faultCode,
+    message,
+  };
+}
+
+function createIdleExtensionQueue(): ExtensionQueueSnapshot {
+  return {
+    active: false,
+    inFlight: false,
+    queuedBatches: 0,
+    queuedBytes: 0,
+  };
+}
 
 function getCommandScheduler(): CommandScheduler {
   if (commandScheduler) {
@@ -2724,6 +3225,8 @@ async function prepareAndOpenReplay(
     }
   }
 
+  revokeExtensionForBoundary(get, set, "已进入回放，实时扩展会话已撤销");
+
   if (!hasReplaySession(get())) {
     set({ replayStatus: "loading" });
   }
@@ -2914,6 +3417,14 @@ async function applyWorkspaceSnapshot(
     }
   }
 
+
+  revokeExtensionForBoundary(
+    get,
+    set,
+    "工作区已切换，扩展授权和会话已清除",
+    true,
+  );
+
   const latestTarget = get().workspaces.find((workspace) => workspace.id === id);
   if (!latestTarget) {
     throw new Error("要应用的工作区不存在");
@@ -3012,6 +3523,7 @@ function resetLiveView(protocol: ProtocolKind, set: WorkbenchSet): void {
   set((state) => ({
     channels: [],
     processedChannels: [],
+    extensionChannels: [],
     attitudeSample: null,
     chartDataRevision: state.chartDataRevision + 1,
     processingStatus: liveProcessingRuntime.getSnapshot(),
@@ -3044,6 +3556,7 @@ function resetReplayView(protocol: ProtocolKind, set: WorkbenchSet): void {
   set((state) => ({
     channels: [],
     processedChannels: [],
+    extensionChannels: [],
     attitudeSample: null,
     chartDataRevision: state.chartDataRevision + 1,
     processingStatus: replayProcessingRuntime.getSnapshot(),
@@ -3201,6 +3714,60 @@ function appendFrames(
   for (const index of updatedChannelIndexes) {
     const channel = nextChannels[index];
     const buffer = buffers.get(`channel-${index}`);
+    if (channel && buffer) {
+      channel.points = buffer.toArray();
+    }
+  }
+  return nextChannels;
+}
+
+function appendExtensionFrames(
+  channels: ChannelSeries[],
+  payload: ExtensionBatchPayload,
+  extensionId: string,
+  visibility: Record<string, boolean>,
+): ChannelSeries[] {
+  if (payload.frames.length === 0) {
+    return channels;
+  }
+  const nextChannels = channels.map((channel) => ({ ...channel }));
+  const updatedIndexes = new Set<number>();
+  for (const frame of payload.frames) {
+    for (const [channelIndex, value] of frame.values.entries()) {
+      if (!Number.isFinite(value)) {
+        continue;
+      }
+      const channelId = `extension:${extensionId}:${channelIndex}`;
+      let buffer = extensionChannelBuffers.get(channelId);
+      if (!buffer) {
+        buffer = new RingBuffer<DataPoint>(MAX_POINTS_PER_CHANNEL);
+        extensionChannelBuffers.set(channelId, buffer);
+      }
+      buffer.push({
+        x: payload.receivedAt / 1_000,
+        y: value,
+      });
+      const label = frame.labels?.[channelIndex]?.trim();
+      const existing = nextChannels[channelIndex];
+      if (existing?.id === channelId) {
+        existing.name = label || existing.name;
+        existing.lastValue = value;
+      } else {
+        nextChannels[channelIndex] = {
+          id: channelId,
+          name: label || `EXT CH ${channelIndex + 1}`,
+          color: CHANNEL_COLORS[(channelIndex + 3) % CHANNEL_COLORS.length] ?? "#f06d76",
+          visible: visibility[channelId] ?? true,
+          points: [],
+          lastValue: value,
+        };
+      }
+      updatedIndexes.add(channelIndex);
+    }
+  }
+  for (const index of updatedIndexes) {
+    const channel = nextChannels[index];
+    const buffer = channel ? extensionChannelBuffers.get(channel.id) : undefined;
     if (channel && buffer) {
       channel.points = buffer.toArray();
     }
