@@ -25,6 +25,7 @@ import {
   MAX_COMMAND_REPEAT_COUNT,
   MIN_COMMAND_INTERVAL_MS,
 } from "../core/commandWorkflow";
+import { isAutoResponderActive } from "../core/autoResponder";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { DisplayMode, LineEnding } from "../types/serial";
 import type {
@@ -54,7 +55,9 @@ export function TerminalPanel() {
   const lineEnding = useWorkbenchStore((state) => state.lineEnding);
   const commandHistory = useWorkbenchStore((state) => state.commandHistory);
   const commandTask = useWorkbenchStore((state) => state.commandTask);
+  const autoResponder = useWorkbenchStore((state) => state.autoResponder);
   const isSendingCommand = useWorkbenchStore((state) => state.isSendingCommand);
+  const commandSendOrigin = useWorkbenchStore((state) => state.commandSendOrigin);
   const terminalPaused = useWorkbenchStore((state) => state.terminalPaused);
   const terminalAutoScroll = useWorkbenchStore((state) => state.terminalAutoScroll);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
@@ -80,6 +83,7 @@ export function TerminalPanel() {
   const pendingSelectionRef = useRef<number | null>(null);
   const [message, setMessage] = useState("");
   const [sendError, setSendError] = useState("");
+  const [manualSendPending, setManualSendPending] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [variablesOpen, setVariablesOpen] = useState(false);
   const [workflowOpen, setWorkflowOpen] = useState(false);
@@ -97,6 +101,9 @@ export function TerminalPanel() {
   );
   const visibleError = templatePreview.error || sendError;
   const taskActive = commandTask.status === "running" || commandTask.status === "stopping";
+  const autoResponderActive = isAutoResponderActive(autoResponder);
+  const manualSendBlocked =
+    manualSendPending || (isSendingCommand && commandSendOrigin !== "auto-responder");
   const workflowVisible = workflowOpen || taskActive;
   const canStartPeriodic =
     connectionStatus === "connected" &&
@@ -105,6 +112,7 @@ export function TerminalPanel() {
     templatePreview.byteCount > 0 &&
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
+    !autoResponderActive &&
     !taskActive;
   const rowVirtualizer = useVirtualizer({
     count: entries.length,
@@ -232,16 +240,19 @@ export function TerminalPanel() {
   };
 
   const submit = async () => {
-    if (!hasPayload || templatePreview.error || taskActive || isSendingCommand) {
+    if (!hasPayload || templatePreview.error || taskActive || manualSendBlocked) {
       return;
     }
     setSendError("");
+    setManualSendPending(true);
     try {
       await send(message, sendMode, lineEnding);
       setMessage("");
       resetHistoryNavigation();
     } catch (error) {
       setSendError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setManualSendPending(false);
     }
   };
 
@@ -537,7 +548,7 @@ export function TerminalPanel() {
                 !hasPayload ||
                 Boolean(templatePreview.error) ||
                 isWorkspaceTransitioning ||
-                isSendingCommand
+                manualSendBlocked
               }
               onClick={() => void submit()}
             >

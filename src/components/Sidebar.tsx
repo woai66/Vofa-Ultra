@@ -25,6 +25,7 @@ import type { ChartWindowSeconds } from "../types/workspace";
 import type { ChannelSeries } from "../types/workbench";
 import type { SidebarPanel } from "./ActivityRail";
 import { CapturePanel } from "./CapturePanel";
+import { AutomationPanel } from "./AutomationPanel";
 import { ProcessingPanel } from "./ProcessingPanel";
 import { WorkspacePanel } from "./WorkspacePanel";
 
@@ -50,6 +51,7 @@ export function Sidebar({ activePanel, theme, onClose, onThemeChange }: SidebarP
       {activePanel === "connection" && <ConnectionPanel />}
       {activePanel === "channels" && <ChannelPanel />}
       {activePanel === "processing" && <ProcessingPanel />}
+      {activePanel === "automation" && <AutomationPanel />}
       {activePanel === "capture" && <CapturePanel />}
       <div className="workspace-panel-host" hidden={activePanel !== "workspaces"}>
         <WorkspacePanel />

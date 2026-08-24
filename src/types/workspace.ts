@@ -7,6 +7,7 @@ import type {
 } from "./serial";
 import type { ProcessingGraphConfig } from "./processingGraph";
 import type { AttitudeConfig } from "./attitude";
+import type { AutoResponderRule } from "./automation";
 
 export type ChartWindowSeconds = 5 | 15 | 30 | 60;
 
@@ -30,7 +31,11 @@ export interface WorkspaceConfigV3 extends WorkspaceConfigV2 {
   attitudeConfig: AttitudeConfig;
 }
 
-export type WorkspaceConfig = WorkspaceConfigV3;
+export interface WorkspaceConfigV4 extends WorkspaceConfigV3 {
+  autoResponderRules: AutoResponderRule[];
+}
+
+export type WorkspaceConfig = WorkspaceConfigV4;
 
 export interface WorkspaceProfile {
   id: string;
@@ -59,4 +64,11 @@ export interface WorkspaceExportV3 {
   schemaVersion: 3;
   name: string;
   config: WorkspaceConfigV3;
+}
+
+export interface WorkspaceExportV4 {
+  format: "vofa-ultra.workspace";
+  schemaVersion: 4;
+  name: string;
+  config: WorkspaceConfigV4;
 }

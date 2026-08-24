@@ -11,21 +11,27 @@ import {
   parseProcessingGraphConfig,
   processingOutputChannelId,
 } from "./processingGraph";
+import {
+  areAutoResponderRulesEqual,
+  cloneAutoResponderRules,
+  parseAutoResponderRules,
+} from "./autoResponder";
 import type {
   ChartWindowSeconds,
   WorkspaceConfig,
   WorkspaceConfigV1,
   WorkspaceConfigV2,
   WorkspaceConfigV3,
-  WorkspaceExportV3,
+  WorkspaceConfigV4,
+  WorkspaceExportV4,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AttitudeConfig } from "../types/attitude";
 import type { ProcessingGraphConfig } from "../types/processingGraph";
 
 export const WORKSPACE_FILE_FORMAT = "vofa-ultra.workspace";
-export const WORKSPACE_SCHEMA_VERSION = 3;
-export const MAX_WORKSPACE_FILE_BYTES = 64 * 1024;
+export const WORKSPACE_SCHEMA_VERSION = 4;
+export const MAX_WORKSPACE_FILE_BYTES = 512 * 1024;
 export const MAX_WORKSPACE_COUNT = 32;
 export const MAX_WORKSPACE_NAME_LENGTH = 64;
 export const DEFAULT_WORKSPACE_ID = "default";
@@ -48,6 +54,7 @@ const WORKSPACE_CONFIG_V2_KEYS = [
   "processingGraph",
 ] as const;
 const WORKSPACE_CONFIG_V3_KEYS = [...WORKSPACE_CONFIG_V2_KEYS, "attitudeConfig"] as const;
+const WORKSPACE_CONFIG_V4_KEYS = [...WORKSPACE_CONFIG_V3_KEYS, "autoResponderRules"] as const;
 const SERIAL_CONFIG_KEYS = [
   "portName",
   "baudRate",
@@ -80,6 +87,7 @@ export function createDefaultWorkspaceConfig(source: WorkspaceConfig["source"]):
     channelVisibility: {},
     processingGraph: createDefaultProcessingGraph(),
     attitudeConfig: createDefaultAttitudeConfig(),
+    autoResponderRules: [],
   };
 }
 
@@ -100,6 +108,7 @@ export function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
     channelVisibility: { ...config.channelVisibility },
     processingGraph: cloneProcessingGraph(config.processingGraph),
     attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
+    autoResponderRules: cloneAutoResponderRules(config.autoResponderRules),
   };
 }
 
@@ -132,7 +141,8 @@ export function areWorkspaceConfigsEqual(
     left.chartWindowSeconds === right.chartWindowSeconds &&
     JSON.stringify(leftVisibility) === JSON.stringify(rightVisibility) &&
     JSON.stringify(left.processingGraph) === JSON.stringify(right.processingGraph) &&
-    areAttitudeConfigsEqual(left.attitudeConfig, right.attitudeConfig)
+    areAttitudeConfigsEqual(left.attitudeConfig, right.attitudeConfig) &&
+    areAutoResponderRulesEqual(left.autoResponderRules, right.autoResponderRules)
   );
 }
 
@@ -210,19 +220,19 @@ export function assertWorkspaceNameAvailable(
 }
 
 export function serializeWorkspace(profile: WorkspaceProfile): string {
-  const exported: WorkspaceExportV3 = {
+  const exported: WorkspaceExportV4 = {
     format: WORKSPACE_FILE_FORMAT,
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     name: profile.name,
     config: cloneWorkspaceConfig(profile.config),
   };
-  return `${JSON.stringify(exported, null, 2)}\n`;
+  const serialized = `${JSON.stringify(exported, null, 2)}\n`;
+  assertWorkspaceFileSize(serialized);
+  return serialized;
 }
 
-export function parseWorkspaceExport(text: string): WorkspaceExportV3 {
-  if (new TextEncoder().encode(text).byteLength > MAX_WORKSPACE_FILE_BYTES) {
-    throw new Error(`工作区文件不能超过 ${MAX_WORKSPACE_FILE_BYTES / 1024} KiB`);
-  }
+export function parseWorkspaceExport(text: string): WorkspaceExportV4 {
+  assertWorkspaceFileSize(text);
 
   let parsed: unknown;
   try {
@@ -238,6 +248,7 @@ export function parseWorkspaceExport(text: string): WorkspaceExportV3 {
   if (
     record.schemaVersion !== 1 &&
     record.schemaVersion !== 2 &&
+    record.schemaVersion !== 3 &&
     record.schemaVersion !== WORKSPACE_SCHEMA_VERSION
   ) {
     throw new Error(`不支持工作区 schema 版本：${String(record.schemaVersion)}`);
@@ -253,16 +264,37 @@ export function parseWorkspaceExport(text: string): WorkspaceExportV3 {
   };
 }
 
+function assertWorkspaceFileSize(text: string): void {
+  if (new TextEncoder().encode(text).byteLength > MAX_WORKSPACE_FILE_BYTES) {
+    throw new Error(`工作区文件不能超过 ${MAX_WORKSPACE_FILE_BYTES / 1024} KiB`);
+  }
+}
+
 export function parseWorkspaceConfig(value: unknown): WorkspaceConfig {
+  const record = requireRecord(value, "工作区配置");
+  assertExactKeys(record, WORKSPACE_CONFIG_V4_KEYS, "工作区配置");
+  const processingGraph = parseProcessingGraphConfig(record.processingGraph);
+  const attitudeConfig = parseAttitudeConfig(record.attitudeConfig);
+  assertAttitudeChannelsMatchGraph(attitudeConfig, processingGraph);
+  const autoResponderRules = parseAutoResponderRules(record.autoResponderRules);
+  const config = parseWorkspaceConfigBase(record, processingGraph);
+
+  return {
+    ...config,
+    processingGraph,
+    attitudeConfig,
+    autoResponderRules,
+  };
+}
+
+function parseWorkspaceConfigV3(value: unknown): WorkspaceConfigV3 {
   const record = requireRecord(value, "工作区配置");
   assertExactKeys(record, WORKSPACE_CONFIG_V3_KEYS, "工作区配置");
   const processingGraph = parseProcessingGraphConfig(record.processingGraph);
   const attitudeConfig = parseAttitudeConfig(record.attitudeConfig);
   assertAttitudeChannelsMatchGraph(attitudeConfig, processingGraph);
-  const config = parseWorkspaceConfigBase(record, processingGraph);
-
   return {
-    ...config,
+    ...parseWorkspaceConfigBase(record, processingGraph),
     processingGraph,
     attitudeConfig,
   };
@@ -323,12 +355,28 @@ function migrateWorkspaceConfigV2(config: WorkspaceConfigV2): WorkspaceConfigV3 
   };
 }
 
+function migrateWorkspaceConfigV3(config: WorkspaceConfigV3): WorkspaceConfigV4 {
+  return {
+    ...config,
+    serialConfig: { ...config.serialConfig },
+    channelVisibility: { ...config.channelVisibility },
+    processingGraph: cloneProcessingGraph(config.processingGraph),
+    attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
+    autoResponderRules: [],
+  };
+}
+
 function parseVersionedWorkspaceConfig(version: unknown, value: unknown): WorkspaceConfig {
   if (version === 1) {
-    return migrateWorkspaceConfigV2(migrateWorkspaceConfigV1(parseWorkspaceConfigV1(value)));
+    return migrateWorkspaceConfigV3(
+      migrateWorkspaceConfigV2(migrateWorkspaceConfigV1(parseWorkspaceConfigV1(value))),
+    );
   }
   if (version === 2) {
-    return migrateWorkspaceConfigV2(parseWorkspaceConfigV2(value));
+    return migrateWorkspaceConfigV3(migrateWorkspaceConfigV2(parseWorkspaceConfigV2(value)));
+  }
+  if (version === 3) {
+    return migrateWorkspaceConfigV3(parseWorkspaceConfigV3(value));
   }
   if (version === WORKSPACE_SCHEMA_VERSION) {
     return parseWorkspaceConfig(value);
@@ -347,6 +395,9 @@ export function restoreWorkspaceConfig(
   const attitudeConfig =
     tryParseAttitudeConfig(record.attitudeConfig, processingGraph) ??
     cloneAttitudeConfig(fallback.attitudeConfig);
+  const autoResponderRules =
+    tryParseAutoResponderRules(record.autoResponderRules) ??
+    cloneAutoResponderRules(fallback.autoResponderRules);
   return {
     source: isEnum(record.source, ["serial", "simulator"]) ? record.source : fallback.source,
     protocol: isEnum(record.protocol, PROTOCOL_IDS)
@@ -393,6 +444,7 @@ export function restoreWorkspaceConfig(
     },
     processingGraph,
     attitudeConfig,
+    autoResponderRules,
   };
 }
 
@@ -430,11 +482,15 @@ function parseWorkspaceProfile(value: unknown): WorkspaceProfile {
     throw new Error("工作区更新时间早于创建时间");
   }
   const configRecord = requireRecord(record.config, "工作区配置");
-  const config = Object.hasOwn(configRecord, "attitudeConfig")
+  const config = Object.hasOwn(configRecord, "autoResponderRules")
     ? parseWorkspaceConfig(configRecord)
+    : Object.hasOwn(configRecord, "attitudeConfig")
+      ? migrateWorkspaceConfigV3(parseWorkspaceConfigV3(configRecord))
     : Object.hasOwn(configRecord, "processingGraph")
-      ? migrateWorkspaceConfigV2(parseWorkspaceConfigV2(configRecord))
-      : migrateWorkspaceConfigV2(migrateWorkspaceConfigV1(parseWorkspaceConfigV1(configRecord)));
+      ? migrateWorkspaceConfigV3(migrateWorkspaceConfigV2(parseWorkspaceConfigV2(configRecord)))
+      : migrateWorkspaceConfigV3(
+          migrateWorkspaceConfigV2(migrateWorkspaceConfigV1(parseWorkspaceConfigV1(configRecord))),
+        );
   return {
     id: validateWorkspaceId(requireString(record.id, "工作区 ID")),
     name: validateWorkspaceName(requireString(record.name, "工作区名称")),
@@ -519,6 +575,14 @@ function tryParseAttitudeConfig(
     const attitudeConfig = parseAttitudeConfig(value);
     assertAttitudeChannelsMatchGraph(attitudeConfig, processingGraph);
     return attitudeConfig;
+  } catch {
+    return null;
+  }
+}
+
+function tryParseAutoResponderRules(value: unknown) {
+  try {
+    return parseAutoResponderRules(value);
   } catch {
     return null;
   }

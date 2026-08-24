@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { APP_VERSION } from "../core/appMetadata";
+import {
+  createDefaultAutoResponderRule,
+  createInitialAutoResponderSnapshot,
+} from "../core/autoResponder";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
 import { createDefaultWorkspaceConfig, createWorkspaceProfile } from "../core/workspaces";
 import {
@@ -159,6 +163,8 @@ function deferred<T>(): Deferred<T> {
 async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 const TEST_REPLAY_HEADER: ReplayCaptureHeader = {
@@ -246,6 +252,7 @@ function numericLogState(
 describe("workbenchStore", () => {
   beforeEach(async () => {
     useWorkbenchStore.getState().stopPeriodicSend();
+    useWorkbenchStore.getState().stopAutoResponder();
     await useWorkbenchStore.getState().setSerialRecoveryEnabled(false);
     useWorkbenchStore.getState().clearSerialDiagnostics();
     cancelSerialConnectMock.mockReset().mockResolvedValue({
@@ -317,7 +324,10 @@ describe("workbenchStore", () => {
       terminalEntries: [],
       commandHistory: [],
       commandTask: createInitialCommandTaskSnapshot(),
+      autoResponderRules: [],
+      autoResponder: createInitialAutoResponderSnapshot(),
       isSendingCommand: false,
+      commandSendOrigin: null,
       terminalPaused: false,
       chartPaused: false,
       chartDataRevision: 0,
@@ -670,6 +680,180 @@ describe("workbenchStore", () => {
     await flushPromises();
     disposeWorkbenchRuntime();
     expect(useWorkbenchStore.getState().commandTask.message).toContain("运行环境已卸载");
+  });
+
+  it("实时 RX 触发自动应答且不写入手动命令历史", async () => {
+    const now = Date.now();
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    useWorkbenchStore.getState().setAutoResponderRules([
+      {
+        ...createDefaultAutoResponderRule("line-ready", "行结束"),
+        response: "PONG ${seq}",
+      },
+    ]);
+
+    useWorkbenchStore.getState().startAutoResponder();
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("1,2\n"), now);
+    await flushPromises();
+
+    const txEntries = useWorkbenchStore
+      .getState()
+      .terminalEntries.filter((entry) => entry.direction === "tx");
+    expect(txEntries.map((entry) => entry.text)).toEqual(["PONG 1"]);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      commandHistory: [],
+      autoResponder: {
+        status: "armed",
+        matchCount: 1,
+        acceptedCount: 1,
+        sentCount: 1,
+      },
+      stats: { txBytes: 6 },
+    });
+  });
+
+  it("手动发送在当前自动写入完成后优先于后续自动队列", async () => {
+    const firstSend = deferred<void>();
+    sendSerialMock
+      .mockImplementationOnce(() => firstSend.promise)
+      .mockResolvedValue(undefined);
+    const now = Date.now();
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 1,
+    });
+    useWorkbenchStore.getState().setAutoResponderRules([
+      {
+        ...createDefaultAutoResponderRule("line-ready", "行结束"),
+        response: "AUTO",
+        cooldownMs: 20,
+      },
+    ]);
+    useWorkbenchStore.getState().startAutoResponder();
+    useWorkbenchStore.getState().ingestBytes(Uint8Array.from([0x0a]), now);
+    useWorkbenchStore.getState().ingestBytes(Uint8Array.from([0x0a]), now + 20);
+
+    const manualSend = useWorkbenchStore.getState().send("MANUAL", "text", "none");
+    expect(sendSerialMock).toHaveBeenCalledOnce();
+    firstSend.resolve();
+    await manualSend;
+    await vi.waitFor(() => {
+      expect(sendSerialMock).toHaveBeenCalledTimes(3);
+    });
+
+    expect(sendSerialMock.mock.calls.map(([bytes]) => new TextDecoder().decode(bytes))).toEqual([
+      "AUTO",
+      "MANUAL",
+      "AUTO",
+    ]);
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([
+      expect.objectContaining({ value: "MANUAL" }),
+    ]);
+    expect(useWorkbenchStore.getState().autoResponder.sentCount).toBe(2);
+  });
+
+  it("连接边界取消排队的手动发送，避免发往重连后的设备", async () => {
+    const firstSend = deferred<void>();
+    sendSerialMock
+      .mockImplementationOnce(() => firstSend.promise)
+      .mockResolvedValue(undefined);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 1,
+    });
+    useWorkbenchStore.getState().setAutoResponderRules([
+      {
+        ...createDefaultAutoResponderRule("line-ready", "行结束"),
+        response: "AUTO",
+      },
+    ]);
+    useWorkbenchStore.getState().startAutoResponder();
+    useWorkbenchStore.getState().ingestBytes(Uint8Array.from([0x0a]), Date.now());
+
+    const manualSend = useWorkbenchStore.getState().send("MANUAL", "text", "none");
+    const manualRejection = expect(manualSend).rejects.toThrow("发送上下文已变更");
+    expect(sendSerialMock).toHaveBeenCalledOnce();
+
+    await expect(useWorkbenchStore.getState().disconnect()).resolves.toBe(true);
+    useWorkbenchStore.setState({ connectionStatus: "connected", serialGeneration: 2 });
+    firstSend.resolve();
+    await manualRejection;
+    await flushPromises();
+
+    expect(sendSerialMock).toHaveBeenCalledOnce();
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
+  });
+
+  it("自动应答与周期发送互斥并在规则或协议变化时停机", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    const firstRule = createDefaultAutoResponderRule("rule-1");
+    useWorkbenchStore.getState().setAutoResponderRules([firstRule]);
+    useWorkbenchStore.getState().startAutoResponder();
+
+    expect(() =>
+      useWorkbenchStore.getState().startPeriodicSend("PING", "text", "none", 20, 1),
+    ).toThrow(/自动应答运行中/);
+    useWorkbenchStore.getState().setProtocol("raw");
+    expect(useWorkbenchStore.getState().autoResponder).toMatchObject({ status: "stopped" });
+    expect(useWorkbenchStore.getState().autoResponder.message).toContain("协议已切换");
+
+    useWorkbenchStore.getState().startPeriodicSend("PING", "text", "none", 20, null);
+    expect(() => useWorkbenchStore.getState().startAutoResponder()).toThrow(/周期发送运行中/);
+    useWorkbenchStore.getState().stopPeriodicSend();
+    await flushPromises();
+
+    useWorkbenchStore.getState().startAutoResponder();
+    useWorkbenchStore.getState().setAutoResponderRules([
+      { ...firstRule, name: "已修改规则" },
+    ]);
+    expect(useWorkbenchStore.getState().autoResponder.message).toContain("规则已变更");
+  });
+
+  it("回放 RX 从结构上绕过自动应答入口", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    useWorkbenchStore.getState().setAutoResponderRules([
+      createDefaultAutoResponderRule("line-ready"),
+    ]);
+    useWorkbenchStore.getState().startAutoResponder();
+    useWorkbenchStore.setState({
+      replayStatus: "playing",
+      replaySessionId: 7,
+      replayGeneration: 1,
+      replayHeader: TEST_REPLAY_HEADER,
+      replayNextSequence: 1,
+    });
+
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_000,
+      dataBytes: 2,
+      records: [{ direction: "rx", timestampUs: 1_000, data: [0x31, 0x0a] }],
+    });
+    await flushPromises();
+
+    expect(useWorkbenchStore.getState().autoResponder).toMatchObject({
+      matchCount: 0,
+      sentCount: 0,
+    });
+    expect(
+      useWorkbenchStore.getState().terminalEntries.filter((entry) => entry.direction === "tx"),
+    ).toEqual([]);
   });
 
   it("周期任务拒绝空草稿，即使配置了行尾", () => {
@@ -1648,7 +1832,7 @@ describe("workbenchStore", () => {
     const beforeActiveId = useWorkbenchStore.getState().activeWorkspaceId;
     const importedId = useWorkbenchStore.getState().importWorkspace({
       format: "vofa-ultra.workspace",
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: "默认工作区",
       config: createDefaultWorkspaceConfig("serial"),
     });
@@ -1732,14 +1916,15 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 3 });
+    ).toMatchObject({ version: 4 });
   });
 
-  it("通过 rehydrate 把 v1 工作区写回 v3 且保留快照", async () => {
+  it("通过 rehydrate 把 v1 工作区写回 v4 且保留快照", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.processingGraph;
     delete legacyConfig.attitudeConfig;
+    delete legacyConfig.autoResponderRules;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -1782,12 +1967,48 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 3 });
+    ).toMatchObject({ version: 4 });
+  });
+
+  it("通过 rehydrate 把 v3 工作区补充为空规则并写回 v4", async () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+    delete legacyConfig.autoResponderRules;
+    localStorage.setItem(
+      "vofa-ultra-workbench",
+      JSON.stringify({
+        version: 3,
+        state: {
+          ...legacyConfig,
+          workspaces: [
+            {
+              id: "legacy-v3",
+              name: "v3 工作区",
+              createdAt: 100,
+              updatedAt: 100,
+              config: legacyConfig,
+            },
+          ],
+          activeWorkspaceId: "legacy-v3",
+        },
+      }),
+    );
+
+    await useWorkbenchStore.persist.rehydrate();
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      activeWorkspaceId: "legacy-v3",
+      autoResponderRules: [],
+      workspaces: [{ id: "legacy-v3", config: { autoResponderRules: [] } }],
+    });
+    expect(
+      JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
+    ).toMatchObject({ version: 4 });
   });
 
   it("拒绝并保留更高版本的持久化数据", async () => {
     const futureValue = JSON.stringify({
-      version: 4,
+      version: 5,
       state: {
         futureWorkspaceFormat: true,
         workspaces: [{ id: "future-only" }],
@@ -1800,10 +2021,10 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState()).toMatchObject({
       workspaceStorageStatus: "newer-version",
-      incompatibleStorageVersion: 4,
+      incompatibleStorageVersion: 5,
     });
     expect(() => useWorkbenchStore.getState().saveActiveWorkspace("不会保存")).toThrow(
-      /版本 4.*不能保存/,
+      /版本 5.*不能保存/,
     );
     expect(localStorage.getItem("vofa-ultra-workbench")).toBe(futureValue);
     useWorkbenchStore.persist.clearStorage();
@@ -3371,6 +3592,31 @@ describe("workbenchStore", () => {
     await useWorkbenchStore.getState().send("PRIVATE", "text", "none");
 
     expect(useWorkbenchStore.getState().commandHistory).toHaveLength(1);
+    expect(storageWrite).not.toHaveBeenCalled();
+    storageWrite.mockRestore();
+  });
+
+  it("只持久化自动应答规则，不持久化启用态和运行计数", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    storageWrite.mockClear();
+    useWorkbenchStore.getState().setAutoResponderRules([
+      createDefaultAutoResponderRule("line-ready"),
+    ]);
+    expect(storageWrite).toHaveBeenCalled();
+    storageWrite.mockClear();
+
+    useWorkbenchStore.getState().startAutoResponder();
+    useWorkbenchStore.getState().ingestBytes(
+      Uint8Array.from([0x0a]),
+      Date.now(),
+    );
+    await flushPromises();
+
+    expect(useWorkbenchStore.getState().autoResponder.sentCount).toBe(1);
     expect(storageWrite).not.toHaveBeenCalled();
     storageWrite.mockRestore();
   });

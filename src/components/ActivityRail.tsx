@@ -6,12 +6,14 @@ import {
   Settings,
   SlidersHorizontal,
   Workflow,
+  Zap,
 } from "lucide-react";
 
 export type SidebarPanel =
   | "connection"
   | "channels"
   | "processing"
+  | "automation"
   | "capture"
   | "workspaces"
   | "settings";
@@ -25,6 +27,7 @@ const RAIL_ITEMS = [
   { id: "connection" as const, label: "连接", icon: Cable },
   { id: "channels" as const, label: "通道", icon: SlidersHorizontal },
   { id: "processing" as const, label: "处理", icon: Workflow },
+  { id: "automation" as const, label: "自动化", icon: Zap },
   { id: "capture" as const, label: "记录", icon: Database },
   { id: "workspaces" as const, label: "工作区", icon: Folders },
   { id: "settings" as const, label: "设置", icon: Settings },

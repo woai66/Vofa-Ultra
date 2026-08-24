@@ -1052,6 +1052,262 @@ textarea:focus {
   gap: 4px;
 }
 
+.automation-runtime {
+  gap: 9px;
+}
+
+.automation-runtime-toggle {
+  height: 30px;
+  padding: 0;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.automation-state {
+  display: grid;
+  min-width: 0;
+  align-items: start;
+  grid-template-columns: 7px minmax(0, 1fr);
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+
+.automation-state .status-dot {
+  margin-top: 4px;
+}
+
+.automation-state[data-status="armed"] .status-dot,
+.automation-state[data-status="sending"] .status-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.automation-state[data-status="stopping"] .status-dot {
+  background: var(--amber);
+}
+
+.automation-state[data-status="error"] .status-dot {
+  background: var(--danger);
+}
+
+.automation-state > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.automation-state strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.automation-state span:last-child {
+  color: var(--text-subtle);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.automation-counters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  color: var(--text-subtle);
+  font-size: 10px;
+  gap: 6px;
+}
+
+.automation-counters span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.automation-counters strong {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.automation-rules-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.automation-rules-heading {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 16px;
+}
+
+.automation-rules-heading > div {
+  display: flex;
+  align-items: baseline;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  gap: 6px;
+}
+
+.automation-rules-heading strong {
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+}
+
+.automation-rule-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+
+.automation-rule-row {
+  display: grid;
+  min-width: 0;
+  min-height: 50px;
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
+  border-bottom: 1px solid var(--border);
+}
+
+.automation-rule-row:last-child {
+  border-bottom: 0;
+}
+
+.automation-rule-row[data-selected="true"] {
+  box-shadow: inset 2px 0 var(--accent);
+}
+
+.automation-rule-select {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  flex-direction: column;
+  justify-content: center;
+  padding: 7px 8px 7px 16px;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+  gap: 2px;
+}
+
+.automation-rule-select:hover {
+  background: var(--surface-hover);
+}
+
+.automation-rule-select strong,
+.automation-rule-select span {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-rule-select strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.automation-rule-select span {
+  color: var(--text-subtle);
+  font-size: 9px;
+}
+
+.automation-rule-toggle {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+}
+
+.automation-rule-toggle input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent-strong);
+}
+
+.automation-empty {
+  min-height: 96px;
+}
+
+.automation-editor {
+  gap: 7px;
+}
+
+.automation-editor textarea {
+  min-height: 54px;
+  padding: 8px 9px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.automation-mode-field {
+  display: grid;
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) 112px;
+  gap: 8px;
+}
+
+.automation-mode-field .segmented-control button {
+  padding: 0 6px;
+  font-size: 10px;
+}
+
+.automation-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.automation-field-grid label {
+  min-width: 0;
+}
+
+.automation-field-grid .field-label {
+  margin-bottom: 5px;
+}
+
+.automation-editor-actions {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 7px;
+}
+
+.automation-editor-actions .icon-button {
+  width: 34px;
+  height: 34px;
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.automation-editor-actions .primary-button {
+  justify-content: center;
+}
+
+.automation-feedback {
+  margin: 10px 16px 14px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.automation-feedback[data-error="true"] {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
+  color: var(--danger);
+}
+
 .field-grid {
   display: grid;
   gap: 7px;
@@ -3521,8 +3777,25 @@ textarea:focus {
   .replay-control-button,
   .workspace-save-actions button,
   .workspace-footer-actions button,
+  .automation-rules-heading .icon-button,
+  .automation-rule-toggle,
+  .automation-rule-row > .icon-button,
+  .automation-editor-actions .icon-button,
+  .automation-editor-actions .primary-button,
   .toggle-row {
     height: 44px;
+  }
+
+  .automation-rule-row {
+    min-height: 58px;
+    grid-template-columns: minmax(0, 1fr) 44px 44px;
+  }
+
+  .automation-rule-toggle,
+  .automation-rule-row > .icon-button,
+  .automation-rules-heading .icon-button,
+  .automation-editor-actions .icon-button {
+    width: 44px;
   }
 
   .session-tabs button {

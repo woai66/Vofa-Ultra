@@ -169,7 +169,7 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   });
 });
 
-test("处理图生成独立派生通道并随 v3 工作区往返", async ({ page }, testInfo) => {
+test("处理图生成独立派生通道并随 v4 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -223,7 +223,7 @@ test("处理图生成独立派生通道并随 v3 工作区往返", async ({ page
     schemaVersion: number;
     config: { processingGraph: ProcessingGraphConfig };
   };
-  expect(exported.schemaVersion).toBe(3);
+  expect(exported.schemaVersion).toBe(4);
   expect(exported.config.processingGraph).toMatchObject({
     enabled: true,
     nodes: [
@@ -244,6 +244,78 @@ test("处理图生成独立派生通道并随 v3 工作区往返", async ({ page
   await page.getByRole("button", { name: "处理", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "启用处理图" })).toBeChecked();
   await expect(page.locator(".processing-node")).toHaveCount(3);
+  expect(pageErrors).toEqual([]);
+});
+
+test("实时 RX 自动应答保持有界运行并随 v4 工作区往返", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "自动化", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "自动应答" })).toBeVisible();
+  await page.getByRole("button", { name: "添加自动应答规则" }).click();
+  await expect(page.getByLabel("规则名称")).toHaveValue("规则 1");
+  await expect(page.getByLabel("触发内容")).toHaveValue("0A");
+  await expect(page.getByLabel("响应模板")).toHaveValue("ACK");
+
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+  await page.getByRole("button", { name: "自动化", exact: true }).click();
+  await page.getByRole("checkbox", { name: "启用自动应答" }).check();
+  await expect(page.getByText("等待触发")).toBeVisible();
+  await expect(page.locator('.terminal-line[data-direction="tx"]')).toContainText("ACK", {
+    timeout: 5_000,
+  });
+  await expect
+    .poll(async () => {
+      const text = await page.getByLabel("自动应答计数").textContent();
+      return Number(text?.match(/发送\s*(\d+)/)?.[1] ?? 0);
+    })
+    .toBeGreaterThan(0);
+  await expect(page.getByLabel("规则名称")).toBeDisabled();
+
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出当前" }).click();
+  const download = await downloadPromise;
+  const downloadPath = testInfo.outputPath("auto-responder-workspace.json");
+  await download.saveAs(downloadPath);
+  const exported = JSON.parse(await readFile(downloadPath, "utf8")) as {
+    schemaVersion: number;
+    config: {
+      autoResponderRules: Array<{
+        triggerMode: string;
+        trigger: string;
+        response: string;
+        cooldownMs: number;
+      }>;
+    };
+  };
+  expect(exported).toMatchObject({
+    schemaVersion: 4,
+    config: {
+      autoResponderRules: [
+        {
+          triggerMode: "hex",
+          trigger: "0A",
+          response: "ACK",
+          cooldownMs: 1_000,
+        },
+      ],
+    },
+  });
+
+  await page.getByRole("button", { name: "自动化", exact: true }).click();
+  await page.getByRole("checkbox", { name: "启用自动应答" }).uncheck();
+  await expect(page.getByText("已停止")).toBeVisible();
   expect(pageErrors).toEqual([]);
 });
 
@@ -418,13 +490,14 @@ test("安全命令变量逐次展开且非法表达式零发送", async ({ page 
   await expect(
     page.getByLabel("命令模板包含 1 个变量，最终 2 字节"),
   ).toBeVisible();
-  await page.getByRole("button", { name: "发送", exact: true }).click();
-  await expect(txLines).toHaveCount(4);
   await page
     .getByRole("group", { name: "接收显示格式" })
     .getByRole("button", { name: "HEX" })
     .click();
-  await expect(txLines.last().locator("code")).toHaveText("01 00");
+  await page.getByRole("button", { name: "清空终端" }).click();
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await page.getByRole("button", { name: "暂停终端显示" }).click();
+  await expect(txLines.locator("code")).toHaveText("01 00");
   const txStats = page.locator(".transfer-stats span").filter({ hasText: "TX" });
   const transmittedBeforeInvalidTemplate = await txStats.textContent();
 
@@ -570,7 +643,7 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
   await page.goto("/");
 
   const navigationButtons = page.getByRole("navigation", { name: "工作台导航" }).getByRole("button");
-  await expect(navigationButtons).toHaveCount(6);
+  await expect(navigationButtons).toHaveCount(7);
   const bounds = await navigationButtons.evaluateAll((buttons) =>
     buttons.map((button) => {
       const rect = button.getBoundingClientRect();
@@ -749,7 +822,7 @@ async function canvasScreenshotSignature(locator: Locator): Promise<{
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({
-    version: 4,
+    version: 5,
     state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
   });
   await page.addInitScript((value) => {
@@ -758,7 +831,7 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("button", { name: "工作区" }).click();
-  await expect(page.getByRole("alert")).toContainText("版本 4 的较新配置");
+  await expect(page.getByRole("alert")).toContainText("版本 5 的较新配置");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();

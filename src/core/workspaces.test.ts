@@ -3,14 +3,16 @@ import {
   areWorkspaceConfigsEqual,
   createDefaultWorkspaceConfig,
   createWorkspaceProfile,
+  MAX_WORKSPACE_FILE_BYTES,
   makeUniqueWorkspaceName,
   parseWorkspaceExport,
   restoreWorkspaceConfig,
   serializeWorkspace,
 } from "./workspaces";
+import { createDefaultAutoResponderRule } from "./autoResponder";
 
 describe("工作区文件", () => {
-  it("以严格的 v3 格式往返处理图与姿态配置", () => {
+  it("以严格的 v4 格式往返处理图、姿态与自动应答配置", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.serialConfig.portName = "COM7";
     config.protocol = "justfloat";
@@ -33,13 +35,14 @@ describe("工作区文件", () => {
     config.attitudeConfig.channels.roll = "channel-0";
     config.attitudeConfig.channels.pitch = "channel-1";
     config.attitudeConfig.channels.yaw = "derived:output";
+    config.autoResponderRules = [createDefaultAutoResponderRule("ready", "设备就绪")];
     const profile = createWorkspaceProfile("台架 A", config, "bench-a", 100);
 
     const parsed = parseWorkspaceExport(serializeWorkspace(profile));
 
     expect(parsed).toEqual({
       format: "vofa-ultra.workspace",
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: "台架 A",
       config,
     });
@@ -48,6 +51,7 @@ describe("工作区文件", () => {
     expect(parsed.config.processingGraph).not.toBe(config.processingGraph);
     expect(parsed.config.attitudeConfig).not.toBe(config.attitudeConfig);
     expect(parsed.config.attitudeConfig.channels).not.toBe(config.attitudeConfig.channels);
+    expect(parsed.config.autoResponderRules).not.toBe(config.autoResponderRules);
   });
 
   it("导入严格 v1 后规范化为禁用处理图和空姿态映射", () => {
@@ -61,11 +65,12 @@ describe("工作区文件", () => {
     const config = exported.config as Record<string, unknown>;
     delete config.processingGraph;
     delete config.attitudeConfig;
+    delete config.autoResponderRules;
     exported.schemaVersion = 1;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(3);
+    expect(parsed.schemaVersion).toBe(4);
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.channels).toEqual({
       roll: "",
@@ -76,6 +81,7 @@ describe("工作区文件", () => {
       y: "",
       z: "",
     });
+    expect(parsed.config.autoResponderRules).toEqual([]);
   });
 
   it("导入严格 v2 后保留处理图并补充默认姿态配置", () => {
@@ -88,16 +94,37 @@ describe("工作区文件", () => {
     const exported = JSON.parse(serializeWorkspace(profile)) as Record<string, unknown>;
     const config = exported.config as Record<string, unknown>;
     delete config.attitudeConfig;
+    delete config.autoResponderRules;
     exported.schemaVersion = 2;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(3);
+    expect(parsed.schemaVersion).toBe(4);
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
+    expect(parsed.config.autoResponderRules).toEqual([]);
   });
 
-  it("严格校验 v3 姿态字段及其派生通道引用", () => {
+  it("导入严格 v3 后保留姿态配置并补充空自动应答规则", () => {
+    const profile = createWorkspaceProfile(
+      "v3 工作区",
+      createDefaultWorkspaceConfig("simulator"),
+      "legacy-v3",
+      100,
+    );
+    const exported = JSON.parse(serializeWorkspace(profile)) as Record<string, unknown>;
+    const config = exported.config as Record<string, unknown>;
+    delete config.autoResponderRules;
+    exported.schemaVersion = 3;
+
+    const parsed = parseWorkspaceExport(JSON.stringify(exported));
+
+    expect(parsed.schemaVersion).toBe(4);
+    expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
+    expect(parsed.config.autoResponderRules).toEqual([]);
+  });
+
+  it("严格校验 v4 姿态字段及其派生通道引用", () => {
     const profile = createWorkspaceProfile(
       "姿态工作区",
       createDefaultWorkspaceConfig("simulator"),
@@ -138,7 +165,7 @@ describe("工作区文件", () => {
 
   it.each([
     ["错误格式", { format: "other", schemaVersion: 1 }],
-    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 4 }],
+    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 5 }],
   ])("拒绝%s", (_label, overrides) => {
     const profile = createWorkspaceProfile(
       "默认工作区",
@@ -242,6 +269,26 @@ describe("工作区文件", () => {
       ),
     ).toThrow(/未知字段/);
   });
+
+  it("最大合法自动应答配置仍可导出并重新导入", () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.autoResponderRules = Array.from({ length: 16 }, (_, index) => ({
+      ...createDefaultAutoResponderRule(`rule-${index + 1}`, `规则 ${index + 1}`),
+      triggerMode: "text" as const,
+      trigger: "\0".repeat(256),
+      response: "\0".repeat(4 * 1024),
+    }));
+    const serialized = serializeWorkspace(
+      createWorkspaceProfile("满容量规则", config, "full-rules", 100),
+    );
+
+    const serializedBytes = new TextEncoder().encode(serialized).byteLength;
+    expect(serializedBytes).toBeGreaterThan(128 * 1024);
+    expect(serializedBytes).toBeLessThanOrEqual(MAX_WORKSPACE_FILE_BYTES);
+    expect(parseWorkspaceExport(serialized).config.autoResponderRules).toEqual(
+      config.autoResponderRules,
+    );
+  });
 });
 
 describe("工作区本地恢复", () => {
@@ -302,6 +349,9 @@ describe("工作区本地恢复", () => {
 
     expect(areWorkspaceConfigsEqual(left, right)).toBe(true);
 
+    right.autoResponderRules = [createDefaultAutoResponderRule("rule-1")];
+    expect(areWorkspaceConfigsEqual(left, right)).toBe(false);
+    right.autoResponderRules = [];
     right.processingGraph.enabled = true;
     expect(areWorkspaceConfigsEqual(left, right)).toBe(false);
   });
