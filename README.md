@@ -295,6 +295,7 @@ AA 55 ${seq:u16le} ${task_unix_ms:u64be}
 
 ```bash
 pnpm check
+pnpm benchmark
 pnpm check:package
 pnpm supply-chain:check
 pnpm test:e2e
@@ -307,6 +308,9 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 `pnpm check` 会依次执行 ESLint、TypeScript 类型检查、Vitest、工具脚本测试和生产构建。构建会验证姿态视图
 保持动态加载、Three.js 不进入首屏静态依赖图；首屏上限为 650 KiB / gzip 200 KiB，姿态模块上限为
 650 KiB / gzip 180 KiB。
+`pnpm benchmark` 以单 worker 运行固定工作量的协议、处理图和 2000 点饱和 Store 场景，再严格核对场景集合、
+中位数和最少样本数。Linux CI 是绝对预算的权威环境，本地结果用于诊断；原始报告和摘要写入
+`artifacts/performance/`。方法与预算维护规则见[性能基准](docs/performance.md)。
 `package.json` 是界面和诊断报告的版本来源；`pnpm check:package` 使用 `cargo metadata` 核对 npm、Tauri、Cargo
 版本、许可证与 bundle 元数据。`pnpm supply-chain:check` 按当前 Rust target 验证 npm 生产依赖和 Cargo 正常依赖
 闭包，未知或不可接受许可证会令检查失败，并用官方严格 Schema 校验 CycloneDX 1.6。Playwright 会验证模拟数据链路、
@@ -323,6 +327,7 @@ Canvas 有效像素、处理图派生通道与工作区 v4 往返、实时 RX �
 
 - [架构说明](docs/architecture.md)：线程模型、状态机、缓存边界与安全边界。
 - [内置协议贡献契约](docs/protocols.md)：注册表、解析边界、兼容策略和合规夹具。
+- [性能基准](docs/performance.md)：固定工作量、预算依据、报告和调整规则。
 - [安全命令模板](docs/command-templates.md)：变量语法、定宽编码、调度语义和资源上限。
 - [竞品与开源调研](docs/competitive-analysis.md)：从 VOFA+ / vofa-NEXT 继承什么、舍弃什么。
 - [路线图](docs/roadmap.md)：从稳定串口核心到记录回放、协议扩展和正式发布。

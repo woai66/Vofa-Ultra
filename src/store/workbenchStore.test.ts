@@ -1685,6 +1685,21 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().channelVisibility).toEqual({});
   });
 
+  it("批量追加帧时保留最新标签并完整写入各通道", () => {
+    useWorkbenchStore.getState().ingestBytes(
+      new TextEncoder().encode("first:1,voltage:2\n3,4\nlatest:5,6\n"),
+      1_000,
+    );
+
+    const channels = useWorkbenchStore.getState().channels;
+    expect(channels.map((channel) => channel.name)).toEqual(["latest", "voltage"]);
+    expect(channels.map((channel) => channel.lastValue)).toEqual([5, 6]);
+    expect(channels.map((channel) => channel.points.map((point) => point.y))).toEqual([
+      [1, 3, 5],
+      [2, 4, 6],
+    ]);
+  });
+
   it("保持基础通道直通并把处理图结果写入独立派生通道", () => {
     useWorkbenchStore.getState().setProcessingGraph({
       enabled: true,

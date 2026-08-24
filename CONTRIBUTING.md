@@ -67,6 +67,7 @@ docs: document protocol limits
 
 ```bash
 pnpm check
+pnpm benchmark
 pnpm check:package
 pnpm supply-chain:check
 pnpm test:e2e
@@ -78,6 +79,11 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 涉及真实串口时，还需记录操作系统、适配器芯片、参数、测试时长，以及连接、收发、拔插和重连结果。烧录和
 硬件操作由测试者手动完成。
+
+涉及协议解析、环形缓冲、处理图、Store 摄入或回放批处理的改动必须运行 `pnpm benchmark`，并在 PR 中记录
+`artifacts/performance/summary.md` 的结果。Linux CI 结果是绝对预算的权威依据；放宽
+`performance-budgets.json` 时必须附同一环境至少五轮数据、业务吞吐依据和独立 review，不能与性能退化修复混在
+同一项无说明提交中。完整方法见[性能基准](docs/performance.md)。
 
 ## 候选安装包
 

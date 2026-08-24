@@ -3079,14 +3079,6 @@ function ingestReplayBatch(
       const frames = replayProtocolParser.push(bytes, timestamp);
       processingFrames.push(...frames);
       rxFrames += frames.length;
-      if (!state.chartPaused) {
-        channels = appendFrames(
-          channels,
-          frames,
-          state.channelVisibility,
-          replayChannelBuffers,
-        );
-      }
       if (!state.terminalPaused) {
         terminalEntries.push(
           createTerminalEntry(
@@ -3110,6 +3102,14 @@ function ingestReplayBatch(
         );
       }
     }
+  }
+  if (!state.chartPaused) {
+    channels = appendFrames(
+      channels,
+      processingFrames,
+      state.channelVisibility,
+      replayChannelBuffers,
+    );
   }
   const processedSamples = replayProcessingRuntime.process(processingFrames);
   const attitudeSample = extractRuntimeAttitudeSample(
@@ -3159,6 +3159,7 @@ function appendFrames(
   }
 
   const nextChannels = channels.map((channel) => ({ ...channel }));
+  const updatedChannelIndexes = new Set<number>();
   for (const frame of frames) {
     const channelCount = Math.min(frame.values.length, MAX_PROTOCOL_CHANNELS);
     for (let index = 0; index < channelCount; index += 1) {
@@ -3175,16 +3176,31 @@ function appendFrames(
       }
       buffer.push({ x: frame.timestamp / 1_000, y: value });
 
-      const existing = nextChannels[index];
       const label = frame.labels?.[index]?.trim();
-      nextChannels[index] = {
-        id: channelId,
-        name: label || existing?.name || `CH ${index + 1}`,
-        color: existing?.color ?? CHANNEL_COLORS[index % CHANNEL_COLORS.length] ?? "#46d89c",
-        visible: existing?.visible ?? channelVisibility[channelId] ?? true,
-        points: buffer.toArray(),
-        lastValue: value,
-      };
+      const existing = nextChannels[index];
+      if (existing) {
+        if (label) {
+          existing.name = label;
+        }
+        existing.lastValue = value;
+      } else {
+        nextChannels[index] = {
+          id: channelId,
+          name: label || `CH ${index + 1}`,
+          color: CHANNEL_COLORS[index % CHANNEL_COLORS.length] ?? "#46d89c",
+          visible: channelVisibility[channelId] ?? true,
+          points: [],
+          lastValue: value,
+        };
+      }
+      updatedChannelIndexes.add(index);
+    }
+  }
+  for (const index of updatedChannelIndexes) {
+    const channel = nextChannels[index];
+    const buffer = buffers.get(`channel-${index}`);
+    if (channel && buffer) {
+      channel.points = buffer.toArray();
     }
   }
   return nextChannels;
@@ -3285,6 +3301,7 @@ function appendProcessedSamples(
   const channelIndexes = new Map(
     nextChannels.map((channel, index) => [channel.id, index] as const),
   );
+  const updatedChannelIds = new Set<string>();
   for (const sample of samples) {
     if (!Number.isFinite(sample.timestamp) || !Number.isFinite(sample.value)) {
       continue;
@@ -3297,20 +3314,32 @@ function appendProcessedSamples(
     buffer.push({ x: sample.timestamp / 1_000, y: sample.value });
 
     const existingIndex = channelIndexes.get(sample.channelId);
-    const existing = existingIndex === undefined ? undefined : nextChannels[existingIndex];
-    const channel: ChannelSeries = {
-      id: sample.channelId,
-      name: sample.name,
-      color: sample.color,
-      visible: existing?.visible ?? channelVisibility[sample.channelId] ?? true,
-      points: buffer.toArray(),
-      lastValue: sample.value,
-    };
     if (existingIndex === undefined) {
       channelIndexes.set(sample.channelId, nextChannels.length);
-      nextChannels.push(channel);
+      nextChannels.push({
+        id: sample.channelId,
+        name: sample.name,
+        color: sample.color,
+        visible: channelVisibility[sample.channelId] ?? true,
+        points: [],
+        lastValue: sample.value,
+      });
     } else {
-      nextChannels[existingIndex] = channel;
+      const existing = nextChannels[existingIndex];
+      if (existing) {
+        existing.name = sample.name;
+        existing.color = sample.color;
+        existing.lastValue = sample.value;
+      }
+    }
+    updatedChannelIds.add(sample.channelId);
+  }
+  for (const channelId of updatedChannelIds) {
+    const channelIndex = channelIndexes.get(channelId);
+    const channel = channelIndex === undefined ? undefined : nextChannels[channelIndex];
+    const buffer = buffers.get(channelId);
+    if (channel && buffer) {
+      channel.points = buffer.toArray();
     }
   }
   return nextChannels;
