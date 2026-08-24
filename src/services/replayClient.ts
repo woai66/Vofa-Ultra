@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type {
   ReplayBatchPayload,
   ReplayEventHandlers,
+  ReplaySpeed,
   ReplayStatePayload,
 } from "../types/replay";
 import { isTauriRuntime } from "./serialClient";
@@ -54,6 +55,15 @@ export async function seekReplay(
 ): Promise<ReplayStatePayload> {
   requireTauriRuntime();
   return invoke<ReplayStatePayload>("seek_replay", { sessionId, generation, targetUs });
+}
+
+export async function setReplaySpeed(
+  sessionId: number,
+  generation: number,
+  speed: ReplaySpeed,
+): Promise<ReplayStatePayload> {
+  requireTauriRuntime();
+  return invoke<ReplayStatePayload>("set_replay_speed", { sessionId, generation, speed });
 }
 
 export async function closeReplay(sessionId: number): Promise<ReplayStatePayload> {

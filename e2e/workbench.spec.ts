@@ -666,6 +666,42 @@ test("Raw 回放滑杆只在提交时发送一次定位命令", async ({ page })
   expect(pageErrors).toEqual([]);
 });
 
+test("播放中切换回放倍速不会重置代次和时间线", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await installTauriReplayMock(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "记录", exact: true }).click();
+  await page.getByRole("tab", { name: "回放" }).click();
+  await page.getByRole("button", { name: "继续", exact: true }).click();
+  await expect(page.getByLabel("回放状态")).toContainText("正在回放");
+
+  const speed = page.getByLabel("回放倍速");
+  await expect(speed).toHaveValue("1");
+  await speed.selectOption("2");
+  await expect(speed).toHaveValue("2");
+  await expect(page.getByLabel("回放状态")).toContainText("Raw Data · 2×");
+  await expect(page.getByText(/^2× 00:01 \/ 00:03$/)).toBeVisible();
+
+  expect(await replaySpeedCalls(page)).toEqual([
+    { sessionId: 7, generation: 3, speed: 2 },
+  ]);
+  expect(await replayStateSnapshot(page)).toMatchObject({
+    status: "playing",
+    generation: 3,
+    timelineRevision: 0,
+    speed: 2,
+    positionUs: 1_000_000,
+  });
+  expect(pageErrors).toEqual([]);
+});
+
 test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -718,6 +754,24 @@ async function replaySeekCalls(page: Page): Promise<Record<string, number>[]> {
   });
 }
 
+async function replaySpeedCalls(page: Page): Promise<Record<string, number>[]> {
+  return page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { speedCalls: Record<string, number>[] };
+    };
+    return testWindow.__TAURI_TEST__.speedCalls;
+  });
+}
+
+async function replayStateSnapshot(page: Page): Promise<Record<string, unknown>> {
+  return page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { replayState(): Record<string, unknown> };
+    };
+    return testWindow.__TAURI_TEST__.replayState();
+  });
+}
+
 async function installTauriReplayMock(page: Page): Promise<void> {
   await page.addInitScript(() => {
     type Callback = (data: unknown) => unknown;
@@ -725,6 +779,7 @@ async function installTauriReplayMock(page: Page): Promise<void> {
     const callbacks = new Map<number, Callback>();
     const listeners = new Map<string, number[]>();
     const seekCalls: Record<string, number>[] = [];
+    const speedCalls: Record<string, number>[] = [];
     let nextCallbackId = 1;
     let replayState = {
       status: "paused",
@@ -748,6 +803,7 @@ async function installTauriReplayMock(page: Page): Promise<void> {
         timeUnit: "microseconds",
       },
       complete: true,
+      speed: 1,
       positionUs: 1_000_000,
       durationUs: 3_500_000,
       dataBytes: 4_096,
@@ -817,6 +873,30 @@ async function installTauriReplayMock(page: Page): Promise<void> {
       if (command === "get_replay_state") {
         return { ...replayState };
       }
+      if (command === "play_replay") {
+        replayState = {
+          ...replayState,
+          status: "playing",
+          generation: replayState.generation + 1,
+          revision: replayState.revision + 1,
+          message: "",
+        };
+        return { ...replayState };
+      }
+      if (command === "set_replay_speed") {
+        const speed = Number(args?.speed);
+        speedCalls.push({
+          sessionId: Number(args?.sessionId),
+          generation: Number(args?.generation),
+          speed,
+        });
+        replayState = {
+          ...replayState,
+          speed,
+          revision: replayState.revision + 1,
+        };
+        return { ...replayState };
+      }
       if (command === "seek_replay") {
         const targetUs = Number(args?.targetUs);
         seekCalls.push({
@@ -850,7 +930,11 @@ async function installTauriReplayMock(page: Page): Promise<void> {
     const testWindow = window as unknown as {
       __TAURI_INTERNALS__: Record<string, unknown>;
       __TAURI_EVENT_PLUGIN_INTERNALS__: Record<string, unknown>;
-      __TAURI_TEST__: { seekCalls: Record<string, number>[] };
+      __TAURI_TEST__: {
+        seekCalls: Record<string, number>[];
+        speedCalls: Record<string, number>[];
+        replayState(): Record<string, unknown>;
+      };
     };
     testWindow.__TAURI_INTERNALS__ = {
       invoke,
@@ -870,7 +954,11 @@ async function installTauriReplayMock(page: Page): Promise<void> {
     testWindow.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
       unregisterListener: (_event: string, id: number) => callbacks.delete(id),
     };
-    testWindow.__TAURI_TEST__ = { seekCalls };
+    testWindow.__TAURI_TEST__ = {
+      seekCalls,
+      speedCalls,
+      replayState: () => ({ ...replayState }),
+    };
   });
 }
 
@@ -1010,6 +1098,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           revision: 0,
           path: "",
           complete: false,
+          speed: 1,
           positionUs: 0,
           durationUs: 0,
           dataBytes: 0,

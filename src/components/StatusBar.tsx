@@ -27,6 +27,7 @@ export function StatusBar() {
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
   const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
   const replayHeader = useWorkbenchStore((state) => state.replayHeader);
+  const replaySpeed = useWorkbenchStore((state) => state.replaySpeed);
   const replayPositionUs = useWorkbenchStore((state) => state.replayPositionUs);
   const replayDurationUs = useWorkbenchStore((state) => state.replayDurationUs);
   const [now, setNow] = useState(Date.now());
@@ -88,7 +89,7 @@ export function StatusBar() {
         <div className="status-item replay-status-item">
           <CirclePlay size={13} />
           <span>
-            1× {formatDuration(replayPositionUs)} / {formatDuration(replayDurationUs)}
+            {replaySpeed}× {formatDuration(replayPositionUs)} / {formatDuration(replayDurationUs)}
           </span>
         </div>
       )}

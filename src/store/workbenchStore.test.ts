@@ -21,6 +21,7 @@ import {
   playReplay,
   selectReplayFilePath,
   seekReplay,
+  setReplaySpeed,
   stopReplay,
 } from "../services/replayClient";
 import {
@@ -82,6 +83,7 @@ vi.mock("../services/replayClient", () => ({
   playReplay: vi.fn(),
   selectReplayFilePath: vi.fn(),
   seekReplay: vi.fn(),
+  setReplaySpeed: vi.fn(),
   stopReplay: vi.fn(),
 }));
 
@@ -107,6 +109,7 @@ const pauseReplayMock = vi.mocked(pauseReplay);
 const playReplayMock = vi.mocked(playReplay);
 const selectReplayFilePathMock = vi.mocked(selectReplayFilePath);
 const seekReplayMock = vi.mocked(seekReplay);
+const setReplaySpeedMock = vi.mocked(setReplaySpeed);
 const stopReplayMock = vi.mocked(stopReplay);
 
 interface Deferred<T> {
@@ -160,6 +163,7 @@ function replayState(
     path: "C:\\captures\\session.vucap",
     header: TEST_REPLAY_HEADER,
     complete: true,
+    speed: 1,
     positionUs: 0,
     durationUs: 50_000,
     dataBytes: 32,
@@ -229,6 +233,7 @@ describe("workbenchStore", () => {
     playReplayMock.mockReset();
     selectReplayFilePathMock.mockReset();
     seekReplayMock.mockReset();
+    setReplaySpeedMock.mockReset();
     stopReplayMock.mockReset();
     localStorage.clear();
     useWorkbenchStore.persist.clearStorage();
@@ -307,6 +312,7 @@ describe("workbenchStore", () => {
       replayPath: "",
       replayHeader: undefined,
       replayComplete: false,
+      replaySpeed: 1,
       replayPositionUs: 0,
       replayDurationUs: 0,
       replayDataBytes: 0,
@@ -2317,6 +2323,45 @@ describe("workbenchStore", () => {
     });
     await expect(useWorkbenchStore.getState().seekReplay(10_000)).resolves.toBe(false);
     expect(seekReplayMock).not.toHaveBeenCalled();
+  });
+
+  it("播放中切换倍速保留代次、时间线和待接收批次", async () => {
+    setReplaySpeedMock.mockResolvedValue(
+      replayState("playing", {
+        generation: 3,
+        timelineRevision: 2,
+        revision: 5,
+        speed: 2,
+        positionUs: 20_000,
+      }),
+    );
+    useWorkbenchStore.setState({
+      replayStatus: "playing",
+      replaySessionId: 7,
+      replayGeneration: 3,
+      replayTimelineRevision: 2,
+      replayRevision: 4,
+      replayHeader: TEST_REPLAY_HEADER,
+      replaySpeed: 1,
+      replayPositionUs: 20_000,
+      replayNextSequence: 4,
+    });
+
+    await expect(useWorkbenchStore.getState().setReplaySpeed(2)).resolves.toBe(true);
+
+    expect(setReplaySpeedMock).toHaveBeenCalledWith(7, 3, 2);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      replayStatus: "playing",
+      replayGeneration: 3,
+      replayTimelineRevision: 2,
+      replayRevision: 5,
+      replaySpeed: 2,
+      replayNextSequence: 4,
+      runtimeTransitionStatus: "idle",
+    });
+
+    await expect(useWorkbenchStore.getState().setReplaySpeed(2)).resolves.toBe(true);
+    expect(setReplaySpeedMock).toHaveBeenCalledOnce();
   });
 
   it("控制命令在途时忽略旧代次批次", () => {

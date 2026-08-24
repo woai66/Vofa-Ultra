@@ -1,5 +1,9 @@
 import type { DataSource, ProtocolKind, SerialConfig } from "./serial";
 
+export const REPLAY_SPEEDS = [0.25, 0.5, 1, 2, 4] as const;
+
+export type ReplaySpeed = (typeof REPLAY_SPEEDS)[number];
+
 export type ReplayStatus =
   | "idle"
   | "loading"
@@ -35,6 +39,7 @@ export interface ReplayStatePayload {
   path: string;
   header?: ReplayCaptureHeader;
   complete: boolean;
+  speed: ReplaySpeed;
   positionUs: number;
   durationUs: number;
   dataBytes: number;

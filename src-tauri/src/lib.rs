@@ -13,7 +13,7 @@ use capture_export::{
 };
 use replay::{
     ack_replay_batch, close_replay, get_replay_state, open_replay, pause_replay, play_replay,
-    seek_replay, stop_replay, ReplayState,
+    seek_replay, set_replay_speed, stop_replay, ReplayState,
 };
 use serial::{
     cancel_serial_connect, connect_serial, disconnect_serial, get_serial_state, list_serial_ports,
@@ -49,6 +49,7 @@ pub fn run() {
             play_replay,
             pause_replay,
             seek_replay,
+            set_replay_speed,
             stop_replay,
             close_replay,
             ack_replay_batch,

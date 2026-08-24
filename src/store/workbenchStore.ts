@@ -77,6 +77,7 @@ import {
   playReplay as playReplayClient,
   selectReplayFilePath,
   seekReplay as seekReplayClient,
+  setReplaySpeed as setReplaySpeedClient,
   stopReplay as stopReplayClient,
 } from "../services/replayClient";
 import type { CaptureStatePayload, CaptureUiStatus } from "../types/capture";
@@ -89,9 +90,11 @@ import type {
 import type {
   ReplayBatchPayload,
   ReplayCaptureHeader,
+  ReplaySpeed,
   ReplayStatePayload,
   ReplayUiStatus,
 } from "../types/replay";
+import { REPLAY_SPEEDS } from "../types/replay";
 import type {
   ConnectionStatus,
   DataSource,
@@ -272,6 +275,7 @@ export interface WorkbenchStore {
   replayPath: string;
   replayHeader?: ReplayCaptureHeader;
   replayComplete: boolean;
+  replaySpeed: ReplaySpeed;
   replayPositionUs: number;
   replayDurationUs: number;
   replayDataBytes: number;
@@ -333,6 +337,7 @@ export interface WorkbenchStore {
   playReplay(): Promise<boolean>;
   pauseReplay(): Promise<boolean>;
   seekReplay(targetUs: number): Promise<boolean>;
+  setReplaySpeed(speed: ReplaySpeed): Promise<boolean>;
   stopReplay(): Promise<boolean>;
   closeReplay(): Promise<boolean>;
   handleReplayState(payload: ReplayStatePayload): void;
@@ -431,6 +436,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       replayRevision: 0,
       replayPath: "",
       replayComplete: false,
+      replaySpeed: 1,
       replayPositionUs: 0,
       replayDurationUs: 0,
       replayDataBytes: 0,
@@ -1416,7 +1422,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const shouldResetView = state.replayStatus === "ready";
         const previousGeneration = state.replayGeneration;
         const previousNextSequence = state.replayNextSequence;
-        set({ replayStatus: "starting", replayMessage: "正在启动 1× 回放" });
+        set({
+          replayStatus: "starting",
+          replayMessage: `正在启动 ${formatReplaySpeed(state.replaySpeed)} 回放`,
+        });
         try {
           const payload = await playReplayClient(
             state.replaySessionId,
@@ -1511,6 +1520,37 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           endRuntimeTransition(get, set, "controlling-replay");
         }
       },
+      setReplaySpeed: async (speed) => {
+        const state = get();
+        if (
+          !state.replayHeader ||
+          !REPLAY_SPEEDS.includes(speed) ||
+          !["ready", "playing", "paused", "completed"].includes(state.replayStatus)
+        ) {
+          return false;
+        }
+        if (speed === state.replaySpeed) {
+          return true;
+        }
+        if (!beginRuntimeTransition(get, set, "controlling-replay")) {
+          return false;
+        }
+
+        try {
+          const payload = await setReplaySpeedClient(
+            state.replaySessionId,
+            state.replayGeneration,
+            speed,
+          );
+          get().handleReplayState(payload);
+          return payload.speed === speed;
+        } catch (error) {
+          setReplayActionError(set, error, state.replayStatus);
+          return false;
+        } finally {
+          endRuntimeTransition(get, set, "controlling-replay");
+        }
+      },
       stopReplay: async () => {
         const state = get();
         if (
@@ -1580,6 +1620,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           replayPath: payload.path,
           replayHeader: payload.header,
           replayComplete: payload.complete,
+          replaySpeed: payload.speed,
           replayPositionUs: keepLatestRunPosition
             ? Math.max(state.replayPositionUs, payload.positionUs)
             : payload.positionUs,
@@ -2725,7 +2766,7 @@ function replayStatusMessage(payload: ReplayStatePayload): string {
     case "ready":
       return payload.complete ? "捕获文件已就绪" : "不完整捕获的有效记录已就绪";
     case "playing":
-      return "正在以 1× 速度回放";
+      return `正在以 ${formatReplaySpeed(payload.speed)} 速度回放`;
     case "paused":
       return "回放已暂停";
     case "seeking":
@@ -2739,6 +2780,10 @@ function replayStatusMessage(payload: ReplayStatePayload): string {
     case "idle":
       return "回放已关闭";
   }
+}
+
+function formatReplaySpeed(speed: ReplaySpeed): string {
+  return `${speed}×`;
 }
 
 function emptyStats(): TransferStats {

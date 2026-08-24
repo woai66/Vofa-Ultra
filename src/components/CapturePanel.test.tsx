@@ -27,6 +27,7 @@ const replayHeader: ReplayCaptureHeader = {
 const playReplayMock = vi.fn(async () => true);
 const pauseReplayMock = vi.fn(async () => true);
 const seekReplayMock = vi.fn(async () => true);
+const setReplaySpeedMock = vi.fn(async () => true);
 const stopReplayMock = vi.fn(async () => true);
 const closeReplayMock = vi.fn(async () => true);
 const selectCaptureExportSourceMock = vi.fn(async () => true);
@@ -51,6 +52,7 @@ function loadReplay(
     replayPath: "C:\\captures\\session.vucap",
     replayHeader,
     replayComplete: true,
+    replaySpeed: 1,
     replayPositionUs: 1_000_000,
     replayDurationUs: 3_500_000,
     replayDataBytes: 2_048,
@@ -59,6 +61,7 @@ function loadReplay(
     playReplay: playReplayMock,
     pauseReplay: pauseReplayMock,
     seekReplay: seekReplayMock,
+    setReplaySpeed: setReplaySpeedMock,
     stopReplay: stopReplayMock,
     closeReplay: closeReplayMock,
     ...overrides,
@@ -107,6 +110,7 @@ describe("CapturePanel replay controls", () => {
     playReplayMock.mockClear();
     pauseReplayMock.mockClear();
     seekReplayMock.mockClear();
+    setReplaySpeedMock.mockClear();
     stopReplayMock.mockClear();
     closeReplayMock.mockClear();
     selectCaptureExportSourceMock.mockClear();
@@ -133,6 +137,17 @@ describe("CapturePanel replay controls", () => {
     expect(screen.getByText("session.vucap")).toBeInTheDocument();
     expect(screen.getByText("C:\\captures\\session.vucap")).toBeInTheDocument();
 
+    const speed = screen.getByRole("combobox", { name: "回放倍速" });
+    expect(speed).toBeEnabled();
+    expect(speed).toHaveValue("1");
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "0.25×",
+      "0.5×",
+      "1×",
+      "2×",
+      "4×",
+    ]);
+
     const slider = screen.getByRole("slider", { name: "回放位置" });
     expect(slider).toHaveAttribute("max", "3500000");
     expect(slider).toHaveValue("1000000");
@@ -141,6 +156,22 @@ describe("CapturePanel replay controls", () => {
     expect(screen.getByRole("button", { name: "播放" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "停止回放" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "关闭回放" })).toBeEnabled();
+  });
+
+  it("播放中允许切换白名单倍速并动态呈现当前值", async () => {
+    const user = userEvent.setup();
+    loadReplay("playing", { replaySpeed: 0.5 });
+
+    render(<CapturePanel />);
+
+    expect(screen.getByText("FireWater · 0.5×")).toBeInTheDocument();
+    const speed = screen.getByRole("combobox", { name: "回放倍速" });
+    expect(speed).toBeEnabled();
+    expect(speed).toHaveValue("0.5");
+
+    await user.selectOptions(speed, "2");
+    expect(setReplaySpeedMock).toHaveBeenCalledOnce();
+    expect(setReplaySpeedMock).toHaveBeenCalledWith(2);
   });
 
   it("截断尾部警告下正确切换播放、暂停、继续和停止控制", async () => {
@@ -175,6 +206,7 @@ describe("CapturePanel replay controls", () => {
 
     act(() => useWorkbenchStore.setState({ replayStatus: "stopping" }));
     expect(screen.getByText("正在停止")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "回放倍速" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "播放" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "停止回放" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "关闭回放" })).toBeDisabled();

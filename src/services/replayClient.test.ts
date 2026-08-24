@@ -7,6 +7,7 @@ import {
   playReplay,
   selectReplayFilePath,
   seekReplay,
+  setReplaySpeed,
   stopReplay,
   subscribeToReplayEvents,
 } from "./replayClient";
@@ -53,6 +54,7 @@ describe("replayClient", () => {
     await playReplay(7, 2);
     await pauseReplay(7, 3);
     await seekReplay(7, 4, 25_000);
+    await setReplaySpeed(7, 4, 2);
     await stopReplay(7, 3);
     await ackReplayBatch(7, 3, 4);
     await closeReplay(7);
@@ -62,6 +64,7 @@ describe("replayClient", () => {
       ["play_replay", { sessionId: 7, generation: 2 }],
       ["pause_replay", { sessionId: 7, generation: 3 }],
       ["seek_replay", { sessionId: 7, generation: 4, targetUs: 25_000 }],
+      ["set_replay_speed", { sessionId: 7, generation: 4, speed: 2 }],
       ["stop_replay", { sessionId: 7, generation: 3 }],
       ["ack_replay_batch", { sessionId: 7, generation: 3, sequence: 4 }],
       ["close_replay", { sessionId: 7 }],

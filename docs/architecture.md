@@ -263,8 +263,14 @@ footer 统计和时间戳单调性；缺少 footer 或尾部截断只开放已�
 2 MiB；达到上限后保留隔项并把记录步长翻倍，不改变 `.vucap` 格式。
 
 每个批次最多 128 KiB、128 条记录或 16 ms 捕获跨度，同时最多存在一个未 ACK 批次。`sessionId + generation +
-sequence` 共同隔离停止、重播和迟到事件；新 generation 先等待 `sequence=0` 启动 ACK，再以单调时钟按 1×
-调度。暂停、停止和关闭通过可唤醒控制通道打断定时或 ACK 等待，不依赖不可中断的长时间 sleep。
+sequence` 共同隔离停止、重播和迟到事件；新 generation 先等待 `sequence=0` 启动 ACK，再以单调时钟按当前
+倍速调度。倍速仅接受 `0.25× / 0.5× / 1× / 2× / 4×`，Rust 内部用四分之一倍整数换算纳秒，避免浮点时钟
+累计误差。播放中切速先按旧速率求出当前捕获时间，再以同一 generation 和 pending batch 重建锚点；deadline
+在等待循环内重新计算，因此不会瞬时追赶、额外停顿或使合法 ACK 失效。暂停、停止和关闭通过可唤醒控制通道
+打断定时或 ACK 等待，不依赖不可中断的长时间 sleep。
+
+倍速是非持久化会话状态。暂停、seek、Stop 和完成后重播保留倍速；打开新文件或关闭回放恢复 `1×`，不会写入
+`.vucap` 或工作区。切速只推进 state `revision`，不推进 `generation`、`timelineRevision` 或批次 `sequence`。
 
 Raw Data 可在 `ready / paused / completed` 状态请求 seek。worker 先进入 `seeking` 并立即返回新 generation，清除
 旧 pending batch、lookahead、时钟锚点和 ACK 屏障，再从严格满足 `checkpoint.positionUs < targetUs` 的最后检查点
@@ -296,8 +302,9 @@ FireWater / JustFloat 不开放任意 seek。捕获 record 只是串口读写分
 2. React 组件测试覆盖主要空状态、工作区命名、恢复控制、变量光标插入与错误反馈、命令草稿导航、历史菜单、
    周期任务、波形测量暂停恢复/选点/清理、处理图建图/循环拒绝/依赖删除/熔断重试和导出控制。
 3. Playwright 覆盖模拟器端到端链路、TX 回显、Canvas 有效像素、波形双游标测量、工作区文件往返、录制入口权限、
-   Raw 回放滑杆拖动零 IPC/提交单次 seek、虚拟列表、命令变量 TEXT / HEX 展开与非法表达式拒绝、周期发送计数与
-   停止、处理图派生通道与工作区 v2、捕获导出入口权限、窄屏溢出、短窗口布局和同一 USB 设备跨端口名恢复。
+   Raw 回放滑杆拖动零 IPC/提交单次 seek、播放中切速不换代、虚拟列表、命令变量 TEXT / HEX 展开与非法表达式
+   拒绝、周期发送计数与停止、处理图派生通道与工作区 v2、捕获导出入口权限、窄屏溢出、短窗口布局和同一 USB
+   设备跨端口名恢复。
 4. GitHub Actions 在三个桌面系统执行 rustfmt、Clippy、Rust 测试和 `tauri build --no-bundle`，在 Node.js 22
    上执行前端检查和浏览器验收。
 5. 手动 workflow 或与项目版本一致的 `v*` 标签生成无签名 MSI、NSIS、DMG、DEB、AppImage，并验证产物非空、

@@ -28,7 +28,7 @@ import type {
   CaptureExportFormat,
   CaptureExportUiStatus,
 } from "../types/captureExport";
-import type { ReplayUiStatus } from "../types/replay";
+import { REPLAY_SPEEDS, type ReplaySpeed, type ReplayUiStatus } from "../types/replay";
 import type { ProtocolKind } from "../types/serial";
 
 type SessionTab = "record" | "replay" | "export";
@@ -82,6 +82,7 @@ export function CapturePanel() {
   const replayPath = useWorkbenchStore((state) => state.replayPath);
   const replayHeader = useWorkbenchStore((state) => state.replayHeader);
   const replayComplete = useWorkbenchStore((state) => state.replayComplete);
+  const replaySpeed = useWorkbenchStore((state) => state.replaySpeed);
   const replayPositionUs = useWorkbenchStore((state) => state.replayPositionUs);
   const replayDurationUs = useWorkbenchStore((state) => state.replayDurationUs);
   const replayDataBytes = useWorkbenchStore((state) => state.replayDataBytes);
@@ -118,6 +119,7 @@ export function CapturePanel() {
   const playReplay = useWorkbenchStore((state) => state.playReplay);
   const pauseReplay = useWorkbenchStore((state) => state.pauseReplay);
   const seekReplay = useWorkbenchStore((state) => state.seekReplay);
+  const setReplaySpeed = useWorkbenchStore((state) => state.setReplaySpeed);
   const stopReplay = useWorkbenchStore((state) => state.stopReplay);
   const closeReplay = useWorkbenchStore((state) => state.closeReplay);
   const [activeTab, setActiveTab] = useState<SessionTab>(() =>
@@ -172,6 +174,8 @@ export function CapturePanel() {
     protocolSupportsReplaySeek(replayHeader.protocol) &&
     ["ready", "paused", "completed"].includes(replayStatus) &&
     !runtimeBusy;
+  const canSetReplaySpeed =
+    ["ready", "playing", "paused", "completed"].includes(replayStatus) && !runtimeBusy;
   const replaySeekStepUs = Math.max(1, Math.floor(replayDurationUs / 1_000));
   const replayDisplayPositionUs =
     replaySeekDirtyRef.current || replayStatus === "seeking"
@@ -220,6 +224,12 @@ export function CapturePanel() {
     replaySeekDirtyRef.current = false;
     replaySeekDraftRef.current = replayPositionUs;
     setReplaySeekDraftUs(replayPositionUs);
+  };
+  const updateReplaySpeed = (value: string) => {
+    const nextSpeed = REPLAY_SPEEDS.find((speed) => speed === Number(value));
+    if (nextSpeed !== undefined) {
+      void setReplaySpeed(nextSpeed);
+    }
   };
 
   return (
@@ -329,7 +339,7 @@ export function CapturePanel() {
               title={replayStatusLabel(replayStatus, runtimeTransitionStatus)}
               subtitle={
                 replayHeader
-                  ? `${getProtocolDefinition(replayHeader.protocol).displayName} · 1×`
+                  ? `${getProtocolDefinition(replayHeader.protocol).displayName} · ${replaySpeed}×`
                   : "VUCAP v1"
               }
             />
@@ -389,6 +399,22 @@ export function CapturePanel() {
                 {replayComplete ? <CheckCircle2 size={15} /> : <TriangleAlert size={15} />}
                 <span>{replayComplete ? "完整捕获" : "尾部不完整，仅回放有效记录"}</span>
               </div>
+              <label className="replay-speed-control" htmlFor="replay-speed">
+                <span className="field-label">倍速</span>
+                <select
+                  id="replay-speed"
+                  aria-label="回放倍速"
+                  value={replaySpeed}
+                  disabled={!canSetReplaySpeed}
+                  onChange={(event) => updateReplaySpeed(event.currentTarget.value)}
+                >
+                  {REPLAY_SPEEDS.map((speed: ReplaySpeed) => (
+                    <option key={speed} value={speed}>
+                      {speed}×
+                    </option>
+                  ))}
+                </select>
+              </label>
               <div className="replay-controls">
                 {replayStatus === "playing" || replayStatus === "pausing" ? (
                   <button

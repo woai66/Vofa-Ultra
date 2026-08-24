@@ -29,6 +29,73 @@ const REPLAY_INDEX_MEMORY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 const REPLAY_INDEX_MAX_CHECKPOINTS: usize =
     REPLAY_INDEX_MEMORY_LIMIT_BYTES / std::mem::size_of::<ReplayCheckpoint>();
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ReplaySpeed {
+    Quarter,
+    Half,
+    #[default]
+    Normal,
+    Double,
+    Quadruple,
+}
+
+impl ReplaySpeed {
+    fn parse(value: f64) -> Result<Self, String> {
+        if !value.is_finite() {
+            return Err("回放倍速必须是有限值".to_owned());
+        }
+
+        if value == 0.25 {
+            Ok(Self::Quarter)
+        } else if value == 0.5 {
+            Ok(Self::Half)
+        } else if value == 1.0 {
+            Ok(Self::Normal)
+        } else if value == 2.0 {
+            Ok(Self::Double)
+        } else if value == 4.0 {
+            Ok(Self::Quadruple)
+        } else {
+            Err("回放倍速仅支持 0.25×、0.5×、1×、2× 或 4×".to_owned())
+        }
+    }
+
+    fn as_f64(self) -> f64 {
+        match self {
+            Self::Quarter => 0.25,
+            Self::Half => 0.5,
+            Self::Normal => 1.0,
+            Self::Double => 2.0,
+            Self::Quadruple => 4.0,
+        }
+    }
+
+    fn quarter_units(self) -> u64 {
+        match self {
+            Self::Quarter => 1,
+            Self::Half => 2,
+            Self::Normal => 4,
+            Self::Double => 8,
+            Self::Quadruple => 16,
+        }
+    }
+}
+
+fn scaled_wall_duration(capture_us: u64, speed: ReplaySpeed) -> Duration {
+    let total_nanoseconds = u128::from(capture_us) * 4_000 / u128::from(speed.quarter_units());
+    let seconds = (total_nanoseconds / 1_000_000_000) as u64;
+    let nanoseconds = (total_nanoseconds % 1_000_000_000) as u32;
+    Duration::new(seconds, nanoseconds)
+}
+
+fn scaled_capture_elapsed(wall_elapsed: Duration, speed: ReplaySpeed) -> u64 {
+    let capture_us = wall_elapsed
+        .as_nanos()
+        .saturating_mul(u128::from(speed.quarter_units()))
+        / 4_000;
+    u64::try_from(capture_us).unwrap_or(u64::MAX)
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplayStatePayload {
@@ -41,6 +108,7 @@ pub struct ReplayStatePayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     header: Option<CaptureHeader>,
     complete: bool,
+    speed: f64,
     position_us: u64,
     duration_us: u64,
     data_bytes: u64,
@@ -117,6 +185,7 @@ struct SharedReplayState {
     path: String,
     header: Option<CaptureHeader>,
     complete: bool,
+    speed: ReplaySpeed,
     position_us: u64,
     duration_us: u64,
     data_bytes: u64,
@@ -136,6 +205,7 @@ impl Default for SharedReplayState {
             path: String::new(),
             header: None,
             complete: false,
+            speed: ReplaySpeed::default(),
             position_us: 0,
             duration_us: 0,
             data_bytes: 0,
@@ -157,6 +227,7 @@ impl SharedReplayState {
             path: self.path.clone(),
             header: self.header.clone(),
             complete: self.complete,
+            speed: self.speed.as_f64(),
             position_us: self.position_us,
             duration_us: self.duration_us,
             data_bytes: self.data_bytes,
@@ -177,6 +248,7 @@ impl SharedReplayState {
         self.path.clear();
         self.header = None;
         self.complete = false;
+        self.speed = ReplaySpeed::default();
         self.position_us = 0;
         self.duration_us = 0;
         self.data_bytes = 0;
@@ -279,6 +351,7 @@ enum ControlKind {
     Play,
     Pause,
     Seek { target_us: u64 },
+    SetSpeed { speed: ReplaySpeed },
     Stop,
     Close,
 }
@@ -416,6 +489,7 @@ fn open_replay_inner(
         shared.path = path_text;
         shared.header = Some(header);
         shared.complete = false;
+        shared.speed = ReplaySpeed::default();
         shared.position_us = 0;
         shared.duration_us = 0;
         shared.data_bytes = 0;
@@ -499,6 +573,24 @@ pub fn seek_replay(
         session_id,
         Some(generation),
         ControlKind::Seek { target_us },
+    )
+}
+
+#[tauri::command]
+pub fn set_replay_speed(
+    app: AppHandle,
+    state: State<'_, ReplayState>,
+    session_id: u64,
+    generation: u64,
+    speed: f64,
+) -> Result<ReplayStatePayload, String> {
+    let speed = ReplaySpeed::parse(speed)?;
+    request_control(
+        &app,
+        &state,
+        session_id,
+        Some(generation),
+        ControlKind::SetSpeed { speed },
     )
 }
 
@@ -724,6 +816,7 @@ fn control_kind_name(kind: ControlKind) -> &'static str {
         ControlKind::Play => "播放",
         ControlKind::Pause => "暂停",
         ControlKind::Seek { .. } => "定位",
+        ControlKind::SetSpeed { .. } => "调整倍速",
         ControlKind::Stop => "停止",
         ControlKind::Close => "关闭",
     }
@@ -821,6 +914,7 @@ impl ReplayCore {
             shared.path = path;
             shared.header = None;
             shared.complete = false;
+            shared.speed = ReplaySpeed::default();
             shared.position_us = 0;
             shared.duration_us = 0;
             shared.data_bytes = 0;
@@ -1420,6 +1514,21 @@ struct PlaybackAnchor {
     capture_us: u64,
 }
 
+fn reanchored_capture_us(
+    anchor: &PlaybackAnchor,
+    now: Instant,
+    speed: ReplaySpeed,
+    upper_bound_us: u64,
+) -> u64 {
+    let wall_elapsed = now
+        .checked_duration_since(anchor.instant)
+        .unwrap_or_default();
+    anchor
+        .capture_us
+        .saturating_add(scaled_capture_elapsed(wall_elapsed, speed))
+        .min(upper_bound_us)
+}
+
 fn clear_delivery_for_seek(
     cursor: &mut Option<ReplayCursor>,
     pending_batch: &mut Option<PendingBatch>,
@@ -1458,6 +1567,7 @@ struct ReplayRuntime {
     timeline_revision: u64,
     next_sequence: u64,
     position_us: u64,
+    speed: ReplaySpeed,
     cursor: Option<ReplayCursor>,
     pending_batch: Option<PendingBatch>,
     waiting_start_ack: bool,
@@ -1501,6 +1611,7 @@ impl ReplayRuntime {
             timeline_revision: 0,
             next_sequence: 1,
             position_us: 0,
+            speed: ReplaySpeed::default(),
             cursor: None,
             pending_batch: None,
             waiting_start_ack: false,
@@ -1614,23 +1725,23 @@ impl ReplayRuntime {
             .as_ref()
             .map(|batch| batch.end_us)
             .ok_or_else(|| "回放批次不存在".to_owned())?;
-        let anchor = self
-            .anchor
-            .as_ref()
-            .ok_or_else(|| "回放时钟尚未启动".to_owned())?;
-        let delay_us = batch_end_us
-            .checked_sub(anchor.capture_us)
-            .ok_or_else(|| "回放批次时间早于当前游标".to_owned())?;
-        let target = anchor
-            .instant
-            .checked_add(Duration::from_micros(delay_us))
-            .ok_or_else(|| "回放时间戳超出单调时钟范围".to_owned())?;
 
         loop {
             if self.shutdown.load(Ordering::Acquire) {
                 self.publish_closed(None)?;
                 return Ok(RuntimeControl::Exit);
             }
+            let anchor = self
+                .anchor
+                .as_ref()
+                .ok_or_else(|| "回放时钟尚未启动".to_owned())?;
+            let delay_us = batch_end_us
+                .checked_sub(anchor.capture_us)
+                .ok_or_else(|| "回放批次时间早于当前游标".to_owned())?;
+            let target = anchor
+                .instant
+                .checked_add(scaled_wall_duration(delay_us, self.speed))
+                .ok_or_else(|| "回放时间戳超出单调时钟范围".to_owned())?;
             let now = Instant::now();
             if now >= target {
                 return Ok(RuntimeControl::Continue);
@@ -1734,6 +1845,7 @@ impl ReplayRuntime {
             ControlKind::Play => self.handle_play(command),
             ControlKind::Pause => self.handle_pause(command),
             ControlKind::Seek { target_us } => self.handle_seek(command, target_us),
+            ControlKind::SetSpeed { speed } => self.handle_set_speed(command, speed),
             ControlKind::Stop => self.handle_stop(command),
             ControlKind::Close => self.handle_close(command),
         }
@@ -1932,6 +2044,58 @@ impl ReplayRuntime {
         Ok(RuntimeControl::Continue)
     }
 
+    fn handle_set_speed(
+        &mut self,
+        command: ControlCommand,
+        speed: ReplaySpeed,
+    ) -> Result<RuntimeControl, String> {
+        if !matches!(
+            self.mode,
+            ReplayStatus::Ready
+                | ReplayStatus::Playing
+                | ReplayStatus::Paused
+                | ReplayStatus::Completed
+        ) {
+            reply_control(command, Err("当前回放状态无法调整倍速".to_owned()));
+            return Ok(RuntimeControl::Continue);
+        }
+        if speed == self.speed {
+            let snapshot = self
+                .core
+                .shared
+                .lock()
+                .map_err(|_| "回放状态锁已损坏".to_owned())?
+                .snapshot();
+            reply_control(command, Ok(snapshot));
+            return Ok(RuntimeControl::Continue);
+        }
+
+        if self.mode == ReplayStatus::Playing {
+            if let Some(anchor) = self.anchor.as_ref() {
+                let upper_bound_us = self
+                    .pending_batch
+                    .as_ref()
+                    .map(|batch| batch.end_us)
+                    .unwrap_or(self.summary.duration_us);
+                let now = Instant::now();
+                let capture_us = reanchored_capture_us(anchor, now, self.speed, upper_bound_us);
+                self.anchor = Some(PlaybackAnchor {
+                    instant: now,
+                    capture_us,
+                });
+            }
+        }
+        self.speed = speed;
+        let result = self
+            .core
+            .publish_transition(&self.app, self.session_id, move |shared| {
+                shared.speed = speed;
+                Ok(())
+            });
+        reply_transition(command, result)?;
+        Ok(RuntimeControl::Continue)
+    }
+
     fn handle_stop(&mut self, command: ControlCommand) -> Result<RuntimeControl, String> {
         if self.mode == ReplayStatus::Ready {
             let snapshot = self
@@ -2022,6 +2186,7 @@ impl ReplayRuntime {
                 shared.path.clear();
                 shared.header = None;
                 shared.complete = false;
+                shared.speed = ReplaySpeed::default();
                 shared.position_us = 0;
                 shared.duration_us = 0;
                 shared.data_bytes = 0;
@@ -2286,6 +2451,96 @@ mod tests {
     }
 
     #[test]
+    fn replay_speed_accepts_only_the_bounded_whitelist() {
+        let supported = [
+            (0.25, ReplaySpeed::Quarter),
+            (0.5, ReplaySpeed::Half),
+            (1.0, ReplaySpeed::Normal),
+            (2.0, ReplaySpeed::Double),
+            (4.0, ReplaySpeed::Quadruple),
+        ];
+        for (value, expected) in supported {
+            let parsed = ReplaySpeed::parse(value).unwrap();
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.as_f64(), value);
+        }
+
+        for value in [0.0, 0.1, 8.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(ReplaySpeed::parse(value).is_err());
+        }
+    }
+
+    #[test]
+    fn replay_speed_scales_wall_time_without_floating_point_drift() {
+        let capture_second = 1_000_000;
+        assert_eq!(
+            scaled_wall_duration(capture_second, ReplaySpeed::Quarter),
+            Duration::from_secs(4)
+        );
+        assert_eq!(
+            scaled_wall_duration(capture_second, ReplaySpeed::Half),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            scaled_wall_duration(capture_second, ReplaySpeed::Normal),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            scaled_wall_duration(capture_second, ReplaySpeed::Double),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            scaled_wall_duration(capture_second, ReplaySpeed::Quadruple),
+            Duration::from_millis(250)
+        );
+
+        let wall_elapsed = Duration::from_millis(250);
+        assert_eq!(
+            scaled_capture_elapsed(wall_elapsed, ReplaySpeed::Quarter),
+            62_500
+        );
+        assert_eq!(
+            scaled_capture_elapsed(wall_elapsed, ReplaySpeed::Half),
+            125_000
+        );
+        assert_eq!(
+            scaled_capture_elapsed(wall_elapsed, ReplaySpeed::Normal),
+            250_000
+        );
+        assert_eq!(
+            scaled_capture_elapsed(wall_elapsed, ReplaySpeed::Double),
+            500_000
+        );
+        assert_eq!(
+            scaled_capture_elapsed(wall_elapsed, ReplaySpeed::Quadruple),
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn replay_speed_reanchors_continuously_and_clamps_to_pending_batch() {
+        let started_at = Instant::now();
+        let anchor = PlaybackAnchor {
+            instant: started_at,
+            capture_us: 100_000,
+        };
+        let now = started_at + Duration::from_millis(500);
+
+        assert_eq!(
+            reanchored_capture_us(&anchor, now, ReplaySpeed::Normal, 2_000_000),
+            600_000
+        );
+        assert_eq!(
+            reanchored_capture_us(&anchor, now, ReplaySpeed::Double, 2_000_000),
+            1_100_000
+        );
+        assert_eq!(
+            reanchored_capture_us(&anchor, now, ReplaySpeed::Double, 700_000),
+            700_000
+        );
+    }
+
+    #[test]
     fn sparse_index_is_bounded_and_locates_strictly_before_target() {
         assert_eq!(std::mem::size_of::<ReplayCheckpoint>(), 32);
         let mut index = ReplayIndex::new(64);
@@ -2464,5 +2719,22 @@ mod tests {
             json.get("complete").and_then(|value| value.as_bool()),
             Some(false)
         );
+        assert_eq!(
+            json.get("speed").and_then(|value| value.as_f64()),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn resetting_replay_state_restores_normal_speed() {
+        let mut shared = SharedReplayState {
+            speed: ReplaySpeed::Quadruple,
+            ..SharedReplayState::default()
+        };
+
+        let payload = shared.reset_idle();
+
+        assert_eq!(payload.speed, 1.0);
+        assert_eq!(shared.speed, ReplaySpeed::Normal);
     }
 }

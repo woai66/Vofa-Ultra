@@ -554,6 +554,17 @@ textarea:disabled {
   overflow-wrap: anywhere;
 }
 
+.replay-speed-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px;
+  align-items: center;
+  gap: 10px;
+}
+
+.replay-speed-control select {
+  width: 100%;
+}
+
 .replay-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 36px 36px;
