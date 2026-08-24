@@ -13,6 +13,13 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  BUILD_ENVIRONMENT_MAX_BYTES,
+  BUILD_PLATFORMS,
+  LINUX_BUILD_PACKAGES,
+  build_environment_file_name,
+  serialize_build_environment,
+} from "./package-artifacts.mjs";
+import {
   extract_release_changelog,
   is_prerelease_version,
   parse_checksum_manifest,
@@ -30,6 +37,8 @@ const RUN_NUMBER = "42";
 const RUN_ID = "4242";
 const RUN_ATTEMPT = "1";
 const SOURCE_COMMIT = "a".repeat(40);
+const CARGO_COMMIT = "b".repeat(40);
+const RUSTC_COMMIT = "c".repeat(40);
 
 function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
@@ -57,6 +66,51 @@ function installer_names(platform_name) {
     `Vofa-Ultra_${VERSION}_x64-setup.exe`,
     `Vofa-Ultra_${VERSION}_x64_en-US.msi`,
   ];
+}
+
+function build_environment_record(platform_name) {
+  const platform = RELEASE_PLATFORMS[platform_name];
+  return {
+    schema_version: 1,
+    project: "vofa-ultra",
+    version: VERSION,
+    source_commit: SOURCE_COMMIT,
+    source_dirty: false,
+    platform: platform_name,
+    rust_target: platform.target_triple,
+    runner: {
+      os: BUILD_PLATFORMS[platform_name].runner_os,
+      arch: "X64",
+      environment: "github-hosted",
+      image_os: platform_name === "linux" ? "ubuntu22" : `${platform_name}15`,
+      image_version: "20260818.1.0",
+    },
+    toolchain: {
+      node: "22.23.2",
+      pnpm: "11.7.0",
+      tauri_cli: "2.11.4",
+      cargo: {
+        release: "1.98.0",
+        commit_hash: CARGO_COMMIT,
+        commit_date: "2026-08-05",
+        host: platform.target_triple,
+      },
+      rustc: {
+        release: "1.98.0",
+        commit_hash: RUSTC_COMMIT,
+        commit_date: "2026-08-18",
+        host: platform.target_triple,
+        llvm_version: "22.1.8",
+      },
+    },
+    declared_system_packages: platform_name === "linux"
+      ? LINUX_BUILD_PACKAGES.map((name) => ({
+        name,
+        architecture: "amd64",
+        version: "1.0.0-1ubuntu1",
+      }))
+      : [],
+  };
 }
 
 function write_checksum_manifest(directory) {
@@ -100,6 +154,10 @@ function create_download_tree(
     writeFileSync(
       path.join(artifact_directory, "SUPPLY_CHAIN_SHA256SUMS"),
       `${"0".repeat(64)}  fixture\n`,
+    );
+    writeFileSync(
+      path.join(artifact_directory, build_environment_file_name(platform.target_triple)),
+      serialize_build_environment(build_environment_record(platform_name)),
     );
     write_checksum_manifest(artifact_directory);
   }
@@ -201,7 +259,7 @@ test("stages deterministic flat assets from exactly three verified platforms", a
       verify_supply_chain: verify_fixture_supply_chain,
     });
 
-    assert.equal(first.file_names.length, 18);
+    assert.equal(first.file_names.length, 21);
     assert.deepEqual(first.file_names, second.file_names);
     assert.equal(first.prerelease, is_prerelease_version(VERSION));
     assert.equal(first.file_names.includes("SUPPLY_CHAIN_SHA256SUMS"), false);
@@ -223,6 +281,10 @@ test("stages deterministic flat assets from exactly three verified platforms", a
     for (const platform of Object.values(RELEASE_PLATFORMS)) {
       assert.equal(
         first.file_names.includes(`SUPPLY_CHAIN_SHA256SUMS-${platform.target_triple}`),
+        true,
+      );
+      assert.equal(
+        first.file_names.includes(build_environment_file_name(platform.target_triple)),
         true,
       );
     }
@@ -263,6 +325,119 @@ test("rejects source artifacts that do not match their checksum manifest", async
         verify_supply_chain: verify_fixture_supply_chain,
       }),
       /Checksum mismatch/,
+    );
+  } finally {
+    rmSync(temporary_root, { recursive: true, force: true });
+  }
+});
+
+test("rejects semantically invalid build environments after checksum verification", async () => {
+  const temporary_root = mkdtempSync(path.join(tmpdir(), "vofa-ultra-build-environment-test-"));
+  try {
+    const cases = [
+      {
+        name: "wrong-source",
+        mutate: (record) => {
+          record.source_commit = "d".repeat(40);
+        },
+        pattern: /source_commit does not match/,
+      },
+      {
+        name: "wrong-target",
+        mutate: (record) => {
+          record.rust_target = "x86_64-pc-windows-msvc";
+        },
+        pattern: /target does not match/,
+      },
+      {
+        name: "wrong-runner",
+        mutate: (record) => {
+          record.runner.os = "Windows";
+        },
+        pattern: /runner does not match/,
+      },
+      {
+        name: "mismatched-toolchain",
+        mutate: (record) => {
+          record.toolchain.cargo.host = "aarch64-apple-darwin";
+        },
+        pattern: /Cargo and rustc must report the same release and host/,
+      },
+      {
+        name: "unknown-field",
+        mutate: (record) => {
+          record.workspace = "/home/runner/work";
+        },
+        pattern: /fields or field order/,
+      },
+      {
+        name: "oversized",
+        mutate: () => {},
+        render: () => `${JSON.stringify({
+          padding: "x".repeat(BUILD_ENVIRONMENT_MAX_BYTES),
+        })}\n`,
+        pattern: /record is too large/,
+      },
+    ];
+
+    for (const test_case of cases) {
+      const input_root = path.join(temporary_root, `input-${test_case.name}`);
+      create_download_tree(input_root);
+      const linux_directory = path.join(
+        input_root,
+        `vofa-ultra-linux-${RUN_NUMBER}-${RUN_ATTEMPT}`,
+      );
+      const environment_path = path.join(
+        linux_directory,
+        build_environment_file_name(RELEASE_PLATFORMS.linux.target_triple),
+      );
+      const record = JSON.parse(readFileSync(environment_path, "utf8"));
+      test_case.mutate(record);
+      writeFileSync(
+        environment_path,
+        test_case.render ? test_case.render(record) : `${JSON.stringify(record, null, 2)}\n`,
+      );
+      write_checksum_manifest(linux_directory);
+      await assert.rejects(
+        stage_release_artifacts({
+          input_root,
+          output_root: path.join(temporary_root, `output-${test_case.name}`),
+          run_attempt: RUN_ATTEMPT,
+          run_id: RUN_ID,
+          run_number: RUN_NUMBER,
+          source_commit: SOURCE_COMMIT,
+          tag_name: `v${VERSION}`,
+          verify_supply_chain: verify_fixture_supply_chain,
+        }),
+        test_case.pattern,
+      );
+    }
+
+    const missing_root = path.join(temporary_root, "input-missing");
+    create_download_tree(missing_root);
+    const windows_directory = path.join(
+      missing_root,
+      `vofa-ultra-windows-${RUN_NUMBER}-${RUN_ATTEMPT}`,
+    );
+    rmSync(
+      path.join(
+        windows_directory,
+        build_environment_file_name(RELEASE_PLATFORMS.windows.target_triple),
+      ),
+    );
+    write_checksum_manifest(windows_directory);
+    await assert.rejects(
+      stage_release_artifacts({
+        input_root: missing_root,
+        output_root: path.join(temporary_root, "output-missing"),
+        run_attempt: RUN_ATTEMPT,
+        run_id: RUN_ID,
+        run_number: RUN_NUMBER,
+        source_commit: SOURCE_COMMIT,
+        tag_name: `v${VERSION}`,
+        verify_supply_chain: verify_fixture_supply_chain,
+      }),
+      /Build environment record is missing|unexpected file/,
     );
   } finally {
     rmSync(temporary_root, { recursive: true, force: true });

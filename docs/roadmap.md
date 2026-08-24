@@ -75,7 +75,8 @@
 - [x] 每目标 CycloneDX SBOM、许可证允许策略、第三方 notices 与完整校验清单进入 CI 和安装包资源。
 - [x] 三平台产物二次复验、commit/run 绑定记录、版本 CHANGELOG 与受保护 draft/prerelease 门禁。
 - [ ] Windows、macOS、Linux 签名安装包和校验值。
-- [ ] 固定构建镜像、可复现构建记录和来源证明。
+- [x] 三平台实际 runner/toolchain 环境记录，以及平台原始产物和聚合 Release assets 的 GitHub 来源证明。
+- [ ] 固定 Windows/macOS runner 镜像和 Linux 系统包，推进安装包字节级可复现构建。
 - [x] 机器可验证的配置兼容性承诺、稳定协议 wire ID / 解析契约和弃用策略。
 - [x] 用户手册与故障排查矩阵覆盖当前连接、采集、自动化和文件工作流。
 - [x] 硬件兼容性证据门槛、空清单和结构化报告模板。

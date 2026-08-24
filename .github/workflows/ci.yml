@@ -191,6 +191,10 @@ jobs:
       - rust-msrv
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -257,6 +261,12 @@ jobs:
       - name: Stage bundles, supply-chain metadata, and checksums
         run: pnpm package:collect ${{ matrix.platform }} ${{ matrix.rust_target }}
 
+      - name: Attest tagged platform build outputs
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: artifacts/${{ matrix.platform }}/*
+
       - name: Upload unsigned bundles and release metadata
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -275,7 +285,9 @@ jobs:
     environment: release-draft
     permissions:
       actions: read
+      attestations: write
       contents: write
+      id-token: write
 
     steps:
       - name: Check out tagged source
@@ -313,6 +325,94 @@ jobs:
           pnpm release:stage downloaded-artifacts release-assets \
             "$RELEASE_RUN_NUMBER" "$RELEASE_TAG_NAME" "$release_source_sha" \
             "$RELEASE_RUN_ID" "$RELEASE_RUN_ATTEMPT"
+
+      - name: Preflight aggregate provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          resolve_remote_tag_commit() {
+            local object_tsv
+            local object_type
+            local object_sha
+            local depth
+
+            object_tsv="$(
+              gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG_NAME}" \
+                --jq '[.object.type, .object.sha] | @tsv'
+            )"
+            IFS=$'\t' read -r object_type object_sha <<< "$object_tsv"
+
+            for depth in {1..8}; do
+              case "$object_type" in
+                commit)
+                  if [[ ! "$object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+                    echo "Remote tag resolved to an invalid commit: $object_sha" >&2
+                    return 1
+                  fi
+                  printf '%s\n' "$object_sha"
+                  return 0
+                  ;;
+                tag)
+                  object_tsv="$(
+                    gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}" \
+                      --jq '[.object.type, .object.sha] | @tsv'
+                  )"
+                  IFS=$'\t' read -r object_type object_sha <<< "$object_tsv"
+                  ;;
+                *)
+                  echo "Remote tag does not resolve to a commit: $object_type" >&2
+                  return 1
+                  ;;
+              esac
+            done
+
+            echo "Remote tag indirection exceeds the verification limit." >&2
+            return 1
+          }
+
+          source_sha="$(git rev-parse 'HEAD^{commit}')"
+          remote_source_sha="$(resolve_remote_tag_commit)"
+          if [[ "$remote_source_sha" != "$source_sha" ]]; then
+            echo "Remote tag moved from triggering commit $source_sha to $remote_source_sha." >&2
+            exit 1
+          fi
+
+          build_source_sha="$(
+            node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              const metadata = JSON.parse(readFileSync(process.argv[1], "utf8"));
+              if (typeof metadata.source_commit !== "string"
+                || typeof metadata.prerelease !== "boolean") {
+                throw new Error("Release build metadata is invalid");
+              }
+              process.stdout.write(metadata.source_commit);
+            ' release-assets/RELEASE_BUILD_INFO.json
+          )"
+          if [[ "$build_source_sha" != "$source_sha" ]]; then
+            echo "Release build metadata does not match triggering commit $source_sha." >&2
+            exit 1
+          fi
+
+          release_lookup_error="$(mktemp)"
+          trap 'rm -f "$release_lookup_error"' EXIT
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG_NAME}" \
+            --silent 2>"$release_lookup_error"; then
+            echo "Release ${RELEASE_TAG_NAME} already exists; refusing to attest replacement assets."
+            exit 1
+          fi
+          if ! grep -q 'HTTP 404' "$release_lookup_error"; then
+            cat "$release_lookup_error" >&2
+            echo "Unable to prove that release ${RELEASE_TAG_NAME} is absent." >&2
+            exit 1
+          fi
+
+      - name: Attest verified aggregate release assets
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: release-assets/*
 
       - name: Create protected unsigned draft
         env:

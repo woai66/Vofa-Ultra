@@ -12,6 +12,13 @@ const PACKAGE_PATH = path.join(PROJECT_ROOT, "package.json");
 const TAURI_CONFIG_PATH = path.join(PROJECT_ROOT, "src-tauri", "tauri.conf.json");
 const CARGO_MANIFEST_PATH = path.join(PROJECT_ROOT, "src-tauri", "Cargo.toml");
 const LICENSE_PATH = path.join(PROJECT_ROOT, "LICENSE");
+const TAURI_CLI_PACKAGE_PATH = path.join(
+  PROJECT_ROOT,
+  "node_modules",
+  "@tauri-apps",
+  "cli",
+  "package.json",
+);
 const BUNDLE_SUPPLY_CHAIN_ROOT = path.join(
   PROJECT_ROOT,
   "src-tauri",
@@ -19,6 +26,39 @@ const BUNDLE_SUPPLY_CHAIN_ROOT = path.join(
   "supply-chain",
 );
 const DEFAULT_BUNDLE_ROOT = path.join(PROJECT_ROOT, "src-tauri", "target", "release", "bundle");
+const BUILD_ENVIRONMENT_PREFIX = "BUILD_ENVIRONMENT";
+export const BUILD_ENVIRONMENT_MAX_BYTES = 32 * 1024;
+const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const RUST_TARGET_PATTERN = /^[a-z0-9_.-]+$/;
+const SOURCE_COMMIT_PATTERN = /^[0-9a-f]{40}$/;
+
+export const BUILD_PLATFORMS = Object.freeze({
+  linux: Object.freeze({
+    runner_hosts: Object.freeze({ X64: "x86_64-unknown-linux-gnu" }),
+    runner_os: "Linux",
+    target_triple: "x86_64-unknown-linux-gnu",
+  }),
+  macos: Object.freeze({
+    runner_hosts: Object.freeze({
+      ARM64: "aarch64-apple-darwin",
+      X64: "x86_64-apple-darwin",
+    }),
+    runner_os: "macOS",
+    target_triple: "x86_64-apple-darwin",
+  }),
+  windows: Object.freeze({
+    runner_hosts: Object.freeze({ X64: "x86_64-pc-windows-msvc" }),
+    runner_os: "Windows",
+    target_triple: "x86_64-pc-windows-msvc",
+  }),
+});
+
+export const LINUX_BUILD_PACKAGES = Object.freeze([
+  "libayatana-appindicator3-dev",
+  "librsvg2-dev",
+  "libwebkit2gtk-4.1-dev",
+  "patchelf",
+]);
 
 const PLATFORM_ARTIFACTS = {
   linux: [
@@ -107,6 +147,466 @@ function normalized_path(file_path) {
 
 function compare_stable(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function assert_exact_keys(value, expected_keys, label) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    fail(`${label} must be an object`);
+  }
+  const actual_keys = Object.keys(value);
+  if (JSON.stringify(actual_keys) !== JSON.stringify(expected_keys)) {
+    fail(`${label} fields or field order are invalid`);
+  }
+}
+
+function assert_safe_value(value, label, pattern = null, maximum_length = 200) {
+  if (typeof value !== "string"
+    || value.length === 0
+    || value.length > maximum_length
+    || [...value].some((character) => {
+      const code_point = character.codePointAt(0);
+      return code_point <= 0x1f || code_point === 0x7f;
+    })
+    || value.includes("/")
+    || value.includes("\\")
+    || (pattern && !pattern.test(value))) {
+    fail(`${label} is invalid`);
+  }
+}
+
+function assert_semver(value, label) {
+  assert_safe_value(value, label, SEMVER_PATTERN);
+}
+
+function assert_date(value, label) {
+  assert_safe_value(value, label, /^\d{4}-\d{2}-\d{2}$/);
+  const [year, month, day] = value.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.getUTCFullYear() !== year
+    || parsed.getUTCMonth() !== month - 1
+    || parsed.getUTCDate() !== day) {
+    fail(`${label} is invalid`);
+  }
+}
+
+function normalize_tool_output(output, label) {
+  if (typeof output !== "string" || output.length === 0 || output.length > 4096) {
+    fail(`${label} output is empty or too large`);
+  }
+  const normalized = output.replaceAll("\r\n", "\n");
+  if (normalized.includes("\r")) {
+    fail(`${label} output contains unsupported line endings`);
+  }
+  return normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
+}
+
+export function build_environment_file_name(target_triple) {
+  assert_safe_value(target_triple, "Build environment Rust target", RUST_TARGET_PATTERN);
+  return `${BUILD_ENVIRONMENT_PREFIX}-${target_triple}.json`;
+}
+
+export function parse_verbose_tool_version(output, tool_name) {
+  if (tool_name !== "cargo" && tool_name !== "rustc") {
+    fail(`Unsupported verbose tool: ${tool_name}`);
+  }
+  const normalized = normalize_tool_output(output, `${tool_name} -Vv`);
+  const lines = normalized.split("\n");
+  const banner = new RegExp(
+    `^${tool_name} (\\S+) \\(([0-9a-f]{7,40}) (\\d{4}-\\d{2}-\\d{2})\\)$`,
+  ).exec(lines[0]);
+  if (!banner) {
+    fail(`${tool_name} -Vv banner is invalid`);
+  }
+
+  const allowed_fields = tool_name === "cargo"
+    ? new Set(["release", "commit-hash", "commit-date", "host", "libgit2", "libcurl", "ssl", "os"])
+    : new Set(["binary", "commit-hash", "commit-date", "host", "release", "LLVM version"]);
+  const fields = new Map();
+  for (const line of lines.slice(1)) {
+    const separator = line.indexOf(": ");
+    if (separator <= 0) {
+      fail(`${tool_name} -Vv contains an invalid field`);
+    }
+    const field_name = line.slice(0, separator);
+    const field_value = line.slice(separator + 2);
+    if (!allowed_fields.has(field_name) || fields.has(field_name)) {
+      fail(`${tool_name} -Vv contains an unknown or duplicate field: ${field_name}`);
+    }
+    fields.set(field_name, field_value);
+  }
+
+  const required_fields = ["release", "commit-hash", "commit-date", "host"];
+  if (tool_name === "rustc") {
+    required_fields.push("binary", "LLVM version");
+  }
+  for (const field_name of required_fields) {
+    if (!fields.has(field_name)) {
+      fail(`${tool_name} -Vv is missing ${field_name}`);
+    }
+  }
+  if (fields.get("release") !== banner[1]
+    || !fields.get("commit-hash").startsWith(banner[2])
+    || fields.get("commit-date") !== banner[3]) {
+    fail(`${tool_name} -Vv banner does not match its fields`);
+  }
+  if (tool_name === "rustc" && fields.get("binary") !== "rustc") {
+    fail("rustc -Vv reports an unexpected binary");
+  }
+
+  const version = {
+    release: fields.get("release"),
+    commit_hash: fields.get("commit-hash"),
+    commit_date: fields.get("commit-date"),
+    host: fields.get("host"),
+  };
+  assert_semver(version.release, `${tool_name} release`);
+  assert_safe_value(version.commit_hash, `${tool_name} commit hash`, SOURCE_COMMIT_PATTERN);
+  assert_date(version.commit_date, `${tool_name} commit date`);
+  assert_safe_value(version.host, `${tool_name} host`, RUST_TARGET_PATTERN);
+
+  if (tool_name === "rustc") {
+    version.llvm_version = fields.get("LLVM version");
+    assert_semver(version.llvm_version, "rustc LLVM version");
+  }
+  return version;
+}
+
+export function parse_linux_build_packages(output) {
+  const normalized = normalize_tool_output(output, "dpkg-query");
+  const packages = [];
+  const seen_names = new Set();
+  for (const line of normalized.split("\n")) {
+    const fields = line.split("\t");
+    if (fields.length !== 3) {
+      fail("dpkg-query contains an invalid package record");
+    }
+    const [name, architecture, version] = fields;
+    assert_safe_value(name, "Linux package name", /^[a-z0-9][a-z0-9+.-]*$/);
+    assert_safe_value(architecture, "Linux package architecture", /^[a-z0-9][a-z0-9-]*$/);
+    assert_safe_value(version, "Linux package version", /^[A-Za-z0-9.+:~_-]+$/);
+    if (seen_names.has(name)) {
+      fail(`dpkg-query contains a duplicate package: ${name}`);
+    }
+    seen_names.add(name);
+    packages.push({ name, architecture, version });
+  }
+  const expected_names = [...LINUX_BUILD_PACKAGES];
+  const actual_names = packages.map((entry) => entry.name).sort(compare_stable);
+  if (JSON.stringify(actual_names) !== JSON.stringify(expected_names)) {
+    fail("dpkg-query does not contain exactly the declared Linux build packages");
+  }
+  return packages.sort((left, right) => compare_stable(left.name, right.name));
+}
+
+function validate_toolchain(toolchain) {
+  assert_exact_keys(toolchain, ["node", "pnpm", "tauri_cli", "cargo", "rustc"], "Toolchain");
+  assert_semver(toolchain.node, "Node.js version");
+  assert_semver(toolchain.pnpm, "pnpm version");
+  assert_semver(toolchain.tauri_cli, "Tauri CLI version");
+  assert_exact_keys(
+    toolchain.cargo,
+    ["release", "commit_hash", "commit_date", "host"],
+    "Cargo version",
+  );
+  assert_exact_keys(
+    toolchain.rustc,
+    ["release", "commit_hash", "commit_date", "host", "llvm_version"],
+    "rustc version",
+  );
+  for (const [tool_name, version] of [["cargo", toolchain.cargo], ["rustc", toolchain.rustc]]) {
+    assert_semver(version.release, `${tool_name} release`);
+    assert_safe_value(version.commit_hash, `${tool_name} commit hash`, SOURCE_COMMIT_PATTERN);
+    assert_date(version.commit_date, `${tool_name} commit date`);
+    assert_safe_value(version.host, `${tool_name} host`, RUST_TARGET_PATTERN);
+  }
+  assert_semver(toolchain.rustc.llvm_version, "rustc LLVM version");
+  if (toolchain.cargo.release !== toolchain.rustc.release
+    || toolchain.cargo.host !== toolchain.rustc.host) {
+    fail("Cargo and rustc must report the same release and host");
+  }
+}
+
+function validate_build_environment(record, expected = {}) {
+  assert_exact_keys(
+    record,
+    [
+      "schema_version",
+      "project",
+      "version",
+      "source_commit",
+      "source_dirty",
+      "platform",
+      "rust_target",
+      "runner",
+      "toolchain",
+      "declared_system_packages",
+    ],
+    "Build environment",
+  );
+  if (record.schema_version !== 1 || record.project !== "vofa-ultra") {
+    fail("Build environment schema or project is invalid");
+  }
+  assert_semver(record.version, "Build environment version");
+  assert_safe_value(record.source_commit, "Build environment source commit", SOURCE_COMMIT_PATTERN);
+  if (typeof record.source_dirty !== "boolean") {
+    fail("Build environment source_dirty must be boolean");
+  }
+  if (!Object.hasOwn(BUILD_PLATFORMS, record.platform)) {
+    fail(`Build environment platform is invalid: ${record.platform}`);
+  }
+  const platform = BUILD_PLATFORMS[record.platform];
+  if (record.rust_target !== platform.target_triple) {
+    fail(`Build environment target does not match ${record.platform}`);
+  }
+  assert_exact_keys(
+    record.runner,
+    ["os", "arch", "environment", "image_os", "image_version"],
+    "Build environment runner",
+  );
+  if (record.runner.os !== platform.runner_os
+    || record.runner.environment !== "github-hosted") {
+    fail(`Build environment runner does not match ${record.platform}`);
+  }
+  assert_safe_value(record.runner.arch, "Runner architecture", /^(?:ARM64|X64)$/);
+  assert_safe_value(record.runner.image_os, "Runner image OS", /^[A-Za-z0-9._+-]+$/);
+  assert_safe_value(record.runner.image_version, "Runner image version", /^[A-Za-z0-9._+-]+$/);
+  validate_toolchain(record.toolchain);
+  const expected_host = platform.runner_hosts[record.runner.arch];
+  if (!expected_host || record.toolchain.rustc.host !== expected_host) {
+    fail(`Build environment toolchain host does not match ${record.platform} runner`);
+  }
+
+  if (!Array.isArray(record.declared_system_packages)) {
+    fail("declared_system_packages must be an array");
+  }
+  const package_names = [];
+  for (const package_record of record.declared_system_packages) {
+    assert_exact_keys(package_record, ["name", "architecture", "version"], "System package");
+    assert_safe_value(package_record.name, "System package name", /^[a-z0-9][a-z0-9+.-]*$/);
+    assert_safe_value(package_record.architecture, "System package architecture", /^[a-z0-9][a-z0-9-]*$/);
+    assert_safe_value(package_record.version, "System package version", /^[A-Za-z0-9.+:~_-]+$/);
+    package_names.push(package_record.name);
+  }
+  const sorted_package_names = [...package_names].sort(compare_stable);
+  if (JSON.stringify(package_names) !== JSON.stringify(sorted_package_names)) {
+    fail("System packages must use stable name order");
+  }
+  const expected_package_names = record.platform === "linux" ? [...LINUX_BUILD_PACKAGES] : [];
+  if (JSON.stringify(package_names) !== JSON.stringify(expected_package_names)) {
+    fail(`Build environment system packages do not match ${record.platform}`);
+  }
+
+  const expected_fields = {
+    platform: "platform",
+    rust_target: "rust_target",
+    source_commit: "source_commit",
+    source_dirty: "source_dirty",
+    version: "version",
+  };
+  for (const [option_name, record_name] of Object.entries(expected_fields)) {
+    if (Object.hasOwn(expected, option_name) && record[record_name] !== expected[option_name]) {
+      fail(`Build environment ${record_name} does not match the release`);
+    }
+  }
+  return record;
+}
+
+export function serialize_build_environment(record) {
+  validate_build_environment(record);
+  return `${JSON.stringify(record, null, 2)}\n`;
+}
+
+export function parse_and_validate_build_environment(text, expected = {}) {
+  if (typeof text !== "string"
+    || Buffer.byteLength(text, "utf8") > BUILD_ENVIRONMENT_MAX_BYTES
+    || !text.endsWith("\n")
+    || text.includes("\r")
+    || text.startsWith("\ufeff")) {
+    fail("Build environment JSON must be UTF-8 canonical JSON with LF line endings");
+  }
+  let record;
+  try {
+    record = JSON.parse(text);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    fail(`Build environment JSON is invalid: ${detail}`);
+  }
+  validate_build_environment(record, expected);
+  if (`${JSON.stringify(record, null, 2)}\n` !== text) {
+    fail("Build environment JSON is not canonical");
+  }
+  return record;
+}
+
+function required_environment_value(environment, variable_name) {
+  const value = environment[variable_name];
+  if (typeof value !== "string" || value.length === 0) {
+    fail(`GitHub build environment is missing ${variable_name}`);
+  }
+  return value;
+}
+
+export function build_ci_environment(options) {
+  const {
+    environment,
+    platform_name,
+    source,
+    target_triple,
+    tools,
+    version,
+  } = options;
+  if (environment?.GITHUB_ACTIONS !== "true") {
+    fail("Build environment records require GitHub Actions");
+  }
+  const platform = BUILD_PLATFORMS[platform_name];
+  if (!platform || target_triple !== platform.target_triple) {
+    fail(`GitHub build target does not match platform ${platform_name}`);
+  }
+  if (source === null || typeof source !== "object" || Array.isArray(source)) {
+    fail("GitHub build source is invalid");
+  }
+  assert_safe_value(source.source_commit, "Source commit", SOURCE_COMMIT_PATTERN);
+  if (source.source_dirty !== false) {
+    fail("GitHub build source must be clean before packaging");
+  }
+
+  const github_sha = required_environment_value(environment, "GITHUB_SHA");
+  const runner_arch = required_environment_value(environment, "RUNNER_ARCH");
+  const runner_environment = required_environment_value(environment, "RUNNER_ENVIRONMENT");
+  const runner_os = required_environment_value(environment, "RUNNER_OS");
+  const image_os = required_environment_value(environment, "ImageOS");
+  const image_version = required_environment_value(environment, "ImageVersion");
+  if (github_sha !== source.source_commit) {
+    fail("GitHub build source does not match GITHUB_SHA");
+  }
+  if (runner_os !== platform.runner_os || runner_environment !== "github-hosted") {
+    fail(`GitHub runner does not match platform ${platform_name}`);
+  }
+  if (tools === null || typeof tools !== "object" || Array.isArray(tools)) {
+    fail("GitHub build tool samples are invalid");
+  }
+
+  const declared_system_packages = platform_name === "linux"
+    ? parse_linux_build_packages(tools.linux_packages)
+    : [];
+  if (platform_name !== "linux"
+    && tools.linux_packages !== null
+    && tools.linux_packages !== undefined
+    && tools.linux_packages !== "") {
+    fail(`GitHub build contains unexpected Linux packages for ${platform_name}`);
+  }
+  return serialize_build_environment({
+    schema_version: 1,
+    project: "vofa-ultra",
+    version,
+    source_commit: source.source_commit,
+    source_dirty: source.source_dirty,
+    platform: platform_name,
+    rust_target: target_triple,
+    runner: {
+      os: runner_os,
+      arch: runner_arch,
+      environment: runner_environment,
+      image_os,
+      image_version,
+    },
+    toolchain: {
+      node: tools.node,
+      pnpm: tools.pnpm,
+      tauri_cli: tools.tauri_cli,
+      cargo: parse_verbose_tool_version(tools.cargo_verbose, "cargo"),
+      rustc: parse_verbose_tool_version(tools.rustc_verbose, "rustc"),
+    },
+    declared_system_packages,
+  });
+}
+
+function run_command(command, args, label) {
+  try {
+    return execFileSync(command, args, {
+      cwd: PROJECT_ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    fail(`Unable to read ${label}: ${detail}`);
+  }
+}
+
+export function pnpm_version_from_user_agent(user_agent) {
+  if (typeof user_agent !== "string") {
+    return null;
+  }
+  const match = /^pnpm\/([^\s]+)/.exec(user_agent);
+  if (!match) {
+    return null;
+  }
+  const version = match[1];
+  assert_semver(version, "pnpm version");
+  return version;
+}
+
+function read_actual_pnpm_version() {
+  const user_agent_version = pnpm_version_from_user_agent(process.env.npm_config_user_agent);
+  if (user_agent_version !== null) {
+    return user_agent_version;
+  }
+  const npm_exec_path = process.env.npm_execpath;
+  const output = npm_exec_path
+    ? run_command(process.execPath, [npm_exec_path, "--version"], "pnpm version")
+    : run_command(process.platform === "win32" ? "pnpm.cmd" : "pnpm", ["--version"], "pnpm version");
+  const version = normalize_tool_output(output, "pnpm");
+  assert_semver(version, "pnpm version");
+  return version;
+}
+
+function read_source_state() {
+  const source_commit = normalize_tool_output(
+    run_command("git", ["rev-parse", "HEAD^{commit}"], "source commit"),
+    "git rev-parse",
+  );
+  assert_safe_value(source_commit, "Source commit", SOURCE_COMMIT_PATTERN);
+  const status = run_command(
+    "git",
+    ["status", "--porcelain=v1", "--untracked-files=all"],
+    "source status",
+  );
+  return { source_commit, source_dirty: status.length > 0 };
+}
+
+function capture_build_environment(version, platform_name, target_triple) {
+  if (process.env.GITHUB_ACTIONS !== "true") {
+    return null;
+  }
+  const source = read_source_state();
+  const tauri_cli_package = read_json(TAURI_CLI_PACKAGE_PATH);
+  const linux_packages = platform_name === "linux"
+    ? run_command(
+      "dpkg-query",
+      [
+        "--show",
+        "--showformat=${Package}\\t${Architecture}\\t${Version}\\n",
+        ...LINUX_BUILD_PACKAGES,
+      ],
+      "declared Linux build packages",
+    )
+    : null;
+  return build_ci_environment({
+    environment: process.env,
+    platform_name,
+    source,
+    target_triple,
+    tools: {
+      node: process.versions.node,
+      pnpm: read_actual_pnpm_version(),
+      tauri_cli: tauri_cli_package.version,
+      cargo_verbose: run_command("cargo", ["-Vv"], "Cargo version"),
+      rustc_verbose: run_command("rustc", ["-Vv"], "rustc version"),
+      linux_packages,
+    },
+    version,
+  });
 }
 
 function read_cargo_package() {
@@ -358,6 +858,16 @@ async function collect_artifacts(platform_name, explicit_target) {
     file_names.add(supply_chain_name);
   }
 
+  const build_environment = capture_build_environment(version, platform_name, target_triple);
+  if (build_environment !== null) {
+    const environment_name = build_environment_file_name(target_triple);
+    if (file_names.has(environment_name)) {
+      fail(`Artifact filename collision: ${environment_name}`);
+    }
+    await writeFile(path.join(output_directory, environment_name), build_environment, "utf8");
+    file_names.add(environment_name);
+  }
+
   const checksum_lines = [];
   const staged_files = (await list_files(output_directory))
     .sort((left, right) => compare_stable(path.basename(left), path.basename(right)));
@@ -374,6 +884,7 @@ async function collect_artifacts(platform_name, explicit_target) {
   console.log(
     `Staged ${sorted_files.length} ${platform_name} bundle(s) and `
       + `${supply_chain.component_count} dependency records for ${target_triple} `
+      + `${build_environment === null ? "without" : "with"} a build environment record `
       + `in ${output_directory}`,
   );
 }

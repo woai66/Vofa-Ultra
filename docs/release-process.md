@@ -9,11 +9,15 @@
 
 1. 创建名为 `release-draft` 的 Environment，限制为 `v*` 标签，并配置至少一名 required reviewer。
 2. 使用 ruleset 保护 `main` 和 `v*` 标签，禁止 force-push、删除已发布标签和绕过必需检查。
-3. Actions 默认 `GITHUB_TOKEN` 权限保持只读；只有 `release-draft` job 获得 `actions: read` 与 `contents: write`。
+3. Actions 默认 `GITHUB_TOKEN` 权限保持只读。package job 仅增加 `id-token: write` 与 `attestations: write`；
+   `release-draft` job 另外获得 `actions: read` 与 `contents: write`，用于下载同 run 产物并创建 draft。
 4. 启用 Private vulnerability reporting；正式发布后建议启用 immutable releases。
 5. 代码签名证书、公证凭据和私钥只能放在受保护 Environment，不能提供给 PR、普通 push 或无签名 package job。
 
 Environment 尚未配置保护规则时，workflow 仍只会创建 draft，但这不满足正式发布要求。
+GitHub 不支持按 step 缩小 job 权限，因此手动 `workflow_dispatch` 的 package job 也会获得 OIDC/attestation 权限，
+但证明步骤仍按 `refs/tags/v` 条件跳过。手动触发权必须只授予仓库写权限成员；若开放给更广泛角色，应把手动无特权
+打包与标签证明拆成独立 workflow。
 
 ## 准备版本
 
@@ -47,20 +51,35 @@ git push origin v0.1.0
 ## 自动聚合
 
 版本标签触发 `CI` workflow 后，三平台 package matrix 分别生成 Linux x64、Windows x64 和 macOS x64 候选包。
-每个平台 artifact 都包含安装包、项目许可证、目标 CycloneDX、第三方 NOTICE、供应链清单和平台 `SHA256SUMS`。
+每个平台 artifact 都包含安装包、项目许可证、目标 CycloneDX、第三方 NOTICE、供应链清单、构建环境记录和平台
+`SHA256SUMS`。环境记录只在 GitHub Actions 中生成，本地收集目录不能进入正式聚合。
 
 `release-draft` job 只在三个 package 全部成功后运行，并执行以下 fail-closed 检查：
 
 - 只接受当前 `github.run_number` 与 `github.run_attempt` 对应的三个平台目录，不接受旧尝试、缺失、额外或嵌套文件。
 - 再次验证每个平台 `SHA256SUMS`，拒绝空文件、未列文件、重复名称、路径逃逸和内容篡改。
 - 使用官方严格 Schema 重验 CycloneDX、目标 triple、输入摘要与 NOTICE inventory。
+- 严格解析 canonical 环境 JSON，拒绝未知/乱序字段、路径泄漏、dirty 源码，以及错误版本、commit、平台或 target。
+- 要求环境记录来自 GitHub hosted runner，并保留实际 runner image、Node/pnpm/Tauri CLI/Cargo/rustc/LLVM；Linux
+  还必须包含 workflow 明确安装的四个系统包及版本。
 - 要求三份项目 `LICENSE` 与标签源码逐字节一致，安装包文件名包含精确版本。
 - 要求当前版本 CHANGELOG 章节非空，生成记录版本、触发 commit、run ID/attempt、target 和通道的构建信息。
 - 保留目标专属供应链清单，并对扁平化后的全部 Release assets 重算单一 `SHA256SUMS`。
 - draft 创建前后都通过 GitHub API 解引用 lightweight/annotated tag，并要求其 commit 与 workflow 源码一致。
 - 已存在同标签 Release 时拒绝覆盖；v0.x 或带 SemVer 预发布后缀的 draft 自动标记为 prerelease。
+- 三个平台在上传前分别对原始文件摘要生成 GitHub build provenance；聚合 job 在复验后对最终 Release assets
+  再生成 provenance。两层 action 都固定到审核过的完整 commit SHA。
 
 job 通过受保护的 `release-draft` Environment 创建 draft，不会调用 Publish，也不会把 draft 标记为 Latest。
+
+可从独立下载目录验证某个文件的来源证明：
+
+```bash
+gh attestation verify <asset-file> --repo <owner>/Vofa-Ultra
+```
+
+平台证明对应实际执行 Tauri 构建的 matrix job；聚合证明对应 `release-draft` 对文件的复验、改名和补充材料。
+证明只绑定 workflow/commit 与 SHA-256 摘要，不替代签名、公证、安装测试，也不表示 runner 镜像或系统包已固定。
 
 ## 人工放行
 

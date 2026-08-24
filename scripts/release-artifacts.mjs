@@ -12,7 +12,12 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { bundle_filename_has_version } from "./package-artifacts.mjs";
+import {
+  BUILD_ENVIRONMENT_MAX_BYTES,
+  build_environment_file_name,
+  bundle_filename_has_version,
+  parse_and_validate_build_environment,
+} from "./package-artifacts.mjs";
 import { verify_supply_chain_artifacts } from "./supply-chain.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -239,6 +244,7 @@ async function verify_platform_artifact(options) {
   const {
     artifact_directory,
     platform_name,
+    source_commit,
     version,
     verify_supply_chain,
   } = options;
@@ -266,12 +272,37 @@ async function verify_platform_artifact(options) {
     fail(`Supply-chain verifier returned an unexpected file set for ${platform_name}`);
   }
 
-  const expected_names = new Set(["LICENSE", ...installers, ...supply_chain_names]);
+  const build_environment_name = build_environment_file_name(platform.target_triple);
+  const build_environment_path = path.join(artifact_directory, build_environment_name);
+  if (!existsSync(build_environment_path)) {
+    fail(`Build environment record is missing for ${platform_name}`);
+  }
+  const build_environment_stat = await stat(build_environment_path);
+  if (build_environment_stat.size > BUILD_ENVIRONMENT_MAX_BYTES) {
+    fail(`Build environment record is too large for ${platform_name}`);
+  }
+  parse_and_validate_build_environment(
+    await readFile(build_environment_path, "utf8"),
+    {
+      platform: platform_name,
+      rust_target: platform.target_triple,
+      source_commit,
+      source_dirty: false,
+      version,
+    },
+  );
+
+  const expected_names = new Set([
+    "LICENSE",
+    build_environment_name,
+    ...installers,
+    ...supply_chain_names,
+  ]);
   if (file_names.length !== expected_names.size
     || file_names.some((file_name) => !expected_names.has(file_name))) {
     fail(`Release artifact contains an unexpected file for ${platform_name}`);
   }
-  return { installers, supply_chain_names };
+  return { build_environment_name, installers, supply_chain_names };
 }
 
 async function copy_release_asset(options) {
@@ -358,6 +389,7 @@ export async function stage_release_artifacts(options) {
     const verified = await verify_platform_artifact({
       artifact_directory,
       platform_name,
+      source_commit,
       version,
       verify_supply_chain,
     });
@@ -370,6 +402,12 @@ export async function stage_release_artifacts(options) {
         staged_names,
       });
     }
+    await copy_release_asset({
+      source_path: path.join(artifact_directory, verified.build_environment_name),
+      output_directory: output_root,
+      output_name: verified.build_environment_name,
+      staged_names,
+    });
     for (const supply_name of verified.supply_chain_names) {
       const output_name = supply_name === SOURCE_SUPPLY_CHECKSUM_NAME
         ? `${SOURCE_SUPPLY_CHECKSUM_NAME}-${target_triple}`

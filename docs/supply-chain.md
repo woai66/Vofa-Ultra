@@ -1,7 +1,8 @@
 # 供应链发布说明
 
-Vofa-Ultra 为每个桌面目标生成独立的软件物料清单和第三方许可证材料。该流程的目标是让候选包中的依赖范围、
-许可证选择和文件校验可审计；它不能替代代码签名、来源证明或法律审查。
+Vofa-Ultra 为每个桌面目标生成独立的软件物料清单、第三方许可证材料和 GitHub 构建环境记录。标签构建还为
+平台原始产物与最终聚合资产生成 GitHub artifact attestation。该流程的目标是让候选包中的依赖范围、许可证选择、
+构建来源和文件校验可审计；它不能替代代码签名、恶意构建检测或法律审查。
 
 ## 输入与范围
 
@@ -26,6 +27,14 @@ CI 在生成前执行 `pnpm install --frozen-lockfile` 和目标级 `cargo fetch
 - `THIRD_PARTY_NOTICES-<target-triple>.txt`：组件、声明许可证、实际选择分支、上游地址及法律文本。
 - `SUPPLY_CHAIN_SHA256SUMS`：前两份文件的 SHA-256。
 
+GitHub Actions 的 package job 另外生成
+`BUILD_ENVIRONMENT-<target-triple>.json`。它记录标签源码 commit、干净状态、平台与 target、GitHub runner
+操作系统/架构/镜像标识、实际 Node/pnpm/Tauri CLI/Cargo/rustc/LLVM 版本；Linux 还记录 workflow 明确安装的四个
+系统包及其实际版本。Windows 与 macOS 不虚构系统包清单，完整预装软件应以对应 GitHub runner image 清单为准。
+
+环境记录使用固定字段顺序、LF 和末尾换行，不包含时间戳、UUID、用户名、workspace、临时目录或原始环境变量。
+本地 `package:collect` 保持可用，但不会生成 GitHub 环境记录；因此本地产物不能通过正式 Release 聚合门禁。
+
 SBOM 记录完整 Rust target，并绑定 `package.json`、`pnpm-lock.yaml`、`Cargo.toml`、`Cargo.lock` 和策略文件的
 SHA-256。NOTICE 原文按内容 SHA-256 去重，同时记录精确 purl。扫描范围包括顶层 `LICENSE`/`LICENCE`、
 `COPYING`、`NOTICE`、`COPYRIGHT`、`AUTHORS`、`PATENTS`、`UNLICENSE` 及 Cargo 声明的包内 `license_file`。
@@ -36,16 +45,18 @@ SHA-256。NOTICE 原文按内容 SHA-256 去重，同时记录精确 purl。扫�
 完整正文证据的允许分支；`AND` 的每个许可证及例外都必须有证据。升级依赖版本不会继承旧审核，正文指纹变化也会
 要求重新审核。
 
-Tauri 在 `beforeBuildCommand` 中生成这些文件，并把同一目录作为应用资源嵌入安装包。`package:collect` 随后验证
+Tauri 在 `beforeBuildCommand` 中生成供应链文件，并把同一目录作为应用资源嵌入安装包。`package:collect` 随后验证
 CycloneDX Schema、完整 target、项目元数据、输入摘要、精确 NOTICE inventory 和供应链校验值，再从该 target
-专属 bundle 目录收集安装包，并把原文件与项目 `LICENSE` 放入同一个 `SHA256SUMS`。因此下载 sidecar 与安装
-内容不会由两次独立扫描产生，也不会混入另一架构的旧 bundle。
+专属 bundle 目录收集安装包。GitHub Actions 同时采集环境记录，并把它、供应链原文件与项目 `LICENSE` 放入同一个
+平台 `SHA256SUMS`。因此下载 sidecar 与安装内容不会由两次独立扫描产生，也不会混入另一架构的旧 bundle。
 
-版本标签的 `release-draft` job 只接受当前 run attempt 的 Linux、macOS、Windows 三个 artifact，重新验证各平台
-清单、目标和项目许可证后再扁平化。重名的 `SUPPLY_CHAIN_SHA256SUMS` 会改为带 target 的名称，最终对全部 Release
-assets 生成一个新的 `SHA256SUMS`。聚合清单还覆盖当前版本 CHANGELOG 和记录触发 commit、run ID/attempt、
-target 与预发布通道的构建信息；远端标签会在 draft 创建前后解引用并与触发 commit 比对。该步骤只创建
-draft，不替代签名、公证、安装或真实串口验收；完整规则见[发布流程](release-process.md)。
+版本标签的三个 package job 会在上传 artifact 前，为平台目录中的每个文件生成 GitHub build provenance。
+`release-draft` job 只接受当前 run attempt 的 Linux、macOS、Windows 三个 artifact，重新验证平台清单、环境记录、
+target 和项目许可证后再扁平化。重名的 `SUPPLY_CHAIN_SHA256SUMS` 会改为带 target 的名称，最终对全部 Release
+assets 生成一个新的 `SHA256SUMS`，并为这个聚合集合再生成一层 provenance。聚合清单还覆盖当前版本 CHANGELOG
+和记录触发 commit、run ID/attempt、target 与预发布通道的构建信息；远端标签会在 draft 创建前后解引用并与触发
+commit 比对。该步骤只创建 draft，不替代签名、公证、安装或真实串口验收；完整规则见
+[发布流程](release-process.md)。
 
 ## 许可证策略
 
@@ -62,12 +73,13 @@ MPL 组件均记录在 `reviewedComponents`；任何新增或升级组件都会�
 
 ## 可重复边界
 
-生成结果不含当前时间、随机 UUID 或绝对路径，组件、依赖边和文本使用稳定代码点排序。相同仓库输入、相同 target
-及相同锁定包内容连续生成应逐字节一致；工具测试覆盖图遍历和排序，发布验证还需连续生成并比较三份文件。
+供应链和环境 JSON 不含当前时间、随机 UUID 或绝对路径，组件、依赖边、环境字段和文本使用稳定代码点排序。
+相同显式输入连续序列化应逐字节一致；工具测试覆盖图遍历、工具输出解析、环境 schema 和排序。实际环境记录会随
+runner 镜像、工具链和系统包版本变化，这种差异正是记录需要保留的事实。
 
-这不代表完整安装包已经可复现。GitHub runner 镜像、系统包、平台 WebView 和签名环境仍会漂移；Windows
-WebView2 Runtime 和 Linux 系统库也不属于 Node/Cargo 依赖图。正式 Release 必须另外记录 runner 镜像、精确
-工具链、系统依赖、签名环境和最终包哈希，不能把本 SBOM 扩大解释为操作系统组件清单。
+这不代表完整安装包已经可复现。Windows/macOS 的 `*-latest` runner、Linux apt 包、平台 WebView 和签名环境仍会
+漂移；Windows WebView2 Runtime 和未显式安装的系统库也不属于本清单。Artifact attestation 证明 GitHub workflow、
+源码 commit 与文件摘要之间的关系，不证明源码无恶意、构建机绝对可信或两个安装包字节相同。
 
 ## 本地命令
 
