@@ -402,8 +402,12 @@ collector 只扫描完整 target 对应的 bundle 目录，接受项目元数据
 4. GitHub Actions 在三个桌面系统执行 rustfmt、Clippy、Rust 测试、目标过滤的许可证/SBOM 门禁和
    `tauri build --no-bundle`，在 Node.js 22 上执行前端检查和浏览器验收。
 5. 手动 workflow 或与项目版本一致的 `v*` 标签生成无签名 MSI、NSIS、DMG、DEB、AppImage，并验证产物非空、
-   文件名版本、嵌入/sidecar 供应链材料和逐文件 SHA-256；不会自动创建 GitHub Release。
-6. 正式发布前必须补充候选包安装/卸载冒烟，以及真实串口的长稳、拔插、流控和高波特率测试。
+   文件名版本、嵌入/sidecar 供应链材料和逐文件 SHA-256。
+6. 标签 workflow 在三平台全部成功后复验当前 run 的完整产物，加入版本 CHANGELOG、source/run 绑定记录、
+   目标专属供应链文件与统一 `SHA256SUMS`；创建前后都将远端标签解引用到 commit，并要求与触发源码一致。
+7. 聚合产物通过受保护 Environment 创建 draft；v0.x 和 SemVer 预发布版本自动标记为 prerelease，自动化不
+   Publish，也不标记 Latest。
+8. 正式发布前必须补充候选包安装/卸载冒烟，以及真实串口的长稳、拔插、流控和高波特率测试。
 
 ## 扩展原则
 

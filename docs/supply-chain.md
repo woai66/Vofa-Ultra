@@ -41,6 +41,12 @@ CycloneDX Schema、完整 target、项目元数据、输入摘要、精确 NOTIC
 专属 bundle 目录收集安装包，并把原文件与项目 `LICENSE` 放入同一个 `SHA256SUMS`。因此下载 sidecar 与安装
 内容不会由两次独立扫描产生，也不会混入另一架构的旧 bundle。
 
+版本标签的 `release-draft` job 只接受当前 run attempt 的 Linux、macOS、Windows 三个 artifact，重新验证各平台
+清单、目标和项目许可证后再扁平化。重名的 `SUPPLY_CHAIN_SHA256SUMS` 会改为带 target 的名称，最终对全部 Release
+assets 生成一个新的 `SHA256SUMS`。聚合清单还覆盖当前版本 CHANGELOG 和记录触发 commit、run ID/attempt、
+target 与预发布通道的构建信息；远端标签会在 draft 创建前后解引用并与触发 commit 比对。该步骤只创建
+draft，不替代签名、公证、安装或真实串口验收；完整规则见[发布流程](release-process.md)。
+
 ## 许可证策略
 
 [`supply-chain-policy.json`](../supply-chain-policy.json) 是唯一允许列表。SPDX 语法由锁定版本的

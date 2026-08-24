@@ -68,12 +68,16 @@ GitHub Actions 的普通 push 和 PR 会在 Windows、macOS、Linux 执行最终
 - macOS：DMG 磁盘映像。
 - Linux：DEB 与 AppImage。
 - 每个完整 Rust target 独立的 CycloneDX 1.6 SBOM、第三方许可证/NOTICE 原文、项目 `LICENSE` 和供应链校验清单。
+- 绑定版本、触发 commit、workflow run 与预发布通道的构建信息，以及对应版本的 CHANGELOG 摘要。
 - 覆盖安装包与上述发布材料的 `SHA256SUMS`。
 
-这些产物保留在对应 Actions run 的 artifact 中 14 天，不会自动创建 GitHub Release。它们明确不含代码签名或
-macOS 公证，操作系统可能显示安全警告；正式发布前仍需在目标系统完成安装、启动、卸载和真实串口冒烟测试。
-第三方 notices 与 SBOM 也会嵌入应用资源，下载 sidecar 和安装内容来自同一次生成。生成范围、许可证策略和
-可复现边界见[供应链发布说明](docs/supply-chain.md)。
+手动 workflow 的产物只保留在对应 Actions run 中 14 天。版本标签还会在三平台全部成功后复验并聚合当前 run
+的产物，并在创建前后确认远端标签仍指向触发 commit，再通过受保护的 `release-draft` Environment 创建无签名
+draft Release；v0.x 和带 SemVer 预发布后缀的版本同时标记为 prerelease，自动化不会 Publish 或标记 Latest。
+候选包明确不含代码签名或 macOS 公证，操作系统可能显示安全警告；正式发布前仍需在目标系统完成安装、启动、
+卸载和真实串口冒烟测试。第三方 notices 与 SBOM 也会嵌入应用资源，下载 sidecar 和安装内容来自同一次生成。
+生成范围、许可证策略和可复现边界见[供应链发布说明](docs/supply-chain.md)，人工放行要求见
+[发布流程](docs/release-process.md)。
 本地生成当前平台的无签名包可运行：
 
 ```bash
