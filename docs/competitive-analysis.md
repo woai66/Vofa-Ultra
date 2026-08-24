@@ -19,6 +19,17 @@
 vofa-NEXT 的 [Issue #11](https://github.com/Horldsence/vofa-NEXT/issues/11) 强化了“采集继续、视口独立暂停”
 这一方向。Vofa-Ultra 从首版就把它作为状态模型的一部分。
 
+### 测量是显式视图模式
+
+[Issue #10](https://github.com/Horldsence/vofa-NEXT/issues/10) 反映了图节点与显示控件关联时的交互和维护成本，
+[Issue #11](https://github.com/Horldsence/vofa-NEXT/issues/11) 则说明冻结视口时持续采集是实际需求。Vofa-Ultra
+把双游标测量设计为波形面板内的显式模式，不要求建立节点、连线或修改采集拓扑。开启后只冻结波形缓存，RX、
+解析、处理、终端、统计和录制继续运行；退出时恢复用户进入测量前的暂停语义。
+
+游标保存并吸附真实采样时间，图表 overlay 只负责坐标映射。测量不写入工作区，数据源、协议、处理图、工作区或
+回放时间线改变时统一失效。这既保留快速读取 `Δt`、频率和 `Δy` 的工作流，也避免像素坐标、历史数据身份和长期
+配置相互耦合。
+
 ### 命令工作流不依赖节点图
 
 vofa-NEXT 把命令发送器列为核心显示控件；其

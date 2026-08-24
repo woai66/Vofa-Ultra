@@ -46,12 +46,61 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   expect(canvasStats.height).toBeGreaterThan(200);
   expect(canvasStats.opaquePixels).toBeGreaterThan(50);
 
+  const terminalCount = async () => {
+    const text = await page.locator(".terminal-toolbar .panel-subtitle").textContent();
+    return Number(text?.match(/\d+/)?.[0] ?? 0);
+  };
+  const terminalCountBeforeMeasurement = await terminalCount();
+  await page.getByRole("button", { name: "开启波形测量" }).click();
+  await expect(page.getByText("HISTORY")).toBeVisible();
+  const measurementResults = page.getByLabel("波形测量结果");
+  await expect(measurementResults).toBeVisible();
+  await expect(page.locator(".waveform-measurement-cursor")).toHaveCount(2);
+  await expect
+    .poll(terminalCount)
+    .toBeGreaterThan(terminalCountBeforeMeasurement);
+
+  const cursorA = page.getByRole("slider", { name: "游标 A 采样点" });
+  const cursorB = page.getByRole("slider", { name: "游标 B 采样点" });
+  const cursorABeforeClick = Number(await cursorA.inputValue());
+  const cursorBBeforeClick = Number(await cursorB.inputValue());
+  const plotBounds = await page.locator(".waveform-chart .u-over").boundingBox();
+  expect(plotBounds).not.toBeNull();
+  if (plotBounds) {
+    await page.mouse.click(
+      plotBounds.x + plotBounds.width * 0.2,
+      plotBounds.y + plotBounds.height * 0.5,
+    );
+    await page.mouse.click(
+      plotBounds.x + plotBounds.width * 0.8,
+      plotBounds.y + plotBounds.height * 0.5,
+    );
+  }
+  expect(Number(await cursorA.inputValue())).toBeLessThan(cursorABeforeClick);
+  expect(Number(await cursorB.inputValue())).toBeGreaterThan(cursorBBeforeClick);
+  await expect(measurementResults).not.toContainText(/NaN|Infinity/);
+  await cursorA.focus();
+  await page.keyboard.press("Home");
+  await cursorB.focus();
+  await page.keyboard.press("End");
+  await expect(measurementResults).not.toContainText(/NaN|Infinity/);
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-measurement.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "关闭波形测量" }).click();
+  await expect(page.getByText("LIVE")).toBeVisible();
+
   await page.getByRole("textbox", { name: "发送内容" }).fill("ping");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toContainText("ping");
 
   await page.getByRole("button", { name: "暂停波形显示" }).click();
   await expect(page.getByText("HISTORY")).toBeVisible();
+  await page.getByRole("button", { name: "开启波形测量" }).click();
+  await page.getByRole("button", { name: "清空波形" }).click();
+  await expect(page.getByText("HISTORY")).toBeVisible();
+  await expect(page.getByRole("button", { name: "继续波形显示" })).toBeVisible();
   expect(pageErrors).toEqual([]);
 
   await page.screenshot({
@@ -240,6 +289,28 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
     )
     .toBeLessThanOrEqual(0);
   await expect(page.getByRole("heading", { name: "实时波形" })).toBeVisible();
+  const measurementButton = page.getByRole("button", { name: "开启波形测量" });
+  await expect(measurementButton).toBeEnabled({ timeout: 5_000 });
+  await measurementButton.click();
+  await expect(page.getByLabel("波形测量结果")).toBeVisible();
+  const measurementBounds = await page.locator(".waveform-measurement-strip").boundingBox();
+  expect(measurementBounds).not.toBeNull();
+  expect(measurementBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((measurementBounds?.x ?? 0) + (measurementBounds?.width ?? 391)).toBeLessThanOrEqual(390);
+  const measurementTargets = await page
+    .locator(
+      ".waveform-measurement-strip button, " +
+        ".waveform-measurement-strip select, " +
+        ".waveform-measurement-strip input",
+    )
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return { width: rect.width, height: rect.height };
+      }),
+    );
+  expect(measurementTargets.every((rect) => rect.width >= 44 && rect.height >= 44)).toBe(true);
+  await page.getByRole("button", { name: "关闭波形测量" }).click();
   const sendFormat = page.getByRole("group", { name: "发送格式" });
   const lineEnding = page.getByRole("combobox", { name: "行尾" });
   await expect(sendFormat).toBeVisible();
@@ -332,7 +403,7 @@ test("中窄屏关闭侧栏后活动导航保持可操作", async ({ page }) => 
   await expect(page.getByRole("heading", { name: "数据通道" })).toBeVisible();
 });
 
-test("320 px 窄屏完整显示底部导航", async ({ page }) => {
+test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto("/");
 
@@ -352,6 +423,42 @@ test("320 px 窄屏完整显示底部导航", async ({ page }) => {
     documentWidth: document.documentElement.scrollWidth,
   }));
   expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth);
+
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  const measurementButton = page.getByRole("button", { name: "开启波形测量" });
+  await expect(measurementButton).toBeEnabled({ timeout: 5_000 });
+  await measurementButton.click();
+  const measurementStrip = page.locator(".waveform-measurement-strip");
+  await expect(measurementStrip).toBeVisible();
+  await expect(page.getByLabel("波形测量结果")).not.toContainText(/NaN|Infinity/);
+
+  const measurementLayout = await measurementStrip.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const targets = [
+      ...element.querySelectorAll("button, select, input"),
+    ].map((target) => {
+      const targetRect = target.getBoundingClientRect();
+      return { width: targetRect.width, height: targetRect.height };
+    });
+    return {
+      left: rect.left,
+      right: rect.right,
+      documentWidth: document.documentElement.scrollWidth,
+      targets,
+    };
+  });
+  expect(measurementLayout.left).toBeGreaterThanOrEqual(0);
+  expect(measurementLayout.right).toBeLessThanOrEqual(320);
+  expect(measurementLayout.documentWidth).toBeLessThanOrEqual(320);
+  expect(
+    measurementLayout.targets.every((target) => target.width >= 44 && target.height >= 44),
+  ).toBe(true);
+
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-320-measurement.png"),
+    fullPage: true,
+  });
 });
 
 test("命名工作区可保存、切换、导出并重新导入", async ({ page }, testInfo) => {

@@ -227,6 +227,7 @@ export interface WorkbenchStore {
   terminalAutoScroll: boolean;
   chartPaused: boolean;
   chartWindowSeconds: ChartWindowSeconds;
+  chartDataRevision: number;
   stats: TransferStats;
   workspaces: WorkspaceProfile[];
   activeWorkspaceId: string;
@@ -390,6 +391,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       terminalAutoScroll: INITIAL_WORKSPACE_CONFIG.terminalAutoScroll,
       chartPaused: false,
       chartWindowSeconds: INITIAL_WORKSPACE_CONFIG.chartWindowSeconds,
+      chartDataRevision: 0,
       stats: emptyStats(),
       workspaces: [INITIAL_WORKSPACE],
       activeWorkspaceId: INITIAL_WORKSPACE.id,
@@ -443,6 +445,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         set((state) => ({
           isNativeRuntime: nativeRuntime,
           source: nativeRuntime ? state.source : "simulator",
+          chartDataRevision:
+            !nativeRuntime && state.source !== "simulator"
+              ? state.chartDataRevision + 1
+              : state.chartDataRevision,
           statusMessage: nativeRuntime ? state.statusMessage : "浏览器预览模式，仅使用模拟数据",
         }));
       },
@@ -476,14 +482,15 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             }
           }
           resetProtocolState(get().protocol);
-          set({
+          set((state) => ({
             source,
             channels: [],
             processedChannels: [],
+            chartDataRevision: state.chartDataRevision + 1,
             processingStatus: liveProcessingRuntime.getSnapshot(),
             connectionStatus: "disconnected",
             statusMessage: source === "serial" ? "选择设备后连接" : "模拟数据源已就绪",
-          });
+          }));
         } finally {
           endRuntimeTransition(get, set, "switching-source");
         }
@@ -500,13 +507,14 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return;
         }
         resetProtocolState(protocol);
-        set({
+        set((state) => ({
           protocol,
           channels: [],
           processedChannels: [],
+          chartDataRevision: state.chartDataRevision + 1,
           processingStatus: liveProcessingRuntime.getSnapshot(),
           statusMessage: protocolDisplayName(protocol) + " 已启用",
-        });
+        }));
       },
 
       updateSerialConfig: (key, value) => {
@@ -940,6 +948,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           processingGraph: configuredGraph,
           processingStatus: activeProcessingRuntime(state).getSnapshot(),
           processedChannels: [],
+          chartDataRevision: state.chartDataRevision + 1,
           channelVisibility: pruneDerivedChannelVisibility(
             state.channelVisibility,
             configuredGraph,
@@ -956,6 +965,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         replayProcessingChannelBuffers.clear();
         set((state) => ({
           processedChannels: [],
+          chartDataRevision: state.chartDataRevision + 1,
           processingStatus: activeProcessingRuntime(state).getSnapshot(),
         }));
       },
@@ -992,7 +1002,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         replayChannelBuffers.clear();
         processingChannelBuffers.clear();
         replayProcessingChannelBuffers.clear();
-        set({ channels: [], processedChannels: [] });
+        set((state) => ({
+          channels: [],
+          processedChannels: [],
+          chartDataRevision: state.chartDataRevision + 1,
+        }));
       },
       resetStats: () => set({ stats: emptyStats() }),
       startCapture: async () => {
@@ -1552,10 +1566,12 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const timelineChanged =
           payload.sessionId === state.replaySessionId &&
           payload.timelineRevision > state.replayTimelineRevision;
-        if (timelineChanged && payload.header) {
+        const resetReplayTimeline = timelineChanged && payload.header !== undefined;
+        if (resetReplayTimeline && payload.header) {
           resetReplayView(payload.header.protocol, set);
         }
-        set({
+        const replaySessionChanged = payload.sessionId !== state.replaySessionId;
+        set((latest) => ({
           replayStatus: payload.status,
           replaySessionId: payload.sessionId,
           replayGeneration: payload.generation,
@@ -1573,7 +1589,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           replayNextSequence: timelineChanged ? 1 : state.replayNextSequence,
           replayMessage: payload.message ?? "",
           statusMessage: replayStatusMessage(payload),
-        });
+          chartDataRevision:
+            replaySessionChanged || (timelineChanged && !resetReplayTimeline)
+              ? latest.chartDataRevision + 1
+              : latest.chartDataRevision,
+        }));
       },
       handleReplayBatch: (payload) => {
         let accepted = false;
@@ -2350,7 +2370,7 @@ async function applyWorkspaceSnapshot(
   const usesBrowserFallback = !get().isNativeRuntime && config.source === "serial";
   const processingGraph = configureProcessingGraph(config.processingGraph);
   resetProtocolState(config.protocol);
-  set({
+  set((state) => ({
     activeWorkspaceId: latestTarget.id,
     source: usesBrowserFallback ? "simulator" : config.source,
     protocol: config.protocol,
@@ -2365,6 +2385,7 @@ async function applyWorkspaceSnapshot(
     processingStatus: liveProcessingRuntime.getSnapshot(),
     channels: [],
     processedChannels: [],
+    chartDataRevision: state.chartDataRevision + 1,
     terminalEntries: [],
     terminalPaused: false,
     chartPaused: false,
@@ -2373,7 +2394,7 @@ async function applyWorkspaceSnapshot(
     statusMessage: usesBrowserFallback
       ? `“${latestTarget.name}”需要串口，浏览器预览已改用模拟器`
       : `工作区“${latestTarget.name}”已应用`,
-  });
+  }));
   return true;
 }
 
@@ -2432,15 +2453,16 @@ function resetLiveStreamBoundary(protocol: ProtocolKind): void {
 
 function resetLiveView(protocol: ProtocolKind, set: WorkbenchSet): void {
   resetProtocolState(protocol);
-  set({
+  set((state) => ({
     channels: [],
     processedChannels: [],
+    chartDataRevision: state.chartDataRevision + 1,
     processingStatus: liveProcessingRuntime.getSnapshot(),
     terminalEntries: [],
     terminalPaused: false,
     chartPaused: false,
     stats: emptyStats(),
-  });
+  }));
 }
 
 function ensureReplayParser(protocol: ProtocolKind): void {
@@ -2461,15 +2483,16 @@ function resetReplayProtocolState(protocol: ProtocolKind): void {
 
 function resetReplayView(protocol: ProtocolKind, set: WorkbenchSet): void {
   resetReplayProtocolState(protocol);
-  set({
+  set((state) => ({
     channels: [],
     processedChannels: [],
+    chartDataRevision: state.chartDataRevision + 1,
     processingStatus: replayProcessingRuntime.getSnapshot(),
     terminalEntries: [],
     terminalPaused: false,
     chartPaused: false,
     stats: emptyStats(),
-  });
+  }));
 }
 
 function ingestReplayBatch(

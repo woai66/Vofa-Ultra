@@ -17,6 +17,7 @@ export type ThemeMode = "dark" | "light";
 export default function App() {
   const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>("connection");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [waveformMeasuring, setWaveformMeasuring] = useState(false);
   const activeWorkspace = useWorkbenchStore(selectActiveWorkspace);
   const workspaceDirty = useWorkbenchStore(selectIsWorkspaceDirty);
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
@@ -84,8 +85,8 @@ export default function App() {
           </div>
         </header>
 
-        <div className="workspace-content">
-          <WaveformPanel theme={theme} />
+        <div className="workspace-content" data-waveform-measuring={waveformMeasuring}>
+          <WaveformPanel theme={theme} onMeasurementModeChange={setWaveformMeasuring} />
           <TerminalPanel />
         </div>
       </main>

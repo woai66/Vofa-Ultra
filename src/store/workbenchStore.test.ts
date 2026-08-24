@@ -262,6 +262,7 @@ describe("workbenchStore", () => {
       isSendingCommand: false,
       terminalPaused: false,
       chartPaused: false,
+      chartDataRevision: 0,
       stats: { rxBytes: 0, txBytes: 0, rxFrames: 0 },
       workspaces: [workspace],
       activeWorkspaceId: workspace.id,
@@ -621,6 +622,40 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState().source).toBe("serial");
     expect(useWorkbenchStore.getState().channels).toEqual([]);
+  });
+
+  it("仅在波形数据语义边界推进修订号", async () => {
+    const initialRevision = useWorkbenchStore.getState().chartDataRevision;
+    useWorkbenchStore.getState().setChartPaused(true);
+    useWorkbenchStore.getState().setChartWindowSeconds(30);
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("1\n"), 1_000);
+    expect(useWorkbenchStore.getState().chartDataRevision).toBe(initialRevision);
+
+    useWorkbenchStore.getState().clearChart();
+    expect(useWorkbenchStore.getState().chartDataRevision).toBe(initialRevision + 1);
+    useWorkbenchStore.getState().setProtocol("raw");
+    expect(useWorkbenchStore.getState().chartDataRevision).toBe(initialRevision + 2);
+    useWorkbenchStore.getState().retryProcessingGraph();
+    expect(useWorkbenchStore.getState().chartDataRevision).toBe(initialRevision + 3);
+
+    useWorkbenchStore.setState({
+      replayStatus: "idle",
+      replaySessionId: 0,
+      replayTimelineRevision: 0,
+      replayRevision: 0,
+    });
+    useWorkbenchStore.getState().handleReplayState(replayState("ready"));
+    expect(useWorkbenchStore.getState().chartDataRevision).toBe(initialRevision + 4);
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("paused", { timelineRevision: 1, revision: 2 }),
+    );
+    expect(useWorkbenchStore.getState().chartDataRevision).toBe(initialRevision + 5);
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("paused", { timelineRevision: 1, revision: 3 }),
+    );
+    expect(useWorkbenchStore.getState().chartDataRevision).toBe(initialRevision + 5);
   });
 
   it("忽略迟到的串口状态事件", () => {
