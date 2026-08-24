@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
-import { ChartNoAxesCombined, Menu, Orbit } from "lucide-react";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { ChartNoAxesCombined, LoaderCircle, Menu, Orbit } from "lucide-react";
 import { ActivityRail, type SidebarPanel } from "./components/ActivityRail";
-import { AttitudePanel } from "./components/AttitudePanel";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { TerminalPanel } from "./components/TerminalPanel";
@@ -15,6 +14,12 @@ import {
 
 export type ThemeMode = "dark" | "light";
 type WorkspaceView = "waveform" | "attitude";
+
+const loadAttitudePanel = () => import("./components/AttitudePanel");
+const AttitudePanel = lazy(async () => {
+  const module = await loadAttitudePanel();
+  return { default: module.AttitudePanel };
+});
 
 export default function App() {
   const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>("connection");
@@ -107,6 +112,8 @@ export default function App() {
               aria-selected={workspaceView === "attitude"}
               data-active={workspaceView === "attitude"}
               title="姿态视图"
+              onFocus={() => void loadAttitudePanel()}
+              onPointerEnter={() => void loadAttitudePanel()}
               onClick={() => selectWorkspaceView("attitude")}
             >
               <Orbit size={15} />
@@ -123,7 +130,9 @@ export default function App() {
           {workspaceView === "waveform" ? (
             <WaveformPanel theme={theme} onMeasurementModeChange={setWaveformMeasuring} />
           ) : (
-            <AttitudePanel theme={theme} />
+            <Suspense fallback={<AttitudePanelFallback />}>
+              <AttitudePanel theme={theme} />
+            </Suspense>
           )}
           <TerminalPanel />
         </div>
@@ -131,5 +140,26 @@ export default function App() {
 
       <StatusBar />
     </div>
+  );
+}
+
+function AttitudePanelFallback() {
+  return (
+    <section className="workspace-panel attitude-panel" aria-busy="true">
+      <header className="panel-toolbar">
+        <div className="panel-title-group">
+          <Orbit size={17} />
+          <div>
+            <h2>3D 姿态</h2>
+          </div>
+        </div>
+      </header>
+      <div className="attitude-viewport">
+        <div className="attitude-state-overlay" role="status">
+          <LoaderCircle className="spin" size={24} />
+          <strong>正在加载姿态视图</strong>
+        </div>
+      </div>
+    </section>
   );
 }

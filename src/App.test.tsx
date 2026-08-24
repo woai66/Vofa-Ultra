@@ -1,8 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import App from "./App";
+
+vi.mock("./components/AttitudeScene", () => ({
+  AttitudeScene: () => <div role="img" aria-label="三维姿态视图" />,
+}));
 
 afterEach(() => cleanup());
 
@@ -26,6 +30,17 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "数据处理" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "启用处理图" })).not.toBeChecked();
     expect(screen.getByRole("button", { name: "添加处理节点" })).toBeEnabled();
+  });
+
+  it("切换标签后按需加载姿态视图", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.queryByRole("heading", { name: "3D 姿态" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "姿态" }));
+
+    expect(await screen.findByRole("heading", { name: "3D 姿态" })).toBeInTheDocument();
+    expect(await screen.findByRole("img", { name: "三维姿态视图" })).toBeInTheDocument();
   });
 
   it("从侧栏保存命名工作区并更新标题", async () => {

@@ -20,7 +20,7 @@ Vofa-Ultra 学习 VOFA+ 与
 - FireWater 文本帧与 JustFloat 浮点帧增量解析，使用静态内置注册表和合规夹具验证任意分包与错误恢复。
 - uPlot 实时波形、最多 16 个基础通道与 16 个派生通道、时间窗切换、通道显隐、独立暂停和双游标测量。
 - 可选的有界数据处理 DAG，提供缩放偏移、限幅、EMA、移动平均、双路运算和独立输出路由。
-- Three.js 3D 姿态视图，支持 Euler 角度/弧度、四元数、两套坐标系、帧一致映射、冻结与当前姿态归零。
+- 按需加载的 Three.js 3D 姿态视图，支持 Euler 角度/弧度、四元数、两套坐标系、帧一致映射、冻结与归零。
 - 内置模拟数据源，无串口硬件也能贯通协议、波形、终端和发送流程。
 - 终端虚拟列表、明暗主题，以及桌面与窄屏响应式布局。
 - 命名工作区保存、应用、另存、删除与 JSON 导入导出；切换前安全断开，但不会自动连接设备。
@@ -272,7 +272,9 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-f
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-`pnpm check` 会依次执行 ESLint、TypeScript 类型检查、Vitest 和生产构建。`pnpm check:package` 使用
+`pnpm check` 会依次执行 ESLint、TypeScript 类型检查、Vitest 和生产构建。构建会验证姿态视图保持动态加载、
+Three.js 不进入首屏静态依赖图；首屏上限为 650 KiB / gzip 200 KiB，姿态模块上限为 650 KiB / gzip 180 KiB。
+`pnpm check:package` 使用
 `cargo metadata` 核对 npm、Tauri、Cargo 版本与 bundle 元数据。Playwright 会验证模拟数据链路、
 Canvas 有效像素、处理图派生通道与工作区 v3 往返、录制与回放入口权限、Raw 回放拖动期间零 IPC 且提交时
 恰好一次定位、播放中切速不换代、有界命令历史、安全变量的 TEXT / HEX 展开与拒绝边界、周期发送启停、
