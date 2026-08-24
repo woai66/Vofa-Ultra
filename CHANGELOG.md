@@ -8,6 +8,7 @@
 ### Added
 
 - 有界 RX 自动应答，支持有序 TEXT/HEX 字节规则、跨 chunk/重叠/NUL 匹配、安全命令模板响应和工作区 v4。
+- FireWater / JustFloat 有界解析健康度，显示成功、丢弃、重同步、稳定原因和实时/回放独立统计。
 
 ### Security
 

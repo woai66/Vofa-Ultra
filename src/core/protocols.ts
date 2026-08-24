@@ -1,4 +1,8 @@
-import type { ParsedFrame } from "../types/workbench";
+import type {
+  ParsedFrame,
+  ProtocolDropReason,
+  ProtocolHealthSnapshot,
+} from "../types/workbench";
 import { PROTOCOL_IDS, type ProtocolKind } from "../types/serial";
 
 const JUSTFLOAT_TAIL = new Uint8Array([0x00, 0x00, 0x80, 0x7f]);
@@ -9,11 +13,33 @@ const MAX_JUSTFLOAT_FRAME_LENGTH =
   MAX_PROTOCOL_CHANNELS * Float32Array.BYTES_PER_ELEMENT;
 const MAX_JUSTFLOAT_PENDING_LENGTH =
   MAX_JUSTFLOAT_FRAME_LENGTH + JUSTFLOAT_TAIL.length - 1;
+export const MAX_PROTOCOL_HEALTH_COUNT = 0xffff_ffff;
+
+const PROTOCOL_DROP_REASONS = [
+  "unit-too-long",
+  "too-many-channels",
+  "invalid-format",
+  "invalid-label",
+  "non-finite-value",
+  "misaligned-length",
+] as const satisfies readonly ProtocolDropReason[];
+
+export const PROTOCOL_DROP_REASON_LABELS: Readonly<Record<ProtocolDropReason, string>> =
+  Object.freeze({
+    "unit-too-long": "单元超过长度上限",
+    "too-many-channels": "通道数量超过上限",
+    "invalid-format": "帧格式无效",
+    "invalid-label": "通道标签无效",
+    "non-finite-value": "包含非有限数值",
+    "misaligned-length": "浮点帧长度未按 4 字节对齐",
+  });
 
 export type ReplaySeekMode = "record-boundary" | "protocol-boundary" | "unsupported";
 
 export interface ProtocolParser {
   push(bytes: Uint8Array, timestamp: number): ParsedFrame[];
+  getHealthSnapshot(): ProtocolHealthSnapshot;
+  clearHealth(): void;
   reset(): void;
 }
 
@@ -30,6 +56,7 @@ export class FireWaterParser implements ProtocolParser {
   private decoder = new TextDecoder();
   private pending = "";
   private discardingLine = false;
+  private readonly health = new ProtocolHealthTracker();
 
   push(bytes: Uint8Array, timestamp: number): ParsedFrame[] {
     const decoded = this.decoder.decode(bytes, { stream: true });
@@ -39,13 +66,20 @@ export class FireWaterParser implements ProtocolParser {
     for (let index = decoded.indexOf("\n"); index >= 0; index = decoded.indexOf("\n", start)) {
       if (this.discardingLine) {
         this.discardingLine = false;
+        this.health.resync();
       } else {
         const segment = decoded.slice(start, index);
         if (this.pending.length + segment.length <= MAX_FIREWATER_LINE_LENGTH) {
-          const frame = parseFireWaterLine(this.pending + segment, timestamp);
-          if (frame) {
-            frames.push(frame);
+          const result = parseFireWaterLine(this.pending + segment, timestamp);
+          if (result.frame) {
+            frames.push(result.frame);
+            this.health.accept();
+          } else if (result.reason) {
+            this.health.drop(result.reason, timestamp);
           }
+        } else {
+          this.health.drop("unit-too-long", timestamp);
+          this.health.resync();
         }
         this.pending = "";
       }
@@ -59,21 +93,32 @@ export class FireWaterParser implements ProtocolParser {
       } else {
         this.pending = "";
         this.discardingLine = true;
+        this.health.drop("unit-too-long", timestamp);
       }
     }
     return frames;
+  }
+
+  getHealthSnapshot(): ProtocolHealthSnapshot {
+    return this.health.getSnapshot();
+  }
+
+  clearHealth(): void {
+    this.health.clear();
   }
 
   reset(): void {
     this.pending = "";
     this.discardingLine = false;
     this.decoder = new TextDecoder();
+    this.health.clear();
   }
 }
 
 export class JustFloatParser implements ProtocolParser {
   private pending: Uint8Array = new Uint8Array();
   private discardingFrame = false;
+  private readonly health = new ProtocolHealthTracker();
 
   push(bytes: Uint8Array, timestamp: number): ParsedFrame[] {
     const buffer = concatBytes(this.pending, bytes);
@@ -83,15 +128,22 @@ export class JustFloatParser implements ProtocolParser {
     let tailIndex = findSequence(buffer, JUSTFLOAT_TAIL, frameStart);
     while (tailIndex >= 0) {
       const frameLength = tailIndex - frameStart;
-      if (
-        !this.discardingFrame &&
-        frameLength > 0 &&
-        frameLength <= MAX_JUSTFLOAT_FRAME_LENGTH &&
-        frameLength % Float32Array.BYTES_PER_ELEMENT === 0
-      ) {
+      if (this.discardingFrame) {
+        this.health.resync();
+      } else if (frameLength === 0) {
+        this.health.drop("invalid-format", timestamp);
+      } else if (frameLength > MAX_JUSTFLOAT_FRAME_LENGTH) {
+        this.health.drop("unit-too-long", timestamp);
+        this.health.resync();
+      } else if (frameLength % Float32Array.BYTES_PER_ELEMENT !== 0) {
+        this.health.drop("misaligned-length", timestamp);
+      } else {
         const values = parseFiniteFloat32Values(buffer, frameStart, frameLength);
-        if (values) {
+        if (!values) {
+          this.health.drop("non-finite-value", timestamp);
+        } else {
           frames.push({ values, timestamp });
+          this.health.accept();
         }
       }
 
@@ -102,6 +154,9 @@ export class JustFloatParser implements ProtocolParser {
 
     const remainder = buffer.slice(frameStart);
     if (this.discardingFrame || remainder.length > MAX_JUSTFLOAT_PENDING_LENGTH) {
+      if (!this.discardingFrame) {
+        this.health.drop("unit-too-long", timestamp);
+      }
       this.discardingFrame = true;
       this.pending = remainder.slice(-(JUSTFLOAT_TAIL.length - 1));
     } else {
@@ -110,9 +165,18 @@ export class JustFloatParser implements ProtocolParser {
     return frames;
   }
 
+  getHealthSnapshot(): ProtocolHealthSnapshot {
+    return this.health.getSnapshot();
+  }
+
+  clearHealth(): void {
+    this.health.clear();
+  }
+
   reset(): void {
     this.pending = new Uint8Array();
     this.discardingFrame = false;
+    this.health.clear();
   }
 }
 
@@ -159,10 +223,15 @@ const protocolRegistry = {
     displayName: "Raw Data",
     description: "原始字节",
     replaySeekMode: "record-boundary",
-    createParser: (): ProtocolParser => ({
-      push: () => [],
-      reset: () => undefined,
-    }),
+    createParser: (): ProtocolParser => {
+      const health = createEmptyProtocolHealth();
+      return {
+        push: () => [],
+        getHealthSnapshot: () => health,
+        clearHealth: () => undefined,
+        reset: () => undefined,
+      };
+    },
     encodeSimulatorSample: (values: readonly number[], sampleIndex: number) =>
       RAW_ENCODER.encode(
         `sample=${sampleIndex.toString().padStart(5, "0")} ` +
@@ -193,44 +262,146 @@ export function protocolSupportsReplaySeek(protocol: ProtocolKind): boolean {
   return getProtocolDefinition(protocol).replaySeekMode !== "unsupported";
 }
 
-function parseFireWaterLine(line: string, timestamp: number): ParsedFrame | null {
+interface FireWaterLineResult {
+  readonly frame: ParsedFrame | null;
+  readonly reason: ProtocolDropReason | null;
+}
+
+function parseFireWaterLine(line: string, timestamp: number): FireWaterLineResult {
   const trimmed = line.trim();
   if (!trimmed) {
-    return null;
+    return { frame: null, reason: null };
   }
 
   const labels: string[] = [];
   const values: number[] = [];
+  if (trimmed.startsWith(",") || trimmed.endsWith(",") || /,\s*,/.test(trimmed)) {
+    return { frame: null, reason: "invalid-format" };
+  }
   const tokens = trimmed.split(/[\s,]+/);
   if (tokens.length > MAX_PROTOCOL_CHANNELS) {
-    return null;
+    return { frame: null, reason: "too-many-channels" };
   }
   for (const token of tokens) {
     const separatorIndex = token.indexOf(":");
-    if (separatorIndex !== token.lastIndexOf(":")) {
-      return null;
+    if (
+      separatorIndex !== token.lastIndexOf(":") ||
+      separatorIndex === 0
+    ) {
+      return { frame: null, reason: "invalid-format" };
     }
     const label = separatorIndex > 0 ? token.slice(0, separatorIndex) : "";
     if (label && !isValidProtocolLabel(label)) {
-      return null;
+      return { frame: null, reason: "invalid-label" };
     }
     const valueText = separatorIndex > 0 ? token.slice(separatorIndex + 1) : token;
     if (!valueText) {
-      return null;
+      return { frame: null, reason: "invalid-format" };
     }
     const value = Number(valueText);
     if (!Number.isFinite(value)) {
-      return null;
+      return { frame: null, reason: "non-finite-value" };
     }
     labels.push(label);
     values.push(value);
   }
 
   return {
-    values,
-    labels: labels.some(Boolean) ? labels : undefined,
-    timestamp,
+    frame: {
+      values,
+      labels: labels.some(Boolean) ? labels : undefined,
+      timestamp,
+    },
+    reason: null,
   };
+}
+
+export function createEmptyProtocolHealth(): ProtocolHealthSnapshot {
+  return createProtocolHealthSnapshot(0, 0, 0, createEmptyReasonCounts(), null, null);
+}
+
+export class ProtocolHealthTracker {
+  private acceptedFrames = 0;
+  private droppedFrames = 0;
+  private resyncCount = 0;
+  private reasonCounts = createEmptyReasonCounts();
+  private lastDropReason: ProtocolDropReason | null = null;
+  private lastDropAt: number | null = null;
+  private cachedSnapshot: ProtocolHealthSnapshot | null = createEmptyProtocolHealth();
+
+  accept(): void {
+    const acceptedFrames = incrementProtocolHealthCount(this.acceptedFrames);
+    if (acceptedFrames !== this.acceptedFrames) {
+      this.acceptedFrames = acceptedFrames;
+      this.cachedSnapshot = null;
+    }
+  }
+
+  drop(reason: ProtocolDropReason, timestamp: number): void {
+    this.droppedFrames = incrementProtocolHealthCount(this.droppedFrames);
+    this.reasonCounts[reason] = incrementProtocolHealthCount(this.reasonCounts[reason]);
+    this.lastDropReason = reason;
+    this.lastDropAt = timestamp;
+    this.cachedSnapshot = null;
+  }
+
+  resync(): void {
+    const resyncCount = incrementProtocolHealthCount(this.resyncCount);
+    if (resyncCount !== this.resyncCount) {
+      this.resyncCount = resyncCount;
+      this.cachedSnapshot = null;
+    }
+  }
+
+  getSnapshot(): ProtocolHealthSnapshot {
+    this.cachedSnapshot ??= createProtocolHealthSnapshot(
+      this.acceptedFrames,
+      this.droppedFrames,
+      this.resyncCount,
+      this.reasonCounts,
+      this.lastDropReason,
+      this.lastDropAt,
+    );
+    return this.cachedSnapshot;
+  }
+
+  clear(): void {
+    this.acceptedFrames = 0;
+    this.droppedFrames = 0;
+    this.resyncCount = 0;
+    this.reasonCounts = createEmptyReasonCounts();
+    this.lastDropReason = null;
+    this.lastDropAt = null;
+    this.cachedSnapshot = createEmptyProtocolHealth();
+  }
+}
+
+function createEmptyReasonCounts(): Record<ProtocolDropReason, number> {
+  return Object.fromEntries(
+    PROTOCOL_DROP_REASONS.map((reason) => [reason, 0]),
+  ) as Record<ProtocolDropReason, number>;
+}
+
+function createProtocolHealthSnapshot(
+  acceptedFrames: number,
+  droppedFrames: number,
+  resyncCount: number,
+  reasonCounts: Readonly<Record<ProtocolDropReason, number>>,
+  lastDropReason: ProtocolDropReason | null,
+  lastDropAt: number | null,
+): ProtocolHealthSnapshot {
+  return Object.freeze({
+    acceptedFrames,
+    droppedFrames,
+    resyncCount,
+    reasonCounts: Object.freeze({ ...reasonCounts }),
+    lastDropReason,
+    lastDropAt,
+  });
+}
+
+export function incrementProtocolHealthCount(value: number): number {
+  return Math.min(value + 1, MAX_PROTOCOL_HEALTH_COUNT);
 }
 
 function parseFiniteFloat32Values(

@@ -12,6 +12,37 @@ async function expectValidTabPanelReferences(page: Page, tablistName: string): P
   }
 }
 
+async function ingestProtocolText(page: Page, text: string, timestamp: number): Promise<void> {
+  await page.evaluate(
+    async ({ payload, receivedAt }) => {
+      type WorkbenchStoreHandle = {
+        getState(): {
+          ingestBytes(bytes: Uint8Array, timestamp?: number): void;
+        };
+      };
+      const runtime = globalThis as typeof globalThis & {
+        __vofaUltraE2eStore?: WorkbenchStoreHandle;
+      };
+      if (!runtime.__vofaUltraE2eStore) {
+        const moduleUrl = performance
+          .getEntriesByType("resource")
+          .map((entry) => entry.name)
+          .find((name) => name.includes("/src/store/workbenchStore.ts"));
+        if (!moduleUrl) {
+          throw new Error("找不到页面当前使用的工作台 Store 模块");
+        }
+        const module = await import(/* @vite-ignore */ moduleUrl);
+        runtime.__vofaUltraE2eStore = module.useWorkbenchStore as WorkbenchStoreHandle;
+      }
+      runtime.__vofaUltraE2eStore.getState().ingestBytes(
+        new TextEncoder().encode(payload),
+        receivedAt,
+      );
+    },
+    { payload: text, receivedAt: timestamp },
+  );
+}
+
 test("标签组支持标准键盘导航", async ({ page }) => {
   await page.goto("/");
 
@@ -167,6 +198,41 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
     path: testInfo.outputPath("desktop-workbench.png"),
     fullPage: true,
   });
+});
+
+test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ page }) => {
+  await page.goto("/");
+  await ingestProtocolText(page, "broken\n", 1_000);
+
+  await expect(page.locator(".protocol-warning-status")).toContainText("丢帧 1");
+  await page.getByRole("button", { name: "通道", exact: true }).click();
+  const health = page.getByRole("region", { name: "协议解析健康度" });
+  await expect(health).toContainText("已丢弃 1 帧");
+  await expect(health).toContainText("最近：包含非有限数值");
+  await expect(health).toContainText("FireWater：每行 1–16 个有限数值");
+
+  await page.getByRole("button", { name: "清空解析统计" }).click();
+  await expect(health).toContainText("等待完整帧");
+  await expect(page.locator(".protocol-warning-status")).toHaveCount(0);
+
+  await ingestProtocolText(page, "1,2,3\n", 1_100);
+  await expect(health).toContainText("解析正常");
+  await expect(health).toContainText("成功 1");
+  await expect(page.getByLabel("数据通道列表").getByRole("button")).toHaveCount(3);
+  await expect(page.locator(".terminal-line").last()).toContainText("1,2,3");
+
+  await page.setViewportSize({ width: 320, height: 700 });
+  const layout = await health.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      documentWidth: document.documentElement.scrollWidth,
+    };
+  });
+  expect(layout.left).toBeGreaterThanOrEqual(0);
+  expect(layout.right).toBeLessThanOrEqual(320);
+  expect(layout.documentWidth).toBeLessThanOrEqual(320);
 });
 
 test("处理图生成独立派生通道并随 v4 工作区往返", async ({ page }, testInfo) => {

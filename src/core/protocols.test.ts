@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PROTOCOL_IDS, type ProtocolKind } from "../types/serial";
-import type { ParsedFrame } from "../types/workbench";
+import type { ParsedFrame, ProtocolHealthSnapshot } from "../types/workbench";
 import {
   BUILTIN_PROTOCOLS,
   createProtocolParser,
@@ -8,8 +8,10 @@ import {
   encodeJustFloatFrame,
   FireWaterParser,
   getProtocolDefinition,
+  incrementProtocolHealthCount,
   JustFloatParser,
   MAX_PROTOCOL_CHANNELS,
+  MAX_PROTOCOL_HEALTH_COUNT,
   MAX_PROTOCOL_LABEL_LENGTH,
   PROTOCOL_REGISTRY,
   protocolSupportsReplaySeek,
@@ -62,6 +64,11 @@ describe("FireWaterParser", () => {
     expect(frames).toHaveLength(2);
     expect(frames[0]?.values).toEqual([1.25, -2, 3]);
     expect(frames[1]?.values).toEqual([4, 5, 6]);
+    expect(parser.getHealthSnapshot()).toMatchObject({
+      acceptedFrames: 2,
+      droppedFrames: 0,
+      resyncCount: 0,
+    });
   });
 
   it("保留对齐的命名通道并跳过损坏行", () => {
@@ -76,6 +83,16 @@ describe("FireWaterParser", () => {
     expect(frames).toHaveLength(2);
     expect(frames[0]).toMatchObject({ labels: ["temp", "voltage"], values: [23.5, 3.3] });
     expect(frames[1]).toMatchObject({ labels: ["current"], values: [0.42] });
+    expect(parser.getHealthSnapshot()).toMatchObject({
+      acceptedFrames: 2,
+      droppedFrames: 2,
+      reasonCounts: {
+        "invalid-format": 1,
+        "non-finite-value": 1,
+      },
+      lastDropReason: "invalid-format",
+      lastDropAt: 2_000,
+    });
   });
 
   it("拒绝超出通道、标签和有限数值边界的行", () => {
@@ -90,6 +107,27 @@ describe("FireWaterParser", () => {
     );
 
     expect(parser.push(bytes, 2_500).map((frame) => frame.values)).toEqual([[1, 2]]);
+    expect(parser.getHealthSnapshot()).toMatchObject({
+      acceptedFrames: 1,
+      droppedFrames: 5,
+      reasonCounts: {
+        "too-many-channels": 1,
+        "invalid-label": 2,
+        "non-finite-value": 2,
+      },
+    });
+  });
+
+  it("拒绝空逗号字段而不是把它静默转换为零", () => {
+    const parser = new FireWaterParser();
+
+    expect(parser.push(new TextEncoder().encode(",1\n1,,2\n1,\n"), 2_550)).toEqual([]);
+    expect(parser.getHealthSnapshot()).toMatchObject({
+      acceptedFrames: 0,
+      droppedFrames: 3,
+      reasonCounts: { "invalid-format": 3 },
+      lastDropReason: "invalid-format",
+    });
   });
 
   it("丢弃超长未闭合行并在下一个换行后恢复", () => {
@@ -97,9 +135,19 @@ describe("FireWaterParser", () => {
     const oversized = new TextEncoder().encode("9".repeat(20 * 1024));
 
     expect(parser.push(oversized, 2_600)).toEqual([]);
+    expect(parser.getHealthSnapshot()).toMatchObject({
+      droppedFrames: 1,
+      resyncCount: 0,
+      lastDropReason: "unit-too-long",
+    });
     expect(
       parser.push(concatBytes(new TextEncoder().encode("\n"), encodeFireWaterFrame([42])), 2_700),
     ).toEqual([{ values: [42], timestamp: 2_700 }]);
+    expect(parser.getHealthSnapshot()).toMatchObject({
+      acceptedFrames: 1,
+      droppedFrames: 1,
+      resyncCount: 1,
+    });
   });
 
   it("编码器拒绝无法满足解析契约的帧", () => {
@@ -139,6 +187,15 @@ describe("JustFloatParser", () => {
     const bytes = concatBytes(malformed, notFinite, encodeJustFloatFrame([42]));
 
     expect(parser.push(bytes, 6_000)).toEqual([{ values: [42], timestamp: 6_000 }]);
+    expect(parser.getHealthSnapshot()).toMatchObject({
+      acceptedFrames: 1,
+      droppedFrames: 2,
+      reasonCounts: {
+        "misaligned-length": 1,
+        "non-finite-value": 1,
+      },
+      lastDropReason: "non-finite-value",
+    });
   });
 
   it("保留 16 通道帧的跨 chunk 帧尾", () => {
@@ -154,6 +211,11 @@ describe("JustFloatParser", () => {
     const parser = new JustFloatParser();
 
     expect(parser.push(new Uint8Array(80).fill(1), 6_300)).toEqual([]);
+    expect(parser.getHealthSnapshot()).toMatchObject({
+      droppedFrames: 1,
+      resyncCount: 0,
+      lastDropReason: "unit-too-long",
+    });
     expect(
       parser.push(
         concatBytes(
@@ -163,6 +225,11 @@ describe("JustFloatParser", () => {
         6_400,
       ),
     ).toEqual([{ values: [7], timestamp: 6_400 }]);
+    expect(parser.getHealthSnapshot()).toMatchObject({
+      acceptedFrames: 1,
+      droppedFrames: 1,
+      resyncCount: 1,
+    });
   });
 
   it("编码器拒绝无法满足解析契约的帧", () => {
@@ -261,6 +328,103 @@ describe("内置协议贡献契约", () => {
       ]);
     },
   );
+
+  it.each(STRUCTURED_CASES)(
+    "$id 的诊断计数不受任意单切点影响",
+    ({ id, values, malformedInput, oversizedInput, recoveryBoundary, encode }) => {
+      const bytes = concatBytes(
+        malformedInput,
+        oversizedInput,
+        recoveryBoundary,
+        encode(values),
+      );
+      const baseline = createProtocolParser(id);
+      baseline.push(bytes, 7_990);
+      const expectedHealth = baseline.getHealthSnapshot();
+
+      expect(expectedHealth).toMatchObject({
+        acceptedFrames: 1,
+        droppedFrames: 2,
+        resyncCount: 1,
+      });
+      for (let split = 0; split <= bytes.length; split += 1) {
+        const parser = createProtocolParser(id);
+        parser.push(bytes.slice(0, split), 7_990);
+        parser.push(bytes.slice(split), 7_990);
+        expect(parser.getHealthSnapshot(), `split=${split}`).toEqual(expectedHealth);
+      }
+    },
+  );
+
+  it.each(STRUCTURED_CASES)(
+    "$id 的 clearHealth 保留半帧，reset 同时清空半帧与诊断",
+    ({ id, values, malformedInput, encode }) => {
+      const parser = createProtocolParser(id);
+      const valid = encode(values);
+      const split = valid.length - 1;
+
+      parser.push(malformedInput, 8_000);
+      parser.push(valid.slice(0, split), 8_010);
+      expect(parser.getHealthSnapshot().droppedFrames).toBe(1);
+
+      parser.clearHealth();
+      expectEmptyProtocolHealth(parser.getHealthSnapshot());
+      expect(parser.push(valid.slice(split), 8_020)).toEqual([
+        { values: [...values], timestamp: 8_020 },
+      ]);
+      expect(parser.getHealthSnapshot().acceptedFrames).toBe(1);
+
+      parser.push(valid.slice(0, split), 8_030);
+      parser.reset();
+      expectEmptyProtocolHealth(parser.getHealthSnapshot());
+      expect(parser.push(valid.slice(split), 8_040)).toEqual([]);
+    },
+  );
+
+  it.each(STRUCTURED_CASES)(
+    "$id 在诊断未变化时复用只读快照",
+    ({ id, values, encode }) => {
+      const parser = createProtocolParser(id);
+      const bytes = encode(values);
+      const initial = parser.getHealthSnapshot();
+
+      expect(Object.isFrozen(initial)).toBe(true);
+      expect(Object.isFrozen(initial.reasonCounts)).toBe(true);
+      expect(parser.getHealthSnapshot()).toBe(initial);
+      expect(parser.push(bytes.slice(0, -1), 8_045)).toEqual([]);
+      expect(parser.getHealthSnapshot()).toBe(initial);
+
+      expect(parser.push(bytes.slice(-1), 8_046)).toHaveLength(1);
+      const accepted = parser.getHealthSnapshot();
+      expect(accepted).not.toBe(initial);
+      expect(accepted.acceptedFrames).toBe(1);
+      expect(parser.getHealthSnapshot()).toBe(accepted);
+    },
+  );
+
+  it("Raw Data 的健康状态始终为空且操作幂等", () => {
+    const parser = createProtocolParser("raw");
+    const health = parser.getHealthSnapshot();
+
+    expect(parser.push(seededBytes(128, 0x1234), 8_050)).toEqual([]);
+    expectEmptyProtocolHealth(parser.getHealthSnapshot());
+    expect(parser.getHealthSnapshot()).toBe(health);
+    expect(Object.isFrozen(health)).toBe(true);
+    expect(Object.isFrozen(health.reasonCounts)).toBe(true);
+    parser.clearHealth();
+    parser.reset();
+    expectEmptyProtocolHealth(parser.getHealthSnapshot());
+    expect(parser.getHealthSnapshot()).toBe(health);
+  });
+
+  it("健康计数达到 32 位无符号上限后保持饱和", () => {
+    expect(incrementProtocolHealthCount(MAX_PROTOCOL_HEALTH_COUNT - 1)).toBe(
+      MAX_PROTOCOL_HEALTH_COUNT,
+    );
+    expect(incrementProtocolHealthCount(MAX_PROTOCOL_HEALTH_COUNT)).toBe(
+      MAX_PROTOCOL_HEALTH_COUNT,
+    );
+  });
 
   it("所有模拟器编码器都能由对应解析器消费", () => {
     for (const definition of BUILTIN_PROTOCOLS) {
@@ -366,4 +530,15 @@ function expectFrameContract(frame: ParsedFrame | undefined): void {
       ),
     ).toBe(true);
   }
+}
+
+function expectEmptyProtocolHealth(snapshot: ProtocolHealthSnapshot): void {
+  expect(snapshot).toMatchObject({
+    acceptedFrames: 0,
+    droppedFrames: 0,
+    resyncCount: 0,
+    lastDropReason: null,
+    lastDropAt: null,
+  });
+  expect(Object.values(snapshot.reasonCounts).every((count) => count === 0)).toBe(true);
 }

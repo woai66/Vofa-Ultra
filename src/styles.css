@@ -45,7 +45,7 @@
   --accent-strong: #0d6e4a;
   --accent-soft: rgb(22 132 91 / 10%);
   --cyan: #187da8;
-  --amber: #aa6815;
+  --amber: #985900;
   --danger: #c3414c;
   --danger-soft: rgb(195 65 76 / 10%);
   --chart-grid: rgb(51 65 57 / 10%);
@@ -835,6 +835,10 @@ textarea:disabled {
   color: var(--amber);
 }
 
+.protocol-warning-status {
+  color: var(--amber);
+}
+
 .capture-status-item svg {
   animation: capture-pulse 1.4s ease-in-out infinite;
 }
@@ -1567,6 +1571,112 @@ textarea:focus {
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 14px;
+}
+
+.protocol-health {
+  flex: 0 0 auto;
+  padding: 11px 16px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.protocol-health[data-status="warning"] {
+  box-shadow: inset 3px 0 var(--amber);
+}
+
+.protocol-health-heading {
+  display: grid;
+  min-width: 0;
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto 28px;
+  gap: 8px;
+}
+
+.protocol-health-heading > div {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  gap: 6px;
+}
+
+.protocol-health[data-status="healthy"] .protocol-health-heading > div {
+  color: var(--accent);
+}
+
+.protocol-health[data-status="warning"] .protocol-health-heading > div,
+.protocol-health[data-status="warning"] .protocol-health-heading > strong {
+  color: var(--amber);
+}
+
+.protocol-health-heading > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.protocol-health-heading .icon-button {
+  width: 28px;
+  height: 28px;
+}
+
+.protocol-health-counters {
+  display: grid;
+  margin-top: 9px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  color: var(--text-subtle);
+  font-size: 9px;
+  gap: 8px;
+}
+
+.protocol-health-counters span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.protocol-health-counters strong {
+  overflow: hidden;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.protocol-health-detail {
+  display: flex;
+  min-width: 0;
+  margin-top: 9px;
+  flex-direction: column;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--amber);
+  font-size: 10px;
+  gap: 3px;
+}
+
+.protocol-health-detail span,
+.protocol-health-detail small,
+.protocol-health-inactive {
+  overflow-wrap: anywhere;
+}
+
+.protocol-health-detail small,
+.protocol-health-inactive {
+  color: var(--text-subtle);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.protocol-health-inactive {
+  display: block;
+  margin-top: 7px;
 }
 
 .channel-list {
@@ -3850,6 +3960,15 @@ textarea:focus {
 
   .status-item {
     padding: 0 6px;
+  }
+
+  .protocol-health-heading {
+    grid-template-columns: minmax(0, 1fr) auto 44px;
+  }
+
+  .protocol-health-heading .icon-button {
+    width: 44px;
+    height: 44px;
   }
 
   .send-button {

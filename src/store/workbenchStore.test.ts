@@ -5,6 +5,7 @@ import {
   createInitialAutoResponderSnapshot,
 } from "../core/autoResponder";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
+import { createEmptyProtocolHealth } from "../core/protocols";
 import { createDefaultWorkspaceConfig, createWorkspaceProfile } from "../core/workspaces";
 import {
   enqueueCaptureMarker,
@@ -332,6 +333,8 @@ describe("workbenchStore", () => {
       chartPaused: false,
       chartDataRevision: 0,
       stats: { rxBytes: 0, txBytes: 0, rxFrames: 0 },
+      protocolHealth: createEmptyProtocolHealth(),
+      replayProtocolHealth: createEmptyProtocolHealth(),
       workspaces: [workspace],
       activeWorkspaceId: workspace.id,
       workspaceTransitionStatus: "idle",
@@ -397,6 +400,7 @@ describe("workbenchStore", () => {
       replayNextSequence: 1,
       replayMessage: "",
     });
+    useWorkbenchStore.getState().setProtocol(config.protocol);
     useWorkbenchStore.getState().setProcessingGraph(config.processingGraph);
     useWorkbenchStore.getState().clearChart();
   });
@@ -720,7 +724,6 @@ describe("workbenchStore", () => {
     sendSerialMock
       .mockImplementationOnce(() => firstSend.promise)
       .mockResolvedValue(undefined);
-    const now = Date.now();
     useWorkbenchStore.setState({
       isNativeRuntime: true,
       source: "serial",
@@ -735,6 +738,7 @@ describe("workbenchStore", () => {
       },
     ]);
     useWorkbenchStore.getState().startAutoResponder();
+    const now = useWorkbenchStore.getState().autoResponder.startedAt!;
     useWorkbenchStore.getState().ingestBytes(Uint8Array.from([0x0a]), now);
     useWorkbenchStore.getState().ingestBytes(Uint8Array.from([0x0a]), now + 20);
 
@@ -883,6 +887,147 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState().source).toBe("serial");
     expect(useWorkbenchStore.getState().channels).toEqual([]);
+  });
+
+  it("视图暂停时仍诊断坏帧，清统计不会丢弃等待中的半帧", () => {
+    useWorkbenchStore.getState().setTerminalPaused(true);
+    useWorkbenchStore.getState().setChartPaused(true);
+
+    useWorkbenchStore.getState().ingestBytes(
+      new TextEncoder().encode("broken\n12"),
+      1_000,
+    );
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      channels: [],
+      terminalEntries: [],
+      protocolHealth: {
+        acceptedFrames: 0,
+        droppedFrames: 1,
+        lastDropReason: "non-finite-value",
+        lastDropAt: 1_000,
+      },
+    });
+
+    useWorkbenchStore.getState().clearProtocolHealth();
+    expect(useWorkbenchStore.getState().protocolHealth).toMatchObject({
+      acceptedFrames: 0,
+      droppedFrames: 0,
+      lastDropReason: null,
+    });
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode(",34\n"), 1_100);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      channels: [],
+      terminalEntries: [],
+      stats: { rxFrames: 1 },
+      protocolHealth: {
+        acceptedFrames: 1,
+        droppedFrames: 0,
+      },
+    });
+
+    useWorkbenchStore.getState().setProtocol("justfloat");
+    expect(useWorkbenchStore.getState().protocolHealth).toMatchObject({
+      acceptedFrames: 0,
+      droppedFrames: 0,
+      resyncCount: 0,
+    });
+  });
+
+  it("运行环境降级时隔离旧串口半帧与诊断", () => {
+    useWorkbenchStore.getState().setProtocol("firewater");
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+    });
+    useWorkbenchStore.getState().ingestBytes(
+      new TextEncoder().encode("bad\n1,"),
+      1_000,
+    );
+    expect(useWorkbenchStore.getState().protocolHealth.droppedFrames).toBe(1);
+
+    useWorkbenchStore.getState().setRuntimeAvailability(false);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      source: "simulator",
+      protocolHealth: {
+        acceptedFrames: 0,
+        droppedFrames: 0,
+        resyncCount: 0,
+      },
+    });
+
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("2,3\n"), 1_100);
+    expect(useWorkbenchStore.getState().channels.map((channel) => channel.lastValue)).toEqual([
+      2,
+      3,
+    ]);
+    expect(useWorkbenchStore.getState().protocolHealth.acceptedFrames).toBe(1);
+  });
+
+  it("运行时释放时隔离旧半帧并清空实时诊断", () => {
+    useWorkbenchStore.getState().setProtocol("firewater");
+    useWorkbenchStore.getState().ingestBytes(
+      new TextEncoder().encode("bad\n1,"),
+      1_000,
+    );
+
+    disposeWorkbenchRuntime();
+    expect(useWorkbenchStore.getState().protocolHealth).toEqual(createEmptyProtocolHealth());
+
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("2,3\n"), 1_100);
+    expect(useWorkbenchStore.getState().channels.map((channel) => channel.lastValue)).toEqual([
+      2,
+      3,
+    ]);
+  });
+
+  it("实时与回放诊断相互隔离，回放时间线切换只重置回放快照", () => {
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("bad\n"), 1_000);
+    expect(useWorkbenchStore.getState().protocolHealth.droppedFrames).toBe(1);
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("ready", { generation: 1, timelineRevision: 1, revision: 1 }),
+    );
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("playing", { generation: 1, timelineRevision: 1, revision: 2 }),
+    );
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 2_000,
+      dataBytes: 6,
+      records: [
+        {
+          direction: "rx",
+          timestampUs: 1_000,
+          data: Array.from(new TextEncoder().encode("bad\n1\n")),
+        },
+      ],
+    });
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      protocolHealth: { droppedFrames: 1 },
+      replayProtocolHealth: {
+        acceptedFrames: 1,
+        droppedFrames: 1,
+        lastDropReason: "non-finite-value",
+      },
+    });
+    useWorkbenchStore.getState().clearProtocolHealth();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      protocolHealth: { droppedFrames: 1 },
+      replayProtocolHealth: { acceptedFrames: 0, droppedFrames: 0 },
+    });
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("paused", { generation: 2, timelineRevision: 2, revision: 3 }),
+    );
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      protocolHealth: { droppedFrames: 1 },
+      replayProtocolHealth: { acceptedFrames: 0, droppedFrames: 0 },
+    });
   });
 
   it("仅在波形数据语义边界推进修订号", async () => {

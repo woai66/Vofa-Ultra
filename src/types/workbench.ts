@@ -6,6 +6,23 @@ export interface ParsedFrame {
   timestamp: number;
 }
 
+export type ProtocolDropReason =
+  | "unit-too-long"
+  | "too-many-channels"
+  | "invalid-format"
+  | "invalid-label"
+  | "non-finite-value"
+  | "misaligned-length";
+
+export interface ProtocolHealthSnapshot {
+  readonly acceptedFrames: number;
+  readonly droppedFrames: number;
+  readonly resyncCount: number;
+  readonly reasonCounts: Readonly<Record<ProtocolDropReason, number>>;
+  readonly lastDropReason: ProtocolDropReason | null;
+  readonly lastDropAt: number | null;
+}
+
 export interface DataPoint {
   x: number;
   y: number;

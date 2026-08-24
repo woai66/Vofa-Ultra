@@ -156,6 +156,7 @@ import type {
   CommandTaskSnapshot,
   DataPoint,
   ParsedFrame,
+  ProtocolHealthSnapshot,
   TerminalEntry,
   TransferStats,
 } from "../types/workbench";
@@ -282,6 +283,8 @@ export interface WorkbenchStore {
   chartWindowSeconds: ChartWindowSeconds;
   chartDataRevision: number;
   stats: TransferStats;
+  protocolHealth: ProtocolHealthSnapshot;
+  replayProtocolHealth: ProtocolHealthSnapshot;
   workspaces: WorkspaceProfile[];
   activeWorkspaceId: string;
   workspaceTransitionStatus: "idle" | "switching" | "deleting";
@@ -388,6 +391,7 @@ export interface WorkbenchStore {
   clearTerminal(): void;
   clearChart(): void;
   resetStats(): void;
+  clearProtocolHealth(): void;
   startCapture(): Promise<boolean>;
   stopCapture(): Promise<boolean>;
   addCaptureMarker(label: string, color: CaptureMarkerColor): boolean;
@@ -478,6 +482,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       chartWindowSeconds: INITIAL_WORKSPACE_CONFIG.chartWindowSeconds,
       chartDataRevision: 0,
       stats: emptyStats(),
+      protocolHealth: protocolParser.getHealthSnapshot(),
+      replayProtocolHealth: replayProtocolParser.getHealthSnapshot(),
       workspaces: [INITIAL_WORKSPACE],
       activeWorkspaceId: INITIAL_WORKSPACE.id,
       workspaceTransitionStatus: "idle",
@@ -537,19 +543,32 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       replayMessage: "",
 
       setRuntimeAvailability: (nativeRuntime) => {
-        if (!nativeRuntime && get().isNativeRuntime) {
+        const state = get();
+        const switchedToBrowserSimulator = !nativeRuntime && state.source !== "simulator";
+        if (!nativeRuntime && state.isNativeRuntime) {
           stopCurrentCommandWorkflows("source-change");
         }
-        set((state) => ({
+        if (switchedToBrowserSimulator) {
+          resetLiveStreamBoundary(state.protocol);
+        }
+        set((latest) => ({
           isNativeRuntime: nativeRuntime,
-          source: nativeRuntime ? state.source : "simulator",
+          source: nativeRuntime ? latest.source : "simulator",
           chartDataRevision:
-            !nativeRuntime && state.source !== "simulator"
-              ? state.chartDataRevision + 1
-              : state.chartDataRevision,
+            switchedToBrowserSimulator
+              ? latest.chartDataRevision + 1
+              : latest.chartDataRevision,
           attitudeSample:
-            !nativeRuntime && state.source !== "simulator" ? null : state.attitudeSample,
-          statusMessage: nativeRuntime ? state.statusMessage : "浏览器预览模式，仅使用模拟数据",
+            switchedToBrowserSimulator ? null : latest.attitudeSample,
+          processingStatus: switchedToBrowserSimulator
+            ? liveProcessingRuntime.getSnapshot()
+            : latest.processingStatus,
+          protocolHealth: switchedToBrowserSimulator
+            ? protocolParser.getHealthSnapshot()
+            : latest.protocolHealth,
+          statusMessage: nativeRuntime
+            ? latest.statusMessage
+            : "浏览器预览模式，仅使用模拟数据",
         }));
       },
 
@@ -590,6 +609,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             attitudeSample: null,
             chartDataRevision: state.chartDataRevision + 1,
             processingStatus: liveProcessingRuntime.getSnapshot(),
+            protocolHealth: protocolParser.getHealthSnapshot(),
             connectionStatus: "disconnected",
             statusMessage: source === "serial" ? "选择设备后连接" : "模拟数据源已就绪",
           }));
@@ -620,6 +640,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           attitudeSample: null,
           chartDataRevision: state.chartDataRevision + 1,
           processingStatus: liveProcessingRuntime.getSnapshot(),
+          protocolHealth: protocolParser.getHealthSnapshot(),
           statusMessage: protocolDisplayName(protocol) + " 已启用",
         }));
       },
@@ -723,6 +744,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               connectionStatus: "connected",
               statusMessage: "模拟数据正在运行",
               stats: { ...emptyStats(), startedAt: Date.now() },
+              protocolHealth: protocolParser.getHealthSnapshot(),
             });
             return;
           }
@@ -734,6 +756,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           const selectedPort = state.ports.find(
             (port) => port.name === state.serialConfig.portName,
           );
+          resetLiveStreamBoundary(state.protocol);
           getSerialRecoveryCoordinator().prepareManualConnection(
             state.serialConfig,
             selectedPort,
@@ -741,6 +764,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           set({
             connectionStatus: "connecting",
             statusMessage: `正在打开 ${state.serialConfig.portName}`,
+            protocolHealth: protocolParser.getHealthSnapshot(),
           });
           try {
             const payload = await connectSerial(state.serialConfig);
@@ -926,6 +950,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
         ensureParser(state.protocol);
         const frames = protocolParser.push(bytes, timestamp);
+        const protocolHealth = protocolParser.getHealthSnapshot();
         const processedSamples = liveProcessingRuntime.process(frames);
         const attitudeSample = extractRuntimeAttitudeSample(
           state.attitudeConfig,
@@ -968,6 +993,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             rxFrames: state.stats.rxFrames + frames.length,
             startedAt: state.stats.startedAt ?? timestamp,
           },
+          protocolHealth,
         });
         const latest = get();
         if (
@@ -1175,6 +1201,15 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }));
       },
       resetStats: () => set({ stats: emptyStats() }),
+      clearProtocolHealth: () => {
+        if (hasReplaySession(get())) {
+          replayProtocolParser.clearHealth();
+          set({ replayProtocolHealth: replayProtocolParser.getHealthSnapshot() });
+          return;
+        }
+        protocolParser.clearHealth();
+        set({ protocolHealth: protocolParser.getHealthSnapshot() });
+      },
       startCapture: async () => {
         const state = get();
         if (
@@ -1903,11 +1938,14 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const timelineChanged =
           payload.sessionId === state.replaySessionId &&
           payload.timelineRevision > state.replayTimelineRevision;
-        const resetReplayTimeline = timelineChanged && payload.header !== undefined;
+        const replaySessionChanged = payload.sessionId !== state.replaySessionId;
+        const resetReplayTimeline =
+          (timelineChanged || replaySessionChanged) && payload.header !== undefined;
         if (resetReplayTimeline && payload.header) {
           resetReplayView(payload.header.protocol, set);
+        } else if (replaySessionChanged || payload.status === "idle") {
+          replayProtocolParser.reset();
         }
-        const replaySessionChanged = payload.sessionId !== state.replaySessionId;
         set((latest) => ({
           replayStatus: payload.status,
           replaySessionId: payload.sessionId,
@@ -1928,6 +1966,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           replayMarkerCount: payload.markerCount,
           replayMarkers:
             replaySessionChanged || payload.status === "idle" ? [] : latest.replayMarkers,
+          replayProtocolHealth:
+            replaySessionChanged || timelineChanged || payload.status === "idle"
+              ? replayProtocolParser.getHealthSnapshot()
+              : latest.replayProtocolHealth,
           replayNextSequence: timelineChanged ? 1 : state.replayNextSequence,
           attitudeSample:
             replaySessionChanged || timelineChanged || payload.status === "idle"
@@ -1936,7 +1978,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           replayMessage: payload.message ?? "",
           statusMessage: replayStatusMessage(payload),
           chartDataRevision:
-            replaySessionChanged || (timelineChanged && !resetReplayTimeline)
+            (replaySessionChanged || timelineChanged) && !resetReplayTimeline
               ? latest.chartDataRevision + 1
               : latest.chartDataRevision,
         }));
@@ -2193,10 +2235,16 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
 export function disposeWorkbenchRuntime(): void {
   stopCurrentCommandWorkflows("runtime-dispose");
+  const state = useWorkbenchStore.getState();
+  resetLiveStreamBoundary(state.protocol);
+  useWorkbenchStore.setState({
+    attitudeSample: null,
+    processingStatus: liveProcessingRuntime.getSnapshot(),
+    protocolHealth: protocolParser.getHealthSnapshot(),
+  });
   if (!serialRecoveryCoordinator) {
     return;
   }
-  const state = useWorkbenchStore.getState();
   const recoveryWasConnecting = state.serialRecovery.phase === "connecting";
   const manualConnecting =
     state.source === "serial" &&
@@ -2246,6 +2294,7 @@ function getSerialRecoveryCoordinator(): SerialReconnectCoordinator {
         processingStatus: liveProcessingRuntime.getSnapshot(),
         attitudeSample: null,
         stats: { ...emptyStats(), startedAt: Date.now() },
+        protocolHealth: protocolParser.getHealthSnapshot(),
       });
     },
     onSnapshot: (serialRecovery) => {
@@ -2257,6 +2306,16 @@ function getSerialRecoveryCoordinator(): SerialReconnectCoordinator {
 
 export function selectActiveWorkspace(state: WorkbenchStore): WorkspaceProfile | undefined {
   return state.workspaces.find((workspace) => workspace.id === state.activeWorkspaceId);
+}
+
+export function selectActiveProtocol(state: WorkbenchStore): ProtocolKind {
+  return hasReplaySession(state) && state.replayHeader
+    ? state.replayHeader.protocol
+    : state.protocol;
+}
+
+export function selectActiveProtocolHealth(state: WorkbenchStore): ProtocolHealthSnapshot {
+  return hasReplaySession(state) ? state.replayProtocolHealth : state.protocolHealth;
 }
 
 export function selectIsWorkspaceDirty(state: WorkbenchStore): boolean {
@@ -2884,6 +2943,7 @@ async function applyWorkspaceSnapshot(
     terminalPaused: false,
     chartPaused: false,
     stats: emptyStats(),
+    protocolHealth: protocolParser.getHealthSnapshot(),
     connectionStatus: "disconnected",
     statusMessage: usesBrowserFallback
       ? `“${latestTarget.name}”需要串口，浏览器预览已改用模拟器`
@@ -2957,6 +3017,7 @@ function resetLiveView(protocol: ProtocolKind, set: WorkbenchSet): void {
     terminalPaused: false,
     chartPaused: false,
     stats: emptyStats(),
+    protocolHealth: protocolParser.getHealthSnapshot(),
   }));
 }
 
@@ -2988,6 +3049,7 @@ function resetReplayView(protocol: ProtocolKind, set: WorkbenchSet): void {
     terminalPaused: false,
     chartPaused: false,
     stats: emptyStats(),
+    replayProtocolHealth: replayProtocolParser.getHealthSnapshot(),
   }));
 }
 
@@ -3080,6 +3142,7 @@ function ingestReplayBatch(
       rxFrames: state.stats.rxFrames + rxFrames,
       startedAt: state.stats.startedAt ?? Date.now(),
     },
+    replayProtocolHealth: replayProtocolParser.getHealthSnapshot(),
     replayPositionUs: Math.max(state.replayPositionUs, payload.endUs),
     replayNextSequence: state.replayNextSequence + 1,
   };

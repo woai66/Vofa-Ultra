@@ -1,8 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { APP_DISPLAY_VERSION } from "./core/appMetadata";
+import { createEmptyProtocolHealth } from "./core/protocols";
+import { useWorkbenchStore } from "./store/workbenchStore";
 import App from "./App";
 
 vi.mock("./components/AttitudeScene", () => ({
@@ -119,5 +121,28 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "选择捕获文件" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "选择位置并导出" })).toBeDisabled();
     expect(screen.getByText("仅桌面应用支持捕获文件导出")).toBeInTheDocument();
+  });
+
+  it("状态栏只在结构化协议发生丢帧时显示紧凑警告", () => {
+    useWorkbenchStore.setState({
+      protocol: "firewater",
+      replayStatus: "idle",
+      replaySessionId: 0,
+      protocolHealth: {
+        ...createEmptyProtocolHealth(),
+        droppedFrames: 3,
+        reasonCounts: {
+          ...createEmptyProtocolHealth().reasonCounts,
+          "invalid-format": 3,
+        },
+        lastDropReason: "invalid-format",
+        lastDropAt: 1_000,
+      },
+    });
+    render(<App />);
+
+    expect(screen.getByText("丢帧 3", { selector: ".protocol-warning-status span" })).toBeVisible();
+    act(() => useWorkbenchStore.setState({ protocolHealth: createEmptyProtocolHealth() }));
+    expect(screen.queryByText("丢帧 3")).not.toBeInTheDocument();
   });
 });

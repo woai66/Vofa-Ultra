@@ -28,16 +28,34 @@ VUCAP 输入的信任边界。`replaySeekMode` 的 `record-boundary` 只适用�
 
 ## 解析器契约
 
-解析器实现 `push(bytes, timestamp)` 与 `reset()`。`timestamp` 是完成协议帧的那个 chunk 的时间，不是首字节时间。
-实现必须满足以下约束：
+解析器实现 `push(bytes, timestamp)`、`getHealthSnapshot()`、`clearHealth()` 与 `reset()`。`timestamp` 是完成协议帧的
+那个 chunk 的时间，不是首字节时间。实现必须满足以下约束：
 
 - 同步、确定、无副作用；相同字节、分包和时间戳产生相同结果。
 - 接受任意分包，包括空 chunk、逐字节输入和跨 chunk 帧尾；只输出完整帧。
 - 不因损坏、随机或超长输入抛异常；丢弃当前损坏单元后能在明确同步点恢复。
-- 残片缓存有硬上限，且 `reset()` 清空残片、解码器和丢弃状态；重复调用保持幂等。
+- 残片缓存有硬上限，且 `reset()` 清空残片、解码器、丢弃状态和健康统计；重复调用保持幂等。
 - 每帧包含 1 到 16 个有限数值，不能输出 `NaN` 或正负无穷。
 - `labels` 要么省略，要么与 `values` 等长；单个非空标签最多 64 个 UTF-16 code unit，不能含分隔符或控制字符。
 - 工厂每次创建独立实例，不能通过模块级可变状态让实时、回放或测试链路相互污染。
+
+健康快照固定包含成功帧数、丢弃帧数、重同步次数、各原因计数、最近原因和最近时间。计数饱和于
+`0xFFFF_FFFF`，不能回绕，也不能保存错误事件数组或被拒绝的原始载荷。内置原因码为：
+
+- `unit-too-long`：单元超过该协议缓存或帧长度上限。
+- `too-many-channels`：完整单元声明了超过 16 个通道。
+- `invalid-format`：单元为空帧、字段缺失或不满足基本语法；FireWater 纯空行不算错误。
+- `invalid-label`：FireWater 标签超过上限或包含被禁止的分隔符、控制字符。
+- `non-finite-value`：数值不是有限数，或 JustFloat 解码得到 `NaN` / 无穷。
+- `misaligned-length`：JustFloat 帧体没有按 4 字节 `float32` 对齐。
+
+同一个损坏单元无论如何分包只计一次。只有解析器先进入超长丢弃状态、之后找到明确同步边界时，才增加一次
+重同步；已经在完整边界上判断为普通格式错误的单元不额外计重同步。`getHealthSnapshot()` 返回不能修改内部状态的
+快照，并在诊断未变化时复用同一引用，避免半帧或 Raw chunk 触发无意义界面更新。`clearHealth()` 只清计数并保留
+正在等待的半帧，`reset()` 同时清除解析状态和计数。
+
+实时与回放必须使用不同 parser 实例和健康快照。协议、数据源、工作区、手动连接、自动重连流边界，以及回放
+会话或时间线改变时，重置对应实例；暂停波形或终端不能停止诊断。Raw Data 返回恒为零的快照，界面显示“不适用”。
 
 内置 FireWater 最多保留 16,384 个 UTF-16 code unit 的未闭合文本行；JustFloat 最多保留 64 字节数据和
 3 字节帧尾前缀。新协议应按自身格式选择更小的可解释上限，不能依赖串口或 IPC 上游“通常不会给大 chunk”。
@@ -49,14 +67,25 @@ VUCAP 输入的信任边界。`replaySeekMode` 的 `record-boundary` 只适用�
 ```ts
 class ExampleParser implements ProtocolParser {
   private pending = new Uint8Array();
+  private readonly health = new ProtocolHealthTracker();
 
   push(bytes: Uint8Array, timestamp: number): ParsedFrame[] {
-    // 追加时立即执行格式上限检查，只返回已验证的完整帧。
-    return parseCompleteFrames(bytes, timestamp);
+    // 追加时立即执行格式上限检查，并按结果调用 accept/drop/resync。
+    const frames = parseCompleteFrames(bytes, timestamp, this.health);
+    return frames;
+  }
+
+  getHealthSnapshot(): ProtocolHealthSnapshot {
+    return this.health.getSnapshot();
+  }
+
+  clearHealth(): void {
+    this.health.clear();
   }
 
   reset(): void {
     this.pending = new Uint8Array();
+    this.clearHealth();
   }
 }
 ```
@@ -83,6 +112,8 @@ expect(frames[0]?.values).toEqual([1, 2, 3]);
 5. 输出通道数、有限数值和标签对齐满足上述边界。
 6. 模拟器编码结果能被对应解析器消费；Raw 明确产生零个波形帧。
 7. 若开放 seek，帧尾所有切点、record 内多帧、TX 交错、重复时间戳和无后续同步点均不产生截断帧。
+8. 合法、损坏和超长单元的健康计数与分包方式无关；原因、最近时间和重同步次数精确一致。
+9. `clearHealth()` 保留半帧，`reset()` 同时清半帧与统计，计数达到上限后保持饱和。
 
 不要使用墙钟性能断言。对于 CPU 或内存风险，使用固定输入规模、显式缓存上限和确定的输出数量进行验证。
 

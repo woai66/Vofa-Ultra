@@ -7,15 +7,24 @@ import {
   Radio,
   RefreshCw,
   Rows3,
+  TriangleAlert,
 } from "lucide-react";
-import { getProtocolDefinition } from "../core/protocols";
+import {
+  getProtocolDefinition,
+  PROTOCOL_DROP_REASON_LABELS,
+} from "../core/protocols";
 import { isRecoveryActivePhase } from "../core/serialRecovery";
-import { useWorkbenchStore } from "../store/workbenchStore";
+import {
+  selectActiveProtocol,
+  selectActiveProtocolHealth,
+  useWorkbenchStore,
+} from "../store/workbenchStore";
 import type { SerialRecoveryPhase } from "../types/serial";
 
 export function StatusBar() {
   const source = useWorkbenchStore((state) => state.source);
-  const protocol = useWorkbenchStore((state) => state.protocol);
+  const activeProtocol = useWorkbenchStore(selectActiveProtocol);
+  const protocolHealth = useWorkbenchStore(selectActiveProtocolHealth);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
   const serialConfig = useWorkbenchStore((state) => state.serialConfig);
   const serialRecovery = useWorkbenchStore((state) => state.serialRecovery);
@@ -26,7 +35,6 @@ export function StatusBar() {
   const captureDataBytes = useWorkbenchStore((state) => state.captureDataBytes);
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
   const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
-  const replayHeader = useWorkbenchStore((state) => state.replayHeader);
   const replaySpeed = useWorkbenchStore((state) => state.replaySpeed);
   const replayPositionUs = useWorkbenchStore((state) => state.replayPositionUs);
   const replayDurationUs = useWorkbenchStore((state) => state.replayDurationUs);
@@ -40,8 +48,8 @@ export function StatusBar() {
   const elapsedSeconds = stats.startedAt ? Math.max((now - stats.startedAt) / 1_000, 1) : 1;
   const receiveRate = stats.rxBytes / elapsedSeconds;
   const replayLoaded = replaySessionId > 0 && replayStatus !== "idle";
-  const activeProtocol = replayHeader?.protocol ?? protocol;
   const recoveryActive = source === "serial" && isRecoveryActivePhase(serialRecovery.phase);
+  const protocolWarning = activeProtocol !== "raw" && protocolHealth.droppedFrames > 0;
 
   return (
     <footer className="status-bar">
@@ -66,6 +74,16 @@ export function StatusBar() {
         <CircleGauge size={13} />
         <span>{getProtocolDefinition(activeProtocol).displayName}</span>
       </div>
+      {protocolWarning && protocolHealth.lastDropReason && (
+        <div
+          className="status-item protocol-warning-status"
+          aria-label={`协议解析已丢弃 ${protocolHealth.droppedFrames.toLocaleString()} 帧`}
+          title={`最近：${PROTOCOL_DROP_REASON_LABELS[protocolHealth.lastDropReason]}`}
+        >
+          <TriangleAlert size={13} />
+          <span>丢帧 {protocolHealth.droppedFrames.toLocaleString()}</span>
+        </div>
+      )}
       <div className="status-spacer" />
       {captureStatus === "recording" && (
         <div className="status-item capture-status-item">

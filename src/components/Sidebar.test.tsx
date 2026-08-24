@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createEmptyProtocolHealth } from "../core/protocols";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { Sidebar } from "./Sidebar";
 
@@ -135,5 +136,113 @@ describe("Sidebar 串口恢复界面", () => {
     );
 
     expect(screen.getByRole("button", { name: "正在取消" })).toBeDisabled();
+  });
+});
+
+describe("Sidebar 协议解析健康度", () => {
+  beforeEach(() => {
+    useWorkbenchStore.setState({
+      protocol: "firewater",
+      replayStatus: "idle",
+      replaySessionId: 0,
+      replayHeader: undefined,
+      protocolHealth: createEmptyProtocolHealth(),
+      replayProtocolHealth: createEmptyProtocolHealth(),
+      channels: [],
+      processedChannels: [],
+      workspaceTransitionStatus: "idle",
+    });
+    useWorkbenchStore.getState().setProtocol("firewater");
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("区分等待、健康与丢帧状态并提供可操作原因", () => {
+    const props = {
+      activePanel: "channels" as const,
+      theme: "dark" as const,
+      onClose: vi.fn(),
+      onThemeChange: vi.fn(),
+    };
+    const { rerender } = render(<Sidebar {...props} />);
+
+    const health = screen.getByRole("region", { name: "协议解析健康度" });
+    expect(health).toHaveTextContent("等待完整帧成功 0丢弃 0重同步 0");
+    expect(screen.getByRole("button", { name: "清空解析统计" })).toBeDisabled();
+
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("1,2\n"), 1_000);
+    rerender(<Sidebar {...props} />);
+    expect(health).toHaveTextContent("解析正常成功 1丢弃 0重同步 0");
+
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("broken\n"), 1_100);
+    rerender(<Sidebar {...props} />);
+    expect(health).toHaveTextContent("已丢弃 1 帧");
+    expect(health).toHaveTextContent("最近：包含非有限数值");
+    expect(health).toHaveTextContent("FireWater：每行 1–16 个有限数值");
+    expect(screen.getByRole("button", { name: "清空解析统计" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "清空解析统计" }));
+    expect(health).toHaveTextContent("等待完整帧成功 0丢弃 0重同步 0");
+  });
+
+  it("Raw Data 显示不适用", () => {
+    useWorkbenchStore.getState().setProtocol("raw");
+    render(
+      <Sidebar
+        activePanel="channels"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("region", { name: "协议解析健康度" })).toHaveTextContent(
+      "不适用Raw Data 不执行结构化解析",
+    );
+    expect(screen.getByRole("button", { name: "清空解析统计" })).toBeDisabled();
+  });
+
+  it("回放会话显示独立的回放诊断", () => {
+    useWorkbenchStore.setState({
+      protocolHealth: {
+        ...createEmptyProtocolHealth(),
+        acceptedFrames: 8,
+      },
+      replayProtocolHealth: {
+        ...createEmptyProtocolHealth(),
+        droppedFrames: 2,
+        reasonCounts: {
+          ...createEmptyProtocolHealth().reasonCounts,
+          "misaligned-length": 2,
+        },
+        lastDropReason: "misaligned-length",
+        lastDropAt: 1_000,
+      },
+      replayStatus: "paused",
+      replaySessionId: 7,
+      replayHeader: {
+        source: "simulator",
+        protocol: "justfloat",
+        serialConfig: useWorkbenchStore.getState().serialConfig,
+        startedAtUnixMs: 1_000,
+        timeUnit: "microseconds",
+      },
+    });
+
+    render(
+      <Sidebar
+        activePanel="channels"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    const health = screen.getByRole("region", { name: "协议解析健康度" });
+    expect(health).toHaveTextContent("已丢弃 2 帧");
+    expect(health).toHaveTextContent("浮点帧长度未按 4 字节对齐");
+    expect(health).toHaveTextContent("JustFloat：1–16 个小端 float32");
   });
 });

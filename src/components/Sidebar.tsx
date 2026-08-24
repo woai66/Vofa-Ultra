@@ -1,7 +1,9 @@
 import {
   Cable,
+  CircleCheck,
   CircleStop,
   Download,
+  Eraser,
   Gauge,
   Moon,
   Play,
@@ -10,19 +12,28 @@ import {
   Settings,
   Sun,
   Trash2,
+  TriangleAlert,
   X,
 } from "lucide-react";
-import { BUILTIN_PROTOCOLS } from "../core/protocols";
+import {
+  BUILTIN_PROTOCOLS,
+  PROTOCOL_DROP_REASON_LABELS,
+} from "../core/protocols";
 import { isRecoveryActivePhase } from "../core/serialRecovery";
 import type { ThemeMode } from "../App";
 import {
   BAUD_RATES,
+  type ProtocolKind,
   type SerialDiagnosticsReport,
   type SerialRecoveryPhase,
 } from "../types/serial";
-import { useWorkbenchStore } from "../store/workbenchStore";
+import {
+  selectActiveProtocol,
+  selectActiveProtocolHealth,
+  useWorkbenchStore,
+} from "../store/workbenchStore";
 import type { ChartWindowSeconds } from "../types/workspace";
-import type { ChannelSeries } from "../types/workbench";
+import type { ChannelSeries, ProtocolHealthSnapshot } from "../types/workbench";
 import type { SidebarPanel } from "./ActivityRail";
 import { CapturePanel } from "./CapturePanel";
 import { AutomationPanel } from "./AutomationPanel";
@@ -432,8 +443,11 @@ function ConnectionPanel() {
 function ChannelPanel() {
   const channels = useWorkbenchStore((state) => state.channels);
   const processedChannels = useWorkbenchStore((state) => state.processedChannels);
+  const activeProtocol = useWorkbenchStore(selectActiveProtocol);
+  const protocolHealth = useWorkbenchStore(selectActiveProtocolHealth);
   const toggleChannel = useWorkbenchStore((state) => state.toggleChannel);
   const clearChart = useWorkbenchStore((state) => state.clearChart);
+  const clearProtocolHealth = useWorkbenchStore((state) => state.clearProtocolHealth);
   const isTransitioning = useWorkbenchStore(
     (state) => state.workspaceTransitionStatus !== "idle",
   );
@@ -451,6 +465,11 @@ function ChannelPanel() {
         <span>基础 {channels.length}</span>
         <strong>派生 {processedChannels.length}</strong>
       </div>
+      <ProtocolHealthSection
+        protocol={activeProtocol}
+        health={protocolHealth}
+        onClear={clearProtocolHealth}
+      />
       <section className="channel-list" aria-label="数据通道列表">
         {channels.length === 0 && processedChannels.length === 0 ? (
           <div className="sidebar-empty">
@@ -492,6 +511,70 @@ function ChannelPanel() {
         清空波形
       </button>
     </div>
+  );
+}
+
+function ProtocolHealthSection({
+  protocol,
+  health,
+  onClear,
+}: {
+  protocol: ProtocolKind;
+  health: ProtocolHealthSnapshot;
+  onClear(): void;
+}) {
+  const raw = protocol === "raw";
+  const warning = !raw && health.droppedFrames > 0;
+  const hasActivity =
+    health.acceptedFrames > 0 || health.droppedFrames > 0 || health.resyncCount > 0;
+  const status = raw
+    ? "inactive"
+    : warning
+      ? "warning"
+      : health.acceptedFrames > 0
+        ? "healthy"
+        : "waiting";
+
+  return (
+    <section className="protocol-health" data-status={status} aria-label="协议解析健康度">
+      <div className="protocol-health-heading">
+        <div>
+          {warning ? <TriangleAlert size={15} /> : <CircleCheck size={15} />}
+          <span>解析健康</span>
+        </div>
+        <strong>{protocolHealthLabel(status, health.droppedFrames)}</strong>
+        <button
+          className="icon-button compact"
+          type="button"
+          aria-label="清空解析统计"
+          title="清空解析统计"
+          disabled={raw || !hasActivity}
+          onClick={onClear}
+        >
+          <Eraser size={14} />
+        </button>
+      </div>
+      {raw ? (
+        <span className="protocol-health-inactive">Raw Data 不执行结构化解析</span>
+      ) : (
+        <>
+          <div className="protocol-health-counters" aria-label="协议解析计数">
+            <span>成功 <strong>{health.acceptedFrames.toLocaleString()}</strong></span>
+            <span>丢弃 <strong>{health.droppedFrames.toLocaleString()}</strong></span>
+            <span>重同步 <strong>{health.resyncCount.toLocaleString()}</strong></span>
+          </div>
+          {health.lastDropReason && (
+            <div className="protocol-health-detail">
+              <span>
+                最近：{PROTOCOL_DROP_REASON_LABELS[health.lastDropReason]}
+                {health.lastDropAt === null ? "" : ` · ${formatProtocolDropTime(health.lastDropAt)}`}
+              </span>
+              <small>{protocolConstraint(protocol)}</small>
+            </div>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -587,6 +670,40 @@ function SettingsPanel({ theme, onThemeChange }: Pick<SidebarProps, "theme" | "o
       </button>
     </div>
   );
+}
+
+type ProtocolHealthStatus = "inactive" | "waiting" | "healthy" | "warning";
+
+function protocolHealthLabel(status: ProtocolHealthStatus, droppedFrames: number): string {
+  switch (status) {
+    case "inactive":
+      return "不适用";
+    case "healthy":
+      return "解析正常";
+    case "warning":
+      return `已丢弃 ${droppedFrames.toLocaleString()} 帧`;
+    default:
+      return "等待完整帧";
+  }
+}
+
+function protocolConstraint(protocol: ProtocolKind): string {
+  if (protocol === "firewater") {
+    return "FireWater：每行 1–16 个有限数值，标签不超过 64 字符";
+  }
+  if (protocol === "justfloat") {
+    return "JustFloat：1–16 个小端 float32，帧尾 00 00 80 7F";
+  }
+  return "Raw Data 不执行结构化解析";
+}
+
+function formatProtocolDropTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString("zh-CN", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function AudioEmptyIcon() {
