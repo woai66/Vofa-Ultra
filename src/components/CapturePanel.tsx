@@ -909,13 +909,16 @@ function replayStatusLabel(status: ReplayUiStatus, runtimeStatus: string): strin
 
 function replaySeekTitle(protocol: ProtocolKind | undefined, status: ReplayUiStatus): string {
   if (!protocol || !protocolSupportsReplaySeek(protocol)) {
-    return "结构化协议回放暂不支持定位";
+    return "当前协议不支持回放定位";
   }
   if (status === "playing" || status === "pausing") {
     return "暂停回放后可定位";
   }
   if (status === "seeking") {
     return "正在定位回放";
+  }
+  if (getProtocolDefinition(protocol).replaySeekMode === "protocol-boundary") {
+    return "拖动定位，位置会吸附到下一协议同步点";
   }
   return "拖动定位回放位置";
 }

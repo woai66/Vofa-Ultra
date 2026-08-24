@@ -28,6 +28,8 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const REPLAY_INDEX_MEMORY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 const REPLAY_INDEX_MAX_CHECKPOINTS: usize =
     REPLAY_INDEX_MEMORY_LIMIT_BYTES / std::mem::size_of::<ReplayCheckpoint>();
+const JUSTFLOAT_TAIL: [u8; 4] = [0x00, 0x00, 0x80, 0x7f];
+const JUSTFLOAT_TAIL_FAILURE: [usize; 4] = [0, 1, 0, 0];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ReplaySpeed {
@@ -997,10 +999,11 @@ struct ReplayCheckpoint {
 struct ReplayIndex {
     checkpoints: Vec<ReplayCheckpoint>,
     stride_records: u64,
+    checkpoint_scanner: Option<ProtocolBoundaryScanner>,
 }
 
 impl ReplayIndex {
-    fn new(origin_file_offset: u64) -> Self {
+    fn new(origin_file_offset: u64, protocol: &str) -> Self {
         let mut checkpoints = Vec::with_capacity(REPLAY_INDEX_MAX_CHECKPOINTS);
         checkpoints.push(ReplayCheckpoint {
             position_us: 0,
@@ -1011,10 +1014,30 @@ impl ReplayIndex {
         Self {
             checkpoints,
             stride_records: 1,
+            checkpoint_scanner: match replay_seek_mode(protocol) {
+                Some(mode @ ReplaySeekMode::FireWater) | Some(mode @ ReplaySeekMode::JustFloat) => {
+                    Some(ProtocolBoundaryScanner::new(mode, true))
+                }
+                _ => None,
+            },
         }
     }
 
-    fn observe(&mut self, position_us: u64, file_offset: u64, record_count: u64, data_bytes: u64) {
+    fn observe(
+        &mut self,
+        record: &CaptureRecord,
+        file_offset: u64,
+        record_count: u64,
+        data_bytes: u64,
+    ) {
+        if let Some(scanner) = &mut self.checkpoint_scanner {
+            if record.direction == CaptureDirection::Rx {
+                scanner.find_boundary(&record.payload, false);
+            }
+            if !scanner.at_boundary() {
+                return;
+            }
+        }
         if !record_count.is_multiple_of(self.stride_records) {
             return;
         }
@@ -1023,7 +1046,7 @@ impl ReplayIndex {
         }
         if record_count.is_multiple_of(self.stride_records) {
             self.checkpoints.push(ReplayCheckpoint {
-                position_us,
+                position_us: record.timestamp_us,
                 file_offset,
                 record_count,
                 data_bytes,
@@ -1153,7 +1176,7 @@ fn scan_capture(
         Ok(file_offset) => file_offset,
         Err(error) => return ScanResult::Failed(error.to_string()),
     };
-    let mut index = ReplayIndex::new(origin_file_offset);
+    let mut index = ReplayIndex::new(origin_file_offset, &reader.header().protocol);
     let mut last_progress = Instant::now();
 
     loop {
@@ -1178,7 +1201,7 @@ fn scan_capture(
                     Err(error) => return ScanResult::Failed(error.to_string()),
                 };
                 index.observe(
-                    record.timestamp_us,
+                    &record,
                     file_offset,
                     accumulator.stats.record_count(),
                     accumulator.stats.data_bytes(),
@@ -1275,9 +1298,82 @@ struct ReplayCursor {
 }
 
 enum SeekLocation {
-    Positioned(Box<ReplayCursor>),
-    Completed,
+    Positioned {
+        cursor: Box<ReplayCursor>,
+        position_us: u64,
+    },
+    Completed {
+        position_us: u64,
+    },
     Interrupted(RuntimeControl),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReplaySeekMode {
+    Record,
+    FireWater,
+    JustFloat,
+}
+
+fn replay_seek_mode(protocol: &str) -> Option<ReplaySeekMode> {
+    match protocol {
+        "raw" => Some(ReplaySeekMode::Record),
+        "firewater" => Some(ReplaySeekMode::FireWater),
+        "justfloat" => Some(ReplaySeekMode::JustFloat),
+        _ => None,
+    }
+}
+
+struct ProtocolBoundaryScanner {
+    mode: ReplaySeekMode,
+    matched_tail_bytes: usize,
+    at_boundary: bool,
+}
+
+impl ProtocolBoundaryScanner {
+    fn new(mode: ReplaySeekMode, starts_at_stream_origin: bool) -> Self {
+        Self {
+            mode,
+            matched_tail_bytes: 0,
+            at_boundary: starts_at_stream_origin,
+        }
+    }
+
+    fn at_boundary(&self) -> bool {
+        self.at_boundary
+    }
+
+    fn find_boundary(&mut self, payload: &[u8], accept_boundary: bool) -> Option<usize> {
+        for (index, byte) in payload.iter().copied().enumerate() {
+            self.at_boundary = false;
+            let boundary_found = match self.mode {
+                ReplaySeekMode::FireWater => byte == b'\n',
+                ReplaySeekMode::JustFloat => self.observe_justfloat_byte(byte),
+                ReplaySeekMode::Record => false,
+            };
+            if boundary_found {
+                self.at_boundary = true;
+                if accept_boundary {
+                    return Some(index + 1);
+                }
+            }
+        }
+        None
+    }
+
+    fn observe_justfloat_byte(&mut self, byte: u8) -> bool {
+        while self.matched_tail_bytes > 0 && byte != JUSTFLOAT_TAIL[self.matched_tail_bytes] {
+            self.matched_tail_bytes = JUSTFLOAT_TAIL_FAILURE[self.matched_tail_bytes - 1];
+        }
+        if byte == JUSTFLOAT_TAIL[self.matched_tail_bytes] {
+            self.matched_tail_bytes += 1;
+        }
+        if self.matched_tail_bytes == JUSTFLOAT_TAIL.len() {
+            self.matched_tail_bytes = 0;
+            return true;
+        }
+        false
+    }
 }
 
 fn locate_replay_cursor<F>(
@@ -1295,20 +1391,75 @@ where
         return Ok(SeekLocation::Interrupted(control));
     }
 
+    let mode = replay_seek_mode(&expected_header.protocol)
+        .ok_or_else(|| format!("协议 {} 不支持回放定位", expected_header.protocol))?;
+    if target_us == 0 && summary.record_count > 0 {
+        let mut cursor = ReplayCursor::open(path, expected_header)?;
+        cursor.lookahead = cursor.next_record(summary)?;
+        return Ok(SeekLocation::Positioned {
+            cursor: Box::new(cursor),
+            position_us: 0,
+        });
+    }
+
     let mut cursor = ReplayCursor::open_at(path, expected_header, checkpoint)?;
     let at_end = target_us >= summary.duration_us;
+    let mut boundary_scanner = ProtocolBoundaryScanner::new(mode, true);
     loop {
         if let Some(control) = poll_control()? {
             return Ok(SeekLocation::Interrupted(control));
         }
 
         match cursor.next_record(summary)? {
-            Some(record) if !at_end && record.timestamp_us >= target_us => {
-                cursor.lookahead = Some(record);
-                return Ok(SeekLocation::Positioned(Box::new(cursor)));
+            Some(record) if !at_end && mode == ReplaySeekMode::Record => {
+                if record.timestamp_us >= target_us {
+                    cursor.lookahead = Some(record);
+                    return Ok(SeekLocation::Positioned {
+                        cursor: Box::new(cursor),
+                        position_us: target_us,
+                    });
+                }
+            }
+            Some(mut record) if !at_end => {
+                let at_or_after_target = record.timestamp_us >= target_us;
+                if at_or_after_target && boundary_scanner.at_boundary() {
+                    let position_us = record.timestamp_us;
+                    cursor.lookahead = Some(record);
+                    return Ok(SeekLocation::Positioned {
+                        cursor: Box::new(cursor),
+                        position_us,
+                    });
+                }
+                if record.direction == CaptureDirection::Rx {
+                    if let Some(payload_offset) =
+                        boundary_scanner.find_boundary(&record.payload, at_or_after_target)
+                    {
+                        let position_us = record.timestamp_us;
+                        let remaining_payload = record.payload.split_off(payload_offset);
+                        if remaining_payload.is_empty() {
+                            if cursor.records_read == summary.record_count {
+                                cursor.verify_end(summary)?;
+                                return Ok(SeekLocation::Completed {
+                                    position_us: summary.duration_us,
+                                });
+                            }
+                        } else {
+                            record.payload = remaining_payload;
+                            cursor.lookahead = Some(record);
+                        }
+                        return Ok(SeekLocation::Positioned {
+                            cursor: Box::new(cursor),
+                            position_us,
+                        });
+                    }
+                }
             }
             Some(_) => {}
-            None if at_end => return Ok(SeekLocation::Completed),
+            None if at_end || mode != ReplaySeekMode::Record => {
+                return Ok(SeekLocation::Completed {
+                    position_us: summary.duration_us,
+                })
+            }
             None => return Err("回放文件在定位时提前结束".to_owned()),
         }
     }
@@ -1548,7 +1699,7 @@ fn clamp_seek_target(target_us: u64, duration_us: u64) -> u64 {
 }
 
 fn seek_protocol_supported(protocol: &str) -> bool {
-    protocol == "raw"
+    replay_seek_mode(protocol).is_some()
 }
 
 struct ReplayRuntime {
@@ -1905,7 +2056,7 @@ impl ReplayRuntime {
         target_us: u64,
     ) -> Result<RuntimeControl, String> {
         if !seek_protocol_supported(&self.header.protocol) {
-            reply_control(command, Err("第一版仅支持定位 Raw 协议捕获文件".to_owned()));
+            reply_control(command, Err("当前协议不支持回放定位".to_owned()));
             return Ok(RuntimeControl::Continue);
         }
         if !matches!(
@@ -1951,9 +2102,12 @@ impl ReplayRuntime {
             locate_replay_cursor(&path, &header, &summary, checkpoint, target_us, || {
                 self.poll_seek_control()
             })?;
-        let cursor = match location {
-            SeekLocation::Positioned(cursor) => Some(*cursor),
-            SeekLocation::Completed => None,
+        let (cursor, position_us) = match location {
+            SeekLocation::Positioned {
+                cursor,
+                position_us,
+            } => (Some(*cursor), position_us),
+            SeekLocation::Completed { position_us } => (None, position_us),
             SeekLocation::Interrupted(control) => return Ok(control),
         };
         if let Some(control) = self.poll_seek_control()? {
@@ -1963,7 +2117,7 @@ impl ReplayRuntime {
             return Ok(RuntimeControl::Continue);
         }
 
-        self.position_us = target_us;
+        self.position_us = position_us;
         self.timeline_revision = self.timeline_revision.saturating_add(1);
         self.mode = if cursor.is_none() {
             self.cursor = None;
@@ -2244,10 +2398,10 @@ mod tests {
         }
     }
 
-    fn raw_header() -> CaptureHeader {
+    fn test_header(protocol: &str) -> CaptureHeader {
         CaptureHeader {
             source: "serial".to_owned(),
-            protocol: "raw".to_owned(),
+            protocol: protocol.to_owned(),
             serial_config: SerialConfig {
                 port_name: "COM3".to_owned(),
                 baud_rate: 115_200,
@@ -2264,7 +2418,19 @@ mod tests {
     }
 
     fn temporary_capture(records: &[(u64, &[u8])], complete: bool) -> TempCapture {
-        let header_bytes = serde_json::to_vec(&raw_header()).unwrap();
+        let directed_records = records
+            .iter()
+            .map(|(timestamp_us, payload)| (CaptureDirection::Rx, *timestamp_us, *payload))
+            .collect::<Vec<_>>();
+        temporary_directed_capture("raw", &directed_records, complete)
+    }
+
+    fn temporary_directed_capture(
+        protocol: &str,
+        records: &[(CaptureDirection, u64, &[u8])],
+        complete: bool,
+    ) -> TempCapture {
+        let header_bytes = serde_json::to_vec(&test_header(protocol)).unwrap();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&CAPTURE_MAGIC);
         bytes.extend_from_slice(&CAPTURE_VERSION.to_le_bytes());
@@ -2273,9 +2439,12 @@ mod tests {
         bytes.extend_from_slice(&header_bytes);
 
         let mut data_bytes = 0_u64;
-        for (timestamp_us, payload) in records {
+        for (direction, timestamp_us, payload) in records {
             bytes.push(0x01);
-            bytes.push(0);
+            bytes.push(match direction {
+                CaptureDirection::Rx => 0,
+                CaptureDirection::Tx => 1,
+            });
             bytes.extend_from_slice(&0_u16.to_le_bytes());
             bytes.extend_from_slice(&timestamp_us.to_le_bytes());
             bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -2304,14 +2473,14 @@ mod tests {
         let file = File::open(path).unwrap();
         let mut reader = CaptureReader::new(file).unwrap();
         let header = reader.header().clone();
-        let mut index = ReplayIndex::new(reader.stream_position().unwrap());
+        let mut index = ReplayIndex::new(reader.stream_position().unwrap(), &header.protocol);
         let mut accumulator = ScanAccumulator::default();
         let complete = loop {
             match reader.next() {
                 Some(Ok(CaptureItem::Record(record))) => {
                     accumulator.observe(&record).unwrap();
                     index.observe(
-                        record.timestamp_us,
+                        &record,
                         reader.stream_position().unwrap(),
                         accumulator.stats.record_count(),
                         accumulator.stats.data_bytes(),
@@ -2345,8 +2514,44 @@ mod tests {
         )
         .unwrap();
         match location {
-            SeekLocation::Positioned(mut cursor) => cursor.lookahead.take(),
-            SeekLocation::Completed => None,
+            SeekLocation::Positioned { mut cursor, .. } => cursor.lookahead.take(),
+            SeekLocation::Completed { .. } => None,
+            SeekLocation::Interrupted(_) => panic!("seek unexpectedly interrupted"),
+        }
+    }
+
+    fn located_suffix(
+        capture: &TempCapture,
+        header: &CaptureHeader,
+        summary: &ScanSummary,
+        index: &ReplayIndex,
+        requested_us: u64,
+    ) -> Option<(u64, Vec<CaptureRecord>)> {
+        let target_us = clamp_seek_target(requested_us, summary.duration_us);
+        let location = locate_replay_cursor(
+            &capture.path,
+            header,
+            summary,
+            index.checkpoint_before(target_us),
+            target_us,
+            || Ok(None),
+        )
+        .unwrap();
+        match location {
+            SeekLocation::Positioned {
+                mut cursor,
+                position_us,
+            } => {
+                let mut records = Vec::new();
+                if let Some(record) = cursor.lookahead.take() {
+                    records.push(record);
+                }
+                while let Some(record) = cursor.next_record(summary).unwrap() {
+                    records.push(record);
+                }
+                Some((position_us, records))
+            }
+            SeekLocation::Completed { .. } => None,
             SeekLocation::Interrupted(_) => panic!("seek unexpectedly interrupted"),
         }
     }
@@ -2543,11 +2748,12 @@ mod tests {
     #[test]
     fn sparse_index_is_bounded_and_locates_strictly_before_target() {
         assert_eq!(std::mem::size_of::<ReplayCheckpoint>(), 32);
-        let mut index = ReplayIndex::new(64);
+        let mut index = ReplayIndex::new(64, "raw");
         let records = (REPLAY_INDEX_MAX_CHECKPOINTS as u64) * 4;
         for record_count in 1..=records {
+            let current_record = record(record_count, 1);
             index.observe(
-                record_count,
+                &current_record,
                 64 + record_count * 16,
                 record_count,
                 record_count * 2,
@@ -2574,11 +2780,11 @@ mod tests {
 
     #[test]
     fn duplicate_timestamp_checkpoint_never_skips_exact_target() {
-        let mut index = ReplayIndex::new(100);
-        index.observe(10, 120, 1, 1);
-        index.observe(10, 140, 2, 2);
-        index.observe(10, 160, 3, 3);
-        index.observe(20, 180, 4, 4);
+        let mut index = ReplayIndex::new(100, "raw");
+        index.observe(&record(10, 1), 120, 1, 1);
+        index.observe(&record(10, 1), 140, 2, 2);
+        index.observe(&record(10, 1), 160, 3, 3);
+        index.observe(&record(20, 1), 180, 4, 4);
 
         assert_eq!(index.checkpoint_before(10).record_count, 0);
         assert_eq!(index.checkpoint_before(11).record_count, 3);
@@ -2613,6 +2819,170 @@ mod tests {
         assert_eq!((exact.timestamp_us, exact.payload), (20, vec![0x14]));
         assert!(located_record(&capture, &header, &summary, &index, 40).is_none());
         assert!(located_record(&capture, &header, &summary, &index, u64::MAX).is_none());
+    }
+
+    #[test]
+    fn firewater_seek_preserves_origin_and_exact_safe_checkpoint() {
+        let capture = temporary_directed_capture(
+            "firewater",
+            &[
+                (CaptureDirection::Rx, 0, b"first\n"),
+                (CaptureDirection::Rx, 5, b"old\n"),
+                (CaptureDirection::Tx, 7, b"command"),
+                (CaptureDirection::Rx, 10, b"new\n"),
+                (CaptureDirection::Rx, 20, b"later\n"),
+            ],
+            true,
+        );
+        let (header, summary, index) = scan_test_capture(&capture.path);
+
+        let (origin_us, origin_records) =
+            located_suffix(&capture, &header, &summary, &index, 0).unwrap();
+        assert_eq!(origin_us, 0);
+        assert_eq!(origin_records[0].payload, b"first\n");
+
+        let checkpoint = index.checkpoint_before(10);
+        assert_eq!(checkpoint.position_us, 7);
+        let (position_us, records) =
+            located_suffix(&capture, &header, &summary, &index, 10).unwrap();
+        assert_eq!(position_us, 10);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].direction, CaptureDirection::Rx);
+        assert_eq!(records[0].payload, b"new\n");
+    }
+
+    #[test]
+    fn firewater_seek_discards_partial_unit_and_keeps_record_remainder() {
+        let capture = temporary_directed_capture(
+            "firewater",
+            &[
+                (CaptureDirection::Rx, 5, b"old-partial"),
+                (CaptureDirection::Tx, 10, b"same-time-command"),
+                (CaptureDirection::Rx, 10, b"\nnew\nnext\n"),
+                (CaptureDirection::Rx, 20, b"later\n"),
+            ],
+            true,
+        );
+        let (header, summary, index) = scan_test_capture(&capture.path);
+
+        let (position_us, records) =
+            located_suffix(&capture, &header, &summary, &index, 10).unwrap();
+        assert_eq!(position_us, 10);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].direction, CaptureDirection::Rx);
+        assert_eq!(records[0].timestamp_us, 10);
+        assert_eq!(records[0].payload, b"new\nnext\n");
+        assert_eq!(records[1].payload, b"later\n");
+    }
+
+    #[test]
+    fn justfloat_seek_handles_every_tail_split_with_tx_interleaving() {
+        let next_frame = [0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x7f];
+        let later_frame = [0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x80, 0x7f];
+
+        for split in 0..=JUSTFLOAT_TAIL.len() {
+            let mut old_prefix = vec![0x41];
+            old_prefix.extend_from_slice(&JUSTFLOAT_TAIL[..split]);
+            let mut synchronized_suffix = JUSTFLOAT_TAIL[split..].to_vec();
+            synchronized_suffix.extend_from_slice(&next_frame);
+            let capture = temporary_directed_capture(
+                "justfloat",
+                &[
+                    (CaptureDirection::Rx, 5, &old_prefix),
+                    (CaptureDirection::Tx, 7, b"command"),
+                    (CaptureDirection::Rx, 10, &synchronized_suffix),
+                    (CaptureDirection::Rx, 20, &later_frame),
+                ],
+                true,
+            );
+            let (header, summary, index) = scan_test_capture(&capture.path);
+
+            let (position_us, records) =
+                located_suffix(&capture, &header, &summary, &index, 10).unwrap();
+            assert_eq!(position_us, 10, "split={split}");
+            assert_eq!(records.len(), 2, "split={split}");
+            assert_eq!(records[0].payload, next_frame, "split={split}");
+            assert_eq!(records[1].payload, later_frame, "split={split}");
+        }
+    }
+
+    #[test]
+    fn justfloat_seek_recovers_overlapping_tail_prefix() {
+        let next_frame = [0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x7f];
+        let later_frame = [0x00, 0x00, 0x80, 0x40, 0x00, 0x00, 0x80, 0x7f];
+        let capture = temporary_directed_capture(
+            "justfloat",
+            &[
+                (CaptureDirection::Rx, 5, &[0x41, 0x00]),
+                (CaptureDirection::Rx, 10, &[0x00, 0x00, 0x80, 0x7f]),
+                (CaptureDirection::Rx, 10, &next_frame),
+                (CaptureDirection::Rx, 20, &later_frame),
+            ],
+            true,
+        );
+        let (header, summary, index) = scan_test_capture(&capture.path);
+
+        let (position_us, records) =
+            located_suffix(&capture, &header, &summary, &index, 10).unwrap();
+        assert_eq!(position_us, 10);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].payload, next_frame);
+    }
+
+    #[test]
+    fn structured_seek_without_later_sync_completes_at_verified_end() {
+        let capture = temporary_directed_capture(
+            "firewater",
+            &[
+                (CaptureDirection::Rx, 5, b"partial"),
+                (CaptureDirection::Tx, 20, b"later-command"),
+            ],
+            true,
+        );
+        let (header, summary, index) = scan_test_capture(&capture.path);
+        let target_us = 10;
+        let location = locate_replay_cursor(
+            &capture.path,
+            &header,
+            &summary,
+            index.checkpoint_before(target_us),
+            target_us,
+            || Ok(None),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            location,
+            SeekLocation::Completed { position_us: 20 }
+        ));
+    }
+
+    #[test]
+    fn structured_seek_with_final_boundary_completes_without_empty_pause() {
+        let capture = temporary_directed_capture(
+            "firewater",
+            &[
+                (CaptureDirection::Rx, 5, b"partial"),
+                (CaptureDirection::Rx, 20, b"\n"),
+            ],
+            true,
+        );
+        let (header, summary, index) = scan_test_capture(&capture.path);
+        let target_us = 10;
+        let location = locate_replay_cursor(
+            &capture.path,
+            &header,
+            &summary,
+            index.checkpoint_before(target_us),
+            target_us,
+            || Ok(None),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            location,
+            SeekLocation::Completed { position_us: 20 }
+        ));
     }
 
     #[test]
@@ -2695,10 +3065,11 @@ mod tests {
     }
 
     #[test]
-    fn seek_is_raw_only_and_target_is_clamped() {
+    fn seek_support_is_explicit_and_target_is_clamped() {
         assert!(seek_protocol_supported("raw"));
-        assert!(!seek_protocol_supported("firewater"));
-        assert!(!seek_protocol_supported("justfloat"));
+        assert!(seek_protocol_supported("firewater"));
+        assert!(seek_protocol_supported("justfloat"));
+        assert!(!seek_protocol_supported("unknown"));
         assert_eq!(clamp_seek_target(5, 10), 5);
         assert_eq!(clamp_seek_target(10, 10), 10);
         assert_eq!(clamp_seek_target(u64::MAX, 10), 10);

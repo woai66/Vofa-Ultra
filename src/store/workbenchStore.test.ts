@@ -2307,22 +2307,44 @@ describe("workbenchStore", () => {
     });
   });
 
-  it("结构化协议和播放中状态拒绝定位", async () => {
+  it("结构化协议定位接收后端吸附位置，播放中仍拒绝定位", async () => {
+    seekReplayMock.mockResolvedValue(
+      replayState("seeking", {
+        generation: 4,
+        revision: 5,
+      }),
+    );
     useWorkbenchStore.setState({
       replayStatus: "paused",
       replaySessionId: 7,
       replayGeneration: 3,
+      replayRevision: 4,
       replayHeader: TEST_REPLAY_HEADER,
       replayDurationUs: 50_000,
     });
-    await expect(useWorkbenchStore.getState().seekReplay(10_000)).resolves.toBe(false);
+    await expect(useWorkbenchStore.getState().seekReplay(10_000)).resolves.toBe(true);
+    expect(seekReplayMock).toHaveBeenCalledWith(7, 3, 10_000);
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("paused", {
+        generation: 4,
+        timelineRevision: 1,
+        revision: 6,
+        positionUs: 12_000,
+      }),
+    );
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      replayStatus: "paused",
+      replayPositionUs: 12_000,
+      replayTimelineRevision: 1,
+    });
 
     useWorkbenchStore.setState({
       replayStatus: "playing",
       replayHeader: { ...TEST_REPLAY_HEADER, protocol: "raw" },
     });
     await expect(useWorkbenchStore.getState().seekReplay(10_000)).resolves.toBe(false);
-    expect(seekReplayMock).not.toHaveBeenCalled();
+    expect(seekReplayMock).toHaveBeenCalledOnce();
   });
 
   it("播放中切换倍速保留代次、时间线和待接收批次", async () => {

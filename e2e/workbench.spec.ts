@@ -666,6 +666,50 @@ test("Raw 回放滑杆只在提交时发送一次定位命令", async ({ page })
   expect(pageErrors).toEqual([]);
 });
 
+for (const protocol of ["firewater", "justfloat"] as const) {
+  test(`${protocol} 回放定位显示后端吸附的协议同步点`, async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        pageErrors.push(message.text());
+      }
+    });
+    await installTauriReplayMock(page, protocol, 140_000);
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "记录", exact: true }).click();
+    await page.getByRole("tab", { name: "回放" }).click();
+    const slider = page.getByRole("slider", { name: "回放位置" });
+    await expect(slider).toBeEnabled();
+    await expect(slider).toHaveAttribute("title", "拖动定位，位置会吸附到下一协议同步点");
+
+    await slider.evaluate((element) => {
+      const input = element as HTMLInputElement;
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(input, "2100000");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(await replaySeekCalls(page)).toEqual([]);
+    await slider.dispatchEvent("pointerup");
+
+    await expect.poll(() => replaySeekCalls(page)).toEqual([
+      { sessionId: 7, generation: 2, targetUs: 2_100_000 },
+    ]);
+    await expect(slider).toHaveValue("2240000");
+    await expect(page.getByLabel("回放状态")).toContainText("回放已暂停");
+    await expect.poll(() => replayStateSnapshot(page)).toMatchObject({
+      status: "paused",
+      positionUs: 2_240_000,
+      timelineRevision: 1,
+    });
+    expect(pageErrors).toEqual([]);
+  });
+}
+
 test("播放中切换回放倍速不会重置代次和时间线", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -772,8 +816,12 @@ async function replayStateSnapshot(page: Page): Promise<Record<string, unknown>>
   });
 }
 
-async function installTauriReplayMock(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+async function installTauriReplayMock(
+  page: Page,
+  protocol: "raw" | "firewater" | "justfloat" = "raw",
+  seekSnapUs = 0,
+): Promise<void> {
+  await page.addInitScript(({ replayProtocol, replaySeekSnapUs }) => {
     type Callback = (data: unknown) => unknown;
     type InvokeArgs = Record<string, unknown> | undefined;
     const callbacks = new Map<number, Callback>();
@@ -790,7 +838,7 @@ async function installTauriReplayMock(page: Page): Promise<void> {
       path: "C:\\captures\\raw-session.vucap",
       header: {
         source: "serial",
-        protocol: "raw",
+        protocol: replayProtocol,
         serialConfig: {
           portName: "COM3",
           baudRate: 115200,
@@ -917,7 +965,7 @@ async function installTauriReplayMock(page: Page): Promise<void> {
             status: "paused",
             timelineRevision: replayState.timelineRevision + 1,
             revision: replayState.revision + 1,
-            positionUs: targetUs,
+            positionUs: Math.min(replayState.durationUs, targetUs + replaySeekSnapUs),
             message: "回放已定位",
           };
           emit("replay://state", { ...replayState });
@@ -959,7 +1007,7 @@ async function installTauriReplayMock(page: Page): Promise<void> {
       speedCalls,
       replayState: () => ({ ...replayState }),
     };
-  });
+  }, { replayProtocol: protocol, replaySeekSnapUs: seekSnapUs });
 }
 
 async function installTauriSerialMock(page: Page): Promise<void> {

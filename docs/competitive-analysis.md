@@ -4,6 +4,8 @@
 [Horldsence/vofa-NEXT](https://github.com/Horldsence/vofa-NEXT) 公开仓库。本文只记录工程决策依据，不对
 其他项目作安全承诺或完整审计。
 
+本次快照中 vofa-NEXT 有 7 个 open issue 和 2 个 open PR；数量会随上游变化，具体判断以下方链接内容为准。
+
 ## 值得继承的方向
 
 | 方向 | 采用方式 |
@@ -41,6 +43,25 @@ vofa-NEXT 把命令发送器列为核心显示控件；其
 的终端继续保留浏览器原生文本选择；命令历史导航只在输入框第一行或最后一行接管对应方向键，不改变终端记录的
 选择语义。
 
+### 原始捕获与数值日志分层
+
+[Issue #17](https://github.com/Horldsence/vofa-NEXT/issues/17) 同时提出实时保存原始数据和解析后 CSV；上游回复说明
+解析日志受图编译器性能与维护重构阻塞。这是两个不同的数据契约。Vofa-Ultra 的 `.vucap` writer 和流式
+CSV / JSONL 导出已经覆盖无损原始 RX / TX 记录，但当前 CSV 仍以 capture record 为行，不是基础/派生数值通道
+表，不能把它宣称为已覆盖解析日志。
+
+后续数值 CSV 将复用统一解析与处理入口，但使用独立的有界 writer、固定列 schema 和明确的通道变化策略，不让
+基础记录依赖节点图，也不把长期文件内容放进 WebView 内存。这一缺口已进入 v0.3 路线图。
+
+### 姿态视图先定义数据语义
+
+[Issue #18](https://github.com/Horldsence/vofa-NEXT/issues/18) 希望 IMU 3D 姿态同时支持角度、弧度和四元数；上游维护者
+表示计划在后续 prerelease 加入。Vofa-Ultra 当前只有通用标量基础/派生通道，尚未定义轴映射、旋转顺序、左右手
+坐标系、单位和四元数分量顺序。直接增加 3D 模型会把歧义推给 UI，并可能显示数值正确但方向错误的姿态。
+
+因此路线图先要求显式姿态映射契约，再提供角度、弧度和四元数输入及可验证的 3D 视图。渲染器生命周期、像素比
+上限、暂停/重置和窄屏交互也必须进入测试，而不是只追求一个可旋转的演示控件。
+
 ## 明确舍弃的做法
 
 ### 基础流程不依赖节点图
@@ -77,7 +98,9 @@ vofa-NEXT 把命令发送器列为核心显示控件；其
 
 - [PR #14](https://github.com/Horldsence/vofa-NEXT/pull/14) 提醒我们：测试必须固定面向用户的正确语义，
   不能只固定当前实现产生的错误结果。
-- [PR #15](https://github.com/Horldsence/vofa-NEXT/pull/15) 暴露了普通 PR 构建与签名发布边界不清的问题。
+- 调研时 [PR #13](https://github.com/Horldsence/vofa-NEXT/pull/13) 与
+  [PR #15](https://github.com/Horldsence/vofa-NEXT/pull/15) 均仍为 Draft；其中 PR #15 暴露了普通 PR 构建与签名
+  发布边界不清的问题。
   Vofa-Ultra 的常规 CI 不读取签名材料；正式发布工作流将使用受保护环境并与 PR 完全分离。
 - CI 必须覆盖构建、协议测试和真实页面验收，不能只验证某一层“能编译”。
 

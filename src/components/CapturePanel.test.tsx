@@ -151,8 +151,8 @@ describe("CapturePanel replay controls", () => {
     const slider = screen.getByRole("slider", { name: "回放位置" });
     expect(slider).toHaveAttribute("max", "3500000");
     expect(slider).toHaveValue("1000000");
-    expect(slider).toBeDisabled();
-    expect(slider).toHaveAttribute("title", "结构化协议回放暂不支持定位");
+    expect(slider).toBeEnabled();
+    expect(slider).toHaveAttribute("title", "拖动定位，位置会吸附到下一协议同步点");
     expect(screen.getByRole("button", { name: "播放" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "停止回放" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "关闭回放" })).toBeEnabled();
@@ -230,6 +230,26 @@ describe("CapturePanel replay controls", () => {
     expect(seekReplayMock).toHaveBeenCalledOnce();
     expect(seekReplayMock).toHaveBeenCalledWith(2_100_000);
   });
+
+  it.each(["firewater", "justfloat"] as const)(
+    "%s 回放开放同步点定位并只在提交时发送命令",
+    (protocol) => {
+      loadReplay("paused", {
+        replayHeader: { ...replayHeader, protocol },
+      });
+
+      render(<CapturePanel />);
+
+      const slider = screen.getByRole("slider", { name: "回放位置" });
+      expect(slider).toBeEnabled();
+      expect(slider).toHaveAttribute("title", "拖动定位，位置会吸附到下一协议同步点");
+      fireEvent.change(slider, { target: { value: "2400000" } });
+      expect(seekReplayMock).not.toHaveBeenCalled();
+      fireEvent.pointerUp(slider);
+      expect(seekReplayMock).toHaveBeenCalledOnce();
+      expect(seekReplayMock).toHaveBeenCalledWith(2_400_000);
+    },
+  );
 
   it("定位中允许停止或关闭但不能启动新播放", () => {
     loadReplay("seeking", {

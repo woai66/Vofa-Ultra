@@ -10,7 +10,7 @@ const MAX_JUSTFLOAT_FRAME_LENGTH =
 const MAX_JUSTFLOAT_PENDING_LENGTH =
   MAX_JUSTFLOAT_FRAME_LENGTH + JUSTFLOAT_TAIL.length - 1;
 
-export type ReplaySeekMode = "record-boundary" | "unsupported";
+export type ReplaySeekMode = "record-boundary" | "protocol-boundary" | "unsupported";
 
 export interface ProtocolParser {
   push(bytes: Uint8Array, timestamp: number): ParsedFrame[];
@@ -142,7 +142,7 @@ const protocolRegistry = {
     id: "firewater",
     displayName: "FireWater",
     description: "文本帧",
-    replaySeekMode: "unsupported",
+    replaySeekMode: "protocol-boundary",
     createParser: () => new FireWaterParser(),
     encodeSimulatorSample: (values: readonly number[]) => encodeFireWaterFrame(values),
   }),
@@ -150,7 +150,7 @@ const protocolRegistry = {
     id: "justfloat",
     displayName: "JustFloat",
     description: "浮点帧",
-    replaySeekMode: "unsupported",
+    replaySeekMode: "protocol-boundary",
     createParser: () => new JustFloatParser(),
     encodeSimulatorSample: (values: readonly number[]) => encodeJustFloatFrame(values),
   }),
@@ -190,7 +190,7 @@ export function createProtocolParser(protocol: ProtocolKind): ProtocolParser {
 }
 
 export function protocolSupportsReplaySeek(protocol: ProtocolKind): boolean {
-  return getProtocolDefinition(protocol).replaySeekMode === "record-boundary";
+  return getProtocolDefinition(protocol).replaySeekMode !== "unsupported";
 }
 
 function parseFireWaterLine(line: string, timestamp: number): ParsedFrame | null {

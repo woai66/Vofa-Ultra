@@ -18,8 +18,13 @@ Vofa-Ultra 的协议扩展点面向随仓库构建、评审和测试的内置协
 改变含义会让旧文件被静默误读。旧版本拒绝未知 ID 是预期的前向不兼容行为。
 
 Rust 的 `SUPPORTED_CAPTURE_PROTOCOLS` 必须独立更新。它不是前端注册表的生成副本，而是 Tauri 对 WebView 和外部
-VUCAP 输入的信任边界。新增结构化协议默认使用 `replaySeekMode: "unsupported"`；只有格式具有可验证同步点、
-前后端定位语义和测试同时完成后，才能开放 seek。当前只有 Raw Data 支持按 record 边界定位。
+VUCAP 输入的信任边界。`replaySeekMode` 的 `record-boundary` 只适用于 record 本身就是安全起点的协议，
+`protocol-boundary` 表示 Rust 能验证并吸附协议同步点，`unsupported` 则必须由前后端共同拒绝。新增结构化协议
+默认使用 `unsupported`；只有同步规则、record 内偏移、取消语义和前后端测试同时完成后，才能开放 seek。
+
+当前 Raw Data 使用 `record-boundary`。FireWater / JustFloat 使用 `protocol-boundary`：前者以 RX `LF` 后为同步点，
+后者以 RX 完整 `00 00 80 7F` 后为同步点，TX 交错不改变 RX 同步状态。结构化定位丢弃目标处可能残缺的第一个
+单元并返回实际吸附时间，不允许仅在 UI 中声明能力而让 Rust 把任意 record 起点当成安全边界。
 
 ## 解析器契约
 
@@ -77,6 +82,7 @@ expect(frames[0]?.values).toEqual([1, 2, 3]);
 4. 空、损坏、超长和固定规模随机字节不抛异常，随后能在同步点恢复。
 5. 输出通道数、有限数值和标签对齐满足上述边界。
 6. 模拟器编码结果能被对应解析器消费；Raw 明确产生零个波形帧。
+7. 若开放 seek，帧尾所有切点、record 内多帧、TX 交错、重复时间戳和无后续同步点均不产生截断帧。
 
 不要使用墙钟性能断言。对于 CPU 或内存风险，使用固定输入规模、显式缓存上限和确定的输出数量进行验证。
 
@@ -88,7 +94,7 @@ expect(frames[0]?.values).toEqual([1, 2, 3]);
 - parser、模拟器编码器和协议合规夹具。
 - Rust 捕获协议白名单及其测试。
 - VUCAP 格式文档中的合法 ID，以及 README 中面向用户的输入说明。
-- seek 是否安全；若不是，保持 `unsupported` 并验证前后端都拒绝。
+- seek 是否安全；若开放，Rust 同步扫描器与端到端吸附反馈必须一并实现，否则保持 `unsupported`。
 
 提交前运行 `pnpm check`、Rust 格式/Clippy/测试和 `pnpm test:e2e`。协议来自公开实现时，还要在 PR 中记录来源、
 规格链接和许可证；不要直接移植许可证不兼容的源码。

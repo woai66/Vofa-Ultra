@@ -178,8 +178,11 @@ describe("内置协议贡献契约", () => {
     expect(BUILTIN_PROTOCOLS.map(({ id }) => id)).toEqual(PROTOCOL_IDS);
     expect(Object.keys(PROTOCOL_REGISTRY)).toEqual(PROTOCOL_IDS);
     expect(protocolSupportsReplaySeek("raw")).toBe(true);
-    expect(protocolSupportsReplaySeek("firewater")).toBe(false);
-    expect(protocolSupportsReplaySeek("justfloat")).toBe(false);
+    expect(protocolSupportsReplaySeek("firewater")).toBe(true);
+    expect(protocolSupportsReplaySeek("justfloat")).toBe(true);
+    expect(getProtocolDefinition("raw").replaySeekMode).toBe("record-boundary");
+    expect(getProtocolDefinition("firewater").replaySeekMode).toBe("protocol-boundary");
+    expect(getProtocolDefinition("justfloat").replaySeekMode).toBe("protocol-boundary");
 
     for (const definition of BUILTIN_PROTOCOLS) {
       expect(definition).toBe(getProtocolDefinition(definition.id));

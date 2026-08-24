@@ -259,8 +259,9 @@ worker 在目标同目录使用 `create_new` 创建唯一临时文件，完成�
 
 回放是独立的非持久化运行模式，不加入工作区 `DataSource`。打开文件后，Rust worker 先流式扫描并验证版本、
 footer 统计和时间戳单调性；缺少 footer 或尾部截断只开放已验证的完整记录前缀，其他损坏进入 `error`。扫描同时
-建立自压缩稀疏索引，检查点保存下一条记录偏移、前序时间、记录数和 payload 字节数。索引最多 65,536 项、约
-2 MiB；达到上限后保留隔项并把记录步长翻倍，不改变 `.vucap` 格式。
+建立自压缩稀疏索引，检查点保存下一条记录偏移、前序时间、记录数和 payload 字节数。Raw 为所有采样 record
+建立候选检查点；FireWater / JustFloat 只在 RX parser 已知为空的 record 末端建立候选检查点。索引最多 65,536
+项、约 2 MiB；达到上限后保留隔项并把记录步长翻倍，不改变 `.vucap` 格式。
 
 每个批次最多 128 KiB、128 条记录或 16 ms 捕获跨度，同时最多存在一个未 ACK 批次。`sessionId + generation +
 sequence` 共同隔离停止、重播和迟到事件；新 generation 先等待 `sequence=0` 启动 ACK，再以单调时钟按当前
@@ -272,14 +273,19 @@ sequence` 共同隔离停止、重播和迟到事件；新 generation 先等待 
 倍速是非持久化会话状态。暂停、seek、Stop 和完成后重播保留倍速；打开新文件或关闭回放恢复 `1×`，不会写入
 `.vucap` 或工作区。切速只推进 state `revision`，不推进 `generation`、`timelineRevision` 或批次 `sequence`。
 
-Raw Data 可在 `ready / paused / completed` 状态请求 seek。worker 先进入 `seeking` 并立即返回新 generation，清除
-旧 pending batch、lookahead、时钟锚点和 ACK 屏障，再从严格满足 `checkpoint.positionUs < targetUs` 的最后检查点
-恢复 `CaptureReader` 累计统计并顺序定位；严格小于可避免跳过目标时间戳上的重复记录。定位成功进入 `paused`，
-目标为末尾时进入 `completed`。Stop、Close 和 shutdown 会在逐记录扫描间隙中断定位。成功 seek、Stop 归零以及
-完成后重播都会推进独立的 `timelineRevision`，前端据此一次性重置 parser、解码器、波形和终端。
+Raw Data、FireWater 和 JustFloat 可在 `ready / paused / completed` 状态请求 seek。worker 先进入 `seeking` 并立即
+返回新 generation，清除旧 pending batch、lookahead、时钟锚点和 ACK 屏障，再从严格满足
+`checkpoint.positionUs < targetUs` 的最后检查点恢复 `CaptureReader` 累计统计并顺序定位；严格小于可避免跳过
+目标时间戳上的重复记录。
 
-FireWater / JustFloat 不开放任意 seek。捕获 record 只是串口读写分片而非协议帧，从任意偏移重置增量 parser 会把
-半帧当作新帧；后端即使绕过 UI 也会拒绝。后续只有在引入协议同步点、隐藏预热或 parser 快照后才能安全开放。
+Raw 在首条时间不早于目标的 record 恢复。FireWater 的安全边界是 RX `LF` 后，JustFloat 的安全边界是 RX 完整
+`00 00 80 7F` 后；TX 不推进或重置同步扫描器。结构化检查点本身一定处于已知同步状态，因此能保留恰好从安全
+record 起点开始的帧；目标落在半帧时则丢弃第一个残缺单元，并把边界后剩余 payload 作为 lookahead，从 record
+内偏移继续。状态中的 `positionUs` 使用实际吸附时间；没有后续同步点或目标为末尾时进入 `completed`。
+
+Stop、Close 和 shutdown 会在逐记录扫描间隙中断定位。成功 seek、Stop 归零以及完成后重播都会推进独立的
+`timelineRevision`，前端据此一次性重置 parser、解码器、波形和终端。结构化定位不会把 record 边界误当协议
+边界，也不会修改 `.vucap` v1 wire format。
 
 前端使用独立增量协议 parser、RX decoder 和流式 TX decoder，一批数据只提交一次 Zustand 更新。RX 进入协议、
 波形、终端和统计，TX 只进入终端和统计；显示时间由捕获起始 Unix 时间加相对微秒时间计算。播放不会修改
@@ -302,7 +308,8 @@ FireWater / JustFloat 不开放任意 seek。捕获 record 只是串口读写分
 2. React 组件测试覆盖主要空状态、工作区命名、恢复控制、变量光标插入与错误反馈、命令草稿导航、历史菜单、
    周期任务、波形测量暂停恢复/选点/清理、处理图建图/循环拒绝/依赖删除/熔断重试和导出控制。
 3. Playwright 覆盖模拟器端到端链路、TX 回显、Canvas 有效像素、波形双游标测量、工作区文件往返、录制入口权限、
-   Raw 回放滑杆拖动零 IPC/提交单次 seek、播放中切速不换代、虚拟列表、命令变量 TEXT / HEX 展开与非法表达式
+   Raw / FireWater / JustFloat 回放滑杆拖动零 IPC、提交单次 seek、实际吸附位置反馈、播放中切速不换代、
+   虚拟列表、命令变量 TEXT / HEX 展开与非法表达式
    拒绝、周期发送计数与停止、处理图派生通道与工作区 v2、捕获导出入口权限、窄屏溢出、短窗口布局和同一 USB
    设备跨端口名恢复。
 4. GitHub Actions 在三个桌面系统执行 rustfmt、Clippy、Rust 测试和 `tauri build --no-bundle`，在 Node.js 22
