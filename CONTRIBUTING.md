@@ -63,7 +63,9 @@ docs: document protocol limits
 
 ```bash
 pnpm check
+pnpm check:package
 pnpm test:e2e
+pnpm tauri build --ci --no-bundle
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --locked --manifest-path src-tauri/Cargo.toml
@@ -71,6 +73,15 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 涉及真实串口时，还需记录操作系统、适配器芯片、参数、测试时长，以及连接、收发、拔插和重连结果。烧录和
 硬件操作由测试者手动完成。
+
+## 候选安装包
+
+普通 push 和 PR 只验证三平台最终桌面二进制，不生成安装包。需要检查打包链路时，手动运行 `CI` workflow；
+与 `package.json`、`tauri.conf.json` 和 `Cargo.toml` 版本一致的 `v*` 标签也会触发打包。workflow 只上传无签名
+MSI、NSIS、DMG、DEB、AppImage 及逐文件 SHA-256，不创建 GitHub Release。
+
+版本标签、正式 Release、签名和公证属于发布者操作。候选包生成成功不能替代目标系统上的安装、启动、卸载和
+串口硬件冒烟记录。AppImage 从 Actions artifact 下载后可能需要重新添加可执行权限。
 
 ## Pull Request
 

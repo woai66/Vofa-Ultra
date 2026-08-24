@@ -18,10 +18,12 @@
 发布前门槛：
 
 - [x] 在 Windows 完成首次 Rust 构建与测试并提交 `Cargo.lock`
-- [ ] 在 macOS、Linux CI 中验证锁定依赖的 Rust 构建与测试
+- [x] 在 macOS、Linux CI 中验证锁定依赖的 Rust 构建与测试
+- [x] 开启 Tauri bundle，配置三平台无签名候选安装包与 SHA-256 流水线
+- [ ] 在 GitHub Actions 首次实际生成并核验三平台候选安装包
+- [ ] 在 Windows、macOS、Linux 完成候选包安装、启动和卸载冒烟测试
 - [ ] 在 Windows 上完成至少两种 USB 串口芯片的连接、收发、拔插和重连验证
 - [ ] 验证软件流控、硬件流控以及 DTR / RTS 行为
-- [ ] 开启 Tauri bundle，生成并冒烟测试安装包
 
 ## v0.2 - 采集、记录与回放
 

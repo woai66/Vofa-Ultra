@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -51,9 +52,9 @@ jobs:
           if-no-files-found: ignore
 
   rust:
-    name: Rust (${{ matrix.os }})
+    name: Rust and desktop build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -76,6 +77,15 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -86,6 +96,9 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
@@ -94,6 +107,12 @@ jobs:
 
       - name: Test Rust
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Validate package metadata
+        run: pnpm check:package
+
+      - name: Build desktop executable
+        run: pnpm tauri build --ci --no-bundle
 
   rust-msrv:
     name: Rust minimum supported version
@@ -123,3 +142,77 @@ jobs:
 
       - name: Check locked dependencies with minimum Rust
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features
+
+  package:
+    name: Unsigned package (${{ matrix.platform }})
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - frontend
+      - rust
+      - rust-msrv
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux
+            bundles: deb,appimage
+          - os: windows-latest
+            platform: windows
+            bundles: msi,nsis
+          - os: macos-latest
+            platform: macos
+            bundles: dmg
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate package metadata
+        run: pnpm check:package
+
+      - name: Build unsigned bundles
+        run: pnpm tauri build --ci --no-sign --bundles "${{ matrix.bundles }}"
+
+      - name: Stage bundles and checksums
+        run: pnpm package:collect ${{ matrix.platform }}
+
+      - name: Upload unsigned bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: vofa-ultra-${{ matrix.platform }}-${{ github.run_number }}
+          path: artifacts/${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 14

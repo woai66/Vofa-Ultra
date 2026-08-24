@@ -6,8 +6,8 @@ Vofa-Ultra 学习 VOFA+ 与
 [vofa-NEXT](https://github.com/Horldsence/vofa-NEXT) 的产品思路，但采用独立实现。项目优先保证串口
 生命周期可靠、数据链路可诊断、内存边界明确，并在基础收发稳定之后再引入高级编排能力。
 
-> 当前代码以可运行的 v0.1.0 MVP 为基础，并已开始实现 v0.2 / v0.3 能力，尚未发布稳定安装包。真实串口仍需在
-> 具备 Rust 工具链和串口硬件的环境中验证。
+> 当前代码以可运行的 v0.1.0 MVP 为基础，并已开始实现 v0.2 / v0.3 能力。CI 可生成无签名候选安装包，但尚未
+> 发布经过签名和完整硬件验证的稳定版本。真实串口仍需在具备 Rust 工具链和串口硬件的环境中验证。
 
 ![Vofa-Ultra 实时串口工作台](docs/images/workbench.png)
 
@@ -27,7 +27,7 @@ Vofa-Ultra 学习 VOFA+ 与
 - `.vucap` 流式导出为 CSV、JSONL 或单向原始二进制，支持方向过滤、进度、取消和失败恢复。
 - 可取消的串口自动重连：用 VID、PID 与非空 USB 序列号识别原设备，跨端口名恢复且不猜测歧义设备。
 - 256 条有界恢复事件与 128 KiB 脱敏诊断导出，不包含端口名、序列号、原始错误或收发载荷。
-- Vitest 单元 / 组件测试、Playwright 浏览器验收和跨平台 GitHub Actions 配置。
+- Vitest 单元 / 组件测试、Playwright 浏览器验收、三平台桌面集成构建和按需无签名候选包。
 
 ## 快速开始
 
@@ -54,6 +54,30 @@ pnpm tauri dev
 
 仓库已提交 `src-tauri/Cargo.lock`，桌面构建应使用锁定依赖。正式发布前仍需在目标平台完成真实串口连接、
 收发、拔插和重连验证。
+
+### 无签名候选包
+
+GitHub Actions 的普通 push 和 PR 会在 Windows、macOS、Linux 执行最终桌面二进制构建，但跳过安装包生成。
+手动运行 `CI` workflow，或推送与项目版本完全一致的标签（例如 `v0.1.0`），才会额外生成以下候选产物：
+
+- Windows：MSI 与 NSIS 安装程序。
+- macOS：DMG 磁盘映像。
+- Linux：DEB 与 AppImage。
+- 每个平台独立的 `SHA256SUMS`。
+
+这些产物保留在对应 Actions run 的 artifact 中 14 天，不会自动创建 GitHub Release。它们明确不含代码签名或
+macOS 公证，操作系统可能显示安全警告；正式发布前仍需在目标系统完成安装、启动、卸载和真实串口冒烟测试。
+本地生成当前平台的无签名包可运行：
+
+```bash
+pnpm check:package
+# Windows
+pnpm tauri build --ci --no-sign --bundles msi,nsis
+# macOS
+pnpm tauri build --ci --no-sign --bundles dmg
+# Linux
+pnpm tauri build --ci --no-sign --bundles deb,appimage
+```
 
 ## 协议输入
 
@@ -142,13 +166,16 @@ Base64 payload 和完成摘要。原始二进制会按记录顺序拼接所选�
 
 ```bash
 pnpm check
+pnpm check:package
 pnpm test:e2e
+pnpm tauri build --ci --no-bundle
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-`pnpm check` 会依次执行 ESLint、TypeScript 类型检查、Vitest 和生产构建。Playwright 会验证模拟数据链路、
+`pnpm check` 会依次执行 ESLint、TypeScript 类型检查、Vitest 和生产构建。`pnpm check:package` 使用
+`cargo metadata` 核对 npm、Tauri、Cargo 版本与 bundle 元数据。Playwright 会验证模拟数据链路、
 Canvas 有效像素、工作区导入导出、录制与回放入口权限、Raw 回放拖动期间零 IPC 且提交时恰好一次定位、有界命令
 历史、周期发送启停、390 px 窄屏无页面级横向溢出、捕获导出入口权限，以及短窗口发送栏可用性；Tauri IPC
 模拟还会验证同一 USB 设备从 `COM3` 迁移到 `COM19` 后的自动恢复流程。

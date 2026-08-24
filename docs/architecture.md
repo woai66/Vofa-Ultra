@@ -247,9 +247,11 @@ FireWater / JustFloat 不开放任意 seek。捕获 record 只是串口读写分
 3. Playwright 覆盖模拟器端到端链路、TX 回显、Canvas 有效像素、工作区文件往返、录制入口权限、Raw 回放滑杆
    拖动零 IPC/提交单次 seek、虚拟列表、周期发送计数与停止、捕获导出入口权限、窄屏溢出、短窗口布局和同一
    USB 设备跨端口名恢复。
-4. GitHub Actions 在三个桌面系统执行 rustfmt、Clippy 和 Rust 测试，在 Node.js 22 上执行前端检查和浏览器
-   验收。
-5. 正式发布前必须补充真实串口的长稳、拔插、流控和高波特率测试。
+4. GitHub Actions 在三个桌面系统执行 rustfmt、Clippy、Rust 测试和 `tauri build --no-bundle`，在 Node.js 22
+   上执行前端检查和浏览器验收。
+5. 手动 workflow 或与项目版本一致的 `v*` 标签生成无签名 MSI、NSIS、DMG、DEB、AppImage，并验证产物非空、
+   文件名版本和逐文件 SHA-256；不会自动创建 GitHub Release。
+6. 正式发布前必须补充候选包安装/卸载冒烟，以及真实串口的长稳、拔插、流控和高波特率测试。
 
 ## 扩展原则
 
