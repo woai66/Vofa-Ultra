@@ -31,6 +31,12 @@ import type { ProcessingGraphConfig } from "../types/processingGraph";
 
 export const WORKSPACE_FILE_FORMAT = "vofa-ultra.workspace";
 export const WORKSPACE_SCHEMA_VERSION = 4;
+export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
+  1,
+  2,
+  3,
+  WORKSPACE_SCHEMA_VERSION,
+] as const;
 export const MAX_WORKSPACE_FILE_BYTES = 512 * 1024;
 export const MAX_WORKSPACE_COUNT = 32;
 export const MAX_WORKSPACE_NAME_LENGTH = 64;
@@ -245,12 +251,7 @@ export function parseWorkspaceExport(text: string): WorkspaceExportV4 {
   if (record.format !== WORKSPACE_FILE_FORMAT) {
     throw new Error("这不是 Vofa-Ultra 工作区文件");
   }
-  if (
-    record.schemaVersion !== 1 &&
-    record.schemaVersion !== 2 &&
-    record.schemaVersion !== 3 &&
-    record.schemaVersion !== WORKSPACE_SCHEMA_VERSION
-  ) {
+  if (!isReadableWorkspaceSchemaVersion(record.schemaVersion)) {
     throw new Error(`不支持工作区 schema 版本：${String(record.schemaVersion)}`);
   }
   assertExactKeys(record, WORKSPACE_EXPORT_KEYS, "工作区文件");
@@ -382,6 +383,12 @@ function parseVersionedWorkspaceConfig(version: unknown, value: unknown): Worksp
     return parseWorkspaceConfig(value);
   }
   throw new Error(`不支持工作区 schema 版本：${String(version)}`);
+}
+
+function isReadableWorkspaceSchemaVersion(
+  value: unknown,
+): value is (typeof WORKSPACE_READABLE_SCHEMA_VERSIONS)[number] {
+  return WORKSPACE_READABLE_SCHEMA_VERSIONS.some((version) => version === value);
 }
 
 export function restoreWorkspaceConfig(

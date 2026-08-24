@@ -20,7 +20,8 @@ Environment 尚未配置保护规则时，workflow 仍只会创建 draft，但�
 1. 从已 review 且 CI 通过的发布分支开始，确保工作区干净。
 2. 同步 `package.json`、`src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 的版本。
 3. 把 `CHANGELOG.md` 的待发布条目整理为唯一的 `## [<version>]` 章节，包含分类标题和至少一条变更；缺少该章节
-   会使聚合器失败。确认升级和兼容性说明完整。
+   会使聚合器失败。对照 `compatibility-policy.json` 和[兼容性与弃用政策](compatibility.md)，确认升级、弃用与
+   迁移说明完整。
 4. 执行仓库质量门禁：
 
 ```bash
@@ -78,6 +79,7 @@ job 通过受保护的 `release-draft` Environment 创建 draft，不会调用 P
 | 安全与法律 | 核对 capability、CSP、SBOM、NOTICE、许可证选择和依赖变更 |
 | 签名 | v1.0 稳定版的 Windows/macOS/Linux 发布策略均有可验证签名或明确平台说明 |
 | 变更说明 | `CHANGELOG.md`、升级说明、已知问题和下载文件说明与候选包一致 |
+| 兼容性 | 机器清单与实现一致；历史读取、未来版本保护、弃用周期和迁移说明均有测试或 review 证据 |
 
 应用安装、真实串口和控制线操作必须由用户手动执行；自动化结果不能替代这些检查。
 

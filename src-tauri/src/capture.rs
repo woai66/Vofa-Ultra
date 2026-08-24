@@ -22,6 +22,7 @@ pub const MAX_CAPTURE_MARKER_LABEL_BYTES: usize = 256;
 
 const FILE_HEADER_SIZE: usize = 16;
 const CAPTURE_VERSION_V1: u16 = 1;
+const CAPTURE_READABLE_VERSIONS: &[u16] = &[CAPTURE_VERSION_V1, CAPTURE_VERSION];
 const RECORD_TAG: u8 = 0x01;
 const MARKER_TAG: u8 = 0x02;
 const FOOTER_TAG: u8 = 0xff;
@@ -297,7 +298,7 @@ impl<R: Read> CaptureReader<R> {
 
         let version = u16::from_le_bytes([prefix[8], prefix[9]]);
         match version {
-            CAPTURE_VERSION_V1 | CAPTURE_VERSION => {}
+            version if CAPTURE_READABLE_VERSIONS.contains(&version) => {}
             version if version > CAPTURE_VERSION => {
                 return Err(CaptureReadError::FutureVersion(version))
             }
@@ -2167,6 +2168,31 @@ mod tests {
 
     use super::*;
 
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CompatibilityPolicy {
+        schema_version: u16,
+        capture: CaptureCompatibility,
+        protocols: ProtocolCompatibility,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CaptureCompatibility {
+        file_format: String,
+        write_version: u16,
+        read_versions: Vec<u16>,
+        future_version_behavior: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ProtocolCompatibility {
+        stable_wire_ids: Vec<String>,
+        wire_id_evolution: String,
+        runtime_plugin_abi: String,
+    }
+
     fn sample_header() -> CaptureHeader {
         CaptureHeader {
             source: "serial".to_owned(),
@@ -2228,6 +2254,30 @@ mod tests {
             header.validate(),
             Err("不支持的录制协议: future-protocol".to_owned())
         );
+    }
+
+    #[test]
+    fn matches_public_compatibility_policy() {
+        let policy: CompatibilityPolicy =
+            serde_json::from_str(include_str!("../../compatibility-policy.json")).unwrap();
+        let stable_wire_ids = policy
+            .protocols
+            .stable_wire_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+
+        assert_eq!(policy.schema_version, 1);
+        assert_eq!(policy.capture.file_format, "VUCAP");
+        assert_eq!(policy.capture.write_version, CAPTURE_VERSION);
+        assert_eq!(
+            policy.capture.read_versions.as_slice(),
+            CAPTURE_READABLE_VERSIONS
+        );
+        assert_eq!(policy.capture.future_version_behavior, "reject");
+        assert_eq!(stable_wire_ids, SUPPORTED_CAPTURE_PROTOCOLS);
+        assert_eq!(policy.protocols.wire_id_evolution, "append-only");
+        assert_eq!(policy.protocols.runtime_plugin_abi, "unsupported");
     }
 
     fn queued_record(

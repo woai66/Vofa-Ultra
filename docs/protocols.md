@@ -17,6 +17,9 @@ Vofa-Ultra 的协议扩展点面向随仓库构建、评审和测试的内置协
 新增协议时必须追加新的 ID，不能重命名、删除或复用已有 ID。工作区 v1/v2 和 VUCAP v1 都会持久化该字符串；
 改变含义会让旧文件被静默误读。旧版本拒绝未知 ID 是预期的前向不兼容行为。
 
+当前稳定承诺覆盖这些持久 wire ID 和本文的解析行为，不代表 TypeScript 模块或运行时插件 ABI 稳定。完整版本
+矩阵与弃用门禁见[兼容性与弃用政策](compatibility.md)。
+
 Rust 的 `SUPPORTED_CAPTURE_PROTOCOLS` 必须独立更新。它不是前端注册表的生成副本，而是 Tauri 对 WebView 和外部
 VUCAP 输入的信任边界。`replaySeekMode` 的 `record-boundary` 只适用于 record 本身就是安全起点的协议，
 `protocol-boundary` 表示 Rust 能验证并吸附协议同步点，`unsupported` 则必须由前后端共同拒绝。新增结构化协议

@@ -144,3 +144,4 @@ reader 必须先验证 magic 和版本，再分配 JSON、payload 或标签缓�
 
 `protocol` 同时是工作区和 VUCAP 的持久化 wire ID。合法 ID 只能追加，不能改名、删除、复用或在不提升格式
 版本的情况下改变既有含义。Rust reader 独立校验白名单；旧版本拒绝包含新 ID 的文件，不能把未知值降级为 Raw。
+跨格式支持矩阵、通知周期与移除门禁见[兼容性与弃用政策](compatibility.md)。

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import compatibilityPolicy from "../../compatibility-policy.json";
 import {
   areWorkspaceConfigsEqual,
   createDefaultWorkspaceConfig,
@@ -8,10 +9,48 @@ import {
   parseWorkspaceExport,
   restoreWorkspaceConfig,
   serializeWorkspace,
+  WORKSPACE_FILE_FORMAT,
+  WORKSPACE_READABLE_SCHEMA_VERSIONS,
+  WORKSPACE_SCHEMA_VERSION,
 } from "./workspaces";
 import { createDefaultAutoResponderRule } from "./autoResponder";
+import { PROTOCOL_IDS } from "../types/serial";
 
 describe("工作区文件", () => {
+  it("与公开兼容性清单保持一致", () => {
+    expect(Object.keys(compatibilityPolicy).sort()).toEqual([
+      "capture",
+      "deprecation",
+      "localStorage",
+      "protocols",
+      "schemaVersion",
+      "workspace",
+    ]);
+    expect(compatibilityPolicy.schemaVersion).toBe(1);
+    expect(compatibilityPolicy.workspace).toEqual({
+      fileFormat: WORKSPACE_FILE_FORMAT,
+      writeVersion: WORKSPACE_SCHEMA_VERSION,
+      readVersions: [...WORKSPACE_READABLE_SCHEMA_VERSIONS],
+      futureVersionBehavior: "reject",
+    });
+    expect(compatibilityPolicy.protocols).toEqual({
+      stableWireIds: [...PROTOCOL_IDS],
+      wireIdEvolution: "append-only",
+      runtimePluginAbi: "unsupported",
+    });
+    expect(Object.keys(compatibilityPolicy.capture).sort()).toEqual([
+      "fileFormat",
+      "futureVersionBehavior",
+      "readVersions",
+      "writeVersion",
+    ]);
+    expect(compatibilityPolicy.deprecation).toEqual({
+      minimumNoticeMinorReleases: 2,
+      minimumNoticeDays: 90,
+      removalRelease: "major-only",
+    });
+  });
+
   it("以严格的 v4 格式往返处理图、姿态与自动应答配置", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.serialConfig.portName = "COM7";

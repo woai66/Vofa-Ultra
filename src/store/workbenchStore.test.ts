@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import compatibilityPolicy from "../../compatibility-policy.json";
 import { APP_VERSION } from "../core/appMetadata";
 import {
   createDefaultAutoResponderRule,
@@ -62,6 +63,9 @@ import {
   disposeWorkbenchRuntime,
   selectIsWorkspaceDirty,
   useWorkbenchStore,
+  WORKBENCH_MIGRATABLE_STORAGE_VERSIONS,
+  WORKBENCH_STORAGE_KEY,
+  WORKBENCH_STORAGE_VERSION,
 } from "./workbenchStore";
 
 vi.mock("../services/serialClient", async (importOriginal) => {
@@ -251,6 +255,15 @@ function numericLogState(
 }
 
 describe("workbenchStore", () => {
+  it("本地持久化版本与公开兼容性清单保持一致", () => {
+    expect(compatibilityPolicy.localStorage).toEqual({
+      key: WORKBENCH_STORAGE_KEY,
+      writeVersion: WORKBENCH_STORAGE_VERSION,
+      migrateFromVersions: [...WORKBENCH_MIGRATABLE_STORAGE_VERSIONS],
+      futureVersionBehavior: "preserve-read-only",
+    });
+  });
+
   beforeEach(async () => {
     useWorkbenchStore.getState().stopPeriodicSend();
     useWorkbenchStore.getState().stopAutoResponder();

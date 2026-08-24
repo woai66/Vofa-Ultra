@@ -175,7 +175,9 @@ import type { AutoResponderRule, AutoResponderSnapshot } from "../types/automati
 const MAX_POINTS_PER_CHANNEL = 2_000;
 const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY = 2_048;
-const WORKBENCH_STORAGE_VERSION = 4;
+export const WORKBENCH_STORAGE_KEY = "vofa-ultra-workbench";
+export const WORKBENCH_STORAGE_VERSION = 4;
+export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [0, 1, 2, 3] as const;
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
   phase: "off",
@@ -2171,7 +2173,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
     }),
     {
-      name: "vofa-ultra-workbench",
+      name: WORKBENCH_STORAGE_KEY,
       version: WORKBENCH_STORAGE_VERSION,
       storage: createDeduplicatingStorage<PersistedWorkbenchState>(
         WORKBENCH_STORAGE_VERSION,
@@ -2199,7 +2201,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             incompatibleStorageVersion: version,
           } as unknown as PersistedWorkbenchState;
         }
-        if (version !== 0 && version !== 1 && version !== 2 && version !== 3) {
+        if (!WORKBENCH_MIGRATABLE_STORAGE_VERSIONS.some((candidate) => candidate === version)) {
           throw new Error(`不支持从持久化版本 ${version} 降级到 ${WORKBENCH_STORAGE_VERSION}`);
         }
         const config = restoreWorkspaceConfig(persistedState, INITIAL_WORKSPACE_CONFIG);
