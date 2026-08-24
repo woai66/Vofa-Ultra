@@ -5,9 +5,16 @@ import {
   Folders,
   Settings,
   SlidersHorizontal,
+  Workflow,
 } from "lucide-react";
 
-export type SidebarPanel = "connection" | "channels" | "capture" | "workspaces" | "settings";
+export type SidebarPanel =
+  | "connection"
+  | "channels"
+  | "processing"
+  | "capture"
+  | "workspaces"
+  | "settings";
 
 interface ActivityRailProps {
   activePanel: SidebarPanel;
@@ -17,6 +24,7 @@ interface ActivityRailProps {
 const RAIL_ITEMS = [
   { id: "connection" as const, label: "连接", icon: Cable },
   { id: "channels" as const, label: "通道", icon: SlidersHorizontal },
+  { id: "processing" as const, label: "处理", icon: Workflow },
   { id: "capture" as const, label: "记录", icon: Database },
   { id: "workspaces" as const, label: "工作区", icon: Folders },
   { id: "settings" as const, label: "设置", icon: Settings },

@@ -23,6 +23,12 @@ import {
   protocolSupportsReplaySeek,
   type ProtocolParser,
 } from "../core/protocols";
+import {
+  cloneProcessingGraph,
+  parseProcessingGraphConfig,
+  ProcessingGraphRuntime,
+  processingOutputChannelId,
+} from "../core/processingGraph";
 import { RingBuffer } from "../core/ringBuffer";
 import {
   isRecoveryActivePhase,
@@ -110,15 +116,20 @@ import type {
   TransferStats,
 } from "../types/workbench";
 import type {
+  ProcessingGraphConfig,
+  ProcessingGraphSnapshot,
+  ProcessingOutputSample,
+} from "../types/processingGraph";
+import type {
   ChartWindowSeconds,
-  WorkspaceExportV1,
+  WorkspaceExportV2,
   WorkspaceProfile,
 } from "../types/workspace";
 
 const MAX_POINTS_PER_CHANNEL = 2_000;
 const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY = 2_048;
-const WORKBENCH_STORAGE_VERSION = 1;
+const WORKBENCH_STORAGE_VERSION = 2;
 const APP_VERSION = "0.1.0";
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
@@ -154,11 +165,19 @@ let protocolParser: ProtocolParser = createProtocolParser(parserProtocol);
 let terminalDecoder = new TextDecoder();
 let terminalEntryId = 0;
 const channelBuffers = new Map<string, RingBuffer<DataPoint>>();
+const processingChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
+let liveProcessingRuntime = new ProcessingGraphRuntime(
+  INITIAL_WORKSPACE_CONFIG.processingGraph,
+);
 let replayParserProtocol: ProtocolKind = "raw";
 let replayProtocolParser: ProtocolParser = createProtocolParser(replayParserProtocol);
 let replayRxDecoder = new TextDecoder();
 let replayTxDecoder = new TextDecoder();
 const replayChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
+const replayProcessingChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
+let replayProcessingRuntime = new ProcessingGraphRuntime(
+  INITIAL_WORKSPACE_CONFIG.processingGraph,
+);
 let captureStopPromise: Promise<boolean> | null = null;
 let serialRecoveryCoordinator: SerialReconnectCoordinator | null = null;
 let serialConnectOperation = 0;
@@ -193,7 +212,10 @@ export interface WorkbenchStore {
   serialRecovery: SerialRecoverySnapshot;
   isCancellingSerialConnection: boolean;
   channels: ChannelSeries[];
+  processedChannels: ChannelSeries[];
   channelVisibility: Record<string, boolean>;
+  processingGraph: ProcessingGraphConfig;
+  processingStatus: Readonly<ProcessingGraphSnapshot>;
   terminalEntries: TerminalEntry[];
   displayMode: DisplayMode;
   sendMode: DisplayMode;
@@ -287,6 +309,8 @@ export interface WorkbenchStore {
   setTerminalAutoScroll(enabled: boolean): void;
   setChartPaused(paused: boolean): void;
   setChartWindowSeconds(seconds: ChartWindowSeconds): void;
+  setProcessingGraph(config: ProcessingGraphConfig): void;
+  retryProcessingGraph(): void;
   toggleChannel(channelId: string): void;
   clearTerminal(): void;
   clearChart(): void;
@@ -316,7 +340,7 @@ export interface WorkbenchStore {
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
   deleteWorkspace(id: string): Promise<boolean>;
-  importWorkspace(workspace: WorkspaceExportV1): string;
+  importWorkspace(workspace: WorkspaceExportV2): string;
 }
 
 type PersistedWorkbenchState = Pick<
@@ -330,6 +354,7 @@ type PersistedWorkbenchState = Pick<
   | "terminalAutoScroll"
   | "chartWindowSeconds"
   | "channelVisibility"
+  | "processingGraph"
   | "workspaces"
   | "activeWorkspaceId"
 >;
@@ -350,7 +375,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       serialRecovery: { ...INITIAL_SERIAL_RECOVERY },
       isCancellingSerialConnection: false,
       channels: [],
+      processedChannels: [],
       channelVisibility: {},
+      processingGraph: cloneProcessingGraph(INITIAL_WORKSPACE_CONFIG.processingGraph),
+      processingStatus: liveProcessingRuntime.getSnapshot(),
       terminalEntries: [],
       displayMode: INITIAL_WORKSPACE_CONFIG.displayMode,
       sendMode: INITIAL_WORKSPACE_CONFIG.sendMode,
@@ -451,6 +479,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           set({
             source,
             channels: [],
+            processedChannels: [],
+            processingStatus: liveProcessingRuntime.getSnapshot(),
             connectionStatus: "disconnected",
             statusMessage: source === "serial" ? "选择设备后连接" : "模拟数据源已就绪",
           });
@@ -470,7 +500,13 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return;
         }
         resetProtocolState(protocol);
-        set({ protocol, channels: [], statusMessage: protocolDisplayName(protocol) + " 已启用" });
+        set({
+          protocol,
+          channels: [],
+          processedChannels: [],
+          processingStatus: liveProcessingRuntime.getSnapshot(),
+          statusMessage: protocolDisplayName(protocol) + " 已启用",
+        });
       },
 
       updateSerialConfig: (key, value) => {
@@ -749,15 +785,26 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
         ensureParser(state.protocol);
         const frames = protocolParser.push(bytes, timestamp);
+        const processedSamples = liveProcessingRuntime.process(frames);
         const nextChannels = state.chartPaused
           ? state.channels
           : appendFrames(state.channels, frames, state.channelVisibility);
+        const nextProcessedChannels = state.chartPaused
+          ? state.processedChannels
+          : appendProcessedSamples(
+              state.processedChannels,
+              processedSamples,
+              state.channelVisibility,
+              processingChannelBuffers,
+            );
         const terminalEntry = state.terminalPaused
           ? null
           : createTerminalEntry("rx", bytes, timestamp, terminalDecoder.decode(bytes, { stream: true }));
 
         set({
           channels: nextChannels,
+          processedChannels: nextProcessedChannels,
+          processingStatus: liveProcessingRuntime.getSnapshot(),
           terminalEntries: terminalEntry
             ? appendBounded(state.terminalEntries, terminalEntry, MAX_TERMINAL_ENTRIES)
             : state.terminalEntries,
@@ -884,12 +931,42 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           set({ chartWindowSeconds });
         }
       },
+      setProcessingGraph: (processingGraph) => {
+        if (get().workspaceTransitionStatus !== "idle") {
+          return;
+        }
+        const configuredGraph = configureProcessingGraph(processingGraph);
+        set((state) => ({
+          processingGraph: configuredGraph,
+          processingStatus: activeProcessingRuntime(state).getSnapshot(),
+          processedChannels: [],
+          channelVisibility: pruneDerivedChannelVisibility(
+            state.channelVisibility,
+            configuredGraph,
+          ),
+        }));
+      },
+      retryProcessingGraph: () => {
+        if (get().workspaceTransitionStatus !== "idle") {
+          return;
+        }
+        liveProcessingRuntime.reset();
+        replayProcessingRuntime.reset();
+        processingChannelBuffers.clear();
+        replayProcessingChannelBuffers.clear();
+        set((state) => ({
+          processedChannels: [],
+          processingStatus: activeProcessingRuntime(state).getSnapshot(),
+        }));
+      },
       toggleChannel: (channelId) => {
         if (get().workspaceTransitionStatus !== "idle") {
           return;
         }
         set((state) => {
-          const channel = state.channels.find((candidate) => candidate.id === channelId);
+          const channel = [...state.channels, ...state.processedChannels].find(
+            (candidate) => candidate.id === channelId,
+          );
           const currentlyVisible = channel?.visible ?? state.channelVisibility[channelId] ?? true;
           const nextVisible = !currentlyVisible;
           const channelVisibility = { ...state.channelVisibility };
@@ -903,13 +980,19 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             channels: state.channels.map((candidate) =>
               candidate.id === channelId ? { ...candidate, visible: nextVisible } : candidate,
             ),
+            processedChannels: state.processedChannels.map((candidate) =>
+              candidate.id === channelId ? { ...candidate, visible: nextVisible } : candidate,
+            ),
           };
         });
       },
       clearTerminal: () => set({ terminalEntries: [] }),
       clearChart: () => {
         channelBuffers.clear();
-        set({ channels: [] });
+        replayChannelBuffers.clear();
+        processingChannelBuffers.clear();
+        replayProcessingChannelBuffers.clear();
+        set({ channels: [], processedChannels: [] });
       },
       resetStats: () => set({ stats: emptyStats() }),
       startCapture: async () => {
@@ -1683,6 +1766,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         terminalAutoScroll: state.terminalAutoScroll,
         chartWindowSeconds: state.chartWindowSeconds,
         channelVisibility: state.channelVisibility,
+        processingGraph: state.processingGraph,
         workspaces: state.workspaces,
         activeWorkspaceId: state.activeWorkspaceId,
       }),
@@ -1693,20 +1777,31 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             incompatibleStorageVersion: version,
           } as unknown as PersistedWorkbenchState;
         }
-        if (version !== 0) {
+        if (version !== 0 && version !== 1) {
           throw new Error(`不支持从持久化版本 ${version} 降级到 ${WORKBENCH_STORAGE_VERSION}`);
         }
         const config = restoreWorkspaceConfig(persistedState, INITIAL_WORKSPACE_CONFIG);
-        const workspace = createWorkspaceProfile(
-          "默认工作区",
-          config,
-          DEFAULT_WORKSPACE_ID,
+        const restoredWorkspaces = restoreWorkspaceProfiles(
+          isRecord(persistedState) ? persistedState.workspaces : undefined,
         );
+        const workspaces =
+          version === 1 && restoredWorkspaces.length > 0
+            ? restoredWorkspaces
+            : [
+                createWorkspaceProfile(
+                  "默认工作区",
+                  config,
+                  DEFAULT_WORKSPACE_ID,
+                ),
+              ];
         return {
           ...(isRecord(persistedState) ? persistedState : {}),
           ...config,
-          workspaces: [workspace],
-          activeWorkspaceId: workspace.id,
+          workspaces,
+          activeWorkspaceId:
+            isRecord(persistedState) && typeof persistedState.activeWorkspaceId === "string"
+              ? persistedState.activeWorkspaceId
+              : workspaces[0]?.id ?? DEFAULT_WORKSPACE_ID,
         } as PersistedWorkbenchState;
       },
       merge: (persistedState, currentState) =>
@@ -1766,6 +1861,7 @@ function getSerialRecoveryCoordinator(): SerialReconnectCoordinator {
       const state = useWorkbenchStore.getState();
       resetLiveStreamBoundary(state.protocol);
       useWorkbenchStore.setState({
+        processingStatus: liveProcessingRuntime.getSnapshot(),
         stats: { ...emptyStats(), startedAt: Date.now() },
       });
     },
@@ -2252,6 +2348,7 @@ async function applyWorkspaceSnapshot(
   }
   const config = cloneWorkspaceConfig(latestTarget.config);
   const usesBrowserFallback = !get().isNativeRuntime && config.source === "serial";
+  const processingGraph = configureProcessingGraph(config.processingGraph);
   resetProtocolState(config.protocol);
   set({
     activeWorkspaceId: latestTarget.id,
@@ -2264,7 +2361,10 @@ async function applyWorkspaceSnapshot(
     terminalAutoScroll: config.terminalAutoScroll,
     chartWindowSeconds: config.chartWindowSeconds,
     channelVisibility: config.channelVisibility,
+    processingGraph,
+    processingStatus: liveProcessingRuntime.getSnapshot(),
     channels: [],
+    processedChannels: [],
     terminalEntries: [],
     terminalPaused: false,
     chartPaused: false,
@@ -2275,6 +2375,37 @@ async function applyWorkspaceSnapshot(
       : `工作区“${latestTarget.name}”已应用`,
   });
   return true;
+}
+
+function configureProcessingGraph(config: ProcessingGraphConfig): ProcessingGraphConfig {
+  const nextConfig = parseProcessingGraphConfig(config);
+  const nextLiveRuntime = new ProcessingGraphRuntime(nextConfig);
+  const nextReplayRuntime = new ProcessingGraphRuntime(nextConfig);
+  liveProcessingRuntime = nextLiveRuntime;
+  replayProcessingRuntime = nextReplayRuntime;
+  processingChannelBuffers.clear();
+  replayProcessingChannelBuffers.clear();
+  return nextConfig;
+}
+
+function activeProcessingRuntime(state: WorkbenchStore): ProcessingGraphRuntime {
+  return hasReplaySession(state) ? replayProcessingRuntime : liveProcessingRuntime;
+}
+
+function pruneDerivedChannelVisibility(
+  visibility: Record<string, boolean>,
+  graph: ProcessingGraphConfig,
+): Record<string, boolean> {
+  const outputChannelIds = new Set(
+    graph.nodes
+      .filter((node) => node.kind === "output")
+      .map((node) => processingOutputChannelId(node.id)),
+  );
+  return Object.fromEntries(
+    Object.entries(visibility).filter(
+      ([channelId]) => !channelId.startsWith("derived:") || outputChannelIds.has(channelId),
+    ),
+  );
 }
 
 function ensureParser(protocol: ProtocolKind): void {
@@ -2288,18 +2419,23 @@ function resetProtocolState(protocol: ProtocolKind): void {
   protocolParser = createProtocolParser(protocol);
   terminalDecoder = new TextDecoder();
   channelBuffers.clear();
+  processingChannelBuffers.clear();
+  liveProcessingRuntime.reset();
 }
 
 function resetLiveStreamBoundary(protocol: ProtocolKind): void {
   parserProtocol = protocol;
   protocolParser = createProtocolParser(protocol);
   terminalDecoder = new TextDecoder();
+  liveProcessingRuntime.reset();
 }
 
 function resetLiveView(protocol: ProtocolKind, set: WorkbenchSet): void {
   resetProtocolState(protocol);
   set({
     channels: [],
+    processedChannels: [],
+    processingStatus: liveProcessingRuntime.getSnapshot(),
     terminalEntries: [],
     terminalPaused: false,
     chartPaused: false,
@@ -2319,12 +2455,16 @@ function resetReplayProtocolState(protocol: ProtocolKind): void {
   replayRxDecoder = new TextDecoder();
   replayTxDecoder = new TextDecoder();
   replayChannelBuffers.clear();
+  replayProcessingChannelBuffers.clear();
+  replayProcessingRuntime.reset();
 }
 
 function resetReplayView(protocol: ProtocolKind, set: WorkbenchSet): void {
   resetReplayProtocolState(protocol);
   set({
     channels: [],
+    processedChannels: [],
+    processingStatus: replayProcessingRuntime.getSnapshot(),
     terminalEntries: [],
     terminalPaused: false,
     chartPaused: false,
@@ -2343,6 +2483,8 @@ function ingestReplayBatch(
   ensureReplayParser(header.protocol);
 
   let channels = state.channels;
+  let processedChannels = state.processedChannels;
+  const processingFrames: ParsedFrame[] = [];
   const terminalEntries: TerminalEntry[] = [];
   let rxBytes = 0;
   let txBytes = 0;
@@ -2354,6 +2496,7 @@ function ingestReplayBatch(
     if (record.direction === "rx") {
       rxBytes += bytes.length;
       const frames = replayProtocolParser.push(bytes, timestamp);
+      processingFrames.push(...frames);
       rxFrames += frames.length;
       if (!state.chartPaused) {
         channels = appendFrames(
@@ -2387,9 +2530,20 @@ function ingestReplayBatch(
       }
     }
   }
+  const processedSamples = replayProcessingRuntime.process(processingFrames);
+  if (!state.chartPaused) {
+    processedChannels = appendProcessedSamples(
+      processedChannels,
+      processedSamples,
+      state.channelVisibility,
+      replayProcessingChannelBuffers,
+    );
+  }
 
   return {
     channels,
+    processedChannels,
+    processingStatus: replayProcessingRuntime.getSnapshot(),
     terminalEntries:
       terminalEntries.length > 0
         ? appendManyBounded(state.terminalEntries, terminalEntries, MAX_TERMINAL_ENTRIES)
@@ -2443,6 +2597,51 @@ function appendFrames(
         points: buffer.toArray(),
         lastValue: value,
       };
+    }
+  }
+  return nextChannels;
+}
+
+function appendProcessedSamples(
+  channels: ChannelSeries[],
+  samples: readonly ProcessingOutputSample[],
+  channelVisibility: Record<string, boolean>,
+  buffers: Map<string, RingBuffer<DataPoint>>,
+): ChannelSeries[] {
+  if (samples.length === 0) {
+    return channels;
+  }
+
+  const nextChannels = channels.map((channel) => ({ ...channel }));
+  const channelIndexes = new Map(
+    nextChannels.map((channel, index) => [channel.id, index] as const),
+  );
+  for (const sample of samples) {
+    if (!Number.isFinite(sample.timestamp) || !Number.isFinite(sample.value)) {
+      continue;
+    }
+    let buffer = buffers.get(sample.channelId);
+    if (!buffer) {
+      buffer = new RingBuffer<DataPoint>(MAX_POINTS_PER_CHANNEL);
+      buffers.set(sample.channelId, buffer);
+    }
+    buffer.push({ x: sample.timestamp / 1_000, y: sample.value });
+
+    const existingIndex = channelIndexes.get(sample.channelId);
+    const existing = existingIndex === undefined ? undefined : nextChannels[existingIndex];
+    const channel: ChannelSeries = {
+      id: sample.channelId,
+      name: sample.name,
+      color: sample.color,
+      visible: existing?.visible ?? channelVisibility[sample.channelId] ?? true,
+      points: buffer.toArray(),
+      lastValue: sample.value,
+    };
+    if (existingIndex === undefined) {
+      channelIndexes.set(sample.channelId, nextChannels.length);
+      nextChannels.push(channel);
+    } else {
+      nextChannels[existingIndex] = channel;
     }
   }
   return nextChannels;
@@ -2566,11 +2765,15 @@ function restorePersistedWorkbenchState(
     !currentState.isNativeRuntime && persistedConfig.source === "serial"
       ? "simulator"
       : persistedConfig.source;
+  const processingGraph = configureProcessingGraph(persistedConfig.processingGraph);
 
   return {
     ...currentState,
     ...persistedConfig,
     source,
+    processingGraph,
+    processingStatus: liveProcessingRuntime.getSnapshot(),
+    processedChannels: [],
     workspaces: restoredWorkspaces,
     activeWorkspaceId,
     workspaceStorageStatus: "writable",
@@ -2597,10 +2800,7 @@ function createDeduplicatingStorage<S extends object>(
       try {
         const value = JSON.parse(serialized) as StorageValue<S>;
         previousValue = value;
-        writesBlocked =
-          value.version !== undefined &&
-          value.version !== 0 &&
-          value.version !== supportedVersion;
+        writesBlocked = value.version !== undefined && value.version > supportedVersion;
         return value;
       } catch {
         previousValue = null;

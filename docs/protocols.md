@@ -14,7 +14,7 @@ Vofa-Ultra 的协议扩展点面向随仓库构建、评审和测试的内置协
 - `encodeSimulatorSample()`：让浏览器预览能贯通该协议的数据链路。
 - `replaySeekMode`：声明回放定位是否具备可靠同步边界。
 
-新增协议时必须追加新的 ID，不能重命名、删除或复用已有 ID。工作区 v1 和 VUCAP v1 都会持久化该字符串；
+新增协议时必须追加新的 ID，不能重命名、删除或复用已有 ID。工作区 v1/v2 和 VUCAP v1 都会持久化该字符串；
 改变含义会让旧文件被静默误读。旧版本拒绝未知 ID 是预期的前向不兼容行为。
 
 Rust 的 `SUPPORTED_CAPTURE_PROTOCOLS` 必须独立更新。它不是前端注册表的生成副本，而是 Tauri 对 WebView 和外部

@@ -14,6 +14,18 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "实时波形" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "数据终端" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "启动模拟" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "处理" })).toBeEnabled();
+  });
+
+  it("从活动导航打开处理图编辑器", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "处理" }));
+
+    expect(screen.getByRole("heading", { name: "数据处理" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "启用处理图" })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "添加处理节点" })).toBeEnabled();
   });
 
   it("从侧栏保存命名工作区并更新标题", async () => {

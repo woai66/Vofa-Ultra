@@ -1,4 +1,6 @@
+import { readFile } from "node:fs/promises";
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import type { ProcessingGraphConfig } from "../src/types/processingGraph";
 
 test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
@@ -56,6 +58,84 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
     path: testInfo.outputPath("desktop-workbench.png"),
     fullPage: true,
   });
+});
+
+test("处理图生成独立派生通道并随 v2 工作区往返", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "处理", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "数据处理" })).toBeVisible();
+
+  const kindSelect = page.getByRole("combobox", { name: "新增节点类型" });
+  const addButton = page.getByRole("button", { name: "添加处理节点" });
+  await addButton.click();
+  await kindSelect.selectOption("ema");
+  await addButton.click();
+  await kindSelect.selectOption("output");
+  await addButton.click();
+  await page.getByRole("checkbox", { name: "启用处理图" }).check();
+  await expect(page.getByText("运行中", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+  await page.getByRole("button", { name: "处理", exact: true }).click();
+  await expect
+    .poll(async () => {
+      const text = await page.locator(".processing-counters span").first().textContent();
+      return Number(text?.match(/\d+/)?.[0] ?? 0);
+    })
+    .toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "通道" }).click();
+  await expect(page.getByText(/基础 [1-9]\d*/)).toBeVisible();
+  await expect(page.getByText("派生 1", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("数据通道列表").getByRole("button").filter({ hasText: "OUT 1" }))
+    .toHaveCount(1);
+
+  await page.getByRole("button", { name: "工作区" }).click();
+  const nameInput = page.getByRole("textbox", { name: "工作区名称" });
+  await nameInput.fill("处理图基准");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出当前" }).click();
+  const download = await downloadPromise;
+  const downloadPath = testInfo.outputPath("processing-workspace.json");
+  await download.saveAs(downloadPath);
+  const exported = JSON.parse(await readFile(downloadPath, "utf8")) as {
+    schemaVersion: number;
+    config: { processingGraph: ProcessingGraphConfig };
+  };
+  expect(exported.schemaVersion).toBe(2);
+  expect(exported.config.processingGraph).toMatchObject({
+    enabled: true,
+    nodes: [
+      { id: "node-1", kind: "input" },
+      { id: "node-2", kind: "ema" },
+      { id: "node-3", kind: "output", name: "OUT 1" },
+    ],
+  });
+
+  await page.getByLabel("导入工作区文件").setInputFiles(downloadPath);
+  await expect(page.getByText("处理图基准 (2)", { exact: true })).toBeVisible();
+  await page
+    .locator(".workspace-row")
+    .filter({ hasText: "处理图基准 (2)" })
+    .locator(".workspace-select")
+    .click();
+  await expect(page.locator(".workspace-title span")).toContainText("处理图基准 (2)");
+  await page.getByRole("button", { name: "处理", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "启用处理图" })).toBeChecked();
+  await expect(page.locator(".processing-node")).toHaveCount(3);
+  expect(pageErrors).toEqual([]);
 });
 
 test("有界命令历史与可取消周期发送形成完整工作流", async ({ page }) => {
@@ -188,6 +268,14 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   expect(await clippedVisibleHeight(variableDialog.getByRole("button").first())).toBeGreaterThanOrEqual(
     52,
   );
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "处理", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "数据处理" })).toBeVisible();
+  const processingKind = page.getByRole("combobox", { name: "新增节点类型" });
+  const addProcessingNode = page.getByRole("button", { name: "添加处理节点" });
+  await addProcessingNode.click();
+  await processingKind.selectOption("affine");
+  await addProcessingNode.click();
 
   const dimensions = await page.evaluate(() => ({
     viewportWidth: window.innerWidth,
@@ -242,6 +330,28 @@ test("中窄屏关闭侧栏后活动导航保持可操作", async ({ page }) => 
 
   await page.getByRole("button", { name: "通道" }).click();
   await expect(page.getByRole("heading", { name: "数据通道" })).toBeVisible();
+});
+
+test("320 px 窄屏完整显示底部导航", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto("/");
+
+  const navigationButtons = page.getByRole("navigation", { name: "工作台导航" }).getByRole("button");
+  await expect(navigationButtons).toHaveCount(6);
+  const bounds = await navigationButtons.evaluateAll((buttons) =>
+    buttons.map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, width: rect.width };
+    }),
+  );
+  expect(bounds.every((rect) => rect.left >= 0 && rect.right <= 320 && rect.width >= 44)).toBe(
+    true,
+  );
+  const dimensions = await page.evaluate(() => ({
+    viewportWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+  }));
+  expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth);
 });
 
 test("命名工作区可保存、切换、导出并重新导入", async ({ page }, testInfo) => {
@@ -351,7 +461,7 @@ async function clippedVisibleHeight(locator: Locator): Promise<number> {
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({
-    version: 2,
+    version: 3,
     state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
   });
   await page.addInitScript((value) => {
@@ -360,7 +470,7 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("button", { name: "工作区" }).click();
-  await expect(page.getByRole("alert")).toContainText("版本 2 的较新配置");
+  await expect(page.getByRole("alert")).toContainText("版本 3 的较新配置");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();

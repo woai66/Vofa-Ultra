@@ -11,7 +11,12 @@ interface WaveformPanelProps {
 }
 
 export function WaveformPanel({ theme }: WaveformPanelProps) {
-  const channels = useWorkbenchStore((state) => state.channels);
+  const rawChannels = useWorkbenchStore((state) => state.channels);
+  const processedChannels = useWorkbenchStore((state) => state.processedChannels);
+  const channels = useMemo(
+    () => [...rawChannels, ...processedChannels],
+    [processedChannels, rawChannels],
+  );
   const chartPaused = useWorkbenchStore((state) => state.chartPaused);
   const chartWindowSeconds = useWorkbenchStore((state) => state.chartWindowSeconds);
   const setChartPaused = useWorkbenchStore((state) => state.setChartPaused);

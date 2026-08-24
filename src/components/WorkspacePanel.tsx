@@ -25,7 +25,7 @@ import {
   selectIsWorkspaceDirty,
   useWorkbenchStore,
 } from "../store/workbenchStore";
-import type { WorkspaceConfigV1, WorkspaceProfile } from "../types/workspace";
+import type { WorkspaceConfig, WorkspaceProfile } from "../types/workspace";
 
 type PendingAction =
   | { type: "switch"; id: string; name: string }
@@ -390,7 +390,7 @@ export function WorkspacePanel() {
   );
 }
 
-function formatWorkspaceSummary(config: WorkspaceConfigV1): string {
+function formatWorkspaceSummary(config: WorkspaceConfig): string {
   const source = config.source === "serial" ? config.serialConfig.portName || "串口" : "模拟器";
   const protocol = getProtocolDefinition(config.protocol).displayName;
   return `${source} · ${protocol}`;

@@ -21,6 +21,7 @@ export function StatusBar() {
   const serialRecovery = useWorkbenchStore((state) => state.serialRecovery);
   const stats = useWorkbenchStore((state) => state.stats);
   const channels = useWorkbenchStore((state) => state.channels);
+  const processedChannels = useWorkbenchStore((state) => state.processedChannels);
   const captureStatus = useWorkbenchStore((state) => state.captureStatus);
   const captureDataBytes = useWorkbenchStore((state) => state.captureDataBytes);
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
@@ -101,7 +102,9 @@ export function StatusBar() {
       </div>
       <div className="status-item">
         <Rows3 size={13} />
-        <span>{stats.rxFrames.toLocaleString()} 帧 · {channels.length} CH</span>
+        <span>
+          {stats.rxFrames.toLocaleString()} 帧 · {channels.length + processedChannels.length} CH
+        </span>
       </div>
     </footer>
   );

@@ -22,8 +22,10 @@ import {
 } from "../types/serial";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { ChartWindowSeconds } from "../types/workspace";
+import type { ChannelSeries } from "../types/workbench";
 import type { SidebarPanel } from "./ActivityRail";
 import { CapturePanel } from "./CapturePanel";
+import { ProcessingPanel } from "./ProcessingPanel";
 import { WorkspacePanel } from "./WorkspacePanel";
 
 interface SidebarProps {
@@ -47,6 +49,7 @@ export function Sidebar({ activePanel, theme, onClose, onThemeChange }: SidebarP
       </button>
       {activePanel === "connection" && <ConnectionPanel />}
       {activePanel === "channels" && <ChannelPanel />}
+      {activePanel === "processing" && <ProcessingPanel />}
       {activePanel === "capture" && <CapturePanel />}
       <div className="workspace-panel-host" hidden={activePanel !== "workspaces"}>
         <WorkspacePanel />
@@ -426,6 +429,7 @@ function ConnectionPanel() {
 
 function ChannelPanel() {
   const channels = useWorkbenchStore((state) => state.channels);
+  const processedChannels = useWorkbenchStore((state) => state.processedChannels);
   const toggleChannel = useWorkbenchStore((state) => state.toggleChannel);
   const clearChart = useWorkbenchStore((state) => state.clearChart);
   const isTransitioning = useWorkbenchStore(
@@ -442,38 +446,75 @@ function ChannelPanel() {
         <Gauge size={20} />
       </div>
       <div className="channel-summary">
-        <span>已检测通道</span>
-        <strong>{channels.length}</strong>
+        <span>基础 {channels.length}</span>
+        <strong>派生 {processedChannels.length}</strong>
       </div>
       <section className="channel-list" aria-label="数据通道列表">
-        {channels.length === 0 ? (
+        {channels.length === 0 && processedChannels.length === 0 ? (
           <div className="sidebar-empty">
             <AudioEmptyIcon />
             <span>暂无可显示通道</span>
           </div>
         ) : (
-          channels.map((channel) => (
-            <button
-              key={channel.id}
-              className="channel-row"
-              type="button"
-              data-visible={channel.visible}
-              aria-pressed={channel.visible}
-              disabled={isTransitioning}
-              onClick={() => toggleChannel(channel.id)}
-            >
-              <span className="channel-swatch" style={{ backgroundColor: channel.color }} />
-              <span className="channel-name">{channel.name}</span>
-              <strong>{formatChannelValue(channel.lastValue)}</strong>
-            </button>
-          ))
+          <>
+            {channels.length > 0 && <span className="channel-group-label">基础通道</span>}
+            {channels.map((channel) => (
+              <ChannelRow
+                key={channel.id}
+                channel={channel}
+                disabled={isTransitioning}
+                onToggle={() => toggleChannel(channel.id)}
+              />
+            ))}
+            {processedChannels.length > 0 && (
+              <span className="channel-group-label">派生通道</span>
+            )}
+            {processedChannels.map((channel) => (
+              <ChannelRow
+                key={channel.id}
+                channel={channel}
+                disabled={isTransitioning}
+                onToggle={() => toggleChannel(channel.id)}
+              />
+            ))}
+          </>
         )}
       </section>
-      <button className="secondary-button" type="button" onClick={clearChart} disabled={!channels.length}>
+      <button
+        className="secondary-button"
+        type="button"
+        onClick={clearChart}
+        disabled={channels.length + processedChannels.length === 0}
+      >
         <RotateCcw size={16} />
         清空波形
       </button>
     </div>
+  );
+}
+
+function ChannelRow({
+  channel,
+  disabled,
+  onToggle,
+}: {
+  channel: ChannelSeries;
+  disabled: boolean;
+  onToggle(): void;
+}) {
+  return (
+    <button
+      className="channel-row"
+      type="button"
+      data-visible={channel.visible}
+      aria-pressed={channel.visible}
+      disabled={disabled}
+      onClick={onToggle}
+    >
+      <span className="channel-swatch" style={{ backgroundColor: channel.color }} />
+      <span className="channel-name">{channel.name}</span>
+      <strong>{formatChannelValue(channel.lastValue)}</strong>
+    </button>
   );
 }
 

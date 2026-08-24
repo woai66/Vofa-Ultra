@@ -1,13 +1,21 @@
 import { DEFAULT_SERIAL_CONFIG, PROTOCOL_IDS } from "../types/serial";
+import {
+  cloneProcessingGraph,
+  createDefaultProcessingGraph,
+  parseProcessingGraphConfig,
+  processingOutputChannelId,
+} from "./processingGraph";
 import type {
   ChartWindowSeconds,
+  WorkspaceConfig,
   WorkspaceConfigV1,
-  WorkspaceExportV1,
+  WorkspaceConfigV2,
+  WorkspaceExportV2,
   WorkspaceProfile,
 } from "../types/workspace";
 
 export const WORKSPACE_FILE_FORMAT = "vofa-ultra.workspace";
-export const WORKSPACE_SCHEMA_VERSION = 1;
+export const WORKSPACE_SCHEMA_VERSION = 2;
 export const MAX_WORKSPACE_FILE_BYTES = 64 * 1024;
 export const MAX_WORKSPACE_COUNT = 32;
 export const MAX_WORKSPACE_NAME_LENGTH = 64;
@@ -15,7 +23,7 @@ export const DEFAULT_WORKSPACE_ID = "default";
 
 const MAX_PORT_NAME_LENGTH = 256;
 const MAX_WORKSPACE_ID_LENGTH = 128;
-const WORKSPACE_CONFIG_KEYS = [
+const WORKSPACE_CONFIG_V1_KEYS = [
   "source",
   "protocol",
   "serialConfig",
@@ -25,6 +33,10 @@ const WORKSPACE_CONFIG_KEYS = [
   "terminalAutoScroll",
   "chartWindowSeconds",
   "channelVisibility",
+] as const;
+const WORKSPACE_CONFIG_V2_KEYS = [
+  ...WORKSPACE_CONFIG_V1_KEYS,
+  "processingGraph",
 ] as const;
 const SERIAL_CONFIG_KEYS = [
   "portName",
@@ -38,13 +50,14 @@ const SERIAL_CONFIG_KEYS = [
 ] as const;
 const WORKSPACE_PROFILE_KEYS = ["id", "name", "createdAt", "updatedAt", "config"] as const;
 const WORKSPACE_EXPORT_KEYS = ["format", "schemaVersion", "name", "config"] as const;
-const CHANNEL_ID_PATTERN = /^channel-(?:[0-9]|1[0-5])$/;
+const RAW_CHANNEL_ID_PATTERN = /^channel-(?:[0-9]|1[0-5])$/;
+const DERIVED_CHANNEL_ID_PATTERN = /^derived:[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const CHART_WINDOWS: readonly ChartWindowSeconds[] = [5, 15, 30, 60];
 
-export type WorkspaceConfigSource = WorkspaceConfigV1;
+export type WorkspaceConfigSource = WorkspaceConfig;
 
-export function createDefaultWorkspaceConfig(source: WorkspaceConfigV1["source"]): WorkspaceConfigV1 {
+export function createDefaultWorkspaceConfig(source: WorkspaceConfig["source"]): WorkspaceConfig {
   return {
     source,
     protocol: "firewater",
@@ -55,14 +68,15 @@ export function createDefaultWorkspaceConfig(source: WorkspaceConfigV1["source"]
     terminalAutoScroll: true,
     chartWindowSeconds: 15,
     channelVisibility: {},
+    processingGraph: createDefaultProcessingGraph(),
   };
 }
 
-export function captureWorkspaceConfig(state: WorkspaceConfigSource): WorkspaceConfigV1 {
+export function captureWorkspaceConfig(state: WorkspaceConfigSource): WorkspaceConfig {
   return cloneWorkspaceConfig(state);
 }
 
-export function cloneWorkspaceConfig(config: WorkspaceConfigV1): WorkspaceConfigV1 {
+export function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
   return {
     source: config.source,
     protocol: config.protocol,
@@ -73,12 +87,13 @@ export function cloneWorkspaceConfig(config: WorkspaceConfigV1): WorkspaceConfig
     terminalAutoScroll: config.terminalAutoScroll,
     chartWindowSeconds: config.chartWindowSeconds,
     channelVisibility: { ...config.channelVisibility },
+    processingGraph: cloneProcessingGraph(config.processingGraph),
   };
 }
 
 export function areWorkspaceConfigsEqual(
-  left: WorkspaceConfigV1,
-  right: WorkspaceConfigV1,
+  left: WorkspaceConfig,
+  right: WorkspaceConfig,
 ): boolean {
   const leftVisibility = Object.entries(left.channelVisibility).sort(([leftId], [rightId]) =>
     leftId.localeCompare(rightId),
@@ -103,7 +118,8 @@ export function areWorkspaceConfigsEqual(
     left.lineEnding === right.lineEnding &&
     left.terminalAutoScroll === right.terminalAutoScroll &&
     left.chartWindowSeconds === right.chartWindowSeconds &&
-    JSON.stringify(leftVisibility) === JSON.stringify(rightVisibility)
+    JSON.stringify(leftVisibility) === JSON.stringify(rightVisibility) &&
+    JSON.stringify(left.processingGraph) === JSON.stringify(right.processingGraph)
   );
 }
 
@@ -123,7 +139,7 @@ export function validateWorkspaceName(value: string): string {
 
 export function createWorkspaceProfile(
   name: string,
-  config: WorkspaceConfigV1,
+  config: WorkspaceConfig,
   id = createWorkspaceId(),
   timestamp = Date.now(),
 ): WorkspaceProfile {
@@ -181,7 +197,7 @@ export function assertWorkspaceNameAvailable(
 }
 
 export function serializeWorkspace(profile: WorkspaceProfile): string {
-  const exported: WorkspaceExportV1 = {
+  const exported: WorkspaceExportV2 = {
     format: WORKSPACE_FILE_FORMAT,
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     name: profile.name,
@@ -190,7 +206,7 @@ export function serializeWorkspace(profile: WorkspaceProfile): string {
   return `${JSON.stringify(exported, null, 2)}\n`;
 }
 
-export function parseWorkspaceExport(text: string): WorkspaceExportV1 {
+export function parseWorkspaceExport(text: string): WorkspaceExportV2 {
   if (new TextEncoder().encode(text).byteLength > MAX_WORKSPACE_FILE_BYTES) {
     throw new Error(`工作区文件不能超过 ${MAX_WORKSPACE_FILE_BYTES / 1024} KiB`);
   }
@@ -206,22 +222,45 @@ export function parseWorkspaceExport(text: string): WorkspaceExportV1 {
   if (record.format !== WORKSPACE_FILE_FORMAT) {
     throw new Error("这不是 Vofa-Ultra 工作区文件");
   }
-  if (record.schemaVersion !== WORKSPACE_SCHEMA_VERSION) {
+  if (record.schemaVersion !== 1 && record.schemaVersion !== WORKSPACE_SCHEMA_VERSION) {
     throw new Error(`不支持工作区 schema 版本：${String(record.schemaVersion)}`);
   }
   assertExactKeys(record, WORKSPACE_EXPORT_KEYS, "工作区文件");
+  const config =
+    record.schemaVersion === 1
+      ? migrateWorkspaceConfigV1(parseWorkspaceConfigV1(record.config))
+      : parseWorkspaceConfig(record.config);
 
   return {
     format: WORKSPACE_FILE_FORMAT,
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     name: validateWorkspaceName(requireString(record.name, "工作区名称")),
-    config: parseWorkspaceConfig(record.config),
+    config,
   };
 }
 
-export function parseWorkspaceConfig(value: unknown): WorkspaceConfigV1 {
+export function parseWorkspaceConfig(value: unknown): WorkspaceConfig {
   const record = requireRecord(value, "工作区配置");
-  assertExactKeys(record, WORKSPACE_CONFIG_KEYS, "工作区配置");
+  assertExactKeys(record, WORKSPACE_CONFIG_V2_KEYS, "工作区配置");
+  const processingGraph = parseProcessingGraphConfig(record.processingGraph);
+  const config = parseWorkspaceConfigBase(record, processingGraph);
+
+  return {
+    ...config,
+    processingGraph,
+  };
+}
+
+function parseWorkspaceConfigV1(value: unknown): WorkspaceConfigV1 {
+  const record = requireRecord(value, "工作区配置");
+  assertExactKeys(record, WORKSPACE_CONFIG_V1_KEYS, "工作区配置");
+  return parseWorkspaceConfigBase(record);
+}
+
+function parseWorkspaceConfigBase(
+  record: Record<string, unknown>,
+  processingGraph = createDefaultProcessingGraph(),
+): WorkspaceConfigV1 {
   const serialConfig = requireRecord(record.serialConfig, "串口配置");
   assertExactKeys(serialConfig, SERIAL_CONFIG_KEYS, "串口配置");
 
@@ -234,16 +273,27 @@ export function parseWorkspaceConfig(value: unknown): WorkspaceConfigV1 {
     lineEnding: requireEnum(record.lineEnding, ["none", "lf", "crlf"], "行尾"),
     terminalAutoScroll: requireBoolean(record.terminalAutoScroll, "终端自动滚动"),
     chartWindowSeconds: requireChartWindow(record.chartWindowSeconds),
-    channelVisibility: parseChannelVisibility(record.channelVisibility),
+    channelVisibility: parseChannelVisibility(record.channelVisibility, processingGraph),
+  };
+}
+
+function migrateWorkspaceConfigV1(config: WorkspaceConfigV1): WorkspaceConfigV2 {
+  return {
+    ...config,
+    serialConfig: { ...config.serialConfig },
+    channelVisibility: { ...config.channelVisibility },
+    processingGraph: createDefaultProcessingGraph(),
   };
 }
 
 export function restoreWorkspaceConfig(
   value: unknown,
-  fallback: WorkspaceConfigV1,
-): WorkspaceConfigV1 {
+  fallback: WorkspaceConfig,
+): WorkspaceConfig {
   const record = isRecord(value) ? value : {};
   const serialConfig = isRecord(record.serialConfig) ? record.serialConfig : {};
+  const processingGraph = tryParseProcessingGraph(record.processingGraph) ??
+    cloneProcessingGraph(fallback.processingGraph);
   return {
     source: isEnum(record.source, ["serial", "simulator"]) ? record.source : fallback.source,
     protocol: isEnum(record.protocol, PROTOCOL_IDS)
@@ -285,9 +335,10 @@ export function restoreWorkspaceConfig(
     chartWindowSeconds: isChartWindow(record.chartWindowSeconds)
       ? record.chartWindowSeconds
       : fallback.chartWindowSeconds,
-    channelVisibility: tryParseChannelVisibility(record.channelVisibility) ?? {
+    channelVisibility: tryParseChannelVisibility(record.channelVisibility, processingGraph) ?? {
       ...fallback.channelVisibility,
     },
+    processingGraph,
   };
 }
 
@@ -324,12 +375,16 @@ function parseWorkspaceProfile(value: unknown): WorkspaceProfile {
   if (updatedAt < createdAt) {
     throw new Error("工作区更新时间早于创建时间");
   }
+  const configRecord = requireRecord(record.config, "工作区配置");
+  const config = Object.hasOwn(configRecord, "processingGraph")
+    ? parseWorkspaceConfig(configRecord)
+    : migrateWorkspaceConfigV1(parseWorkspaceConfigV1(configRecord));
   return {
     id: validateWorkspaceId(requireString(record.id, "工作区 ID")),
     name: validateWorkspaceName(requireString(record.name, "工作区名称")),
     createdAt,
     updatedAt,
-    config: parseWorkspaceConfig(record.config),
+    config,
   };
 }
 
@@ -350,25 +405,39 @@ function parseSerialConfig(record: Record<string, unknown>) {
   };
 }
 
-function parseChannelVisibility(value: unknown): Record<string, boolean> {
-  const parsed = tryParseChannelVisibility(value);
+function parseChannelVisibility(
+  value: unknown,
+  processingGraph = createDefaultProcessingGraph(),
+): Record<string, boolean> {
+  const parsed = tryParseChannelVisibility(value, processingGraph);
   if (!parsed) {
     throw new Error("通道显隐配置无效");
   }
   return parsed;
 }
 
-function tryParseChannelVisibility(value: unknown): Record<string, boolean> | null {
+function tryParseChannelVisibility(
+  value: unknown,
+  processingGraph = createDefaultProcessingGraph(),
+): Record<string, boolean> | null {
   if (!isRecord(value)) {
     return null;
   }
   const entries = Object.entries(value);
-  if (entries.length > 16) {
+  if (entries.length > 32) {
     return null;
   }
+  const derivedChannelIds = new Set(
+    processingGraph.nodes
+      .filter((node) => node.kind === "output")
+      .map((node) => processingOutputChannelId(node.id)),
+  );
   const visibility: Record<string, boolean> = {};
   for (const [channelId, visible] of entries) {
-    if (!CHANNEL_ID_PATTERN.test(channelId) || typeof visible !== "boolean") {
+    const knownChannel =
+      RAW_CHANNEL_ID_PATTERN.test(channelId) ||
+      (DERIVED_CHANNEL_ID_PATTERN.test(channelId) && derivedChannelIds.has(channelId));
+    if (!knownChannel || typeof visible !== "boolean") {
       return null;
     }
     if (!visible) {
@@ -376,6 +445,14 @@ function tryParseChannelVisibility(value: unknown): Record<string, boolean> | nu
     }
   }
   return visibility;
+}
+
+function tryParseProcessingGraph(value: unknown) {
+  try {
+    return parseProcessingGraphConfig(value);
+  } catch {
+    return null;
+  }
 }
 
 function validateWorkspaceId(value: string): string {

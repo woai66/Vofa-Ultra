@@ -10,30 +10,62 @@ import {
 } from "./workspaces";
 
 describe("工作区文件", () => {
-  it("以严格的 v1 格式往返配置", () => {
+  it("以严格的 v2 格式往返处理图配置", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.serialConfig.portName = "COM7";
     config.protocol = "justfloat";
     config.sendMode = "hex";
     config.lineEnding = "crlf";
     config.channelVisibility = { "channel-2": false };
+    config.processingGraph = {
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        {
+          id: "output",
+          kind: "output",
+          input: "source",
+          name: "Filtered",
+          color: "#46d89c",
+        },
+      ],
+    };
     const profile = createWorkspaceProfile("台架 A", config, "bench-a", 100);
 
     const parsed = parseWorkspaceExport(serializeWorkspace(profile));
 
     expect(parsed).toEqual({
       format: "vofa-ultra.workspace",
-      schemaVersion: 1,
+      schemaVersion: 2,
       name: "台架 A",
       config,
     });
     expect(parsed.config).not.toBe(config);
     expect(parsed.config.serialConfig).not.toBe(config.serialConfig);
+    expect(parsed.config.processingGraph).not.toBe(config.processingGraph);
+  });
+
+  it("导入严格 v1 后规范化为禁用的 v2 处理图", () => {
+    const profile = createWorkspaceProfile(
+      "旧工作区",
+      createDefaultWorkspaceConfig("simulator"),
+      "legacy",
+      100,
+    );
+    const exported = JSON.parse(serializeWorkspace(profile)) as Record<string, unknown>;
+    const config = exported.config as Record<string, unknown>;
+    delete config.processingGraph;
+    exported.schemaVersion = 1;
+
+    const parsed = parseWorkspaceExport(JSON.stringify(exported));
+
+    expect(parsed.schemaVersion).toBe(2);
+    expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
   });
 
   it.each([
     ["错误格式", { format: "other", schemaVersion: 1 }],
-    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 2 }],
+    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 3 }],
   ])("拒绝%s", (_label, overrides) => {
     const profile = createWorkspaceProfile(
       "默认工作区",
@@ -97,6 +129,46 @@ describe("工作区文件", () => {
 
     expect(parsed.config.channelVisibility).toEqual({ "channel-1": false });
   });
+
+  it("拒绝含循环或未知字段的处理图", () => {
+    const profile = createWorkspaceProfile(
+      "默认工作区",
+      createDefaultWorkspaceConfig("simulator"),
+      "default",
+      100,
+    );
+    const exported = JSON.parse(serializeWorkspace(profile)) as Record<string, unknown>;
+    const config = exported.config as Record<string, unknown>;
+
+    expect(() =>
+      parseWorkspaceExport(
+        JSON.stringify({
+          ...exported,
+          config: {
+            ...config,
+            processingGraph: {
+              enabled: true,
+              nodes: [
+                { id: "a", kind: "affine", input: "b", gain: 1, offset: 0 },
+                { id: "b", kind: "affine", input: "a", gain: 1, offset: 0 },
+              ],
+            },
+          },
+        }),
+      ),
+    ).toThrow(/循环/);
+    expect(() =>
+      parseWorkspaceExport(
+        JSON.stringify({
+          ...exported,
+          config: {
+            ...config,
+            processingGraph: { enabled: false, nodes: [], script: "return value" },
+          },
+        }),
+      ),
+    ).toThrow(/未知字段/);
+  });
 });
 
 describe("工作区本地恢复", () => {
@@ -156,6 +228,9 @@ describe("工作区本地恢复", () => {
     right.channelVisibility = { "channel-0": false, "channel-2": false };
 
     expect(areWorkspaceConfigsEqual(left, right)).toBe(true);
+
+    right.processingGraph.enabled = true;
+    expect(areWorkspaceConfigsEqual(left, right)).toBe(false);
   });
 
   it("为导入的重名工作区生成稳定后缀", () => {

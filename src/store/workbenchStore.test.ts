@@ -255,6 +255,7 @@ describe("workbenchStore", () => {
       },
       isCancellingSerialConnection: false,
       channels: [],
+      processedChannels: [],
       terminalEntries: [],
       commandHistory: [],
       commandTask: createInitialCommandTaskSnapshot(),
@@ -312,6 +313,7 @@ describe("workbenchStore", () => {
       replayNextSequence: 1,
       replayMessage: "",
     });
+    useWorkbenchStore.getState().setProcessingGraph(config.processingGraph);
     useWorkbenchStore.getState().clearChart();
   });
 
@@ -1238,11 +1240,180 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().channelVisibility).toEqual({});
   });
 
+  it("保持基础通道直通并把处理图结果写入独立派生通道", () => {
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        { id: "scaled", kind: "affine", input: "source", gain: 2, offset: 1 },
+        {
+          id: "result",
+          kind: "output",
+          input: "scaled",
+          name: "Scaled",
+          color: "#55bde8",
+        },
+      ],
+    });
+
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("1,2\n"), 1_000);
+
+    const state = useWorkbenchStore.getState();
+    expect(state.channels.map((channel) => channel.lastValue)).toEqual([1, 2]);
+    expect(state.processedChannels).toEqual([
+      expect.objectContaining({
+        id: "derived:result",
+        name: "Scaled",
+        color: "#55bde8",
+        lastValue: 3,
+      }),
+    ]);
+    expect(state.stats.rxFrames).toBe(1);
+    expect(state.processingStatus).toMatchObject({ status: "ready", processedFrames: 1 });
+
+    useWorkbenchStore.getState().toggleChannel("derived:result");
+    expect(useWorkbenchStore.getState().channelVisibility).toEqual({
+      "derived:result": false,
+    });
+  });
+
+  it("拒绝无效新图并保留旧配置与运行链路", () => {
+    const validGraph = {
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input" as const, channelIndex: 0 },
+        {
+          id: "result",
+          kind: "output" as const,
+          input: "source",
+          name: "Result",
+          color: "#46d89c",
+        },
+      ],
+    };
+    useWorkbenchStore.getState().setProcessingGraph(validGraph);
+
+    expect(() =>
+      useWorkbenchStore.getState().setProcessingGraph({
+        enabled: true,
+        nodes: [
+          { id: "a", kind: "affine", input: "b", gain: 1, offset: 0 },
+          { id: "b", kind: "affine", input: "a", gain: 1, offset: 0 },
+        ],
+      }),
+    ).toThrow(/循环/);
+    expect(useWorkbenchStore.getState().processingGraph).toEqual(validGraph);
+
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("4\n"), 1_000);
+    expect(useWorkbenchStore.getState().processedChannels[0]?.lastValue).toBe(4);
+  });
+
+  it("应用处理图时统一规范化配置与运行时输出", () => {
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        {
+          id: "result",
+          kind: "output",
+          input: "source",
+          name: "  Filtered  ",
+          color: "#AABBCC",
+        },
+      ],
+    });
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("4\n"), 1_000);
+
+    expect(useWorkbenchStore.getState().processingGraph.nodes[1]).toMatchObject({
+      name: "Filtered",
+      color: "#aabbcc",
+    });
+    expect(useWorkbenchStore.getState().processedChannels[0]).toMatchObject({
+      name: "Filtered",
+      color: "#aabbcc",
+    });
+  });
+
+  it("波形暂停时继续推进滤波状态但不追加派生显示点", () => {
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        { id: "smooth", kind: "ema", input: "source", alpha: 0.5 },
+        {
+          id: "result",
+          kind: "output",
+          input: "smooth",
+          name: "EMA",
+          color: "#46d89c",
+        },
+      ],
+    });
+    const encoder = new TextEncoder();
+
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("0\n"), 1_000);
+    useWorkbenchStore.getState().setChartPaused(true);
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("10\n"), 2_000);
+    useWorkbenchStore.getState().setChartPaused(false);
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("10\n"), 3_000);
+
+    expect(
+      useWorkbenchStore.getState().processedChannels[0]?.points.map((point) => point.y),
+    ).toEqual([0, 7.5]);
+    expect(useWorkbenchStore.getState().processingStatus.processedFrames).toBe(3);
+  });
+
+  it("实时与回放使用互不共享的滤波状态", () => {
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        { id: "smooth", kind: "moving_average", input: "source", windowSize: 2 },
+        {
+          id: "result",
+          kind: "output",
+          input: "smooth",
+          name: "Average",
+          color: "#46d89c",
+        },
+      ],
+    });
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("10\n"), 1_000);
+    expect(useWorkbenchStore.getState().processedChannels[0]?.lastValue).toBe(10);
+    useWorkbenchStore.setState({
+      replayStatus: "playing",
+      replaySessionId: 7,
+      replayGeneration: 1,
+      replayHeader: TEST_REPLAY_HEADER,
+      replayNextSequence: 1,
+      channels: [],
+      processedChannels: [],
+    });
+
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_000,
+      dataBytes: 2,
+      records: [
+        {
+          direction: "rx",
+          timestampUs: 1_000,
+          data: Array.from(new TextEncoder().encode("0\n")),
+        },
+      ],
+    });
+
+    expect(useWorkbenchStore.getState().processedChannels[0]?.lastValue).toBe(0);
+  });
+
   it("导入同名工作区时生成后缀且不自动应用", () => {
     const beforeActiveId = useWorkbenchStore.getState().activeWorkspaceId;
     const importedId = useWorkbenchStore.getState().importWorkspace({
       format: "vofa-ultra.workspace",
-      schemaVersion: 1,
+      schemaVersion: 2,
       name: "默认工作区",
       config: createDefaultWorkspaceConfig("serial"),
     });
@@ -1314,18 +1485,60 @@ describe("workbenchStore", () => {
             sendMode: "text",
             lineEnding: "none",
             chartWindowSeconds: 30,
+            processingGraph: { enabled: false, nodes: [] },
           },
         },
       ],
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 1 });
+    ).toMatchObject({ version: 2 });
+  });
+
+  it("通过 rehydrate 把 v1 工作区写回 v2 且保留快照", async () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+    delete legacyConfig.processingGraph;
+    localStorage.setItem(
+      "vofa-ultra-workbench",
+      JSON.stringify({
+        version: 1,
+        state: {
+          ...legacyConfig,
+          workspaces: [
+            {
+              id: "legacy",
+              name: "旧工作区",
+              createdAt: 100,
+              updatedAt: 100,
+              config: legacyConfig,
+            },
+          ],
+          activeWorkspaceId: "legacy",
+        },
+      }),
+    );
+
+    await useWorkbenchStore.persist.rehydrate();
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      activeWorkspaceId: "legacy",
+      processingGraph: { enabled: false, nodes: [] },
+      workspaces: [
+        {
+          id: "legacy",
+          config: { processingGraph: { enabled: false, nodes: [] } },
+        },
+      ],
+    });
+    expect(
+      JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
+    ).toMatchObject({ version: 2 });
   });
 
   it("拒绝并保留更高版本的持久化数据", async () => {
     const futureValue = JSON.stringify({
-      version: 2,
+      version: 3,
       state: {
         futureWorkspaceFormat: true,
         workspaces: [{ id: "future-only" }],
@@ -1338,10 +1551,10 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState()).toMatchObject({
       workspaceStorageStatus: "newer-version",
-      incompatibleStorageVersion: 2,
+      incompatibleStorageVersion: 3,
     });
     expect(() => useWorkbenchStore.getState().saveActiveWorkspace("不会保存")).toThrow(
-      /版本 2.*不能保存/,
+      /版本 3.*不能保存/,
     );
     expect(localStorage.getItem("vofa-ultra-workbench")).toBe(futureValue);
     useWorkbenchStore.persist.clearStorage();
