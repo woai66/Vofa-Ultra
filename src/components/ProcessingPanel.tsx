@@ -302,7 +302,7 @@ function ProcessingNodeEditor({
               value={node.alpha}
               min={0.001}
               max={1}
-              step={0.01}
+              step={0.001}
               disabled={disabled}
               onChange={(alpha) => onChange({ ...node, alpha })}
             />

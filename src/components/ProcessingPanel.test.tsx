@@ -102,6 +102,19 @@ describe("ProcessingPanel", () => {
     expect(useWorkbenchStore.getState().processingGraph.nodes).toHaveLength(4);
   });
 
+  it("让默认 EMA 参数满足浏览器数字步进约束", () => {
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: false,
+      nodes: [
+        { id: "node-1", kind: "input", channelIndex: 0 },
+        { id: "node-2", kind: "ema", input: "node-1", alpha: 0.2 },
+      ],
+    });
+    render(<ProcessingPanel />);
+
+    expect(screen.getByRole("spinbutton", { name: "node-2 Alpha" })).toBeValid();
+  });
+
   it("重试熔断运行时并在工作区切换期间禁用编辑", async () => {
     const user = userEvent.setup();
     useWorkbenchStore.getState().setProcessingGraph(GRAPH_WITH_BRANCH);
