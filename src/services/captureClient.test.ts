@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   abortCapture,
+  enqueueCaptureMarker,
   enqueueSimulatorCapture,
   flushSimulatorCaptureQueue,
   resetSimulatorCaptureQueue,
@@ -56,7 +57,7 @@ describe("captureClient", () => {
     expect(invokeMock).toHaveBeenCalledWith("start_capture", { request });
   });
 
-  it("模拟器写入按顺序串行提交", async () => {
+  it("模拟器数据与时间线标记按同一 FIFO 串行提交", async () => {
     let resolveFirst: (() => void) | undefined;
     invokeMock
       .mockImplementationOnce(
@@ -65,10 +66,15 @@ describe("captureClient", () => {
             resolveFirst = resolve;
           }),
       )
+      .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined);
     const onError = vi.fn();
+    const onMarkerRejected = vi.fn();
 
     expect(enqueueSimulatorCapture(7, "rx", new Uint8Array([1, 2]), onError)).toBe(true);
+    expect(
+      enqueueCaptureMarker(7, "blue", "稳态", onMarkerRejected, onError),
+    ).toBe(true);
     expect(enqueueSimulatorCapture(7, "tx", new Uint8Array([3]), onError)).toBe(true);
     expect(invokeMock).toHaveBeenCalledTimes(1);
 
@@ -77,9 +83,72 @@ describe("captureClient", () => {
 
     expect(invokeMock.mock.calls).toEqual([
       ["append_simulator_capture", { sessionId: 7, direction: "rx", data: [1, 2] }],
+      ["append_capture_marker", { sessionId: 7, color: "blue", label: "稳态" }],
       ["append_simulator_capture", { sessionId: 7, direction: "tx", data: [3] }],
     ]);
     expect(onError).not.toHaveBeenCalled();
+    expect(onMarkerRejected).not.toHaveBeenCalled();
+  });
+
+  it("单个标记被后端拒绝后继续提交后续数据", async () => {
+    invokeMock.mockRejectedValueOnce(new Error("单次捕获最多添加 512 个标记"));
+    invokeMock.mockResolvedValueOnce({
+      status: "recording",
+      sessionId: 7,
+      revision: 3,
+      formatVersion: 2,
+      path: "capture.vucap.part",
+      dataBytes: 0,
+      recordCount: 0,
+      markerCount: 512,
+    });
+    invokeMock.mockResolvedValueOnce(undefined);
+    const onMarkerRejected = vi.fn();
+    const onQueueError = vi.fn();
+
+    expect(
+      enqueueCaptureMarker(7, "purple", "超出上限", onMarkerRejected, onQueueError),
+    ).toBe(true);
+    expect(
+      enqueueSimulatorCapture(7, "rx", new Uint8Array([1, 2]), onQueueError),
+    ).toBe(true);
+    await expect(flushSimulatorCaptureQueue()).resolves.toBeUndefined();
+
+    expect(onMarkerRejected).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "单次捕获最多添加 512 个标记" }),
+    );
+    expect(onQueueError).not.toHaveBeenCalled();
+    expect(invokeMock.mock.calls).toEqual([
+      ["append_capture_marker", { sessionId: 7, color: "purple", label: "超出上限" }],
+      ["get_capture_state"],
+      ["append_simulator_capture", { sessionId: 7, direction: "rx", data: [1, 2] }],
+    ]);
+  });
+
+  it("标记写入失败且后端进入错误态时中止 FIFO", async () => {
+    invokeMock.mockRejectedValueOnce(new Error("录制写入队列已满，录制已中止"));
+    invokeMock.mockResolvedValueOnce({
+      status: "error",
+      sessionId: 7,
+      revision: 4,
+      formatVersion: 2,
+      path: "capture.vucap.part",
+      dataBytes: 0,
+      recordCount: 0,
+      markerCount: 3,
+    });
+    const onMarkerRejected = vi.fn();
+    const onQueueError = vi.fn();
+
+    expect(
+      enqueueCaptureMarker(7, "red", "异常", onMarkerRejected, onQueueError),
+    ).toBe(true);
+    await expect(flushSimulatorCaptureQueue()).rejects.toThrow("录制写入队列已满");
+
+    expect(onMarkerRejected).not.toHaveBeenCalled();
+    expect(onQueueError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "录制写入队列已满，录制已中止" }),
+    );
   });
 
   it("模拟器队列超过字节上限时明确中止", async () => {

@@ -38,6 +38,7 @@ const cancelCaptureExportMock = vi.fn(async () => true);
 const clearCaptureExportMock = vi.fn(async () => true);
 const startNumericLogMock = vi.fn(async () => true);
 const stopNumericLogMock = vi.fn(async () => true);
+const addCaptureMarkerMock = vi.fn(() => true);
 
 function loadReplay(
   status: ReplayUiStatus,
@@ -54,12 +55,15 @@ function loadReplay(
     replayRevision: 3,
     replayPath: "C:\\captures\\session.vucap",
     replayHeader,
+    replayFormatVersion: 2,
     replayComplete: true,
     replaySpeed: 1,
     replayPositionUs: 1_000_000,
     replayDurationUs: 3_500_000,
     replayDataBytes: 2_048,
     replayRecordCount: 128,
+    replayMarkerCount: 0,
+    replayMarkers: [],
     replayMessage: "",
     playReplay: playReplayMock,
     pauseReplay: pauseReplayMock,
@@ -151,6 +155,7 @@ describe("CapturePanel replay controls", () => {
     clearCaptureExportMock.mockClear();
     startNumericLogMock.mockClear();
     stopNumericLogMock.mockClear();
+    addCaptureMarkerMock.mockClear();
   });
 
   afterEach(() => cleanup());
@@ -162,7 +167,7 @@ describe("CapturePanel replay controls", () => {
 
     expect(screen.getByRole("tab", { name: "回放" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("回放已就绪")).toBeInTheDocument();
-    expect(screen.getByText("FireWater · 1×")).toBeInTheDocument();
+    expect(screen.getByText("FireWater · VUCAP v2 · 1×")).toBeInTheDocument();
     expect(screen.getByText("00:00:01 / 00:00:03")).toBeInTheDocument();
     expect(screen.getByText("2.0 KiB")).toBeInTheDocument();
     expect(screen.getByText("128")).toBeInTheDocument();
@@ -206,6 +211,47 @@ describe("CapturePanel replay controls", () => {
     expect(startNumericLogMock).toHaveBeenCalledOnce();
   });
 
+  it("录制中可选择颜色并添加命名时间线标记", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "simulator",
+      protocol: "firewater",
+      connectionStatus: "connected",
+      workspaceTransitionStatus: "idle",
+      runtimeTransitionStatus: "idle",
+      replayStatus: "idle",
+      replaySessionId: 0,
+      captureStatus: "recording",
+      captureSessionId: 9,
+      captureFormatVersion: 2,
+      capturePath: "C:\\captures\\session.vucap.part",
+      captureStartedAt: Date.now() - 1_000,
+      captureDataBytes: 128,
+      captureRecordCount: 3,
+      captureMarkerCount: 1,
+      addCaptureMarker: addCaptureMarkerMock,
+    });
+
+    render(<CapturePanel />);
+    const input = screen.getByRole("textbox", { name: "标记名称" });
+    await user.type(input, "进入稳态");
+    await user.click(screen.getByRole("radio", { name: "橙色" }));
+    await user.click(screen.getByRole("button", { name: "添加时间线标记" }));
+
+    expect(addCaptureMarkerMock).toHaveBeenCalledWith("进入稳态", "orange");
+    expect(input).toHaveValue("");
+    expect(screen.getByText("VUCAP v2")).toBeInTheDocument();
+
+    const maximumEmojiLabel = "😀".repeat(64);
+    fireEvent.change(input, { target: { value: `${maximumEmojiLabel}extra` } });
+    expect(input).toHaveValue(maximumEmojiLabel);
+
+    act(() => useWorkbenchStore.setState({ captureMarkerCount: 512 }));
+    expect(input).toBeDisabled();
+    expect(screen.getByRole("button", { name: "添加时间线标记" })).toBeDisabled();
+  });
+
   it("Raw 与浏览器预览明确禁用数值文件记录", async () => {
     const user = userEvent.setup();
     loadNumericLog("idle", { protocol: "raw" });
@@ -243,7 +289,7 @@ describe("CapturePanel replay controls", () => {
 
     render(<CapturePanel />);
 
-    expect(screen.getByText("FireWater · 0.5×")).toBeInTheDocument();
+    expect(screen.getByText("FireWater · VUCAP v2 · 0.5×")).toBeInTheDocument();
     const speed = screen.getByRole("combobox", { name: "回放倍速" });
     expect(speed).toBeEnabled();
     expect(speed).toHaveValue("0.5");
@@ -308,6 +354,27 @@ describe("CapturePanel replay controls", () => {
     fireEvent.blur(slider);
     expect(seekReplayMock).toHaveBeenCalledOnce();
     expect(seekReplayMock).toHaveBeenCalledWith(2_100_000);
+  });
+
+  it("暂停时点击标记精确定位，播放中禁用标记定位", async () => {
+    const user = userEvent.setup();
+    loadReplay("paused", {
+      replayMarkerCount: 2,
+      replayMarkers: [
+        { index: 1, timestampUs: 500_000, label: "启动", color: "green" },
+        { index: 2, timestampUs: 2_100_000, label: "进入稳态", color: "orange" },
+      ],
+    });
+
+    render(<CapturePanel />);
+    const markerButton = screen.getByRole("button", { name: /进入稳态/ });
+    expect(markerButton).toBeEnabled();
+    await user.click(markerButton);
+    expect(seekReplayMock).toHaveBeenCalledOnce();
+    expect(seekReplayMock).toHaveBeenCalledWith(2_100_000);
+
+    act(() => useWorkbenchStore.setState({ replayStatus: "playing" }));
+    expect(screen.getByRole("button", { name: /进入稳态/ })).toBeDisabled();
   });
 
   it.each(["firewater", "justfloat"] as const)(

@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
 import { createDefaultWorkspaceConfig, createWorkspaceProfile } from "../core/workspaces";
 import {
+  enqueueCaptureMarker,
   enqueueSimulatorCapture,
+  resetSimulatorCaptureQueue,
   startCapture,
   stopCapture,
 } from "../services/captureClient";
@@ -70,7 +72,9 @@ vi.mock("../services/serialClient", async (importOriginal) => {
 
 vi.mock("../services/captureClient", () => ({
   abortCapture: vi.fn(),
+  enqueueCaptureMarker: vi.fn(() => true),
   enqueueSimulatorCapture: vi.fn(() => true),
+  resetSimulatorCaptureQueue: vi.fn(),
   startCapture: vi.fn(),
   stopCapture: vi.fn(),
 }));
@@ -109,6 +113,8 @@ const disconnectSerialMock = vi.mocked(disconnectSerial);
 const listSerialPortsMock = vi.mocked(listSerialPorts);
 const sendSerialMock = vi.mocked(sendSerial);
 const enqueueSimulatorCaptureMock = vi.mocked(enqueueSimulatorCapture);
+const enqueueCaptureMarkerMock = vi.mocked(enqueueCaptureMarker);
+const resetSimulatorCaptureQueueMock = vi.mocked(resetSimulatorCaptureQueue);
 const startCaptureMock = vi.mocked(startCapture);
 const stopCaptureMock = vi.mocked(stopCapture);
 const abortNumericLogMock = vi.mocked(abortNumericLog);
@@ -183,12 +189,14 @@ function replayState(
     revision: 1,
     path: "C:\\captures\\session.vucap",
     header: TEST_REPLAY_HEADER,
+    formatVersion: 2,
     complete: true,
     speed: 1,
     positionUs: 0,
     durationUs: 50_000,
     dataBytes: 32,
     recordCount: 4,
+    markerCount: 0,
     ...overrides,
   };
 }
@@ -255,6 +263,8 @@ describe("workbenchStore", () => {
     listSerialPortsMock.mockReset();
     sendSerialMock.mockReset().mockResolvedValue(undefined);
     enqueueSimulatorCaptureMock.mockReset().mockReturnValue(true);
+    enqueueCaptureMarkerMock.mockReset().mockReturnValue(true);
+    resetSimulatorCaptureQueueMock.mockReset();
     startCaptureMock.mockReset();
     stopCaptureMock.mockReset();
     abortNumericLogMock.mockReset();
@@ -319,11 +329,13 @@ describe("workbenchStore", () => {
       captureStatus: "idle",
       captureSessionId: 0,
       captureRevision: 0,
+      captureFormatVersion: 2,
       capturePath: "",
       captureStartedAt: undefined,
       captureEndedAt: undefined,
       captureDataBytes: 0,
       captureRecordCount: 0,
+      captureMarkerCount: 0,
       captureMessage: "",
       numericLogStatus: "idle",
       numericLogSessionId: 0,
@@ -361,12 +373,15 @@ describe("workbenchStore", () => {
       replayRevision: 0,
       replayPath: "",
       replayHeader: undefined,
+      replayFormatVersion: 0,
       replayComplete: false,
       replaySpeed: 1,
       replayPositionUs: 0,
       replayDurationUs: 0,
       replayDataBytes: 0,
       replayRecordCount: 0,
+      replayMarkerCount: 0,
+      replayMarkers: [],
       replayNextSequence: 1,
       replayMessage: "",
     });
@@ -821,10 +836,12 @@ describe("workbenchStore", () => {
       status: "idle",
       sessionId: 0,
       revision: 2,
+      formatVersion: 2,
       path: "C:\\captures\\session.vucap",
       endedAtUnixMs: Date.now(),
       dataBytes: 256,
       recordCount: 8,
+      markerCount: 0,
     });
     await vi.advanceTimersByTimeAsync(0);
 
@@ -855,10 +872,12 @@ describe("workbenchStore", () => {
       status: "idle",
       sessionId: 0,
       revision: 2,
+      formatVersion: 2,
       path: "C:\\captures\\blocked-device.vucap",
       endedAtUnixMs: Date.now(),
       dataBytes: 64,
       recordCount: 2,
+      markerCount: 0,
     });
     useWorkbenchStore.setState({
       isNativeRuntime: true,
@@ -1728,10 +1747,12 @@ describe("workbenchStore", () => {
       status: "recording",
       sessionId: 7,
       revision: 3,
+      formatVersion: 2,
       path: "C:\\captures\\session.vucap",
       startedAtUnixMs: 1_000,
       dataBytes: 0,
       recordCount: 0,
+      markerCount: 0,
     });
     useWorkbenchStore.setState({
       isNativeRuntime: true,
@@ -1776,10 +1797,12 @@ describe("workbenchStore", () => {
       status: "recording",
       sessionId: 7,
       revision: 3,
+      formatVersion: 2,
       path: "C:\\captures\\session.vucap",
       startedAtUnixMs: 1_000,
       dataBytes: 0,
       recordCount: 0,
+      markerCount: 0,
     });
     useWorkbenchStore.setState({
       isNativeRuntime: true,
@@ -1863,6 +1886,37 @@ describe("workbenchStore", () => {
     });
   });
 
+  it("录制中把命名标记加入当前会话的有界 FIFO", () => {
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      captureStatus: "recording",
+      captureSessionId: 4,
+      runtimeTransitionStatus: "idle",
+    });
+
+    expect(useWorkbenchStore.getState().addCaptureMarker(" 进入稳态 ", "orange")).toBe(
+      true,
+    );
+    expect(enqueueCaptureMarkerMock).toHaveBeenCalledWith(
+      4,
+      "orange",
+      "进入稳态",
+      expect.any(Function),
+      expect.any(Function),
+    );
+
+    const rejectMarker = enqueueCaptureMarkerMock.mock.calls[0]?.[3];
+    rejectMarker?.(new Error("单次捕获最多添加 512 个标记"));
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureStatus: "recording",
+      captureMessage: "单次捕获最多添加 512 个标记",
+    });
+
+    useWorkbenchStore.setState({ captureMarkerCount: 512 });
+    expect(useWorkbenchStore.getState().addCaptureMarker("上限外", "red")).toBe(false);
+    expect(enqueueCaptureMarkerMock).toHaveBeenCalledOnce();
+  });
+
   it("波形暂停时仍记录基础与派生数值样本", () => {
     useWorkbenchStore.getState().setProtocol("firewater");
     useWorkbenchStore.getState().setProcessingGraph({
@@ -1933,10 +1987,12 @@ describe("workbenchStore", () => {
       status: "idle",
       sessionId: 9,
       revision: 6,
+      formatVersion: 2,
       path: "C:\\captures\\complete.vucap",
       endedAtUnixMs: 2_000,
       dataBytes: 128,
       recordCount: 4,
+      markerCount: 1,
     });
     stopNumericLogMock.mockResolvedValue(
       numericLogState("idle", {
@@ -2021,6 +2077,61 @@ describe("workbenchStore", () => {
     });
   });
 
+  it("捕获收尾时忽略同一会话的迟到录制状态", async () => {
+    const stopping = deferred<CaptureStatePayload>();
+    stopCaptureMock.mockReturnValue(stopping.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      captureStatus: "recording",
+      captureSessionId: 9,
+      captureRevision: 3,
+      captureMessage: "",
+    });
+
+    const stopPromise = useWorkbenchStore.getState().stopCapture();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureStatus: "stopping",
+      captureMessage: "正在完成捕获文件",
+    });
+
+    useWorkbenchStore.getState().handleCaptureState({
+      status: "recording",
+      sessionId: 9,
+      revision: 4,
+      formatVersion: 2,
+      path: "C:\\captures\\session.vucap.part",
+      dataBytes: 256,
+      recordCount: 6,
+      markerCount: 2,
+      message: "录制中",
+    });
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureStatus: "stopping",
+      captureRevision: 4,
+      captureDataBytes: 256,
+      captureMarkerCount: 2,
+      captureMessage: "正在完成捕获文件",
+    });
+
+    stopping.resolve({
+      status: "idle",
+      sessionId: 9,
+      revision: 5,
+      formatVersion: 2,
+      path: "C:\\captures\\session.vucap",
+      dataBytes: 320,
+      recordCount: 8,
+      markerCount: 2,
+    });
+    await expect(stopPromise).resolves.toBe(true);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureStatus: "idle",
+      captureRevision: 5,
+      captureMarkerCount: 2,
+    });
+    expect(resetSimulatorCaptureQueueMock).toHaveBeenCalled();
+  });
+
   it("工作区切换先完成录制并忽略迟到状态", async () => {
     const target = createWorkspaceProfile(
       "目标工作区",
@@ -2032,11 +2143,13 @@ describe("workbenchStore", () => {
       status: "idle",
       sessionId: 9,
       revision: 6,
+      formatVersion: 2,
       path: "C:\\captures\\complete.vucap",
       startedAtUnixMs: 1_000,
       endedAtUnixMs: 2_000,
       dataBytes: 128,
       recordCount: 4,
+      markerCount: 1,
       message: "捕获文件已完成",
     });
     useWorkbenchStore.setState((state) => ({
@@ -2061,9 +2174,11 @@ describe("workbenchStore", () => {
       status: "recording",
       sessionId: 9,
       revision: 5,
+      formatVersion: 2,
       path: "late.vucap",
       dataBytes: 64,
       recordCount: 2,
+      markerCount: 0,
     });
     expect(useWorkbenchStore.getState()).toMatchObject({
       captureStatus: "idle",
@@ -2077,10 +2192,12 @@ describe("workbenchStore", () => {
       status: "stopping",
       sessionId: 11,
       revision: 8,
+      formatVersion: 2,
       path: "C:\\captures\\pending.vucap",
       startedAtUnixMs: 1_000,
       dataBytes: 64,
       recordCount: 2,
+      markerCount: 0,
       message: "正在完成捕获文件",
     });
     useWorkbenchStore.setState({
@@ -2476,6 +2593,116 @@ describe("workbenchStore", () => {
       stats: { rxBytes: 0, txBytes: 0, rxFrames: 0 },
     });
     expect(ackReplayBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("回放标记只接受当前非空闲会话", () => {
+    const markers = [
+      { index: 1, timestampUs: 12_000, label: "峰值", color: "red" as const },
+    ];
+    useWorkbenchStore.setState({
+      replayStatus: "ready",
+      replaySessionId: 7,
+      replayMarkers: markers,
+    });
+
+    useWorkbenchStore.getState().handleReplayMarkers({
+      sessionId: 6,
+      markers: [{ index: 1, timestampUs: 8_000, label: "旧会话", color: "gray" }],
+    });
+    expect(useWorkbenchStore.getState().replayMarkers).toEqual(markers);
+
+    useWorkbenchStore.getState().handleReplayMarkers({
+      sessionId: 7,
+      markers: [{ index: 1, timestampUs: 15_000, label: "稳定", color: "green" }],
+    });
+    expect(useWorkbenchStore.getState().replayMarkers).toMatchObject([
+      { timestampUs: 15_000, label: "稳定", color: "green" },
+    ]);
+
+    useWorkbenchStore.setState({ replayStatus: "idle" });
+    useWorkbenchStore.getState().handleReplayMarkers({ sessionId: 7, markers: [] });
+    expect(useWorkbenchStore.getState().replayMarkers).toHaveLength(1);
+  });
+
+  it("定位和停止保留标记，换文件与关闭时清空", async () => {
+    const rawHeader: ReplayCaptureHeader = { ...TEST_REPLAY_HEADER, protocol: "raw" };
+    const markers = [
+      { index: 1, timestampUs: 12_000, label: "观察点", color: "blue" as const },
+    ];
+    seekReplayMock.mockResolvedValue(
+      replayState("seeking", {
+        header: rawHeader,
+        generation: 4,
+        revision: 5,
+        positionUs: 30_000,
+        markerCount: 1,
+      }),
+    );
+    stopReplayMock.mockResolvedValue(
+      replayState("ready", {
+        header: rawHeader,
+        generation: 5,
+        timelineRevision: 2,
+        revision: 7,
+        markerCount: 1,
+      }),
+    );
+    useWorkbenchStore.setState({
+      replayStatus: "paused",
+      replaySessionId: 7,
+      replayGeneration: 3,
+      replayTimelineRevision: 0,
+      replayRevision: 4,
+      replayHeader: rawHeader,
+      replayDurationUs: 50_000,
+      replayMarkers: markers,
+    });
+
+    await expect(useWorkbenchStore.getState().seekReplay(30_000)).resolves.toBe(true);
+    expect(useWorkbenchStore.getState().replayMarkers).toEqual(markers);
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("playing", {
+        header: rawHeader,
+        generation: 4,
+        timelineRevision: 1,
+        revision: 6,
+        positionUs: 30_000,
+        markerCount: 1,
+      }),
+    );
+    await expect(useWorkbenchStore.getState().stopReplay()).resolves.toBe(true);
+    expect(useWorkbenchStore.getState().replayMarkers).toEqual(markers);
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("loading", {
+        sessionId: 8,
+        revision: 8,
+        path: "C:\\captures\\next.vucap",
+        markerCount: 0,
+      }),
+    );
+    expect(useWorkbenchStore.getState().replayMarkers).toEqual([]);
+
+    useWorkbenchStore.getState().handleReplayMarkers({
+      sessionId: 8,
+      markers: [{ index: 1, timestampUs: 1_000, label: "新文件", color: "purple" }],
+    });
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("idle", {
+        sessionId: 8,
+        revision: 9,
+        path: "",
+        header: undefined,
+        formatVersion: 0,
+        complete: false,
+        durationUs: 0,
+        dataBytes: 0,
+        recordCount: 0,
+        markerCount: 0,
+      }),
+    );
+    expect(useWorkbenchStore.getState().replayMarkers).toEqual([]);
   });
 
   it("暂停保留画面而停止回放会清空旧时间线并回到文件起点", async () => {

@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type {
   ReplayBatchPayload,
   ReplayEventHandlers,
+  ReplayMarkersPayload,
   ReplaySpeed,
   ReplayStatePayload,
 } from "../types/replay";
@@ -85,6 +86,11 @@ export async function getReplayState(): Promise<ReplayStatePayload> {
   return invoke<ReplayStatePayload>("get_replay_state");
 }
 
+export async function getReplayMarkers(sessionId: number): Promise<ReplayMarkersPayload> {
+  requireTauriRuntime();
+  return invoke<ReplayMarkersPayload>("get_replay_markers", { sessionId });
+}
+
 export async function subscribeToReplayEvents(
   handlers: ReplayEventHandlers,
 ): Promise<UnlistenFn> {
@@ -95,6 +101,9 @@ export async function subscribeToReplayEvents(
   const unlisten = await Promise.all([
     listen<ReplayStatePayload>("replay://state", ({ payload }) => handlers.onState(payload)),
     listen<ReplayBatchPayload>("replay://batch", ({ payload }) => handlers.onBatch(payload)),
+    listen<ReplayMarkersPayload>("replay://markers", ({ payload }) =>
+      handlers.onMarkers(payload),
+    ),
   ]);
   return () => unlisten.forEach((dispose) => dispose());
 }

@@ -5,8 +5,8 @@ mod replay;
 mod serial;
 
 use capture::{
-    abort_capture, append_simulator_capture, get_capture_state, start_capture, stop_capture,
-    CaptureState,
+    abort_capture, append_capture_marker, append_simulator_capture, get_capture_state,
+    start_capture, stop_capture, CaptureState,
 };
 use capture_export::{
     cancel_capture_export, clear_capture_export, get_capture_export_state, start_capture_export,
@@ -17,8 +17,8 @@ use numeric_log::{
     stop_numeric_log, NumericLogState,
 };
 use replay::{
-    ack_replay_batch, close_replay, get_replay_state, open_replay, pause_replay, play_replay,
-    seek_replay, set_replay_speed, stop_replay, ReplayState,
+    ack_replay_batch, close_replay, get_replay_markers, get_replay_state, open_replay,
+    pause_replay, play_replay, seek_replay, set_replay_speed, stop_replay, ReplayState,
 };
 use serial::{
     cancel_serial_connect, connect_serial, disconnect_serial, get_serial_state, list_serial_ports,
@@ -46,6 +46,7 @@ pub fn run() {
             stop_capture,
             abort_capture,
             append_simulator_capture,
+            append_capture_marker,
             get_capture_export_state,
             start_capture_export,
             cancel_capture_export,
@@ -56,6 +57,7 @@ pub fn run() {
             stop_numeric_log,
             abort_numeric_log,
             get_replay_state,
+            get_replay_markers,
             open_replay,
             play_replay,
             pause_replay,

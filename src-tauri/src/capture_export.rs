@@ -14,8 +14,8 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::capture::{
-    CaptureDirection, CaptureHeader, CaptureItem, CaptureReadError, CaptureReader, CaptureRecord,
-    CaptureRecordStats, CaptureState,
+    CaptureDirection, CaptureHeader, CaptureItem, CaptureMarker, CaptureReadError, CaptureReader,
+    CaptureRecord, CaptureRecordStats, CaptureState,
 };
 
 const MAX_PATH_CHARS: usize = 4096;
@@ -398,6 +398,7 @@ struct PreparedExport {
     direction: ExportDirection,
     allow_incomplete: bool,
     header: CaptureHeader,
+    format_version: u16,
     reader: InputReader,
     input_count: Arc<AtomicU64>,
     writer: Option<OutputWriter>,
@@ -713,6 +714,7 @@ fn prepare_export(request: CaptureExportRequest, job_id: u64) -> Result<Prepared
     let input_count = Arc::new(AtomicU64::new(0));
     let counting_reader = CountingReader::new(BufReader::new(file), Arc::clone(&input_count));
     let reader = CaptureReader::new(counting_reader).map_err(|error| error.to_string())?;
+    let format_version = reader.version();
     let header = reader.header().clone();
     let (temp_file, temp_path) = create_temp_file(&destination_path, job_id)?;
     let writer = CountingWriter::new(BufWriter::new(temp_file));
@@ -725,6 +727,7 @@ fn prepare_export(request: CaptureExportRequest, job_id: u64) -> Result<Prepared
         direction,
         allow_incomplete: request.allow_incomplete,
         header,
+        format_version,
         reader,
         input_count,
         writer: Some(writer),
@@ -844,7 +847,12 @@ fn run_export_worker(
     );
 
     let writer = prepared.writer.take().expect("导出 writer 只会取出一次");
-    let mut sink = match ExportSink::new(prepared.format, writer, &prepared.header) {
+    let mut sink = match ExportSink::new(
+        prepared.format,
+        writer,
+        &prepared.header,
+        prepared.format_version,
+    ) {
         Ok(sink) => sink,
         Err(message) => {
             let outcome = cleanup_failed_output(
@@ -924,6 +932,7 @@ struct ProcessResult {
     source_complete: bool,
     warning: Option<String>,
     duration_us: u64,
+    marker_count: u64,
 }
 
 enum ProcessFailure {
@@ -987,6 +996,25 @@ where
                 }
                 on_progress(&progress);
             }
+            Some(Ok(CaptureItem::Marker(marker))) => {
+                if control.is_cancelled() {
+                    progress.processed_input_bytes = input_position();
+                    return Err(ProcessFailure::Cancelled { progress });
+                }
+                if let Err(message) = stats.observe_marker(&marker) {
+                    progress.processed_input_bytes = input_position();
+                    return Err(ProcessFailure::Failed { progress, message });
+                }
+                if let Err(error) = sink.write_marker(header, stats.marker_count(), &marker) {
+                    return Err(ProcessFailure::Failed {
+                        progress,
+                        message: format!("写入导出标记失败: {error}"),
+                    });
+                }
+                progress.processed_input_bytes = input_position();
+                progress.output_bytes = sink.output_bytes();
+                on_progress(&progress);
+            }
             Some(Ok(CaptureItem::Footer(_))) => {
                 progress.processed_input_bytes = input_position();
                 break (true, None);
@@ -1038,6 +1066,8 @@ where
     if let Err(error) = sink.write_summary(
         source_complete,
         stats.duration_us(),
+        reader.version(),
+        stats.marker_count(),
         &progress,
         warning.as_deref(),
     ) {
@@ -1052,6 +1082,7 @@ where
         source_complete,
         warning,
         duration_us: stats.duration_us(),
+        marker_count: stats.marker_count(),
     })
 }
 
@@ -1128,6 +1159,17 @@ fn finalize_export(
         "导出完成：{} 条记录，{} 字节数据，时长 {} 微秒",
         result.progress.exported_records, result.progress.exported_data_bytes, result.duration_us
     );
+    if result.marker_count > 0 {
+        match prepared.format {
+            ExportFormat::Jsonl => {
+                message.push_str(&format!("；保留 {} 个时间线标记", result.marker_count))
+            }
+            ExportFormat::Csv | ExportFormat::Binary => message.push_str(&format!(
+                "；未包含 {} 个时间线标记（仅导出原始数据记录）",
+                result.marker_count
+            )),
+        }
+    }
     if let Some(warning) = result.warning {
         message.push_str(&format!("；{warning}"));
     }
@@ -1308,6 +1350,7 @@ impl ExportSink {
         format: ExportFormat,
         mut writer: OutputWriter,
         header: &CaptureHeader,
+        format_version: u16,
     ) -> Result<Self, String> {
         match format {
             ExportFormat::Csv => {
@@ -1326,7 +1369,7 @@ impl ExportSink {
                 let metadata = json!({
                     "type": "metadata",
                     "schema": "vofa-ultra.capture-export",
-                    "version": 1,
+                    "version": format_version,
                     "payloadEncoding": "base64",
                     "capture": header,
                 });
@@ -1362,24 +1405,60 @@ impl ExportSink {
         }
     }
 
+    fn write_marker(
+        &mut self,
+        header: &CaptureHeader,
+        marker_index: u64,
+        marker: &CaptureMarker,
+    ) -> io::Result<()> {
+        if let Self::Jsonl(writer) = self {
+            let payload = json!({
+                "type": "marker",
+                "markerIndex": marker_index,
+                "timestampUs": marker.timestamp_us,
+                "unixTimeUs": absolute_unix_micros(header, marker.timestamp_us),
+                "color": marker.color,
+                "label": marker.label,
+            });
+            write_json_line(writer, &payload)?;
+        }
+        Ok(())
+    }
+
     fn write_summary(
         &mut self,
         source_complete: bool,
         duration_us: u64,
+        format_version: u16,
+        marker_count: u64,
         progress: &ExportProgress,
         warning: Option<&str>,
     ) -> io::Result<()> {
         if let Self::Jsonl(writer) = self {
-            let summary = json!({
-                "type": "summary",
-                "sourceComplete": source_complete,
-                "durationUs": duration_us,
-                "processedRecords": progress.processed_records,
-                "processedDataBytes": progress.processed_data_bytes,
-                "exportedRecords": progress.exported_records,
-                "exportedDataBytes": progress.exported_data_bytes,
-                "warning": warning,
-            });
+            let summary = if format_version >= 2 {
+                json!({
+                    "type": "summary",
+                    "sourceComplete": source_complete,
+                    "durationUs": duration_us,
+                    "processedRecords": progress.processed_records,
+                    "processedMarkers": marker_count,
+                    "processedDataBytes": progress.processed_data_bytes,
+                    "exportedRecords": progress.exported_records,
+                    "exportedDataBytes": progress.exported_data_bytes,
+                    "warning": warning,
+                })
+            } else {
+                json!({
+                    "type": "summary",
+                    "sourceComplete": source_complete,
+                    "durationUs": duration_us,
+                    "processedRecords": progress.processed_records,
+                    "processedDataBytes": progress.processed_data_bytes,
+                    "exportedRecords": progress.exported_records,
+                    "exportedDataBytes": progress.exported_data_bytes,
+                    "warning": warning,
+                })
+            };
             write_json_line(writer, &summary)?;
         }
         Ok(())
@@ -1596,7 +1675,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::capture::{CAPTURE_MAGIC, CAPTURE_VERSION};
+    use crate::capture::{CaptureMarkerColor, CAPTURE_MAGIC, CAPTURE_VERSION};
     use crate::serial::SerialConfig;
 
     struct TestDirectory {
@@ -1651,7 +1730,7 @@ mod tests {
         let header_bytes = serde_json::to_vec(&sample_header()).unwrap();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&CAPTURE_MAGIC);
-        bytes.extend_from_slice(&CAPTURE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
         bytes.extend_from_slice(&0_u16.to_le_bytes());
         bytes.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&header_bytes);
@@ -1678,6 +1757,59 @@ mod tests {
         bytes
     }
 
+    enum TestCaptureItem<'a> {
+        Record(CaptureDirection, u64, &'a [u8]),
+        Marker(CaptureMarkerColor, u64, &'a str),
+    }
+
+    fn v2_capture_bytes(items: &[TestCaptureItem<'_>], complete: bool) -> Vec<u8> {
+        let header_bytes = serde_json::to_vec(&sample_header()).unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&CAPTURE_MAGIC);
+        bytes.extend_from_slice(&CAPTURE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&header_bytes);
+
+        let mut data_bytes = 0_u64;
+        let mut record_count = 0_u64;
+        let mut marker_count = 0_u64;
+        for item in items {
+            match item {
+                TestCaptureItem::Record(direction, timestamp_us, payload) => {
+                    bytes.push(0x01);
+                    bytes.push(match direction {
+                        CaptureDirection::Rx => 0,
+                        CaptureDirection::Tx => 1,
+                    });
+                    bytes.extend_from_slice(&0_u16.to_le_bytes());
+                    bytes.extend_from_slice(&timestamp_us.to_le_bytes());
+                    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(payload);
+                    data_bytes = data_bytes.saturating_add(payload.len() as u64);
+                    record_count = record_count.saturating_add(1);
+                }
+                TestCaptureItem::Marker(color, timestamp_us, label) => {
+                    bytes.push(0x02);
+                    bytes.push(*color as u8);
+                    bytes.extend_from_slice(&0_u16.to_le_bytes());
+                    bytes.extend_from_slice(&timestamp_us.to_le_bytes());
+                    bytes.extend_from_slice(&(label.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(label.as_bytes());
+                    marker_count = marker_count.saturating_add(1);
+                }
+            }
+        }
+        if complete {
+            bytes.push(0xff);
+            bytes.extend_from_slice(&[0_u8; 7]);
+            bytes.extend_from_slice(&data_bytes.to_le_bytes());
+            bytes.extend_from_slice(&record_count.to_le_bytes());
+            bytes.extend_from_slice(&marker_count.to_le_bytes());
+        }
+        bytes
+    }
+
     fn process_to_file(
         directory: &TestDirectory,
         name: &str,
@@ -1689,11 +1821,12 @@ mod tests {
     ) -> (Result<ProcessResult, ProcessFailure>, PathBuf) {
         let input_size = bytes.len() as u64;
         let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
+        let format_version = reader.version();
         let header = reader.header().clone();
         let path = directory.join(name);
         let file = File::create(&path).unwrap();
         let writer = CountingWriter::new(BufWriter::new(file));
-        let mut sink = ExportSink::new(format, writer, &header).unwrap();
+        let mut sink = ExportSink::new(format, writer, &header, format_version).unwrap();
         let result = process_capture(
             &mut reader,
             &header,
@@ -1785,6 +1918,198 @@ mod tests {
         assert_eq!(lines[3]["processedRecords"], 3);
         assert_eq!(lines[3]["exportedRecords"], 2);
         assert_eq!(lines[3]["sourceComplete"], true);
+    }
+
+    #[test]
+    fn v2_jsonl_preserves_record_marker_order() {
+        let directory = TestDirectory::new("v2-jsonl-order");
+        let bytes = v2_capture_bytes(
+            &[
+                TestCaptureItem::Record(CaptureDirection::Rx, 10, &[1, 2]),
+                TestCaptureItem::Marker(CaptureMarkerColor::Blue, 15, "峰值"),
+                TestCaptureItem::Record(CaptureDirection::Tx, 20, &[3]),
+            ],
+            true,
+        );
+        let control = ExportControl::new();
+        let (result, path) = process_to_file(
+            &directory,
+            "capture.jsonl",
+            bytes,
+            ExportFormat::Jsonl,
+            ExportDirection::Both,
+            false,
+            &control,
+        );
+
+        let result = result.unwrap_or_else(|_| panic!("v2 JSONL 导出不应失败"));
+        assert_eq!(result.marker_count, 1);
+        let lines = fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["metadata", "record", "marker", "record", "summary"]
+        );
+        assert_eq!(lines[0]["version"], CAPTURE_VERSION);
+        assert_eq!(lines[1]["recordIndex"], 1);
+        assert_eq!(lines[2]["markerIndex"], 1);
+        assert_eq!(lines[2]["timestampUs"], 15);
+        assert_eq!(lines[2]["color"], "blue");
+        assert_eq!(lines[2]["label"], "峰值");
+        assert_eq!(lines[3]["recordIndex"], 2);
+        assert_eq!(lines[4]["processedMarkers"], 1);
+    }
+
+    #[test]
+    fn v2_direction_filter_keeps_markers() {
+        let directory = TestDirectory::new("v2-jsonl-filter");
+        let bytes = v2_capture_bytes(
+            &[
+                TestCaptureItem::Record(CaptureDirection::Tx, 5, &[0xaa]),
+                TestCaptureItem::Marker(CaptureMarkerColor::Yellow, 6, "TX 后"),
+                TestCaptureItem::Record(CaptureDirection::Rx, 7, &[0xbb]),
+            ],
+            true,
+        );
+        let control = ExportControl::new();
+        let (result, path) = process_to_file(
+            &directory,
+            "capture.jsonl",
+            bytes,
+            ExportFormat::Jsonl,
+            ExportDirection::Rx,
+            false,
+            &control,
+        );
+
+        let result = result.unwrap_or_else(|_| panic!("方向过滤不应影响标记导出"));
+        assert_eq!(result.progress.processed_records, 2);
+        assert_eq!(result.progress.exported_records, 1);
+        assert_eq!(result.marker_count, 1);
+        let lines = fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["metadata", "marker", "record", "summary"]
+        );
+        assert_eq!(lines[1]["label"], "TX 后");
+        assert_eq!(lines[2]["direction"], "rx");
+    }
+
+    #[test]
+    fn v2_csv_and_binary_skip_markers_without_changing_record_output() {
+        let bytes = v2_capture_bytes(
+            &[
+                TestCaptureItem::Record(CaptureDirection::Rx, 10, &[1, 2]),
+                TestCaptureItem::Marker(CaptureMarkerColor::Red, 12, "异常"),
+                TestCaptureItem::Record(CaptureDirection::Tx, 15, &[3, 4]),
+                TestCaptureItem::Marker(CaptureMarkerColor::Green, 18, "恢复"),
+            ],
+            true,
+        );
+
+        let csv_directory = TestDirectory::new("v2-csv");
+        let csv_control = ExportControl::new();
+        let (csv_result, csv_path) = process_to_file(
+            &csv_directory,
+            "capture.csv",
+            bytes.clone(),
+            ExportFormat::Csv,
+            ExportDirection::Both,
+            false,
+            &csv_control,
+        );
+        let csv_result = csv_result.unwrap_or_else(|_| panic!("v2 CSV 导出不应失败"));
+        assert_eq!(csv_result.marker_count, 2);
+        assert_eq!(
+            fs::read_to_string(csv_path).unwrap(),
+            concat!(
+                "record_index,timestamp_us,unix_time_us,direction,payload_length,payload_hex\r\n",
+                "1,10,1700000000000010,rx,2,0102\r\n",
+                "2,15,1700000000000015,tx,2,0304\r\n"
+            )
+        );
+
+        let binary_directory = TestDirectory::new("v2-binary");
+        let binary_control = ExportControl::new();
+        let (binary_result, binary_path) = process_to_file(
+            &binary_directory,
+            "capture.bin",
+            bytes,
+            ExportFormat::Binary,
+            ExportDirection::Tx,
+            false,
+            &binary_control,
+        );
+        let binary_result = binary_result.unwrap_or_else(|_| panic!("v2 BIN 导出不应失败"));
+        assert_eq!(binary_result.marker_count, 2);
+        assert_eq!(binary_result.progress.exported_records, 1);
+        assert_eq!(fs::read(binary_path).unwrap(), vec![3, 4]);
+    }
+
+    #[test]
+    fn incomplete_v2_exports_only_complete_marker_prefix() {
+        let directory = TestDirectory::new("v2-incomplete-marker");
+        let mut bytes = v2_capture_bytes(
+            &[
+                TestCaptureItem::Record(CaptureDirection::Rx, 1, &[0xaa]),
+                TestCaptureItem::Marker(CaptureMarkerColor::Purple, 2, "完整"),
+            ],
+            false,
+        );
+        bytes.push(0x02);
+        bytes.push(CaptureMarkerColor::Orange as u8);
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&3_u64.to_le_bytes());
+        bytes.extend_from_slice(&6_u32.to_le_bytes());
+        bytes.extend_from_slice("截".as_bytes());
+
+        let control = ExportControl::new();
+        let (result, path) = process_to_file(
+            &directory,
+            "capture.jsonl",
+            bytes,
+            ExportFormat::Jsonl,
+            ExportDirection::Both,
+            true,
+            &control,
+        );
+
+        let result = result.unwrap_or_else(|_| panic!("允许有效前缀时应忽略截断标记"));
+        assert!(!result.source_complete);
+        assert_eq!(result.marker_count, 1);
+        assert!(result
+            .warning
+            .as_deref()
+            .unwrap_or_default()
+            .contains("不完整"));
+        let lines = fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["metadata", "record", "marker", "summary"]
+        );
+        assert_eq!(lines[2]["label"], "完整");
+        assert_eq!(lines[3]["sourceComplete"], false);
+        assert_eq!(lines[3]["processedMarkers"], 1);
     }
 
     #[test]

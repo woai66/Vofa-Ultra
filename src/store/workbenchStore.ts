@@ -50,7 +50,9 @@ import {
 } from "../core/workspaces";
 import {
   abortCapture as abortCaptureClient,
+  enqueueCaptureMarker,
   enqueueSimulatorCapture,
+  resetSimulatorCaptureQueue,
   startCapture as startCaptureClient,
   stopCapture as stopCaptureClient,
 } from "../services/captureClient";
@@ -87,7 +89,12 @@ import {
   setReplaySpeed as setReplaySpeedClient,
   stopReplay as stopReplayClient,
 } from "../services/replayClient";
-import type { CaptureStatePayload, CaptureUiStatus } from "../types/capture";
+import {
+  MAX_CAPTURE_MARKERS,
+  type CaptureMarkerColor,
+  type CaptureStatePayload,
+  type CaptureUiStatus,
+} from "../types/capture";
 import type {
   CaptureExportDirection,
   CaptureExportFormat,
@@ -97,6 +104,8 @@ import type {
 import type {
   ReplayBatchPayload,
   ReplayCaptureHeader,
+  ReplayMarkersPayload,
+  ReplayMarkerPayload,
   ReplaySpeed,
   ReplayStatePayload,
   ReplayUiStatus,
@@ -256,11 +265,13 @@ export interface WorkbenchStore {
   captureStatus: CaptureUiStatus;
   captureSessionId: number;
   captureRevision: number;
+  captureFormatVersion: number;
   capturePath: string;
   captureStartedAt?: number;
   captureEndedAt?: number;
   captureDataBytes: number;
   captureRecordCount: number;
+  captureMarkerCount: number;
   captureMessage: string;
   numericLogStatus: NumericLogUiStatus;
   numericLogSessionId: number;
@@ -298,12 +309,15 @@ export interface WorkbenchStore {
   replayRevision: number;
   replayPath: string;
   replayHeader?: ReplayCaptureHeader;
+  replayFormatVersion: number;
   replayComplete: boolean;
   replaySpeed: ReplaySpeed;
   replayPositionUs: number;
   replayDurationUs: number;
   replayDataBytes: number;
   replayRecordCount: number;
+  replayMarkerCount: number;
+  replayMarkers: ReplayMarkerPayload[];
   replayNextSequence: number;
   replayMessage: string;
   setRuntimeAvailability(nativeRuntime: boolean): void;
@@ -346,6 +360,7 @@ export interface WorkbenchStore {
   resetStats(): void;
   startCapture(): Promise<boolean>;
   stopCapture(): Promise<boolean>;
+  addCaptureMarker(label: string, color: CaptureMarkerColor): boolean;
   handleCaptureState(payload: CaptureStatePayload): void;
   startNumericLog(): Promise<boolean>;
   stopNumericLog(): Promise<boolean>;
@@ -369,6 +384,7 @@ export interface WorkbenchStore {
   closeReplay(): Promise<boolean>;
   handleReplayState(payload: ReplayStatePayload): void;
   handleReplayBatch(payload: ReplayBatchPayload): void;
+  handleReplayMarkers(payload: ReplayMarkersPayload): void;
   saveActiveWorkspace(name: string): void;
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
@@ -434,9 +450,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       captureStatus: "idle",
       captureSessionId: 0,
       captureRevision: 0,
+      captureFormatVersion: 2,
       capturePath: "",
       captureDataBytes: 0,
       captureRecordCount: 0,
+      captureMarkerCount: 0,
       captureMessage: "",
       numericLogStatus: "idle",
       numericLogSessionId: 0,
@@ -469,12 +487,15 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       replayTimelineRevision: 0,
       replayRevision: 0,
       replayPath: "",
+      replayFormatVersion: 0,
       replayComplete: false,
       replaySpeed: 1,
       replayPositionUs: 0,
       replayDurationUs: 0,
       replayDataBytes: 0,
       replayRecordCount: 0,
+      replayMarkerCount: 0,
+      replayMarkers: [],
       replayNextSequence: 1,
       replayMessage: "",
 
@@ -1113,20 +1134,58 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           endRuntimeTransition(get, set, "stopping-capture");
         }
       },
+      addCaptureMarker: (label, color) => {
+        const state = get();
+        if (
+          !state.isNativeRuntime ||
+          state.captureStatus !== "recording" ||
+          state.runtimeTransitionStatus !== "idle"
+        ) {
+          return false;
+        }
+        const normalizedLabel = label.trim();
+        if (!normalizedLabel) {
+          return false;
+        }
+        if (state.captureMarkerCount >= MAX_CAPTURE_MARKERS) {
+          set({ captureMessage: `单次捕获最多添加 ${MAX_CAPTURE_MARKERS} 个标记` });
+          return false;
+        }
+        return enqueueCaptureMarker(
+          state.captureSessionId,
+          color,
+          normalizedLabel,
+          handleCaptureMarkerError,
+          handleCaptureQueueError,
+        );
+      },
       handleCaptureState: (payload) => {
-        if (payload.revision < get().captureRevision) {
+        const state = get();
+        if (payload.revision < state.captureRevision) {
           return;
         }
+        const preserveLocalStatus =
+          payload.sessionId === state.captureSessionId &&
+          ((state.captureStatus === "stopping" && payload.status === "recording") ||
+            (state.captureStatus === "error" &&
+              (payload.status === "recording" || payload.status === "stopping")));
+        if (payload.status === "idle" || payload.status === "error") {
+          resetSimulatorCaptureQueue();
+        }
         set({
-          captureStatus: payload.status,
+          captureStatus: preserveLocalStatus ? state.captureStatus : payload.status,
           captureSessionId: payload.sessionId,
           captureRevision: payload.revision,
+          captureFormatVersion: payload.formatVersion,
           capturePath: payload.path,
           captureStartedAt: payload.startedAtUnixMs,
           captureEndedAt: payload.endedAtUnixMs,
           captureDataBytes: payload.dataBytes,
           captureRecordCount: payload.recordCount,
-          captureMessage: payload.message ?? "",
+          captureMarkerCount: payload.markerCount,
+          captureMessage: preserveLocalStatus
+            ? state.captureMessage
+            : (payload.message ?? ""),
         });
       },
       startNumericLog: async () => {
@@ -1762,6 +1821,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           replayRevision: payload.revision,
           replayPath: payload.path,
           replayHeader: payload.header,
+          replayFormatVersion: payload.formatVersion,
           replayComplete: payload.complete,
           replaySpeed: payload.speed,
           replayPositionUs: keepLatestRunPosition
@@ -1770,6 +1830,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           replayDurationUs: payload.durationUs,
           replayDataBytes: payload.dataBytes,
           replayRecordCount: payload.recordCount,
+          replayMarkerCount: payload.markerCount,
+          replayMarkers:
+            replaySessionChanged || payload.status === "idle" ? [] : latest.replayMarkers,
           replayNextSequence: timelineChanged ? 1 : state.replayNextSequence,
           replayMessage: payload.message ?? "",
           statusMessage: replayStatusMessage(payload),
@@ -1822,6 +1885,16 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             }
           });
         }
+      },
+      handleReplayMarkers: (payload) => {
+        const state = get();
+        if (
+          payload.sessionId !== state.replaySessionId ||
+          state.replayStatus === "idle"
+        ) {
+          return;
+        }
+        set({ replayMarkers: payload.markers });
       },
       saveActiveWorkspace: (name) => {
         const state = get();
@@ -2534,6 +2607,17 @@ function handleCaptureQueueError(error: Error): void {
     .catch((abortError) => {
       useWorkbenchStore.setState({ captureMessage: getErrorMessage(abortError) });
     });
+}
+
+function handleCaptureMarkerError(error: Error): void {
+  const state = useWorkbenchStore.getState();
+  if (state.captureStatus !== "recording") {
+    return;
+  }
+  useWorkbenchStore.setState({
+    captureMessage: error.message,
+    statusMessage: error.message,
+  });
 }
 
 function handleNumericLogQueueError(error: Error): void {

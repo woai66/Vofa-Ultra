@@ -13,15 +13,22 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::serial::SerialConfig;
 
 pub const CAPTURE_MAGIC: [u8; 8] = *b"VUCAP\0\r\n";
-pub const CAPTURE_VERSION: u16 = 1;
+pub const CAPTURE_VERSION: u16 = 2;
 pub const MAX_CAPTURE_HEADER_BYTES: usize = 64 * 1024;
 pub const MAX_CAPTURE_RECORD_BYTES: usize = 64 * 1024;
+pub const MAX_CAPTURE_MARKERS: u64 = 512;
+pub const MAX_CAPTURE_MARKER_LABEL_CHARS: usize = 64;
+pub const MAX_CAPTURE_MARKER_LABEL_BYTES: usize = 256;
 
 const FILE_HEADER_SIZE: usize = 16;
+const CAPTURE_VERSION_V1: u16 = 1;
 const RECORD_TAG: u8 = 0x01;
+const MARKER_TAG: u8 = 0x02;
 const FOOTER_TAG: u8 = 0xff;
 const RECORD_HEADER_SIZE: usize = 16;
-const FOOTER_SIZE: usize = 24;
+const MARKER_HEADER_SIZE: usize = 16;
+const V1_FOOTER_SIZE: usize = 24;
+const V2_FOOTER_SIZE: usize = 32;
 const WRITER_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const WRITER_QUEUE_RECORDS: usize = 4096;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
@@ -99,29 +106,92 @@ pub struct CaptureRecord {
     pub payload: Vec<u8>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[repr(u8)]
+#[serde(rename_all = "camelCase")]
+pub enum CaptureMarkerColor {
+    Gray = 0,
+    Red = 1,
+    Orange = 2,
+    Yellow = 3,
+    Green = 4,
+    Blue = 5,
+    Purple = 6,
+}
+
+impl CaptureMarkerColor {
+    fn from_code(code: u8) -> Result<Self, CaptureReadError> {
+        match code {
+            0 => Ok(Self::Gray),
+            1 => Ok(Self::Red),
+            2 => Ok(Self::Orange),
+            3 => Ok(Self::Yellow),
+            4 => Ok(Self::Green),
+            5 => Ok(Self::Blue),
+            6 => Ok(Self::Purple),
+            _ => Err(CaptureReadError::InvalidMarkerColor(code)),
+        }
+    }
+
+    fn code(self) -> u8 {
+        self as u8
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaptureMarker {
+    pub color: CaptureMarkerColor,
+    pub timestamp_us: u64,
+    pub label: String,
+}
+
+#[derive(Clone, Default)]
 pub(crate) struct CaptureRecordStats {
     last_timestamp_us: Option<u64>,
     data_bytes: u64,
     record_count: u64,
+    marker_count: u64,
 }
 
 impl CaptureRecordStats {
     pub(crate) fn observe(&mut self, record: &CaptureRecord) -> Result<(), String> {
+        self.observe_record_parts(record.timestamp_us, record.payload.len())
+    }
+
+    pub(crate) fn observe_marker(&mut self, marker: &CaptureMarker) -> Result<(), String> {
+        self.observe_marker_timestamp(marker.timestamp_us)
+    }
+
+    fn observe_record_parts(
+        &mut self,
+        timestamp_us: u64,
+        payload_size: usize,
+    ) -> Result<(), String> {
+        self.observe_timestamp(timestamp_us)?;
+        self.data_bytes = self.data_bytes.saturating_add(payload_size as u64);
+        self.record_count = self.record_count.saturating_add(1);
+        Ok(())
+    }
+
+    fn observe_marker_timestamp(&mut self, timestamp_us: u64) -> Result<(), String> {
+        self.observe_timestamp(timestamp_us)?;
+        self.marker_count = self.marker_count.saturating_add(1);
+        Ok(())
+    }
+
+    fn observe_timestamp(&mut self, timestamp_us: u64) -> Result<(), String> {
         if self
             .last_timestamp_us
-            .map(|last| record.timestamp_us < last)
+            .map(|last| timestamp_us < last)
             .unwrap_or(false)
         {
             return Err(format!(
-                "捕获记录时间戳从 {} 微秒回退到 {} 微秒",
+                "捕获时间戳从 {} 微秒回退到 {} 微秒",
                 self.last_timestamp_us.unwrap_or(0),
-                record.timestamp_us
+                timestamp_us
             ));
         }
-        self.last_timestamp_us = Some(record.timestamp_us);
-        self.data_bytes = self.data_bytes.saturating_add(record.payload.len() as u64);
-        self.record_count = self.record_count.saturating_add(1);
+        self.last_timestamp_us = Some(timestamp_us);
         Ok(())
     }
 
@@ -136,17 +206,23 @@ impl CaptureRecordStats {
     pub(crate) fn record_count(&self) -> u64 {
         self.record_count
     }
+
+    pub(crate) fn marker_count(&self) -> u64 {
+        self.marker_count
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureFooter {
     pub data_bytes: u64,
     pub record_count: u64,
+    pub marker_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CaptureItem {
     Record(CaptureRecord),
+    Marker(CaptureMarker),
     Footer(CaptureFooter),
 }
 
@@ -158,8 +234,10 @@ pub enum CaptureReadError {
     UnsupportedVersion(u16),
     HeaderTooLarge(u32),
     RecordTooLarge(u32),
+    MarkerLabelTooLarge(u32),
     InvalidHeader(String),
     InvalidDirection(u8),
+    InvalidMarkerColor(u8),
     InvalidTag(u8),
     Truncated(&'static str),
     Corrupt(String),
@@ -178,8 +256,12 @@ impl std::fmt::Display for CaptureReadError {
             }
             Self::HeaderTooLarge(size) => write!(formatter, "捕获文件头超过 64 KiB: {size} 字节"),
             Self::RecordTooLarge(size) => write!(formatter, "捕获记录超过 64 KiB: {size} 字节"),
+            Self::MarkerLabelTooLarge(size) => {
+                write!(formatter, "捕获标记标签超过 256 字节: {size} 字节")
+            }
             Self::InvalidHeader(message) => write!(formatter, "捕获文件头无效: {message}"),
             Self::InvalidDirection(direction) => write!(formatter, "捕获记录方向无效: {direction}"),
+            Self::InvalidMarkerColor(color) => write!(formatter, "捕获标记颜色无效: {color}"),
             Self::InvalidTag(tag) => write!(formatter, "捕获记录类型无效: 0x{tag:02x}"),
             Self::Truncated(section) => write!(formatter, "捕获文件在{section}处被截断"),
             Self::Corrupt(message) => write!(formatter, "捕获文件已损坏: {message}"),
@@ -198,9 +280,9 @@ impl std::error::Error for CaptureReadError {
 
 pub struct CaptureReader<R: Read> {
     reader: R,
+    version: u16,
     header: CaptureHeader,
-    data_bytes: u64,
-    record_count: u64,
+    stats: CaptureRecordStats,
     done: bool,
 }
 
@@ -214,11 +296,12 @@ impl<R: Read> CaptureReader<R> {
         }
 
         let version = u16::from_le_bytes([prefix[8], prefix[9]]);
-        if version > CAPTURE_VERSION {
-            return Err(CaptureReadError::FutureVersion(version));
-        }
-        if version != CAPTURE_VERSION {
-            return Err(CaptureReadError::UnsupportedVersion(version));
+        match version {
+            CAPTURE_VERSION_V1 | CAPTURE_VERSION => {}
+            version if version > CAPTURE_VERSION => {
+                return Err(CaptureReadError::FutureVersion(version))
+            }
+            version => return Err(CaptureReadError::UnsupportedVersion(version)),
         }
 
         let flags = u16::from_le_bytes([prefix[10], prefix[11]]);
@@ -241,11 +324,15 @@ impl<R: Read> CaptureReader<R> {
 
         Ok(Self {
             reader,
+            version,
             header,
-            data_bytes: 0,
-            record_count: 0,
+            stats: CaptureRecordStats::default(),
             done: false,
         })
+    }
+
+    pub fn version(&self) -> u16 {
+        self.version
     }
 
     pub fn header(&self) -> &CaptureHeader {
@@ -258,6 +345,7 @@ impl<R: Read> CaptureReader<R> {
 
         match tag[0] {
             RECORD_TAG => self.read_record(),
+            MARKER_TAG if self.version >= CAPTURE_VERSION => self.read_marker(),
             FOOTER_TAG => self.read_footer(),
             tag => Err(CaptureReadError::InvalidTag(tag)),
         }
@@ -283,18 +371,61 @@ impl<R: Read> CaptureReader<R> {
 
         let mut payload = vec![0_u8; payload_size as usize];
         read_exact_section(&mut self.reader, &mut payload, "记录数据")?;
-        self.data_bytes = self.data_bytes.saturating_add(payload_size as u64);
-        self.record_count = self.record_count.saturating_add(1);
-
-        Ok(CaptureItem::Record(CaptureRecord {
+        let record = CaptureRecord {
             direction,
             timestamp_us,
             payload,
-        }))
+        };
+        self.stats
+            .observe(&record)
+            .map_err(CaptureReadError::Corrupt)?;
+
+        Ok(CaptureItem::Record(record))
+    }
+
+    fn read_marker(&mut self) -> Result<CaptureItem, CaptureReadError> {
+        let mut header = [0_u8; MARKER_HEADER_SIZE - 1];
+        read_exact_section(&mut self.reader, &mut header, "标记头")?;
+
+        let color = CaptureMarkerColor::from_code(header[0])?;
+        let reserved = u16::from_le_bytes([header[1], header[2]]);
+        if reserved != 0 {
+            return Err(CaptureReadError::Corrupt(format!(
+                "标记保留字段必须为 0，实际为 {reserved}"
+            )));
+        }
+
+        let timestamp_us = u64::from_le_bytes(header[3..11].try_into().expect("时间戳长度固定"));
+        let label_size = u32::from_le_bytes(header[11..15].try_into().expect("标签长度字段固定"));
+        if label_size as usize > MAX_CAPTURE_MARKER_LABEL_BYTES {
+            return Err(CaptureReadError::MarkerLabelTooLarge(label_size));
+        }
+
+        let mut label_bytes = vec![0_u8; label_size as usize];
+        read_exact_section(&mut self.reader, &mut label_bytes, "标记标签")?;
+        let label = String::from_utf8(label_bytes)
+            .map_err(|_| CaptureReadError::Corrupt("标记标签不是有效 UTF-8".to_owned()))?;
+        validate_marker_label(&label).map_err(CaptureReadError::Corrupt)?;
+        if self.stats.marker_count() >= MAX_CAPTURE_MARKERS {
+            return Err(CaptureReadError::Corrupt(format!(
+                "捕获标记不能超过 {MAX_CAPTURE_MARKERS} 个"
+            )));
+        }
+
+        let marker = CaptureMarker {
+            color,
+            timestamp_us,
+            label,
+        };
+        self.stats
+            .observe_marker(&marker)
+            .map_err(CaptureReadError::Corrupt)?;
+
+        Ok(CaptureItem::Marker(marker))
     }
 
     fn read_footer(&mut self) -> Result<CaptureItem, CaptureReadError> {
-        let mut footer = [0_u8; FOOTER_SIZE - 1];
+        let mut footer = [0_u8; V1_FOOTER_SIZE - 1];
         read_exact_section(&mut self.reader, &mut footer, "结束标记")?;
 
         if footer[..7].iter().any(|byte| *byte != 0) {
@@ -304,43 +435,35 @@ impl<R: Read> CaptureReader<R> {
         }
         let data_bytes = u64::from_le_bytes(footer[7..15].try_into().expect("字节计数字段固定"));
         let record_count = u64::from_le_bytes(footer[15..23].try_into().expect("记录计数字段固定"));
-        if data_bytes != self.data_bytes || record_count != self.record_count {
+        let marker_count = if self.version >= CAPTURE_VERSION {
+            let mut marker_count = [0_u8; V2_FOOTER_SIZE - V1_FOOTER_SIZE];
+            read_exact_section(&mut self.reader, &mut marker_count, "标记计数")?;
+            u64::from_le_bytes(marker_count)
+        } else {
+            0
+        };
+        if data_bytes != self.stats.data_bytes()
+            || record_count != self.stats.record_count()
+            || marker_count != self.stats.marker_count()
+        {
             return Err(CaptureReadError::Corrupt(format!(
-                "结束统计不匹配，期望 {} 字节/{} 条，实际 {data_bytes} 字节/{record_count} 条",
-                self.data_bytes, self.record_count
+                "结束统计不匹配，期望 {} 字节/{} 条记录/{} 个标记，实际 {data_bytes} 字节/\
+                 {record_count} 条记录/{marker_count} 个标记",
+                self.stats.data_bytes(),
+                self.stats.record_count(),
+                self.stats.marker_count()
             )));
         }
 
-        let mut trailing = [0_u8; 1];
-        match self.reader.read(&mut trailing) {
-            Ok(0) => {}
-            Ok(_) => return Err(CaptureReadError::Corrupt("结束标记后仍有数据".to_owned())),
-            Err(error) if error.kind() == ErrorKind::Interrupted => {
-                return self.read_footer_trailing(data_bytes, record_count)
-            }
-            Err(error) => return Err(CaptureReadError::Io(error)),
-        }
-
-        Ok(CaptureItem::Footer(CaptureFooter {
+        let footer = CaptureFooter {
             data_bytes,
             record_count,
-        }))
-    }
-
-    fn read_footer_trailing(
-        &mut self,
-        data_bytes: u64,
-        record_count: u64,
-    ) -> Result<CaptureItem, CaptureReadError> {
+            marker_count,
+        };
         loop {
             let mut trailing = [0_u8; 1];
             match self.reader.read(&mut trailing) {
-                Ok(0) => {
-                    return Ok(CaptureItem::Footer(CaptureFooter {
-                        data_bytes,
-                        record_count,
-                    }))
-                }
+                Ok(0) => return Ok(CaptureItem::Footer(footer)),
                 Ok(_) => return Err(CaptureReadError::Corrupt("结束标记后仍有数据".to_owned())),
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(CaptureReadError::Io(error)),
@@ -359,12 +482,18 @@ impl<R: Read + Seek> CaptureReader<R> {
         file_offset: u64,
         data_bytes: u64,
         record_count: u64,
+        marker_count: u64,
+        last_timestamp_us: Option<u64>,
     ) -> Result<Self, CaptureReadError> {
         self.reader
             .seek(SeekFrom::Start(file_offset))
             .map_err(CaptureReadError::Io)?;
-        self.data_bytes = data_bytes;
-        self.record_count = record_count;
+        self.stats = CaptureRecordStats {
+            last_timestamp_us,
+            data_bytes,
+            record_count,
+            marker_count,
+        };
         self.done = false;
         Ok(self)
     }
@@ -379,7 +508,7 @@ impl<R: Read> Iterator for CaptureReader<R> {
         }
 
         let result = self.read_item();
-        if !matches!(result, Ok(CaptureItem::Record(_))) {
+        if !matches!(result, Ok(CaptureItem::Record(_) | CaptureItem::Marker(_))) {
             self.done = true;
         }
         Some(result)
@@ -400,6 +529,7 @@ pub struct CaptureStatePayload {
     status: String,
     session_id: u64,
     revision: u64,
+    format_version: u16,
     path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     started_at_unix_ms: Option<u64>,
@@ -407,6 +537,7 @@ pub struct CaptureStatePayload {
     ended_at_unix_ms: Option<u64>,
     data_bytes: u64,
     record_count: u64,
+    marker_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
 }
@@ -551,6 +682,17 @@ impl CaptureRecorderHandle {
     ) -> Result<(), String> {
         self.core.append(app, session_id, direction, payload)
     }
+
+    pub fn append_marker_for_session(
+        &self,
+        app: &AppHandle,
+        session_id: u64,
+        color: CaptureMarkerColor,
+        label: &str,
+    ) -> Result<(), String> {
+        self.core
+            .append_marker(app, session_id, color, label.trim())
+    }
 }
 
 struct CaptureCore {
@@ -566,6 +708,7 @@ struct SharedCaptureState {
     ended_at_unix_ms: Option<u64>,
     data_bytes: u64,
     record_count: u64,
+    marker_count: u64,
     message: Option<String>,
     worker: Option<CaptureWorker>,
     finalizing: Option<FinalizingCapture>,
@@ -582,6 +725,7 @@ impl Default for SharedCaptureState {
             ended_at_unix_ms: None,
             data_bytes: 0,
             record_count: 0,
+            marker_count: 0,
             message: None,
             worker: None,
             finalizing: None,
@@ -595,11 +739,13 @@ impl SharedCaptureState {
             status: self.status.as_str().to_owned(),
             session_id: self.session_id,
             revision: self.revision,
+            format_version: CAPTURE_VERSION,
             path: self.path.clone(),
             started_at_unix_ms: self.started_at_unix_ms,
             ended_at_unix_ms: self.ended_at_unix_ms,
             data_bytes: self.data_bytes,
             record_count: self.record_count,
+            marker_count: self.marker_count,
             message: self.message.clone(),
         }
     }
@@ -635,6 +781,7 @@ struct CaptureWorker {
     control: Arc<WriterControl>,
     budget: Arc<ByteBudget>,
     started: Instant,
+    accepted_marker_count: u64,
     join_handle: Option<JoinHandle<()>>,
 }
 
@@ -894,6 +1041,7 @@ fn finalize_worker_in_background(
 
 enum WriterCommand {
     Record(QueuedRecord),
+    Marker(QueuedMarker),
     Finish,
 }
 
@@ -902,6 +1050,14 @@ struct QueuedRecord {
     direction: CaptureDirection,
     timestamp_us: u64,
     payload: Vec<u8>,
+    _reservation: ByteReservation,
+}
+
+struct QueuedMarker {
+    session_id: u64,
+    color: CaptureMarkerColor,
+    timestamp_us: u64,
+    label: String,
     _reservation: ByteReservation,
 }
 
@@ -1054,21 +1210,128 @@ impl CaptureCore {
         result
     }
 
+    fn append_marker(
+        &self,
+        app: &AppHandle,
+        expected_session_id: u64,
+        color: CaptureMarkerColor,
+        label: &str,
+    ) -> Result<(), String> {
+        let mut event = None;
+        let result = {
+            let mut shared = self
+                .shared
+                .lock()
+                .map_err(|_| "录制状态锁已损坏".to_owned())?;
+
+            let worker_session_id = shared.worker.as_ref().map(|worker| worker.session_id);
+            if shared.session_id != expected_session_id
+                || worker_session_id != Some(expected_session_id)
+            {
+                return Ok(());
+            }
+
+            match shared.status {
+                CaptureStatus::Idle | CaptureStatus::Stopping => Ok(()),
+                CaptureStatus::Error => Err(shared
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "录制已经终止".to_owned())),
+                CaptureStatus::Recording => {
+                    if let Err(message) = validate_marker_label(label) {
+                        Err(message)
+                    } else {
+                        let size = MARKER_HEADER_SIZE.saturating_add(label.len());
+                        let enqueue_result = match shared.worker.as_mut() {
+                            Some(worker) if worker.accepted_marker_count >= MAX_CAPTURE_MARKERS => {
+                                Err((
+                                    format!("单次捕获最多添加 {MAX_CAPTURE_MARKERS} 个标记"),
+                                    false,
+                                ))
+                            }
+                            Some(worker) => {
+                                let timestamp_us = duration_micros(worker.started.elapsed());
+                                match worker.sender.clone() {
+                                    Some(sender) => match worker.budget.try_reserve(size) {
+                                        Some(reservation) => {
+                                            let marker = QueuedMarker {
+                                                session_id: worker.session_id,
+                                                color,
+                                                timestamp_us,
+                                                label: label.to_owned(),
+                                                _reservation: reservation,
+                                            };
+                                            match sender.try_send(WriterCommand::Marker(marker)) {
+                                                Ok(()) => {
+                                                    worker.accepted_marker_count = worker
+                                                        .accepted_marker_count
+                                                        .saturating_add(1);
+                                                    Ok(())
+                                                }
+                                                Err(mpsc::TrySendError::Full(_)) => Err((
+                                                    "录制写入队列已满，录制已中止".to_owned(),
+                                                    true,
+                                                )),
+                                                Err(mpsc::TrySendError::Disconnected(_)) => Err((
+                                                    "录制写入线程已停止，录制已中止".to_owned(),
+                                                    true,
+                                                )),
+                                            }
+                                        }
+                                        None => Err((
+                                            format!(
+                                                "录制写入队列超过 {} MiB，录制已中止",
+                                                WRITER_QUEUE_BYTES / 1024 / 1024
+                                            ),
+                                            true,
+                                        )),
+                                    },
+                                    None => {
+                                        Err(("录制写入通道已关闭，录制已中止".to_owned(), true))
+                                    }
+                                }
+                            }
+                            None => Err(("录制状态异常：写入线程不存在".to_owned(), true)),
+                        };
+
+                        match enqueue_result {
+                            Ok(()) => Ok(()),
+                            Err((message, false)) => Err(message),
+                            Err((message, true)) => {
+                                event = Some(fail_active_capture(&mut shared, message.clone()));
+                                Err(message)
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        if let Some(payload) = event {
+            emit_state(app, payload);
+        }
+        result
+    }
+
     fn publish_progress(
         &self,
         app: &AppHandle,
         session_id: u64,
         data_bytes: u64,
         record_count: u64,
+        marker_count: u64,
     ) {
         let payload = self.shared.lock().ok().and_then(|mut shared| {
             if shared.session_id != session_id
-                || (shared.data_bytes == data_bytes && shared.record_count == record_count)
+                || (shared.data_bytes == data_bytes
+                    && shared.record_count == record_count
+                    && shared.marker_count == marker_count)
             {
                 return None;
             }
             shared.data_bytes = data_bytes;
             shared.record_count = record_count;
+            shared.marker_count = marker_count;
             Some(shared.touch())
         });
         if let Some(payload) = payload {
@@ -1083,6 +1346,7 @@ impl CaptureCore {
         outcome: WriterOutcome,
         data_bytes: u64,
         record_count: u64,
+        marker_count: u64,
     ) {
         let payload = self.shared.lock().ok().and_then(|mut shared| {
             if shared.session_id != session_id {
@@ -1091,6 +1355,7 @@ impl CaptureCore {
 
             shared.data_bytes = data_bytes;
             shared.record_count = record_count;
+            shared.marker_count = marker_count;
             shared.ended_at_unix_ms = Some(unix_millis());
             let preserve_error = shared.status == CaptureStatus::Error && shared.message.is_some();
             if !preserve_error {
@@ -1306,6 +1571,7 @@ fn start_capture_blocking(
         control,
         budget,
         started,
+        accepted_marker_count: 0,
         join_handle: Some(join_handle),
     };
     let ready_error = match ready_receiver.recv_timeout(WRITER_START_TIMEOUT) {
@@ -1347,6 +1613,7 @@ fn start_capture_blocking(
         shared.ended_at_unix_ms = None;
         shared.data_bytes = 0;
         shared.record_count = 0;
+        shared.marker_count = 0;
         shared.message = None;
         shared.worker = Some(worker);
         shared.touch()
@@ -1483,6 +1750,19 @@ pub fn append_simulator_capture(
         .append_for_session(&app, session_id, direction, &data)
 }
 
+#[tauri::command]
+pub fn append_capture_marker(
+    app: AppHandle,
+    state: State<'_, CaptureState>,
+    session_id: u64,
+    color: CaptureMarkerColor,
+    label: String,
+) -> Result<(), String> {
+    state
+        .recorder_handle()
+        .append_marker_for_session(&app, session_id, color, &label)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_capture_writer(
     app: AppHandle,
@@ -1495,8 +1775,7 @@ fn run_capture_writer(
     ready_sender: mpsc::Sender<Result<(), String>>,
 ) {
     let mut writer = BufWriter::new(file);
-    let mut data_bytes = 0_u64;
-    let mut record_count = 0_u64;
+    let mut stats = CaptureRecordStats::default();
     let mut last_progress = Instant::now();
     let mut progress_dirty = false;
 
@@ -1530,17 +1809,51 @@ fn run_capture_writer(
                     outcome = Some(WriterOutcome::Failed("录制会话标识不匹配".to_owned()));
                     continue;
                 }
+                let mut next_stats = stats.clone();
+                if let Err(message) =
+                    next_stats.observe_record_parts(record.timestamp_us, record.payload.len())
+                {
+                    outcome = Some(WriterOutcome::Failed(message));
+                    continue;
+                }
                 if let Err(error) = write_record(&mut writer, &record) {
                     outcome = Some(WriterOutcome::Failed(format!("写入录制数据失败: {error}")));
                     continue;
                 }
-                data_bytes = data_bytes.saturating_add(record.payload.len() as u64);
-                record_count = record_count.saturating_add(1);
+                stats = next_stats;
+                progress_dirty = true;
+            }
+            Ok(WriterCommand::Marker(marker)) => {
+                if marker.session_id != session_id {
+                    outcome = Some(WriterOutcome::Failed("录制会话标识不匹配".to_owned()));
+                    continue;
+                }
+                if stats.marker_count() >= MAX_CAPTURE_MARKERS {
+                    outcome = Some(WriterOutcome::Failed(format!(
+                        "单次捕获最多添加 {MAX_CAPTURE_MARKERS} 个标记"
+                    )));
+                    continue;
+                }
+                let mut next_stats = stats.clone();
+                if let Err(message) = next_stats.observe_marker_timestamp(marker.timestamp_us) {
+                    outcome = Some(WriterOutcome::Failed(message));
+                    continue;
+                }
+                if let Err(error) = write_marker(&mut writer, &marker) {
+                    outcome = Some(WriterOutcome::Failed(format!("写入捕获标记失败: {error}")));
+                    continue;
+                }
+                stats = next_stats;
                 progress_dirty = true;
             }
             Ok(WriterCommand::Finish) => {
                 outcome = Some(if control.begin_commit() {
-                    match write_footer(&mut writer, data_bytes, record_count) {
+                    match write_footer(
+                        &mut writer,
+                        stats.data_bytes(),
+                        stats.record_count(),
+                        stats.marker_count(),
+                    ) {
                         Ok(()) => WriterOutcome::Completed,
                         Err(error) => {
                             WriterOutcome::Failed(format!("写入录制结束标记失败: {error}"))
@@ -1563,7 +1876,13 @@ fn run_capture_writer(
         }
 
         if progress_dirty && last_progress.elapsed() >= PROGRESS_INTERVAL {
-            core.publish_progress(&app, session_id, data_bytes, record_count);
+            core.publish_progress(
+                &app,
+                session_id,
+                stats.data_bytes(),
+                stats.record_count(),
+                stats.marker_count(),
+            );
             progress_dirty = false;
             last_progress = Instant::now();
         }
@@ -1578,7 +1897,14 @@ fn run_capture_writer(
     if let WriterOutcome::Completed = &outcome {
         control.mark_completed();
     }
-    core.finish_writer(&app, session_id, outcome, data_bytes, record_count);
+    core.finish_writer(
+        &app,
+        session_id,
+        outcome,
+        stats.data_bytes(),
+        stats.record_count(),
+        stats.marker_count(),
+    );
 }
 
 fn write_file_header<W: Write>(writer: &mut W, header_bytes: &[u8]) -> io::Result<()> {
@@ -1608,11 +1934,58 @@ fn write_record<W: Write>(writer: &mut W, record: &QueuedRecord) -> io::Result<(
     writer.write_all(&record.payload)
 }
 
-fn write_footer<W: Write>(writer: &mut W, data_bytes: u64, record_count: u64) -> io::Result<()> {
+fn write_marker<W: Write>(writer: &mut W, marker: &QueuedMarker) -> io::Result<()> {
+    validate_marker_label(&marker.label)
+        .map_err(|message| io::Error::new(ErrorKind::InvalidInput, message))?;
+    let label_size = u32::try_from(marker.label.len())
+        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "捕获标记标签过长"))?;
+
+    writer.write_all(&[MARKER_TAG, marker.color.code()])?;
+    writer.write_all(&0_u16.to_le_bytes())?;
+    writer.write_all(&marker.timestamp_us.to_le_bytes())?;
+    writer.write_all(&label_size.to_le_bytes())?;
+    writer.write_all(marker.label.as_bytes())
+}
+
+fn write_footer<W: Write>(
+    writer: &mut W,
+    data_bytes: u64,
+    record_count: u64,
+    marker_count: u64,
+) -> io::Result<()> {
     writer.write_all(&[FOOTER_TAG])?;
     writer.write_all(&[0_u8; 7])?;
     writer.write_all(&data_bytes.to_le_bytes())?;
-    writer.write_all(&record_count.to_le_bytes())
+    writer.write_all(&record_count.to_le_bytes())?;
+    writer.write_all(&marker_count.to_le_bytes())
+}
+
+fn validate_marker_label(label: &str) -> Result<(), String> {
+    if label.is_empty() {
+        return Err("捕获标记标签不能为空".to_owned());
+    }
+    if label.len() > MAX_CAPTURE_MARKER_LABEL_BYTES {
+        return Err(format!(
+            "捕获标记标签不能超过 {MAX_CAPTURE_MARKER_LABEL_BYTES} 个 UTF-8 字节"
+        ));
+    }
+
+    let mut char_count = 0_usize;
+    for character in label.chars() {
+        if character.is_control() {
+            return Err("捕获标记标签不能包含控制字符".to_owned());
+        }
+        char_count = char_count.saturating_add(1);
+        if char_count > MAX_CAPTURE_MARKER_LABEL_CHARS {
+            return Err(format!(
+                "捕获标记标签不能超过 {MAX_CAPTURE_MARKER_LABEL_CHARS} 个 Unicode 字符"
+            ));
+        }
+    }
+    if label.trim() != label {
+        return Err("捕获标记标签不能包含首尾空白".to_owned());
+    }
+    Ok(())
 }
 
 fn encode_header(header: &CaptureHeader) -> Result<Vec<u8>, String> {
@@ -1724,6 +2097,7 @@ fn publish_start_error(
         shared.ended_at_unix_ms = Some(unix_millis());
         shared.data_bytes = 0;
         shared.record_count = 0;
+        shared.marker_count = 0;
         shared.message = Some(message);
         shared.touch()
     });
@@ -1818,6 +2192,28 @@ mod tests {
         bytes
     }
 
+    fn file_with_header_version(version: u16) -> Vec<u8> {
+        let header_bytes = encode_header(&sample_header()).unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&CAPTURE_MAGIC);
+        bytes.extend_from_slice(&version.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&header_bytes);
+        bytes
+    }
+
+    fn write_v1_footer<W: Write>(
+        writer: &mut W,
+        data_bytes: u64,
+        record_count: u64,
+    ) -> io::Result<()> {
+        writer.write_all(&[FOOTER_TAG])?;
+        writer.write_all(&[0_u8; 7])?;
+        writer.write_all(&data_bytes.to_le_bytes())?;
+        writer.write_all(&record_count.to_le_bytes())
+    }
+
     #[test]
     fn validates_capture_protocol_whitelist() {
         for protocol in SUPPORTED_CAPTURE_PROTOCOLS {
@@ -1850,21 +2246,54 @@ mod tests {
         }
     }
 
-    #[test]
-    fn round_trips_mixed_records_and_footer() {
-        let budget = Arc::new(ByteBudget::new(1024));
-        let records = [
-            queued_record(&budget, CaptureDirection::Rx, 0, vec![1, 2]),
-            queued_record(&budget, CaptureDirection::Tx, 12, vec![3, 4, 5]),
-            queued_record(&budget, CaptureDirection::Rx, 19, Vec::new()),
-        ];
-        let mut bytes = file_with_header();
-        for record in &records {
-            write_record(&mut bytes, record).unwrap();
+    fn queued_marker(
+        budget: &Arc<ByteBudget>,
+        color: CaptureMarkerColor,
+        timestamp_us: u64,
+        label: &str,
+    ) -> QueuedMarker {
+        let size = MARKER_HEADER_SIZE + label.len();
+        QueuedMarker {
+            session_id: 1,
+            color,
+            timestamp_us,
+            label: label.to_owned(),
+            _reservation: budget.try_reserve(size).unwrap(),
         }
-        write_footer(&mut bytes, 5, 3).unwrap();
+    }
+
+    fn append_raw_marker(
+        bytes: &mut Vec<u8>,
+        color: u8,
+        reserved: u16,
+        timestamp_us: u64,
+        label_size: u32,
+        label: &[u8],
+    ) {
+        bytes.push(MARKER_TAG);
+        bytes.push(color);
+        bytes.extend_from_slice(&reserved.to_le_bytes());
+        bytes.extend_from_slice(&timestamp_us.to_le_bytes());
+        bytes.extend_from_slice(&label_size.to_le_bytes());
+        bytes.extend_from_slice(label);
+    }
+
+    #[test]
+    fn writer_emits_v2_and_round_trips_mixed_items() {
+        let budget = Arc::new(ByteBudget::new(1024));
+        let first = queued_record(&budget, CaptureDirection::Rx, 0, vec![1, 2]);
+        let marker = queued_marker(&budget, CaptureMarkerColor::Blue, 12, "启动");
+        let second = queued_record(&budget, CaptureDirection::Tx, 12, vec![3, 4, 5]);
+        let mut bytes = file_with_header();
+        write_record(&mut bytes, &first).unwrap();
+        write_marker(&mut bytes, &marker).unwrap();
+        write_record(&mut bytes, &second).unwrap();
+        write_footer(&mut bytes, 5, 2, 1).unwrap();
+
+        assert_eq!(u16::from_le_bytes([bytes[8], bytes[9]]), CAPTURE_VERSION);
 
         let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(reader.version(), CAPTURE_VERSION);
         assert_eq!(reader.header(), &sample_header());
         assert_eq!(
             reader.next().unwrap().unwrap(),
@@ -1872,6 +2301,14 @@ mod tests {
                 direction: CaptureDirection::Rx,
                 timestamp_us: 0,
                 payload: vec![1, 2],
+            })
+        );
+        assert_eq!(
+            reader.next().unwrap().unwrap(),
+            CaptureItem::Marker(CaptureMarker {
+                color: CaptureMarkerColor::Blue,
+                timestamp_us: 12,
+                label: "启动".to_owned(),
             })
         );
         assert_eq!(
@@ -1884,39 +2321,133 @@ mod tests {
         );
         assert_eq!(
             reader.next().unwrap().unwrap(),
-            CaptureItem::Record(CaptureRecord {
-                direction: CaptureDirection::Rx,
-                timestamp_us: 19,
-                payload: Vec::new(),
-            })
-        );
-        assert_eq!(
-            reader.next().unwrap().unwrap(),
             CaptureItem::Footer(CaptureFooter {
                 data_bytes: 5,
-                record_count: 3,
+                record_count: 2,
+                marker_count: 1,
             })
         );
         assert!(reader.next().is_none());
     }
 
     #[test]
+    fn reads_v1_fixture_without_changing_record_layout() {
+        let mut bytes = file_with_header_version(CAPTURE_VERSION_V1);
+        bytes.extend_from_slice(&[
+            RECORD_TAG, 1, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0xaa, 0xbb, 0xcc,
+        ]);
+        write_v1_footer(&mut bytes, 3, 1).unwrap();
+
+        let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(reader.version(), CAPTURE_VERSION_V1);
+        assert_eq!(
+            reader.next().unwrap().unwrap(),
+            CaptureItem::Record(CaptureRecord {
+                direction: CaptureDirection::Tx,
+                timestamp_us: 9,
+                payload: vec![0xaa, 0xbb, 0xcc],
+            })
+        );
+        assert_eq!(
+            reader.next().unwrap().unwrap(),
+            CaptureItem::Footer(CaptureFooter {
+                data_bytes: 3,
+                record_count: 1,
+                marker_count: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn capture_stats_include_markers_in_global_duration() {
+        let mut stats = CaptureRecordStats::default();
+        stats
+            .observe_marker(&CaptureMarker {
+                color: CaptureMarkerColor::Gray,
+                timestamp_us: 4,
+                label: "开始".to_owned(),
+            })
+            .unwrap();
+        stats
+            .observe(&CaptureRecord {
+                direction: CaptureDirection::Rx,
+                timestamp_us: 4,
+                payload: vec![1, 2],
+            })
+            .unwrap();
+        stats
+            .observe_marker(&CaptureMarker {
+                color: CaptureMarkerColor::Green,
+                timestamp_us: 9,
+                label: "完成".to_owned(),
+            })
+            .unwrap();
+
+        assert_eq!(stats.duration_us(), 9);
+        assert_eq!(stats.data_bytes(), 2);
+        assert_eq!(stats.record_count(), 1);
+        assert_eq!(stats.marker_count(), 2);
+    }
+
+    #[test]
+    fn rejects_timestamp_regression_across_record_and_marker() {
+        let budget = Arc::new(ByteBudget::new(1024));
+        let record = queued_record(&budget, CaptureDirection::Rx, 10, vec![1]);
+        let marker = queued_marker(&budget, CaptureMarkerColor::Yellow, 9, "回退");
+        let mut bytes = file_with_header();
+        write_record(&mut bytes, &record).unwrap();
+        write_marker(&mut bytes, &marker).unwrap();
+
+        let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
+        assert!(matches!(reader.next(), Some(Ok(CaptureItem::Record(_)))));
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("时间戳")
+        ));
+
+        let marker = queued_marker(&budget, CaptureMarkerColor::Yellow, 10, "先标记");
+        let record = queued_record(&budget, CaptureDirection::Rx, 9, vec![1]);
+        let mut bytes = file_with_header();
+        write_marker(&mut bytes, &marker).unwrap();
+        write_record(&mut bytes, &record).unwrap();
+
+        let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
+        assert!(matches!(reader.next(), Some(Ok(CaptureItem::Marker(_)))));
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("时间戳")
+        ));
+    }
+
+    #[test]
     fn resumes_from_verified_offset_with_footer_statistics() {
         let budget = Arc::new(ByteBudget::new(1024));
         let first = queued_record(&budget, CaptureDirection::Rx, 5, vec![1, 2]);
+        let marker = queued_marker(&budget, CaptureMarkerColor::Red, 6, "检查点");
         let second = queued_record(&budget, CaptureDirection::Tx, 8, vec![3, 4, 5]);
         let mut bytes = file_with_header();
         write_record(&mut bytes, &first).unwrap();
+        write_marker(&mut bytes, &marker).unwrap();
         write_record(&mut bytes, &second).unwrap();
-        write_footer(&mut bytes, 5, 2).unwrap();
+        write_footer(&mut bytes, 5, 2, 1).unwrap();
 
         let mut scanned = CaptureReader::new(Cursor::new(bytes.clone())).unwrap();
         assert!(matches!(scanned.next(), Some(Ok(CaptureItem::Record(_)))));
+        assert!(matches!(scanned.next(), Some(Ok(CaptureItem::Marker(_)))));
         let checkpoint_offset = scanned.stream_position().unwrap();
+
+        let mut regressed = CaptureReader::new(Cursor::new(bytes.clone()))
+            .unwrap()
+            .resume_from_verified(checkpoint_offset, 2, 1, 1, Some(9))
+            .unwrap();
+        assert!(matches!(
+            regressed.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("时间戳")
+        ));
 
         let mut resumed = CaptureReader::new(Cursor::new(bytes))
             .unwrap()
-            .resume_from_verified(checkpoint_offset, 2, 1)
+            .resume_from_verified(checkpoint_offset, 2, 1, 1, Some(6))
             .unwrap();
         assert_eq!(
             resumed.next().unwrap().unwrap(),
@@ -1931,6 +2462,7 @@ mod tests {
             CaptureItem::Footer(CaptureFooter {
                 data_bytes: 5,
                 record_count: 2,
+                marker_count: 1,
             })
         );
     }
@@ -1948,7 +2480,80 @@ mod tests {
         future[8..10].copy_from_slice(&(CAPTURE_VERSION + 1).to_le_bytes());
         assert!(matches!(
             CaptureReader::new(Cursor::new(future)),
-            Err(CaptureReadError::FutureVersion(2))
+            Err(CaptureReadError::FutureVersion(version)) if version == CAPTURE_VERSION + 1
+        ));
+
+        let unsupported = file_with_header_version(0);
+        assert!(matches!(
+            CaptureReader::new(Cursor::new(unsupported)),
+            Err(CaptureReadError::UnsupportedVersion(0))
+        ));
+    }
+
+    #[test]
+    fn validates_marker_label_unicode_limits_and_controls() {
+        assert!(validate_marker_label("标记").is_ok());
+        assert!(validate_marker_label(&"😀".repeat(MAX_CAPTURE_MARKER_LABEL_CHARS)).is_ok());
+        assert!(validate_marker_label("").is_err());
+        assert!(validate_marker_label("   ").is_err());
+        assert!(validate_marker_label(" 标记").is_err());
+        assert!(validate_marker_label("标记 ").is_err());
+        assert!(validate_marker_label("换行\n标记").is_err());
+        assert!(validate_marker_label(&"a".repeat(MAX_CAPTURE_MARKER_LABEL_CHARS + 1)).is_err());
+        assert!(validate_marker_label(&"😀".repeat(MAX_CAPTURE_MARKER_LABEL_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_tags_colors_and_nonzero_reserved_fields() {
+        let mut unknown = file_with_header();
+        unknown.push(0x03);
+        let mut reader = CaptureReader::new(Cursor::new(unknown)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::InvalidTag(0x03)))
+        ));
+
+        let mut v1_marker = file_with_header_version(CAPTURE_VERSION_V1);
+        v1_marker.push(MARKER_TAG);
+        let mut reader = CaptureReader::new(Cursor::new(v1_marker)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::InvalidTag(MARKER_TAG)))
+        ));
+
+        let mut invalid_color = file_with_header();
+        append_raw_marker(&mut invalid_color, 0xfe, 0, 0, 1, b"x");
+        let mut reader = CaptureReader::new(Cursor::new(invalid_color)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::InvalidMarkerColor(0xfe)))
+        ));
+
+        let mut marker_reserved = file_with_header();
+        append_raw_marker(
+            &mut marker_reserved,
+            CaptureMarkerColor::Red.code(),
+            1,
+            0,
+            1,
+            b"x",
+        );
+        let mut reader = CaptureReader::new(Cursor::new(marker_reserved)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("标记保留字段")
+        ));
+
+        let mut record_reserved = file_with_header();
+        record_reserved.push(RECORD_TAG);
+        record_reserved.push(CaptureDirection::Rx.code());
+        record_reserved.extend_from_slice(&1_u16.to_le_bytes());
+        record_reserved.extend_from_slice(&0_u64.to_le_bytes());
+        record_reserved.extend_from_slice(&0_u32.to_le_bytes());
+        let mut reader = CaptureReader::new(Cursor::new(record_reserved)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("记录保留字段")
         ));
     }
 
@@ -1973,6 +2578,8 @@ mod tests {
         assert!(json.get("startedAtUnixMs").is_none());
         assert!(json.get("endedAtUnixMs").is_none());
         assert!(json.get("message").is_none());
+        assert_eq!(json.get("formatVersion"), Some(&serde_json::json!(2)));
+        assert_eq!(json.get("markerCount"), Some(&serde_json::json!(0)));
     }
 
     #[test]
@@ -2021,7 +2628,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_oversized_header_and_record_before_allocating_payload() {
+    fn rejects_oversized_header_record_and_marker_before_allocating_payload() {
         let mut oversized_header = Vec::new();
         oversized_header.extend_from_slice(&CAPTURE_MAGIC);
         oversized_header.extend_from_slice(&CAPTURE_VERSION.to_le_bytes());
@@ -2042,6 +2649,22 @@ mod tests {
         assert!(matches!(
             reader.next(),
             Some(Err(CaptureReadError::RecordTooLarge(_)))
+        ));
+
+        let mut oversized_marker = file_with_header();
+        append_raw_marker(
+            &mut oversized_marker,
+            CaptureMarkerColor::Gray.code(),
+            0,
+            0,
+            (MAX_CAPTURE_MARKER_LABEL_BYTES + 1) as u32,
+            &[],
+        );
+        let mut reader = CaptureReader::new(Cursor::new(oversized_marker)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::MarkerLabelTooLarge(size)))
+                if size == (MAX_CAPTURE_MARKER_LABEL_BYTES + 1) as u32
         ));
     }
 
@@ -2068,22 +2691,144 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_utf8_and_truncated_marker_sections() {
+        let mut invalid_utf8 = file_with_header();
+        append_raw_marker(
+            &mut invalid_utf8,
+            CaptureMarkerColor::Purple.code(),
+            0,
+            1,
+            1,
+            &[0xff],
+        );
+        let mut reader = CaptureReader::new(Cursor::new(invalid_utf8)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("UTF-8")
+        ));
+
+        let mut too_many_chars = file_with_header();
+        let label = "a".repeat(MAX_CAPTURE_MARKER_LABEL_CHARS + 1);
+        append_raw_marker(
+            &mut too_many_chars,
+            CaptureMarkerColor::Green.code(),
+            0,
+            1,
+            label.len() as u32,
+            label.as_bytes(),
+        );
+        let mut reader = CaptureReader::new(Cursor::new(too_many_chars)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("Unicode")
+        ));
+
+        let mut empty_label = file_with_header();
+        append_raw_marker(
+            &mut empty_label,
+            CaptureMarkerColor::Gray.code(),
+            0,
+            1,
+            0,
+            b"",
+        );
+        let mut reader = CaptureReader::new(Cursor::new(empty_label)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("不能为空")
+        ));
+
+        let mut control_character = file_with_header();
+        append_raw_marker(
+            &mut control_character,
+            CaptureMarkerColor::Gray.code(),
+            0,
+            1,
+            1,
+            b"\n",
+        );
+        let mut reader = CaptureReader::new(Cursor::new(control_character)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("控制字符")
+        ));
+
+        let mut truncated_header = file_with_header();
+        truncated_header.push(MARKER_TAG);
+        let mut reader = CaptureReader::new(Cursor::new(truncated_header)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Truncated("标记头")))
+        ));
+
+        let mut truncated_label = file_with_header();
+        append_raw_marker(
+            &mut truncated_label,
+            CaptureMarkerColor::Orange.code(),
+            0,
+            1,
+            2,
+            b"x",
+        );
+        let mut reader = CaptureReader::new(Cursor::new(truncated_label)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Truncated("标记标签")))
+        ));
+
+        let mut truncated_footer = file_with_header();
+        write_v1_footer(&mut truncated_footer, 0, 0).unwrap();
+        let mut reader = CaptureReader::new(Cursor::new(truncated_footer)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Truncated("标记计数")))
+        ));
+    }
+
+    #[test]
     fn validates_footer_statistics_and_trailing_data() {
         let mut wrong_stats = file_with_header();
-        write_footer(&mut wrong_stats, 1, 0).unwrap();
+        write_footer(&mut wrong_stats, 1, 0, 0).unwrap();
         let mut reader = CaptureReader::new(Cursor::new(wrong_stats)).unwrap();
         assert!(matches!(
             reader.next(),
             Some(Err(CaptureReadError::Corrupt(_)))
         ));
 
+        let mut wrong_marker_count = file_with_header();
+        write_footer(&mut wrong_marker_count, 0, 0, 1).unwrap();
+        let mut reader = CaptureReader::new(Cursor::new(wrong_marker_count)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("标记")
+        ));
+
         let mut trailing = file_with_header();
-        write_footer(&mut trailing, 0, 0).unwrap();
+        write_footer(&mut trailing, 0, 0, 0).unwrap();
         trailing.push(0);
         let mut reader = CaptureReader::new(Cursor::new(trailing)).unwrap();
         assert!(matches!(
             reader.next(),
             Some(Err(CaptureReadError::Corrupt(_)))
+        ));
+    }
+
+    #[test]
+    fn rejects_more_than_maximum_marker_count() {
+        let budget = Arc::new(ByteBudget::new(1024));
+        let mut bytes = file_with_header();
+        for timestamp_us in 0..=MAX_CAPTURE_MARKERS {
+            let marker = queued_marker(&budget, CaptureMarkerColor::Gray, timestamp_us, "x");
+            write_marker(&mut bytes, &marker).unwrap();
+        }
+
+        let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
+        for _ in 0..MAX_CAPTURE_MARKERS {
+            assert!(matches!(reader.next(), Some(Ok(CaptureItem::Marker(_)))));
+        }
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("512")
         ));
     }
 

@@ -9,10 +9,12 @@ import {
   FileOutput,
   FileSpreadsheet,
   FolderOpen,
+  Flag,
   HardDrive,
   History,
   Pause,
   Play,
+  Plus,
   RotateCcw,
   Timer,
   TriangleAlert,
@@ -23,7 +25,14 @@ import {
   protocolSupportsReplaySeek,
 } from "../core/protocols";
 import { useWorkbenchStore } from "../store/workbenchStore";
-import type { CaptureUiStatus } from "../types/capture";
+import {
+  CAPTURE_MARKER_COLORS,
+  MAX_CAPTURE_MARKER_LABEL_BYTES,
+  MAX_CAPTURE_MARKER_LABEL_CHARS,
+  MAX_CAPTURE_MARKERS,
+  type CaptureMarkerColor,
+  type CaptureUiStatus,
+} from "../types/capture";
 import type {
   CaptureExportDirection,
   CaptureExportFormat,
@@ -35,6 +44,27 @@ import type { ProtocolKind } from "../types/serial";
 
 type SessionTab = "record" | "numeric" | "replay" | "export";
 
+const UTF8_ENCODER = new TextEncoder();
+
+function clampCaptureMarkerLabel(value: string): string {
+  let result = "";
+  let byteCount = 0;
+  let charCount = 0;
+  for (const character of value) {
+    const characterBytes = UTF8_ENCODER.encode(character).length;
+    if (
+      charCount >= MAX_CAPTURE_MARKER_LABEL_CHARS ||
+      byteCount + characterBytes > MAX_CAPTURE_MARKER_LABEL_BYTES
+    ) {
+      break;
+    }
+    result += character;
+    charCount += 1;
+    byteCount += characterBytes;
+  }
+  return result;
+}
+
 export function CapturePanel() {
   const isNativeRuntime = useWorkbenchStore((state) => state.isNativeRuntime);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
@@ -45,6 +75,8 @@ export function CapturePanel() {
   const captureEndedAt = useWorkbenchStore((state) => state.captureEndedAt);
   const captureDataBytes = useWorkbenchStore((state) => state.captureDataBytes);
   const captureRecordCount = useWorkbenchStore((state) => state.captureRecordCount);
+  const captureMarkerCount = useWorkbenchStore((state) => state.captureMarkerCount);
+  const captureFormatVersion = useWorkbenchStore((state) => state.captureFormatVersion);
   const captureMessage = useWorkbenchStore((state) => state.captureMessage);
   const numericLogStatus = useWorkbenchStore((state) => state.numericLogStatus);
   const numericLogPath = useWorkbenchStore((state) => state.numericLogPath);
@@ -97,6 +129,9 @@ export function CapturePanel() {
   const replayDurationUs = useWorkbenchStore((state) => state.replayDurationUs);
   const replayDataBytes = useWorkbenchStore((state) => state.replayDataBytes);
   const replayRecordCount = useWorkbenchStore((state) => state.replayRecordCount);
+  const replayMarkerCount = useWorkbenchStore((state) => state.replayMarkerCount);
+  const replayMarkers = useWorkbenchStore((state) => state.replayMarkers);
+  const replayFormatVersion = useWorkbenchStore((state) => state.replayFormatVersion);
   const replayMessage = useWorkbenchStore((state) => state.replayMessage);
   const workspaceTransitionStatus = useWorkbenchStore(
     (state) => state.workspaceTransitionStatus,
@@ -106,6 +141,7 @@ export function CapturePanel() {
   );
   const startCapture = useWorkbenchStore((state) => state.startCapture);
   const stopCapture = useWorkbenchStore((state) => state.stopCapture);
+  const addCaptureMarker = useWorkbenchStore((state) => state.addCaptureMarker);
   const startNumericLog = useWorkbenchStore((state) => state.startNumericLog);
   const stopNumericLog = useWorkbenchStore((state) => state.stopNumericLog);
   const selectCaptureExportSource = useWorkbenchStore(
@@ -138,6 +174,8 @@ export function CapturePanel() {
     replaySessionId > 0 ? "replay" : "record",
   );
   const [now, setNow] = useState(Date.now());
+  const [markerLabel, setMarkerLabel] = useState("");
+  const [markerColor, setMarkerColor] = useState<CaptureMarkerColor>("blue");
   const [replaySeekDraftUs, setReplaySeekDraftUs] = useState(replayPositionUs);
   const replaySeekDraftRef = useRef(replayPositionUs);
   const replaySeekDirtyRef = useRef(false);
@@ -165,6 +203,7 @@ export function CapturePanel() {
     numericLogStatus === "starting" || numericLogStatus === "stopping";
   const isNumericLogging = numericLogStatus === "recording";
   const runtimeBusy = runtimeTransitionStatus !== "idle";
+  const captureMarkerLimitReached = captureMarkerCount >= MAX_CAPTURE_MARKERS;
   const replayLoaded = replaySessionId > 0 && replayStatus !== "idle";
   const replayRunning = [
     "starting",
@@ -261,6 +300,11 @@ export function CapturePanel() {
       void setReplaySpeed(nextSpeed);
     }
   };
+  const commitCaptureMarker = () => {
+    if (addCaptureMarker(markerLabel, markerColor)) {
+      setMarkerLabel("");
+    }
+  };
 
   return (
     <div className="sidebar-panel capture-sidebar-panel">
@@ -325,14 +369,82 @@ export function CapturePanel() {
             <SessionState
               status={captureStatus}
               title={captureStatusLabel(captureStatus)}
-              subtitle={captureDestinationLabel(isNativeRuntime, capturePath)}
+              subtitle={captureDestinationLabel(
+                isNativeRuntime,
+                capturePath,
+                captureFormatVersion,
+              )}
             />
             <SessionMetrics
               duration={formatDuration(elapsedMs)}
               dataBytes={captureDataBytes}
               recordCount={captureRecordCount}
+              markerCount={captureMarkerCount}
             />
           </section>
+
+          {isRecording && (
+            <section className="sidebar-section capture-marker-section">
+              <label className="field-label" htmlFor="capture-marker-label">
+                时间线标记
+              </label>
+              <div className="capture-marker-input-row">
+                <input
+                  id="capture-marker-label"
+                  type="text"
+                  value={markerLabel}
+                  placeholder="标记名称"
+                  aria-label="标记名称"
+                  disabled={captureMarkerLimitReached}
+                  onChange={(event) =>
+                    setMarkerLabel(clampCaptureMarkerLabel(event.currentTarget.value))
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitCaptureMarker();
+                    }
+                  }}
+                />
+                <button
+                  className="icon-button capture-marker-add"
+                  type="button"
+                  aria-label="添加时间线标记"
+                  title={
+                    captureMarkerLimitReached
+                      ? `已达到 ${MAX_CAPTURE_MARKERS} 个标记上限`
+                      : "添加时间线标记"
+                  }
+                  disabled={
+                    !markerLabel.trim() || runtimeBusy || captureMarkerLimitReached
+                  }
+                  onClick={commitCaptureMarker}
+                >
+                  <Plus size={17} />
+                </button>
+              </div>
+              <div
+                className="capture-marker-colors"
+                role="radiogroup"
+                aria-label="标记颜色"
+              >
+                {CAPTURE_MARKER_COLORS.map((color) => (
+                  <button
+                    key={color}
+                    className="capture-marker-color"
+                    type="button"
+                    role="radio"
+                    aria-checked={markerColor === color}
+                    aria-label={captureMarkerColorLabel(color)}
+                    title={captureMarkerColorLabel(color)}
+                    data-color={color}
+                    disabled={captureMarkerLimitReached}
+                    onClick={() => setMarkerColor(color)}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
 
           <section className="sidebar-section capture-action-section">
             {isRecording || captureStatus === "stopping" ? (
@@ -441,33 +553,46 @@ export function CapturePanel() {
               title={replayStatusLabel(replayStatus, runtimeTransitionStatus)}
               subtitle={
                 replayHeader
-                  ? `${getProtocolDefinition(replayHeader.protocol).displayName} · ${replaySpeed}×`
-                  : "VUCAP v1"
+                  ? `${getProtocolDefinition(replayHeader.protocol).displayName} · VUCAP v${replayFormatVersion} · ${replaySpeed}×`
+                  : "VUCAP"
               }
             />
             <SessionMetrics
               duration={`${formatDurationUs(replayDisplayPositionUs)} / ${formatDurationUs(replayDurationUs)}`}
               dataBytes={replayDataBytes}
               recordCount={replayRecordCount}
+              markerCount={replayMarkerCount}
             />
             {replayLoaded && (
-              <input
-                className="replay-seek-slider"
-                type="range"
-                min={0}
-                max={Math.max(1, replayDurationUs)}
-                step={replaySeekStepUs}
-                value={Math.min(replaySeekDraftUs, replayDurationUs)}
-                aria-label="回放位置"
-                aria-valuetext={`${formatDurationUs(replayDisplayPositionUs)} / ${formatDurationUs(replayDurationUs)}`}
-                title={replaySeekTitle(replayHeader?.protocol, replayStatus)}
-                disabled={!canSeekReplay}
-                onChange={(event) => updateReplaySeekDraft(event.currentTarget.value)}
-                onPointerUp={commitReplaySeek}
-                onPointerCancel={cancelReplaySeekDraft}
-                onKeyUp={commitReplaySeek}
-                onBlur={commitReplaySeek}
-              />
+              <div className="replay-timeline">
+                <input
+                  className="replay-seek-slider"
+                  type="range"
+                  min={0}
+                  max={Math.max(1, replayDurationUs)}
+                  step={replaySeekStepUs}
+                  value={Math.min(replaySeekDraftUs, replayDurationUs)}
+                  aria-label="回放位置"
+                  aria-valuetext={`${formatDurationUs(replayDisplayPositionUs)} / ${formatDurationUs(replayDurationUs)}`}
+                  title={replaySeekTitle(replayHeader?.protocol, replayStatus)}
+                  disabled={!canSeekReplay}
+                  onChange={(event) => updateReplaySeekDraft(event.currentTarget.value)}
+                  onPointerUp={commitReplaySeek}
+                  onPointerCancel={cancelReplaySeekDraft}
+                  onKeyUp={commitReplaySeek}
+                  onBlur={commitReplaySeek}
+                />
+                <div className="replay-marker-track" aria-hidden="true">
+                  {replayMarkers.map((marker) => (
+                    <span
+                      key={marker.index}
+                      className="replay-marker-tick"
+                      data-color={marker.color}
+                      style={{ left: replayMarkerPosition(marker.timestampUs, replayDurationUs) }}
+                    />
+                  ))}
+                </div>
+              </div>
             )}
           </section>
 
@@ -565,6 +690,30 @@ export function CapturePanel() {
                 >
                   <X size={18} />
                 </button>
+              </div>
+            </section>
+          )}
+
+          {replayLoaded && replayMarkers.length > 0 && (
+            <section className="sidebar-section replay-marker-section">
+              <div className="replay-marker-heading">
+                <span className="field-label">时间线标记</span>
+                <strong>{replayMarkers.length}</strong>
+              </div>
+              <div className="replay-marker-list">
+                {replayMarkers.map((marker) => (
+                  <button
+                    key={marker.index}
+                    type="button"
+                    disabled={!canSeekReplay}
+                    title={canSeekReplay ? `定位到 ${marker.label}` : "暂停回放后可定位"}
+                    onClick={() => void seekReplay(marker.timestampUs)}
+                  >
+                    <span className="replay-marker-swatch" data-color={marker.color} />
+                    <span>{marker.label}</span>
+                    <time>{formatMarkerTimestamp(marker.timestampUs)}</time>
+                  </button>
+                ))}
               </div>
             </section>
           )}
@@ -856,15 +1005,21 @@ function SessionMetrics({
   recordCount,
   dataLabel = "数据",
   countLabel = "记录",
+  markerCount,
 }: {
   duration: string;
   dataBytes: number;
   recordCount: number;
   dataLabel?: string;
   countLabel?: string;
+  markerCount?: number;
 }) {
   return (
-    <div className="capture-metrics" data-wide={duration.includes("/")}>
+    <div
+      className="capture-metrics"
+      data-wide={duration.includes("/")}
+      data-markers={markerCount !== undefined}
+    >
       <div>
         <Timer size={15} />
         <span>时长</span>
@@ -880,6 +1035,13 @@ function SessionMetrics({
         <span>{countLabel}</span>
         <strong>{recordCount.toLocaleString()}</strong>
       </div>
+      {markerCount !== undefined && (
+        <div>
+          <Flag size={15} />
+          <span>标记</span>
+          <strong>{markerCount.toLocaleString()}</strong>
+        </div>
+      )}
     </div>
   );
 }
@@ -1044,11 +1206,47 @@ function replaySeekTitle(protocol: ProtocolKind | undefined, status: ReplayUiSta
   return "拖动定位回放位置";
 }
 
-function captureDestinationLabel(isNativeRuntime: boolean, path: string): string {
+function captureDestinationLabel(
+  isNativeRuntime: boolean,
+  path: string,
+  formatVersion: number,
+): string {
   if (!isNativeRuntime) {
     return "浏览器预览";
   }
-  return path ? "VUCAP v1" : "桌面文件";
+  return path ? `VUCAP v${formatVersion}` : "桌面文件";
+}
+
+function captureMarkerColorLabel(color: CaptureMarkerColor): string {
+  switch (color) {
+    case "gray":
+      return "灰色";
+    case "red":
+      return "红色";
+    case "orange":
+      return "橙色";
+    case "yellow":
+      return "黄色";
+    case "green":
+      return "绿色";
+    case "blue":
+      return "蓝色";
+    case "purple":
+      return "紫色";
+  }
+}
+
+function replayMarkerPosition(timestampUs: number, durationUs: number): string {
+  if (durationUs <= 0) {
+    return "0%";
+  }
+  return `${Math.min(100, Math.max(0, (timestampUs / durationUs) * 100))}%`;
+}
+
+function formatMarkerTimestamp(timestampUs: number): string {
+  const totalMilliseconds = Math.floor(timestampUs / 1_000);
+  const milliseconds = totalMilliseconds % 1_000;
+  return `${formatDuration(totalMilliseconds)}.${milliseconds.toString().padStart(3, "0")}`;
 }
 
 function numericLogDestinationLabel(

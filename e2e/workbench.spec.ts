@@ -735,7 +735,7 @@ test("播放中切换回放倍速不会重置代次和时间线", async ({ page 
   await expect(speed).toHaveValue("1");
   await speed.selectOption("2");
   await expect(speed).toHaveValue("2");
-  await expect(page.getByLabel("回放状态")).toContainText("Raw Data · 2×");
+  await expect(page.getByLabel("回放状态")).toContainText("Raw Data · VUCAP v2 · 2×");
   await expect(page.getByText(/^2× 00:01 \/ 00:03$/)).toBeVisible();
 
   expect(await replaySpeedCalls(page)).toEqual([
@@ -906,6 +906,7 @@ async function installTauriReplayMock(
       timelineRevision: 0,
       revision: 3,
       path: "C:\\captures\\raw-session.vucap",
+      formatVersion: 2,
       header: {
         source: "serial",
         protocol: replayProtocol,
@@ -926,6 +927,7 @@ async function installTauriReplayMock(
       durationUs: 3_500_000,
       dataBytes: 4_096,
       recordCount: 16,
+      markerCount: 0,
       message: "",
     };
 
@@ -962,9 +964,11 @@ async function installTauriReplayMock(
           status: "idle",
           sessionId: 0,
           revision: 0,
+          formatVersion: 2,
           path: "",
           dataBytes: 0,
           recordCount: 0,
+          markerCount: 0,
         };
       }
       if (command === "get_numeric_log_state") {
@@ -1000,6 +1004,9 @@ async function installTauriReplayMock(
       }
       if (command === "get_replay_state") {
         return { ...replayState };
+      }
+      if (command === "get_replay_markers") {
+        return { sessionId: replayState.sessionId, markers: [] };
       }
       if (command === "play_replay") {
         replayState = {
@@ -1201,9 +1208,11 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           status: "idle",
           sessionId: 0,
           revision: 0,
+          formatVersion: 2,
           path: "",
           dataBytes: 0,
           recordCount: 0,
+          markerCount: 0,
         };
       }
       if (command === "get_numeric_log_state") {
@@ -1283,13 +1292,18 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           timelineRevision: 0,
           revision: 0,
           path: "",
+          formatVersion: 0,
           complete: false,
           speed: 1,
           positionUs: 0,
           durationUs: 0,
           dataBytes: 0,
           recordCount: 0,
+          markerCount: 0,
         };
+      }
+      if (command === "get_replay_markers") {
+        return { sessionId: 0, markers: [] };
       }
       return undefined;
     };

@@ -1,3 +1,4 @@
+import type { CaptureMarkerColor } from "./capture";
 import type { DataSource, ProtocolKind, SerialConfig } from "./serial";
 
 export const REPLAY_SPEEDS = [0.25, 0.5, 1, 2, 4] as const;
@@ -38,13 +39,27 @@ export interface ReplayStatePayload {
   revision: number;
   path: string;
   header?: ReplayCaptureHeader;
+  formatVersion: number;
   complete: boolean;
   speed: ReplaySpeed;
   positionUs: number;
   durationUs: number;
   dataBytes: number;
   recordCount: number;
+  markerCount: number;
   message?: string;
+}
+
+export interface ReplayMarkerPayload {
+  index: number;
+  timestampUs: number;
+  label: string;
+  color: CaptureMarkerColor;
+}
+
+export interface ReplayMarkersPayload {
+  sessionId: number;
+  markers: ReplayMarkerPayload[];
 }
 
 export interface ReplayRecordPayload {
@@ -66,4 +81,5 @@ export interface ReplayBatchPayload {
 export interface ReplayEventHandlers {
   onState(payload: ReplayStatePayload): void;
   onBatch(payload: ReplayBatchPayload): void;
+  onMarkers(payload: ReplayMarkersPayload): void;
 }

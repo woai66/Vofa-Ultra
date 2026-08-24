@@ -414,6 +414,22 @@ textarea:disabled {
   font-size: 9px;
 }
 
+.capture-metrics[data-markers="true"] {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.capture-metrics[data-markers="true"] > div {
+  padding-inline: 7px;
+}
+
+.capture-metrics[data-wide="true"][data-markers="true"] {
+  grid-template-columns:
+    minmax(0, 1.65fr)
+    minmax(0, 1fr)
+    minmax(0, 0.75fr)
+    minmax(0, 0.6fr);
+}
+
 .capture-action-section {
   align-items: stretch;
 }
@@ -421,6 +437,63 @@ textarea:disabled {
 .capture-action-button {
   width: 100%;
   margin: 0;
+}
+
+.capture-marker-section {
+  align-items: stretch;
+}
+
+.capture-marker-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 6px;
+}
+
+.capture-marker-input-row input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+}
+
+.capture-marker-add {
+  width: 36px;
+  height: 36px;
+  border-color: var(--border);
+  background: var(--surface-1);
+}
+
+.capture-marker-colors {
+  display: grid;
+  grid-template-columns: repeat(7, 30px);
+  justify-content: space-between;
+  min-height: 30px;
+  align-items: center;
+}
+
+.capture-marker-color {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.capture-marker-color::before {
+  width: 18px;
+  height: 18px;
+  border: 3px solid var(--surface-0);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--border-strong);
+  background: var(--marker-color);
+  content: "";
+}
+
+.capture-marker-color[aria-checked="true"]::before {
+  box-shadow: 0 0 0 2px var(--text);
 }
 
 .capture-availability {
@@ -465,6 +538,8 @@ textarea:disabled {
 }
 
 .replay-seek-slider {
+  position: relative;
+  z-index: 1;
   display: block;
   width: calc(100% - 32px);
   height: 20px;
@@ -474,6 +549,32 @@ textarea:disabled {
   background: transparent;
   cursor: pointer;
   appearance: none;
+}
+
+.replay-timeline {
+  position: relative;
+  min-height: 28px;
+}
+
+.replay-marker-track {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: 23px;
+  left: 23px;
+  height: 8px;
+  pointer-events: none;
+}
+
+.replay-marker-tick {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 8px;
+  border-radius: 1px;
+  box-shadow: 0 0 0 1px var(--surface-0);
+  background: var(--marker-color);
+  transform: translateX(-50%);
 }
 
 .replay-seek-slider::-webkit-slider-runnable-track {
@@ -569,6 +670,117 @@ textarea:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 36px 36px;
   gap: 6px;
+}
+
+.replay-marker-section {
+  align-items: stretch;
+}
+
+.replay-marker-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.replay-marker-heading strong {
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+}
+
+.replay-marker-list {
+  display: flex;
+  max-height: 168px;
+  flex-direction: column;
+  overflow-y: auto;
+  border-block: 1px solid var(--border);
+}
+
+.replay-marker-list button {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  min-height: 34px;
+  align-items: center;
+  padding: 5px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.replay-marker-list button:last-child {
+  border-bottom: 0;
+}
+
+.replay-marker-list button:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.replay-marker-list button > span:nth-child(2) {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replay-marker-list time {
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+}
+
+.replay-marker-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--marker-color);
+}
+
+.capture-marker-color[data-color="gray"],
+.replay-marker-tick[data-color="gray"],
+.replay-marker-swatch[data-color="gray"] {
+  --marker-color: #87958c;
+}
+
+.capture-marker-color[data-color="red"],
+.replay-marker-tick[data-color="red"],
+.replay-marker-swatch[data-color="red"] {
+  --marker-color: #f06d76;
+}
+
+.capture-marker-color[data-color="orange"],
+.replay-marker-tick[data-color="orange"],
+.replay-marker-swatch[data-color="orange"] {
+  --marker-color: #e58a42;
+}
+
+.capture-marker-color[data-color="yellow"],
+.replay-marker-tick[data-color="yellow"],
+.replay-marker-swatch[data-color="yellow"] {
+  --marker-color: #f2d05e;
+}
+
+.capture-marker-color[data-color="green"],
+.replay-marker-tick[data-color="green"],
+.replay-marker-swatch[data-color="green"] {
+  --marker-color: #46d89c;
+}
+
+.capture-marker-color[data-color="blue"],
+.replay-marker-tick[data-color="blue"],
+.replay-marker-swatch[data-color="blue"] {
+  --marker-color: #55bde8;
+}
+
+.capture-marker-color[data-color="purple"],
+.replay-marker-tick[data-color="purple"],
+.replay-marker-swatch[data-color="purple"] {
+  --marker-color: #b69cf6;
 }
 
 .replay-controls .primary-button,
@@ -2897,6 +3109,19 @@ textarea:focus {
 
   .session-tabs button {
     height: 44px;
+  }
+
+  .capture-marker-input-row {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+
+  .capture-marker-colors {
+    grid-template-columns: repeat(7, 36px);
+  }
+
+  .capture-marker-color {
+    width: 36px;
+    height: 36px;
   }
 
   .replay-controls {

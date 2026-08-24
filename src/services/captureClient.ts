@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   CaptureDirection,
   CaptureEventHandlers,
+  CaptureMarkerColor,
   CaptureStartRequest,
   CaptureStatePayload,
 } from "../types/capture";
@@ -12,13 +13,26 @@ const MAX_SIMULATOR_QUEUE_BYTES = 1024 * 1024;
 const CAPTURE_SETTLE_POLL_MS = 50;
 const CAPTURE_SETTLE_TIMEOUT_MS = 10_000;
 
-interface QueuedChunk {
+interface QueuedRecord {
+  kind: "record";
   sessionId: number;
   direction: CaptureDirection;
   data: number[];
+  byteSize: number;
 }
 
-let s_simulator_queue: QueuedChunk[] = [];
+interface QueuedMarker {
+  kind: "marker";
+  sessionId: number;
+  color: CaptureMarkerColor;
+  label: string;
+  byteSize: number;
+  onRejected: (error: Error) => void;
+}
+
+type QueuedCaptureItem = QueuedRecord | QueuedMarker;
+
+let s_simulator_queue: QueuedCaptureItem[] = [];
 let s_simulator_queue_bytes = 0;
 let s_drain_promise: Promise<void> | null = null;
 let s_queue_error: Error | null = null;
@@ -70,21 +84,41 @@ export function enqueueSimulatorCapture(
   if (!isTauriRuntime() || bytes.length === 0 || s_queue_error) {
     return false;
   }
-  if (s_simulator_queue_bytes + bytes.length > MAX_SIMULATOR_QUEUE_BYTES) {
-    const error = new Error("模拟器录制写入队列已满，录制已中止");
-    s_queue_error = error;
-    onError(error);
+  return enqueueCaptureItem(
+    {
+      kind: "record",
+      sessionId,
+      direction,
+      data: Array.from(bytes),
+      byteSize: bytes.length,
+    },
+    onError,
+  );
+}
+
+export function enqueueCaptureMarker(
+  sessionId: number,
+  color: CaptureMarkerColor,
+  label: string,
+  onRejected: (error: Error) => void,
+  onError: (error: Error) => void,
+): boolean {
+  if (!isTauriRuntime() || s_queue_error) {
     return false;
   }
-
-  s_simulator_queue.push({ sessionId, direction, data: Array.from(bytes) });
-  s_simulator_queue_bytes += bytes.length;
-  if (!s_drain_promise) {
-    const generation = s_queue_generation;
-    const drainPromise = drainSimulatorQueue(generation, onError);
-    s_drain_promise = drainPromise;
-  }
-  return true;
+  const normalizedLabel = label.trim();
+  const byteSize = new TextEncoder().encode(normalizedLabel).length + 16;
+  return enqueueCaptureItem(
+    {
+      kind: "marker",
+      sessionId,
+      color,
+      label: normalizedLabel,
+      byteSize,
+      onRejected,
+    },
+    onError,
+  );
 }
 
 export async function flushSimulatorCaptureQueue(): Promise<void> {
@@ -112,15 +146,40 @@ async function drainSimulatorQueue(
       if (!chunk) {
         break;
       }
-      await invoke<void>("append_simulator_capture", {
-        sessionId: chunk.sessionId,
-        direction: chunk.direction,
-        data: chunk.data,
-      });
+      if (chunk.kind === "record") {
+        await invoke<void>("append_simulator_capture", {
+          sessionId: chunk.sessionId,
+          direction: chunk.direction,
+          data: chunk.data,
+        });
+      } else {
+        try {
+          await invoke<void>("append_capture_marker", {
+            sessionId: chunk.sessionId,
+            color: chunk.color,
+            label: chunk.label,
+          });
+        } catch (error) {
+          if (generation !== s_queue_generation) {
+            return;
+          }
+          const markerError = toError(error);
+          const state = await invoke<CaptureStatePayload>("get_capture_state");
+          if (generation !== s_queue_generation) {
+            return;
+          }
+          if (state.sessionId === chunk.sessionId && state.status === "recording") {
+            s_simulator_queue_bytes -= chunk.byteSize;
+            chunk.onRejected(markerError);
+            continue;
+          }
+          throw markerError;
+        }
+      }
       if (generation !== s_queue_generation) {
         return;
       }
-      s_simulator_queue_bytes -= chunk.data.length;
+      s_simulator_queue_bytes -= chunk.byteSize;
     }
   } catch (error) {
     if (generation === s_queue_generation) {
@@ -134,6 +193,25 @@ async function drainSimulatorQueue(
       s_drain_promise = null;
     }
   }
+}
+
+function enqueueCaptureItem(
+  item: QueuedCaptureItem,
+  onError: (error: Error) => void,
+): boolean {
+  if (s_simulator_queue_bytes + item.byteSize > MAX_SIMULATOR_QUEUE_BYTES) {
+    const error = new Error("录制写入队列已满，录制已中止");
+    s_queue_error = error;
+    onError(error);
+    return false;
+  }
+  s_simulator_queue.push(item);
+  s_simulator_queue_bytes += item.byteSize;
+  if (!s_drain_promise) {
+    const generation = s_queue_generation;
+    s_drain_promise = drainSimulatorQueue(generation, onError);
+  }
+  return true;
 }
 
 async function waitForCaptureSettled(

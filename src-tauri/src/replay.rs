@@ -10,8 +10,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::capture::{
-    CaptureDirection, CaptureHeader, CaptureItem, CaptureReadError, CaptureReader, CaptureRecord,
-    CaptureRecordStats,
+    CaptureDirection, CaptureHeader, CaptureItem, CaptureMarker, CaptureMarkerColor,
+    CaptureReadError, CaptureReader, CaptureRecord, CaptureRecordStats,
 };
 
 const CONTROL_QUEUE_CAPACITY: usize = 16;
@@ -109,14 +109,32 @@ pub struct ReplayStatePayload {
     path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     header: Option<CaptureHeader>,
+    format_version: u16,
     complete: bool,
     speed: f64,
     position_us: u64,
     duration_us: u64,
     data_bytes: u64,
     record_count: u64,
+    marker_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplayMarkerPayload {
+    index: u64,
+    timestamp_us: u64,
+    label: String,
+    color: CaptureMarkerColor,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayMarkersPayload {
+    session_id: u64,
+    markers: Vec<ReplayMarkerPayload>,
 }
 
 #[derive(Clone, Serialize)]
@@ -186,12 +204,15 @@ struct SharedReplayState {
     revision: u64,
     path: String,
     header: Option<CaptureHeader>,
+    format_version: u16,
     complete: bool,
     speed: ReplaySpeed,
     position_us: u64,
     duration_us: u64,
     data_bytes: u64,
     record_count: u64,
+    marker_count: u64,
+    markers: Vec<ReplayMarkerPayload>,
     message: Option<String>,
     worker: Option<ReplayWorkerHandle>,
 }
@@ -206,12 +227,15 @@ impl Default for SharedReplayState {
             revision: 0,
             path: String::new(),
             header: None,
+            format_version: 0,
             complete: false,
             speed: ReplaySpeed::default(),
             position_us: 0,
             duration_us: 0,
             data_bytes: 0,
             record_count: 0,
+            marker_count: 0,
+            markers: Vec::new(),
             message: None,
             worker: None,
         }
@@ -228,12 +252,14 @@ impl SharedReplayState {
             revision: self.revision,
             path: self.path.clone(),
             header: self.header.clone(),
+            format_version: self.format_version,
             complete: self.complete,
             speed: self.speed.as_f64(),
             position_us: self.position_us,
             duration_us: self.duration_us,
             data_bytes: self.data_bytes,
             record_count: self.record_count,
+            marker_count: self.marker_count,
             message: self.message.clone(),
         }
     }
@@ -249,12 +275,15 @@ impl SharedReplayState {
         self.timeline_revision = 0;
         self.path.clear();
         self.header = None;
+        self.format_version = 0;
         self.complete = false;
         self.speed = ReplaySpeed::default();
         self.position_us = 0;
         self.duration_us = 0;
         self.data_bytes = 0;
         self.record_count = 0;
+        self.marker_count = 0;
+        self.markers.clear();
         self.message = None;
         self.touch()
     }
@@ -384,6 +413,25 @@ pub fn get_replay_state(state: State<'_, ReplayState>) -> Result<ReplayStatePayl
 }
 
 #[tauri::command]
+pub fn get_replay_markers(
+    state: State<'_, ReplayState>,
+    session_id: u64,
+) -> Result<ReplayMarkersPayload, String> {
+    let shared = state
+        .core
+        .shared
+        .lock()
+        .map_err(|_| "回放状态锁已损坏".to_owned())?;
+    if shared.session_id != session_id || shared.status == ReplayStatus::Idle {
+        return Err("回放会话已变化".to_owned());
+    }
+    Ok(ReplayMarkersPayload {
+        session_id,
+        markers: shared.markers.clone(),
+    })
+}
+
+#[tauri::command]
 pub async fn open_replay(
     app: AppHandle,
     state: State<'_, ReplayState>,
@@ -419,6 +467,7 @@ fn open_replay_inner(
         path: candidate_path,
         path_text,
         header,
+        format_version,
         reader,
     } = candidate;
 
@@ -455,6 +504,7 @@ fn open_replay_inner(
                     session_id,
                     worker_path,
                     worker_header,
+                    format_version,
                     reader,
                     control_receiver,
                     ack_receiver,
@@ -490,12 +540,15 @@ fn open_replay_inner(
         shared.timeline_revision = 0;
         shared.path = path_text;
         shared.header = Some(header);
+        shared.format_version = format_version;
         shared.complete = false;
         shared.speed = ReplaySpeed::default();
         shared.position_us = 0;
         shared.duration_us = 0;
         shared.data_bytes = 0;
         shared.record_count = 0;
+        shared.marker_count = 0;
+        shared.markers.clear();
         shared.message = Some("正在扫描捕获文件".to_owned());
         shared.worker = Some(ReplayWorkerHandle {
             session_id,
@@ -765,6 +818,7 @@ struct ReplayCandidate {
     path: PathBuf,
     path_text: String,
     header: CaptureHeader,
+    format_version: u16,
     reader: CaptureReader<File>,
 }
 
@@ -796,12 +850,14 @@ fn open_replay_candidate(path: String) -> Result<ReplayCandidate, String> {
         return Err("回放路径不是普通文件".to_owned());
     }
     let reader = CaptureReader::new(file).map_err(|error| error.to_string())?;
+    let format_version = reader.version();
     let header = reader.header().clone();
 
     Ok(ReplayCandidate {
         path: path_buf,
         path_text: path.to_owned(),
         header,
+        format_version,
         reader,
     })
 }
@@ -868,6 +924,7 @@ impl ReplayCore {
             shared.duration_us = accumulator.duration_us();
             shared.data_bytes = accumulator.stats.data_bytes();
             shared.record_count = accumulator.stats.record_count();
+            shared.marker_count = accumulator.stats.marker_count();
             Some(shared.touch())
         });
         if let Some(payload) = payload {
@@ -880,17 +937,28 @@ impl ReplayCore {
         app: &AppHandle,
         session_id: u64,
         summary: &ScanSummary,
+        markers: &[ReplayMarkerPayload],
     ) -> Result<ReplayStatePayload, String> {
-        self.publish_transition(app, session_id, |shared| {
+        let payload = self.publish_transition(app, session_id, |shared| {
             shared.status = ReplayStatus::Ready;
             shared.complete = summary.complete;
             shared.position_us = 0;
             shared.duration_us = summary.duration_us;
             shared.data_bytes = summary.data_bytes;
             shared.record_count = summary.record_count;
+            shared.marker_count = summary.marker_count;
+            shared.markers = markers.to_vec();
             shared.message = summary.message.clone();
             Ok(())
-        })
+        })?;
+        emit_markers(
+            app,
+            ReplayMarkersPayload {
+                session_id,
+                markers: markers.to_vec(),
+            },
+        );
+        Ok(payload)
     }
 
     fn publish_worker_error(&self, app: &AppHandle, session_id: u64, message: String) {
@@ -915,12 +983,15 @@ impl ReplayCore {
             shared.timeline_revision = 0;
             shared.path = path;
             shared.header = None;
+            shared.format_version = 0;
             shared.complete = false;
             shared.speed = ReplaySpeed::default();
             shared.position_us = 0;
             shared.duration_us = 0;
             shared.data_bytes = 0;
             shared.record_count = 0;
+            shared.marker_count = 0;
+            shared.markers.clear();
             shared.message = Some(message);
             shared.touch()
         });
@@ -981,10 +1052,12 @@ impl ReplayCore {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ScanSummary {
+    format_version: u16,
     complete: bool,
     duration_us: u64,
     data_bytes: u64,
     record_count: u64,
+    marker_count: u64,
     message: Option<String>,
 }
 
@@ -994,6 +1067,7 @@ struct ReplayCheckpoint {
     file_offset: u64,
     record_count: u64,
     data_bytes: u64,
+    marker_count: u64,
 }
 
 struct ReplayIndex {
@@ -1010,6 +1084,7 @@ impl ReplayIndex {
             file_offset: origin_file_offset,
             record_count: 0,
             data_bytes: 0,
+            marker_count: 0,
         });
         Self {
             checkpoints,
@@ -1029,6 +1104,7 @@ impl ReplayIndex {
         file_offset: u64,
         record_count: u64,
         data_bytes: u64,
+        marker_count: u64,
     ) {
         if let Some(scanner) = &mut self.checkpoint_scanner {
             if record.direction == CaptureDirection::Rx {
@@ -1050,6 +1126,7 @@ impl ReplayIndex {
                 file_offset,
                 record_count,
                 data_bytes,
+                marker_count,
             });
         }
     }
@@ -1076,6 +1153,7 @@ impl ReplayIndex {
 #[derive(Default)]
 struct ScanAccumulator {
     stats: CaptureRecordStats,
+    markers: Vec<ReplayMarkerPayload>,
 }
 
 impl ScanAccumulator {
@@ -1083,18 +1161,37 @@ impl ScanAccumulator {
         self.stats.observe(record)
     }
 
+    fn observe_marker(&mut self, marker: &CaptureMarker) -> Result<(), String> {
+        self.stats.observe_marker(marker)?;
+        self.markers.push(ReplayMarkerPayload {
+            index: self.stats.marker_count(),
+            timestamp_us: marker.timestamp_us,
+            label: marker.label.clone(),
+            color: marker.color,
+        });
+        Ok(())
+    }
+
     fn duration_us(&self) -> u64 {
         self.stats.duration_us()
     }
 
-    fn finish(self, complete: bool, message: Option<String>) -> ScanSummary {
-        ScanSummary {
+    fn finish(
+        self,
+        format_version: u16,
+        complete: bool,
+        message: Option<String>,
+    ) -> (ScanSummary, Vec<ReplayMarkerPayload>) {
+        let summary = ScanSummary {
+            format_version,
             complete,
             duration_us: self.stats.duration_us(),
             data_bytes: self.stats.data_bytes(),
             record_count: self.stats.record_count(),
+            marker_count: self.stats.marker_count(),
             message,
-        }
+        };
+        (summary, self.markers)
     }
 }
 
@@ -1102,6 +1199,7 @@ enum ScanResult {
     Ready {
         summary: ScanSummary,
         index: ReplayIndex,
+        markers: Vec<ReplayMarkerPayload>,
     },
     Closed,
     Failed(String),
@@ -1114,6 +1212,7 @@ fn run_replay_worker(
     session_id: u64,
     path: PathBuf,
     header: CaptureHeader,
+    format_version: u16,
     mut reader: CaptureReader<File>,
     control_receiver: mpsc::Receiver<ControlCommand>,
     ack_receiver: mpsc::Receiver<ReplayAck>,
@@ -1130,15 +1229,23 @@ fn run_replay_worker(
     );
     drop(reader);
 
-    let (summary, index) = match scan_result {
-        ScanResult::Ready { summary, index } => (summary, index),
+    let (summary, index, markers) = match scan_result {
+        ScanResult::Ready {
+            summary,
+            index,
+            markers,
+        } => (summary, index, markers),
         ScanResult::Closed => return,
         ScanResult::Failed(message) => {
             core.publish_worker_error(&app, session_id, message);
             return;
         }
     };
-    if let Err(message) = core.publish_ready(&app, session_id, &summary) {
+    if summary.format_version != format_version {
+        core.publish_worker_error(&app, session_id, "回放扫描版本与打开版本不一致".to_owned());
+        return;
+    }
+    if let Err(message) = core.publish_ready(&app, session_id, &summary, &markers) {
         core.publish_worker_error(&app, session_id, message);
         return;
     }
@@ -1172,6 +1279,7 @@ fn scan_capture(
     shutdown: &Arc<AtomicBool>,
 ) -> ScanResult {
     let mut accumulator = ScanAccumulator::default();
+    let format_version = reader.version();
     let origin_file_offset = match reader.stream_position() {
         Ok(file_offset) => file_offset,
         Err(error) => return ScanResult::Failed(error.to_string()),
@@ -1205,31 +1313,47 @@ fn scan_capture(
                     file_offset,
                     accumulator.stats.record_count(),
                     accumulator.stats.data_bytes(),
+                    accumulator.stats.marker_count(),
                 );
                 if last_progress.elapsed() >= SCAN_PROGRESS_INTERVAL {
                     core.publish_scan_progress(app, session_id, &accumulator);
                     last_progress = Instant::now();
                 }
             }
+            Some(Ok(CaptureItem::Marker(marker))) => {
+                if let Err(message) = accumulator.observe_marker(&marker) {
+                    return ScanResult::Failed(message);
+                }
+                if last_progress.elapsed() >= SCAN_PROGRESS_INTERVAL {
+                    core.publish_scan_progress(app, session_id, &accumulator);
+                    last_progress = Instant::now();
+                }
+            }
             Some(Ok(CaptureItem::Footer(_))) => {
+                let (summary, markers) = accumulator.finish(format_version, true, None);
                 return ScanResult::Ready {
-                    summary: accumulator.finish(true, None),
+                    summary,
                     index,
+                    markers,
                 };
             }
             Some(Err(error @ CaptureReadError::Truncated(_))) => {
                 let message = format!("捕获文件未正常结束，将回放已验证的完整记录前缀（{error}）");
+                let (summary, markers) = accumulator.finish(format_version, false, Some(message));
                 return ScanResult::Ready {
-                    summary: accumulator.finish(false, Some(message)),
+                    summary,
                     index,
+                    markers,
                 };
             }
             Some(Err(error)) => return ScanResult::Failed(error.to_string()),
             None => {
                 let message = "捕获文件缺少结束标记，将回放已验证的完整记录前缀".to_owned();
+                let (summary, markers) = accumulator.finish(format_version, false, Some(message));
                 return ScanResult::Ready {
-                    summary: accumulator.finish(false, Some(message)),
+                    summary,
                     index,
+                    markers,
                 };
             }
         }
@@ -1294,6 +1418,7 @@ struct ReplayCursor {
     last_timestamp_us: Option<u64>,
     data_bytes_read: u64,
     records_read: u64,
+    markers_read: u64,
     end_verified: bool,
 }
 
@@ -1394,7 +1519,7 @@ where
     let mode = replay_seek_mode(&expected_header.protocol)
         .ok_or_else(|| format!("协议 {} 不支持回放定位", expected_header.protocol))?;
     if target_us == 0 && summary.record_count > 0 {
-        let mut cursor = ReplayCursor::open(path, expected_header)?;
+        let mut cursor = ReplayCursor::open(path, expected_header, summary.format_version)?;
         cursor.lookahead = cursor.next_record(summary)?;
         return Ok(SeekLocation::Positioned {
             cursor: Box::new(cursor),
@@ -1402,7 +1527,8 @@ where
         });
     }
 
-    let mut cursor = ReplayCursor::open_at(path, expected_header, checkpoint)?;
+    let mut cursor =
+        ReplayCursor::open_at(path, expected_header, summary.format_version, checkpoint)?;
     let at_end = target_us >= summary.duration_us;
     let mut boundary_scanner = ProtocolBoundaryScanner::new(mode, true);
     loop {
@@ -1437,8 +1563,9 @@ where
                         let position_us = record.timestamp_us;
                         let remaining_payload = record.payload.split_off(payload_offset);
                         if remaining_payload.is_empty() {
-                            if cursor.records_read == summary.record_count {
-                                cursor.verify_end(summary)?;
+                            if cursor.records_read == summary.record_count
+                                && cursor.next_record(summary)?.is_none()
+                            {
                                 return Ok(SeekLocation::Completed {
                                     position_us: summary.duration_us,
                                 });
@@ -1455,23 +1582,26 @@ where
                 }
             }
             Some(_) => {}
-            None if at_end || mode != ReplaySeekMode::Record => {
+            None => {
                 return Ok(SeekLocation::Completed {
                     position_us: summary.duration_us,
                 })
             }
-            None => return Err("回放文件在定位时提前结束".to_owned()),
         }
     }
 }
 
 impl ReplayCursor {
-    fn open(path: &Path, expected_header: &CaptureHeader) -> Result<Self, String> {
+    fn open(
+        path: &Path,
+        expected_header: &CaptureHeader,
+        expected_format_version: u16,
+    ) -> Result<Self, String> {
         let file = File::open(path)
             .map_err(|error| format!("重新打开回放文件 {} 失败: {error}", path.display()))?;
         let reader = CaptureReader::new(file).map_err(|error| error.to_string())?;
-        if reader.header() != expected_header {
-            return Err("回放文件在扫描后发生变化：文件头不一致".to_owned());
+        if reader.header() != expected_header || reader.version() != expected_format_version {
+            return Err("回放文件在扫描后发生变化：文件头或版本不一致".to_owned());
         }
         Ok(Self {
             reader,
@@ -1479,6 +1609,7 @@ impl ReplayCursor {
             last_timestamp_us: None,
             data_bytes_read: 0,
             records_read: 0,
+            markers_read: 0,
             end_verified: false,
         })
     }
@@ -1486,62 +1617,87 @@ impl ReplayCursor {
     fn open_at(
         path: &Path,
         expected_header: &CaptureHeader,
+        expected_format_version: u16,
         checkpoint: ReplayCheckpoint,
     ) -> Result<Self, String> {
         let file = File::open(path)
             .map_err(|error| format!("重新打开回放文件 {} 失败: {error}", path.display()))?;
         let reader = CaptureReader::new(file).map_err(|error| error.to_string())?;
-        if reader.header() != expected_header {
-            return Err("回放文件在扫描后发生变化：文件头不一致".to_owned());
+        if reader.header() != expected_header || reader.version() != expected_format_version {
+            return Err("回放文件在扫描后发生变化：文件头或版本不一致".to_owned());
         }
         let reader = reader
             .resume_from_verified(
                 checkpoint.file_offset,
                 checkpoint.data_bytes,
                 checkpoint.record_count,
+                checkpoint.marker_count,
+                (checkpoint.record_count > 0 || checkpoint.marker_count > 0)
+                    .then_some(checkpoint.position_us),
             )
             .map_err(|error| error.to_string())?;
         Ok(Self {
             reader,
             lookahead: None,
-            last_timestamp_us: (checkpoint.record_count > 0).then_some(checkpoint.position_us),
+            last_timestamp_us: (checkpoint.record_count > 0 || checkpoint.marker_count > 0)
+                .then_some(checkpoint.position_us),
             data_bytes_read: checkpoint.data_bytes,
             records_read: checkpoint.record_count,
+            markers_read: checkpoint.marker_count,
             end_verified: false,
         })
     }
 
     fn next_record(&mut self, summary: &ScanSummary) -> Result<Option<CaptureRecord>, String> {
-        if self.records_read < summary.record_count {
-            let record = match self.reader.next() {
-                Some(Ok(CaptureItem::Record(record))) => record,
+        loop {
+            if self.records_read == summary.record_count
+                && self.markers_read == summary.marker_count
+            {
+                self.verify_end(summary)?;
+                return Ok(None);
+            }
+            match self.reader.next() {
+                Some(Ok(CaptureItem::Record(record))) => {
+                    if self.records_read >= summary.record_count {
+                        return Err("回放文件在扫描后发生变化：记录数量增加".to_owned());
+                    }
+                    self.observe_timestamp(record.timestamp_us)?;
+                    self.data_bytes_read = self
+                        .data_bytes_read
+                        .saturating_add(record.payload.len() as u64);
+                    self.records_read = self.records_read.saturating_add(1);
+                    return Ok(Some(record));
+                }
+                Some(Ok(CaptureItem::Marker(marker))) => {
+                    if self.markers_read >= summary.marker_count {
+                        return Err("回放文件在扫描后发生变化：标记数量增加".to_owned());
+                    }
+                    self.observe_timestamp(marker.timestamp_us)?;
+                    self.markers_read = self.markers_read.saturating_add(1);
+                }
                 Some(Ok(CaptureItem::Footer(_))) => {
-                    return Err("回放文件在扫描后发生变化：记录提前结束".to_owned())
+                    return Err("回放文件在扫描后发生变化：时间线提前结束".to_owned())
                 }
                 Some(Err(error)) => return Err(error.to_string()),
-                None => return Err("回放文件在扫描后发生变化：记录提前结束".to_owned()),
-            };
-            if self
-                .last_timestamp_us
-                .map(|last| record.timestamp_us < last)
-                .unwrap_or(false)
-            {
-                return Err(format!(
-                    "回放时间戳从 {} 微秒回退到 {} 微秒",
-                    self.last_timestamp_us.unwrap_or(0),
-                    record.timestamp_us
-                ));
+                None => return Err("回放文件在扫描后发生变化：时间线提前结束".to_owned()),
             }
-            self.last_timestamp_us = Some(record.timestamp_us);
-            self.data_bytes_read = self
-                .data_bytes_read
-                .saturating_add(record.payload.len() as u64);
-            self.records_read = self.records_read.saturating_add(1);
-            return Ok(Some(record));
         }
+    }
 
-        self.verify_end(summary)?;
-        Ok(None)
+    fn observe_timestamp(&mut self, timestamp_us: u64) -> Result<(), String> {
+        if self
+            .last_timestamp_us
+            .map(|last| timestamp_us < last)
+            .unwrap_or(false)
+        {
+            return Err(format!(
+                "回放时间戳从 {} 微秒回退到 {} 微秒",
+                self.last_timestamp_us.unwrap_or(0),
+                timestamp_us
+            ));
+        }
+        self.last_timestamp_us = Some(timestamp_us);
+        Ok(())
     }
 
     fn verify_end(&mut self, summary: &ScanSummary) -> Result<(), String> {
@@ -1554,11 +1710,18 @@ impl ReplayCursor {
                 summary.data_bytes, self.data_bytes_read
             ));
         }
+        if self.records_read != summary.record_count || self.markers_read != summary.marker_count {
+            return Err(format!(
+                "回放文件在扫描后发生变化：期望 {} 条记录/{} 个标记，实际 {} 条记录/{} 个标记",
+                summary.record_count, summary.marker_count, self.records_read, self.markers_read
+            ));
+        }
 
         let valid_end = match self.reader.next() {
             Some(Ok(CaptureItem::Footer(_))) => summary.complete,
             Some(Err(CaptureReadError::Truncated(_))) => !summary.complete,
             Some(Ok(CaptureItem::Record(_))) => false,
+            Some(Ok(CaptureItem::Marker(_))) => false,
             Some(Err(error)) => return Err(error.to_string()),
             None => false,
         };
@@ -1829,7 +1992,11 @@ impl ReplayRuntime {
 
     fn ensure_cursor(&mut self) -> Result<(), String> {
         if self.cursor.is_none() {
-            self.cursor = Some(ReplayCursor::open(&self.path, &self.header)?);
+            self.cursor = Some(ReplayCursor::open(
+                &self.path,
+                &self.header,
+                self.summary.format_version,
+            )?);
         }
         Ok(())
     }
@@ -2339,12 +2506,15 @@ impl ReplayRuntime {
                 shared.timeline_revision = 0;
                 shared.path.clear();
                 shared.header = None;
+                shared.format_version = 0;
                 shared.complete = false;
                 shared.speed = ReplaySpeed::default();
                 shared.position_us = 0;
                 shared.duration_us = 0;
                 shared.data_bytes = 0;
                 shared.record_count = 0;
+                shared.marker_count = 0;
+                shared.markers.clear();
                 shared.message = None;
                 Ok(())
             });
@@ -2365,6 +2535,10 @@ fn next_generation(generation: u64) -> u64 {
 
 fn emit_state(app: &AppHandle, payload: ReplayStatePayload) {
     let _ = app.emit("replay://state", payload);
+}
+
+fn emit_markers(app: &AppHandle, payload: ReplayMarkersPayload) {
+    let _ = app.emit("replay://markers", payload);
 }
 
 fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
@@ -2396,6 +2570,11 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_file(&self.path);
         }
+    }
+
+    enum TestTimelineItem {
+        Record(CaptureDirection, u64, Vec<u8>),
+        Marker(CaptureMarkerColor, u64, String),
     }
 
     fn test_header(protocol: &str) -> CaptureHeader {
@@ -2433,7 +2612,7 @@ mod tests {
         let header_bytes = serde_json::to_vec(&test_header(protocol)).unwrap();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&CAPTURE_MAGIC);
-        bytes.extend_from_slice(&CAPTURE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
         bytes.extend_from_slice(&0_u16.to_le_bytes());
         bytes.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&header_bytes);
@@ -2469,10 +2648,78 @@ mod tests {
         TempCapture { path }
     }
 
-    fn scan_test_capture(path: &Path) -> (CaptureHeader, ScanSummary, ReplayIndex) {
+    fn temporary_v2_capture(
+        protocol: &str,
+        items: &[TestTimelineItem],
+        complete: bool,
+    ) -> TempCapture {
+        let header_bytes = serde_json::to_vec(&test_header(protocol)).unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&CAPTURE_MAGIC);
+        bytes.extend_from_slice(&CAPTURE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&header_bytes);
+
+        let mut data_bytes = 0_u64;
+        let mut record_count = 0_u64;
+        let mut marker_count = 0_u64;
+        for item in items {
+            match item {
+                TestTimelineItem::Record(direction, timestamp_us, payload) => {
+                    bytes.push(0x01);
+                    bytes.push(match direction {
+                        CaptureDirection::Rx => 0,
+                        CaptureDirection::Tx => 1,
+                    });
+                    bytes.extend_from_slice(&0_u16.to_le_bytes());
+                    bytes.extend_from_slice(&timestamp_us.to_le_bytes());
+                    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(payload);
+                    data_bytes = data_bytes.saturating_add(payload.len() as u64);
+                    record_count = record_count.saturating_add(1);
+                }
+                TestTimelineItem::Marker(color, timestamp_us, label) => {
+                    let label = label.as_bytes();
+                    bytes.push(0x02);
+                    bytes.push(*color as u8);
+                    bytes.extend_from_slice(&0_u16.to_le_bytes());
+                    bytes.extend_from_slice(&timestamp_us.to_le_bytes());
+                    bytes.extend_from_slice(&(label.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(label);
+                    marker_count = marker_count.saturating_add(1);
+                }
+            }
+        }
+        if complete {
+            bytes.push(0xff);
+            bytes.extend_from_slice(&[0_u8; 7]);
+            bytes.extend_from_slice(&data_bytes.to_le_bytes());
+            bytes.extend_from_slice(&record_count.to_le_bytes());
+            bytes.extend_from_slice(&marker_count.to_le_bytes());
+        }
+
+        let unique = NEXT_TEMP_CAPTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "vofa-ultra-replay-v2-{}-{unique}.vucap",
+            std::process::id()
+        ));
+        fs::write(&path, bytes).unwrap();
+        TempCapture { path }
+    }
+
+    fn scan_test_capture_full(
+        path: &Path,
+    ) -> (
+        CaptureHeader,
+        ScanSummary,
+        ReplayIndex,
+        Vec<ReplayMarkerPayload>,
+    ) {
         let file = File::open(path).unwrap();
         let mut reader = CaptureReader::new(file).unwrap();
         let header = reader.header().clone();
+        let format_version = reader.version();
         let mut index = ReplayIndex::new(reader.stream_position().unwrap(), &header.protocol);
         let mut accumulator = ScanAccumulator::default();
         let complete = loop {
@@ -2484,7 +2731,11 @@ mod tests {
                         reader.stream_position().unwrap(),
                         accumulator.stats.record_count(),
                         accumulator.stats.data_bytes(),
+                        accumulator.stats.marker_count(),
                     );
+                }
+                Some(Ok(CaptureItem::Marker(marker))) => {
+                    accumulator.observe_marker(&marker).unwrap();
                 }
                 Some(Ok(CaptureItem::Footer(_))) => break true,
                 Some(Err(CaptureReadError::Truncated(_))) => break false,
@@ -2493,7 +2744,13 @@ mod tests {
             }
         };
         let message = (!complete).then(|| "文件不完整".to_owned());
-        (header, accumulator.finish(complete, message), index)
+        let (summary, markers) = accumulator.finish(format_version, complete, message);
+        (header, summary, index, markers)
+    }
+
+    fn scan_test_capture(path: &Path) -> (CaptureHeader, ScanSummary, ReplayIndex) {
+        let (header, summary, index, _) = scan_test_capture_full(path);
+        (header, summary, index)
     }
 
     fn located_record(
@@ -2581,13 +2838,89 @@ mod tests {
         let mut accumulator = ScanAccumulator::default();
         accumulator.observe(&record(20, 4)).unwrap();
         accumulator.observe(&record(35, 6)).unwrap();
-        let summary = accumulator.finish(false, Some("文件不完整".to_owned()));
+        let (summary, _) =
+            accumulator.finish(CAPTURE_VERSION, false, Some("文件不完整".to_owned()));
 
         assert!(!summary.complete);
         assert_eq!(summary.duration_us, 35);
         assert_eq!(summary.data_bytes, 10);
         assert_eq!(summary.record_count, 2);
+        assert_eq!(summary.marker_count, 0);
         assert_eq!(summary.message.as_deref(), Some("文件不完整"));
+    }
+
+    #[test]
+    fn v2_scan_collects_markers_without_putting_them_in_record_batches() {
+        let capture = temporary_v2_capture(
+            "raw",
+            &[
+                TestTimelineItem::Record(CaptureDirection::Rx, 0, vec![1]),
+                TestTimelineItem::Marker(CaptureMarkerColor::Green, 5, "启动".to_owned()),
+                TestTimelineItem::Record(CaptureDirection::Tx, 10, vec![2, 3]),
+                TestTimelineItem::Marker(CaptureMarkerColor::Orange, 20, "进入稳态".to_owned()),
+            ],
+            true,
+        );
+        let (header, summary, index, markers) = scan_test_capture_full(&capture.path);
+
+        assert_eq!(summary.format_version, CAPTURE_VERSION);
+        assert!(summary.complete);
+        assert_eq!(summary.duration_us, 20);
+        assert_eq!((summary.record_count, summary.marker_count), (2, 2));
+        assert_eq!(markers.len(), 2);
+        assert_eq!(markers[0].label, "启动");
+        assert_eq!(markers[1].color, CaptureMarkerColor::Orange);
+
+        let (_, records) = located_suffix(&capture, &header, &summary, &index, 0).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].payload, vec![1]);
+        assert_eq!(records[1].payload, vec![2, 3]);
+    }
+
+    #[test]
+    fn marker_only_and_trailing_marker_ranges_complete_without_empty_batches() {
+        let capture = temporary_v2_capture(
+            "raw",
+            &[
+                TestTimelineItem::Marker(CaptureMarkerColor::Blue, 5, "A".to_owned()),
+                TestTimelineItem::Marker(CaptureMarkerColor::Purple, 10, "B".to_owned()),
+            ],
+            true,
+        );
+        let (header, summary, index, markers) = scan_test_capture_full(&capture.path);
+        assert_eq!((summary.record_count, summary.marker_count), (0, 2));
+        assert_eq!(summary.duration_us, 10);
+        assert_eq!(markers.len(), 2);
+        assert!(located_record(&capture, &header, &summary, &index, 5).is_none());
+
+        let mut cursor =
+            ReplayCursor::open(&capture.path, &header, summary.format_version).unwrap();
+        assert!(build_next_batch(&mut cursor, &summary).unwrap().is_none());
+    }
+
+    #[test]
+    fn seek_checkpoint_restores_marker_count_and_incomplete_v2_prefix() {
+        let capture = temporary_v2_capture(
+            "raw",
+            &[
+                TestTimelineItem::Record(CaptureDirection::Rx, 10, vec![1]),
+                TestTimelineItem::Marker(CaptureMarkerColor::Yellow, 20, "M".to_owned()),
+                TestTimelineItem::Record(CaptureDirection::Rx, 30, vec![2]),
+                TestTimelineItem::Marker(CaptureMarkerColor::Red, 40, "尾部".to_owned()),
+            ],
+            false,
+        );
+        let (header, summary, index, markers) = scan_test_capture_full(&capture.path);
+        assert!(!summary.complete);
+        assert_eq!((summary.record_count, summary.marker_count), (2, 2));
+        assert_eq!(markers.len(), 2);
+
+        let checkpoint = index.checkpoint_before(35);
+        assert_eq!(checkpoint.record_count, 2);
+        assert_eq!(checkpoint.marker_count, 1);
+        assert!(located_record(&capture, &header, &summary, &index, 35).is_none());
+        let next = located_record(&capture, &header, &summary, &index, 25).unwrap();
+        assert_eq!(next.timestamp_us, 30);
     }
 
     #[test]
@@ -2747,7 +3080,7 @@ mod tests {
 
     #[test]
     fn sparse_index_is_bounded_and_locates_strictly_before_target() {
-        assert_eq!(std::mem::size_of::<ReplayCheckpoint>(), 32);
+        assert_eq!(std::mem::size_of::<ReplayCheckpoint>(), 40);
         let mut index = ReplayIndex::new(64, "raw");
         let records = (REPLAY_INDEX_MAX_CHECKPOINTS as u64) * 4;
         for record_count in 1..=records {
@@ -2757,6 +3090,7 @@ mod tests {
                 64 + record_count * 16,
                 record_count,
                 record_count * 2,
+                0,
             );
         }
 
@@ -2781,10 +3115,10 @@ mod tests {
     #[test]
     fn duplicate_timestamp_checkpoint_never_skips_exact_target() {
         let mut index = ReplayIndex::new(100, "raw");
-        index.observe(&record(10, 1), 120, 1, 1);
-        index.observe(&record(10, 1), 140, 2, 2);
-        index.observe(&record(10, 1), 160, 3, 3);
-        index.observe(&record(20, 1), 180, 4, 4);
+        index.observe(&record(10, 1), 120, 1, 1, 0);
+        index.observe(&record(10, 1), 140, 2, 2, 0);
+        index.observe(&record(10, 1), 160, 3, 3, 0);
+        index.observe(&record(20, 1), 180, 4, 4, 0);
 
         assert_eq!(index.checkpoint_before(10).record_count, 0);
         assert_eq!(index.checkpoint_before(11).record_count, 3);

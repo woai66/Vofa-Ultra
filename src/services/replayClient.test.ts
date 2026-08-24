@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ackReplayBatch,
   closeReplay,
+  getReplayMarkers,
   openReplay,
   pauseReplay,
   playReplay,
@@ -57,6 +58,7 @@ describe("replayClient", () => {
     await setReplaySpeed(7, 4, 2);
     await stopReplay(7, 3);
     await ackReplayBatch(7, 3, 4);
+    await getReplayMarkers(7);
     await closeReplay(7);
 
     expect(invokeMock.mock.calls).toEqual([
@@ -67,33 +69,46 @@ describe("replayClient", () => {
       ["set_replay_speed", { sessionId: 7, generation: 4, speed: 2 }],
       ["stop_replay", { sessionId: 7, generation: 3 }],
       ["ack_replay_batch", { sessionId: 7, generation: 3, sequence: 4 }],
+      ["get_replay_markers", { sessionId: 7 }],
       ["close_replay", { sessionId: 7 }],
     ]);
   });
 
-  it("订阅状态和批次事件并统一释放监听", async () => {
+  it("订阅状态、批次和标记事件并统一释放监听", async () => {
     const callbacks = new Map<string, (event: { payload: unknown }) => void>();
     const disposeState = vi.fn();
     const disposeBatch = vi.fn();
+    const disposeMarkers = vi.fn();
     listenMock.mockImplementation(
       (event: string, callback: (payload: { payload: unknown }) => void) => {
         callbacks.set(event, callback);
-        return Promise.resolve(event === "replay://state" ? disposeState : disposeBatch);
+        return Promise.resolve(
+          event === "replay://state"
+            ? disposeState
+            : event === "replay://batch"
+              ? disposeBatch
+              : disposeMarkers,
+        );
       },
     );
     const onState = vi.fn();
     const onBatch = vi.fn();
+    const onMarkers = vi.fn();
 
-    const dispose = await subscribeToReplayEvents({ onState, onBatch });
+    const dispose = await subscribeToReplayEvents({ onState, onBatch, onMarkers });
     const statePayload = { status: "ready", sessionId: 7 };
     const batchPayload = { sessionId: 7, generation: 1, sequence: 1 };
+    const markersPayload = { sessionId: 7, markers: [] };
     callbacks.get("replay://state")?.({ payload: statePayload });
     callbacks.get("replay://batch")?.({ payload: batchPayload });
+    callbacks.get("replay://markers")?.({ payload: markersPayload });
     dispose();
 
     expect(onState).toHaveBeenCalledWith(statePayload);
     expect(onBatch).toHaveBeenCalledWith(batchPayload);
+    expect(onMarkers).toHaveBeenCalledWith(markersPayload);
     expect(disposeState).toHaveBeenCalledOnce();
     expect(disposeBatch).toHaveBeenCalledOnce();
+    expect(disposeMarkers).toHaveBeenCalledOnce();
   });
 });

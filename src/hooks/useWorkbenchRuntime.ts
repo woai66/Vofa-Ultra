@@ -13,6 +13,7 @@ import {
   subscribeToSerialEvents,
 } from "../services/serialClient";
 import {
+  getReplayMarkers,
   getReplayState,
   subscribeToReplayEvents,
 } from "../services/replayClient";
@@ -43,6 +44,7 @@ export function useWorkbenchRuntime(): void {
   );
   const handleReplayState = useWorkbenchStore((state) => state.handleReplayState);
   const handleReplayBatch = useWorkbenchStore((state) => state.handleReplayBatch);
+  const handleReplayMarkers = useWorkbenchStore((state) => state.handleReplayMarkers);
 
   useEffect(() => {
     const nativeRuntime = isTauriRuntime();
@@ -175,6 +177,7 @@ export function useWorkbenchRuntime(): void {
     void subscribeToReplayEvents({
       onState: handleReplayState,
       onBatch: handleReplayBatch,
+      onMarkers: handleReplayMarkers,
     })
       .then(async (unlisten) => {
         if (cancelled) {
@@ -186,6 +189,23 @@ export function useWorkbenchRuntime(): void {
           const snapshot = await getReplayState();
           if (!cancelled) {
             handleReplayState(snapshot);
+            if (snapshot.sessionId > 0 && snapshot.status !== "idle") {
+              try {
+                const markers = await getReplayMarkers(snapshot.sessionId);
+                if (!cancelled) {
+                  handleReplayMarkers(markers);
+                }
+              } catch (error) {
+                const replay = useWorkbenchStore.getState();
+                if (
+                  !cancelled &&
+                  replay.replaySessionId === snapshot.sessionId &&
+                  replay.replayStatus !== "idle"
+                ) {
+                  console.error("初始化回放标记失败", error);
+                }
+              }
+            }
           }
         }
       })
@@ -197,7 +217,7 @@ export function useWorkbenchRuntime(): void {
       cancelled = true;
       dispose();
     };
-  }, [handleReplayBatch, handleReplayState]);
+  }, [handleReplayBatch, handleReplayMarkers, handleReplayState]);
 
   useEffect(() => {
     if (source !== "simulator" || connectionStatus !== "connected") {
