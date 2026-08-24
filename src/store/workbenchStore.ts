@@ -9,7 +9,13 @@ import {
   type CommandTaskStopReason,
   type PreparedCommand,
 } from "../core/commandWorkflow";
-import { createProtocolParser, type ProtocolParser } from "../core/protocols";
+import {
+  createProtocolParser,
+  getProtocolDefinition,
+  MAX_PROTOCOL_CHANNELS,
+  protocolSupportsReplaySeek,
+  type ProtocolParser,
+} from "../core/protocols";
 import { RingBuffer } from "../core/ringBuffer";
 import {
   isRecoveryActivePhase,
@@ -102,7 +108,6 @@ import type {
   WorkspaceProfile,
 } from "../types/workspace";
 
-const MAX_CHANNELS = 16;
 const MAX_POINTS_PER_CHANNEL = 2_000;
 const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY = 2_048;
@@ -1366,7 +1371,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       seekReplay: async (targetUs) => {
         const state = get();
         if (
-          state.replayHeader?.protocol !== "raw" ||
+          !state.replayHeader ||
+          !protocolSupportsReplaySeek(state.replayHeader.protocol) ||
           !["ready", "paused", "completed"].includes(state.replayStatus) ||
           !Number.isFinite(targetUs) ||
           !beginRuntimeTransition(get, set, "controlling-replay")
@@ -2390,7 +2396,7 @@ function appendFrames(
 
   const nextChannels = channels.map((channel) => ({ ...channel }));
   for (const frame of frames) {
-    const channelCount = Math.min(frame.values.length, MAX_CHANNELS);
+    const channelCount = Math.min(frame.values.length, MAX_PROTOCOL_CHANNELS);
     for (let index = 0; index < channelCount; index += 1) {
       const value = frame.values[index];
       if (value === undefined || !Number.isFinite(value)) {
@@ -2620,14 +2626,7 @@ function getErrorMessage(error: unknown): string {
 }
 
 function protocolDisplayName(protocol: ProtocolKind): string {
-  switch (protocol) {
-    case "firewater":
-      return "FireWater";
-    case "justfloat":
-      return "JustFloat";
-    case "raw":
-      return "Raw Data";
-  }
+  return getProtocolDefinition(protocol).displayName;
 }
 
 function serialStatusMessage(status: ConnectionStatus, portName: string): string {

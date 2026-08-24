@@ -17,6 +17,10 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
+import {
+  getProtocolDefinition,
+  protocolSupportsReplaySeek,
+} from "../core/protocols";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { CaptureUiStatus } from "../types/capture";
 import type {
@@ -25,6 +29,7 @@ import type {
   CaptureExportUiStatus,
 } from "../types/captureExport";
 import type { ReplayUiStatus } from "../types/replay";
+import type { ProtocolKind } from "../types/serial";
 
 type SessionTab = "record" | "replay" | "export";
 
@@ -163,7 +168,8 @@ export function CapturePanel() {
   ].includes(replayStatus);
   const canInterruptReplay = replayStatus === "seeking";
   const canSeekReplay =
-    replayHeader?.protocol === "raw" &&
+    replayHeader !== undefined &&
+    protocolSupportsReplaySeek(replayHeader.protocol) &&
     ["ready", "paused", "completed"].includes(replayStatus) &&
     !runtimeBusy;
   const replaySeekStepUs = Math.max(1, Math.floor(replayDurationUs / 1_000));
@@ -321,7 +327,11 @@ export function CapturePanel() {
             <SessionState
               status={replayStatus}
               title={replayStatusLabel(replayStatus, runtimeTransitionStatus)}
-              subtitle={replayHeader ? `${protocolName(replayHeader.protocol)} · 1×` : "VUCAP v1"}
+              subtitle={
+                replayHeader
+                  ? `${getProtocolDefinition(replayHeader.protocol).displayName} · 1×`
+                  : "VUCAP v1"
+              }
             />
             <SessionMetrics
               duration={`${formatDurationUs(replayDisplayPositionUs)} / ${formatDurationUs(replayDurationUs)}`}
@@ -871,8 +881,8 @@ function replayStatusLabel(status: ReplayUiStatus, runtimeStatus: string): strin
   }
 }
 
-function replaySeekTitle(protocol: string | undefined, status: ReplayUiStatus): string {
-  if (protocol !== "raw") {
+function replaySeekTitle(protocol: ProtocolKind | undefined, status: ReplayUiStatus): string {
+  if (!protocol || !protocolSupportsReplaySeek(protocol)) {
     return "结构化协议回放暂不支持定位";
   }
   if (status === "playing" || status === "pausing") {
@@ -889,17 +899,6 @@ function captureDestinationLabel(isNativeRuntime: boolean, path: string): string
     return "浏览器预览";
   }
   return path ? "VUCAP v1" : "桌面文件";
-}
-
-function protocolName(protocol: string): string {
-  switch (protocol) {
-    case "firewater":
-      return "FireWater";
-    case "justfloat":
-      return "JustFloat";
-    default:
-      return "Raw Data";
-  }
 }
 
 function formatDuration(milliseconds: number): string {

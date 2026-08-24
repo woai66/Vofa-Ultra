@@ -1,4 +1,4 @@
-import { encodeFireWaterFrame, encodeJustFloatFrame } from "../core/protocols";
+import { getProtocolDefinition } from "../core/protocols";
 import type { ProtocolKind } from "../types/serial";
 
 export function startSimulator(
@@ -16,18 +16,7 @@ export function startSimulator(
       9 + Math.sin(elapsed * Math.PI * 0.22) * 1.4 + Math.sin(sampleIndex * 0.91) * 0.12,
     ];
 
-    let bytes: Uint8Array;
-    if (protocol === "justfloat") {
-      bytes = encodeJustFloatFrame(values);
-    } else if (protocol === "firewater") {
-      bytes = encodeFireWaterFrame(values);
-    } else {
-      bytes = new TextEncoder().encode(
-        `sample=${sampleIndex.toString().padStart(5, "0")} temp=${values[0]?.toFixed(2)} ` +
-          `voltage=${values[1]?.toFixed(2)} load=${values[2]?.toFixed(2)}\n`,
-      );
-    }
-
+    const bytes = getProtocolDefinition(protocol).encodeSimulatorSample(values, sampleIndex);
     onData(bytes, Date.now());
     sampleIndex += 1;
   }, 40);

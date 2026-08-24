@@ -12,6 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { BUILTIN_PROTOCOLS } from "../core/protocols";
 import { isRecoveryActivePhase } from "../core/serialRecovery";
 import type { ThemeMode } from "../App";
 import {
@@ -356,13 +357,7 @@ function ConnectionPanel() {
           role="radiogroup"
           aria-labelledby="protocol-parser-label"
         >
-          {(
-            [
-              ["firewater", "FireWater", "文本帧"],
-              ["justfloat", "JustFloat", "浮点帧"],
-              ["raw", "Raw Data", "原始字节"],
-            ] as const
-          ).map(([id, name, detail]) => (
+          {BUILTIN_PROTOCOLS.map(({ id, displayName, description }) => (
             <button
               key={id}
               className="protocol-option"
@@ -375,8 +370,8 @@ function ConnectionPanel() {
             >
               <span className="protocol-dot" />
               <span>
-                <strong>{name}</strong>
-                <small>{detail}</small>
+                <strong>{displayName}</strong>
+                <small>{description}</small>
               </span>
             </button>
           ))}

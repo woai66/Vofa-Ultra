@@ -1,6 +1,7 @@
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 export type DataSource = "serial" | "simulator";
-export type ProtocolKind = "firewater" | "justfloat" | "raw";
+export const PROTOCOL_IDS = ["firewater", "justfloat", "raw"] as const;
+export type ProtocolKind = (typeof PROTOCOL_IDS)[number];
 export type DisplayMode = "text" | "hex";
 export type LineEnding = "none" | "lf" | "crlf";
 export type SerialErrorCode =

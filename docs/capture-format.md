@@ -88,3 +88,6 @@ JSON 头使用 UTF-8，字段采用 camelCase：
 
 reader 必须先验证 magic 和版本，再分配 JSON 或 payload 缓冲。v1 reader 不接受未来版本；后续版本如改变记录
 语义，应提升格式版本并保留旧 reader，而不是复用 flags 静默改变既有含义。
+
+`protocol` 同时是工作区和 VUCAP 的持久化 wire ID。合法 ID 只能追加，不能改名、删除、复用或在不提升格式
+版本的情况下改变既有含义。Rust reader 独立校验白名单；旧版本拒绝包含新 ID 的文件，不能把未知值降级为 Raw。

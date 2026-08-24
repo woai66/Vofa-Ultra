@@ -1,4 +1,4 @@
-import { DEFAULT_SERIAL_CONFIG } from "../types/serial";
+import { DEFAULT_SERIAL_CONFIG, PROTOCOL_IDS } from "../types/serial";
 import type {
   ChartWindowSeconds,
   WorkspaceConfigV1,
@@ -227,7 +227,7 @@ export function parseWorkspaceConfig(value: unknown): WorkspaceConfigV1 {
 
   return {
     source: requireEnum(record.source, ["serial", "simulator"], "数据源"),
-    protocol: requireEnum(record.protocol, ["firewater", "justfloat", "raw"], "协议"),
+    protocol: requireEnum(record.protocol, PROTOCOL_IDS, "协议"),
     serialConfig: parseSerialConfig(serialConfig),
     displayMode: requireEnum(record.displayMode, ["text", "hex"], "接收显示格式"),
     sendMode: requireEnum(record.sendMode, ["text", "hex"], "发送格式"),
@@ -246,7 +246,7 @@ export function restoreWorkspaceConfig(
   const serialConfig = isRecord(record.serialConfig) ? record.serialConfig : {};
   return {
     source: isEnum(record.source, ["serial", "simulator"]) ? record.source : fallback.source,
-    protocol: isEnum(record.protocol, ["firewater", "justfloat", "raw"])
+    protocol: isEnum(record.protocol, PROTOCOL_IDS)
       ? record.protocol
       : fallback.protocol,
     serialConfig: {

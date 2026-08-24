@@ -8,6 +8,7 @@ import {
   RefreshCw,
   Rows3,
 } from "lucide-react";
+import { getProtocolDefinition } from "../core/protocols";
 import { isRecoveryActivePhase } from "../core/serialRecovery";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { SerialRecoveryPhase } from "../types/serial";
@@ -61,7 +62,7 @@ export function StatusBar() {
       </div>
       <div className="status-item">
         <CircleGauge size={13} />
-        <span>{protocolName(activeProtocol)}</span>
+        <span>{getProtocolDefinition(activeProtocol).displayName}</span>
       </div>
       <div className="status-spacer" />
       {captureStatus === "recording" && (
@@ -127,17 +128,6 @@ function recoveryStatusLabel(phase: SerialRecoveryPhase): string {
       return "SCAN";
     default:
       return "RECONNECT";
-  }
-}
-
-function protocolName(protocol: string): string {
-  switch (protocol) {
-    case "firewater":
-      return "FireWater";
-    case "justfloat":
-      return "JustFloat";
-    default:
-      return "Raw Data";
   }
 }
 

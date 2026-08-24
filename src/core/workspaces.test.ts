@@ -68,6 +68,11 @@ describe("工作区文件", () => {
         }),
       ),
     ).toThrow(/波特率/);
+    expect(() =>
+      parseWorkspaceExport(
+        JSON.stringify({ ...exported, config: { ...config, protocol: "future-protocol" } }),
+      ),
+    ).toThrow(/协议/);
   });
 
   it("把显式可见通道归一为默认值", () => {
@@ -133,6 +138,15 @@ describe("工作区本地恢复", () => {
         rts: false,
       },
     });
+  });
+
+  it("未知协议恢复为显式 fallback", () => {
+    const fallback = createDefaultWorkspaceConfig("simulator");
+    fallback.protocol = "justfloat";
+
+    expect(restoreWorkspaceConfig({ protocol: "future-protocol" }, fallback).protocol).toBe(
+      "justfloat",
+    );
   });
 
   it("比较配置时忽略通道键顺序", () => {

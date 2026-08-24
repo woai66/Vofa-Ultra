@@ -33,6 +33,7 @@ const WRITER_PHASE_FINISH_REQUESTED: u8 = 1;
 const WRITER_PHASE_COMMITTING: u8 = 2;
 const WRITER_PHASE_ABORTED: u8 = 3;
 const WRITER_PHASE_COMPLETED: u8 = 4;
+const SUPPORTED_CAPTURE_PROTOCOLS: &[&str] = &["firewater", "justfloat", "raw"];
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -49,7 +50,7 @@ impl CaptureHeader {
         if !matches!(self.source.as_str(), "serial" | "simulator") {
             return Err(format!("不支持的录制数据源: {}", self.source));
         }
-        if !matches!(self.protocol.as_str(), "firewater" | "justfloat" | "raw") {
+        if !SUPPORTED_CAPTURE_PROTOCOLS.contains(&self.protocol.as_str()) {
             return Err(format!("不支持的录制协议: {}", self.protocol));
         }
         if self.time_unit != "microseconds" {
@@ -1815,6 +1816,22 @@ mod tests {
         let mut bytes = Vec::new();
         write_file_header(&mut bytes, &encode_header(&sample_header()).unwrap()).unwrap();
         bytes
+    }
+
+    #[test]
+    fn validates_capture_protocol_whitelist() {
+        for protocol in SUPPORTED_CAPTURE_PROTOCOLS {
+            let mut header = sample_header();
+            header.protocol = (*protocol).to_owned();
+            assert!(header.validate().is_ok(), "protocol={protocol}");
+        }
+
+        let mut header = sample_header();
+        header.protocol = "future-protocol".to_owned();
+        assert_eq!(
+            header.validate(),
+            Err("不支持的录制协议: future-protocol".to_owned())
+        );
     }
 
     fn queued_record(

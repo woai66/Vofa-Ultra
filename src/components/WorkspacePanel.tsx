@@ -14,6 +14,7 @@ import {
   SaveAll,
   Trash2,
 } from "lucide-react";
+import { getProtocolDefinition } from "../core/protocols";
 import {
   MAX_WORKSPACE_FILE_BYTES,
   parseWorkspaceExport,
@@ -391,12 +392,7 @@ export function WorkspacePanel() {
 
 function formatWorkspaceSummary(config: WorkspaceConfigV1): string {
   const source = config.source === "serial" ? config.serialConfig.portName || "串口" : "模拟器";
-  const protocol =
-    config.protocol === "firewater"
-      ? "FireWater"
-      : config.protocol === "justfloat"
-        ? "JustFloat"
-        : "Raw Data";
+  const protocol = getProtocolDefinition(config.protocol).displayName;
   return `${source} · ${protocol}`;
 }
 
