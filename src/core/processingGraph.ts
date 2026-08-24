@@ -305,8 +305,8 @@ export class ProcessingGraphRuntime {
     const samples: ProcessingOutputSample[] = [];
     let completedFrames = 0;
     try {
-      for (const frame of frames) {
-        samples.push(...this.processFrame(frame));
+      for (const [frameIndex, frame] of frames.entries()) {
+        samples.push(...this.processFrame(frame, frameIndex));
         completedFrames += 1;
       }
       this.processedFramesValue = addCounter(this.processedFramesValue, completedFrames);
@@ -327,7 +327,7 @@ export class ProcessingGraphRuntime {
     this.statusValue = this.compiled.config.enabled ? "ready" : "disabled";
   }
 
-  private processFrame(frame: ParsedFrame): ProcessingOutputSample[] {
+  private processFrame(frame: ParsedFrame, frameIndex: number): ProcessingOutputSample[] {
     if (!Number.isFinite(frame.timestamp) || !Array.isArray(frame.values)) {
       return [];
     }
@@ -355,6 +355,7 @@ export class ProcessingGraphRuntime {
         color: node.color,
         value,
         timestamp: frame.timestamp,
+        frameIndex,
       });
     }
     return samples;

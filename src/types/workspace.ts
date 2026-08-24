@@ -6,6 +6,7 @@ import type {
   SerialConfig,
 } from "./serial";
 import type { ProcessingGraphConfig } from "./processingGraph";
+import type { AttitudeConfig } from "./attitude";
 
 export type ChartWindowSeconds = 5 | 15 | 30 | 60;
 
@@ -25,7 +26,11 @@ export interface WorkspaceConfigV2 extends WorkspaceConfigV1 {
   processingGraph: ProcessingGraphConfig;
 }
 
-export type WorkspaceConfig = WorkspaceConfigV2;
+export interface WorkspaceConfigV3 extends WorkspaceConfigV2 {
+  attitudeConfig: AttitudeConfig;
+}
+
+export type WorkspaceConfig = WorkspaceConfigV3;
 
 export interface WorkspaceProfile {
   id: string;
@@ -47,4 +52,11 @@ export interface WorkspaceExportV2 {
   schemaVersion: 2;
   name: string;
   config: WorkspaceConfigV2;
+}
+
+export interface WorkspaceExportV3 {
+  format: "vofa-ultra.workspace";
+  schemaVersion: 3;
+  name: string;
+  config: WorkspaceConfigV3;
 }

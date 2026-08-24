@@ -312,6 +312,7 @@ describe("workbenchStore", () => {
       isCancellingSerialConnection: false,
       channels: [],
       processedChannels: [],
+      attitudeSample: null,
       terminalEntries: [],
       commandHistory: [],
       commandTask: createInitialCommandTaskSnapshot(),
@@ -1473,6 +1474,125 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().processingStatus.processedFrames).toBe(3);
   });
 
+  it("同一时间戳的多帧姿态不跨帧拼接", () => {
+    const attitudeConfig = createDefaultWorkspaceConfig("simulator").attitudeConfig;
+    attitudeConfig.channels.roll = "channel-0";
+    attitudeConfig.channels.pitch = "channel-1";
+    attitudeConfig.channels.yaw = "channel-2";
+    useWorkbenchStore.getState().setAttitudeConfig(attitudeConfig);
+
+    useWorkbenchStore
+      .getState()
+      .ingestBytes(new TextEncoder().encode("1,2,3\n4,5\n"), 1_000);
+
+    expect(useWorkbenchStore.getState().attitudeSample).toMatchObject({
+      frameIndex: 0,
+      timestamp: 1_000,
+      sourceValues: { inputMode: "euler", roll: 1, pitch: 2, yaw: 3 },
+    });
+  });
+
+  it("波形暂停时仍持续更新姿态样本", () => {
+    const attitudeConfig = createDefaultWorkspaceConfig("simulator").attitudeConfig;
+    attitudeConfig.channels.roll = "channel-0";
+    attitudeConfig.channels.pitch = "channel-1";
+    attitudeConfig.channels.yaw = "channel-2";
+    useWorkbenchStore.getState().setAttitudeConfig(attitudeConfig);
+    useWorkbenchStore.getState().setChartPaused(true);
+
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("10,20,30\n"), 2_000);
+
+    expect(useWorkbenchStore.getState().channels).toEqual([]);
+    expect(useWorkbenchStore.getState().attitudeSample?.sourceValues).toEqual({
+      inputMode: "euler",
+      roll: 10,
+      pitch: 20,
+      yaw: 30,
+    });
+  });
+
+  it("只组合来自同一帧的基础与派生姿态通道", () => {
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        {
+          id: "roll",
+          kind: "output",
+          input: "source",
+          name: "Roll",
+          color: "#46d89c",
+        },
+      ],
+    });
+    const attitudeConfig = createDefaultWorkspaceConfig("simulator").attitudeConfig;
+    attitudeConfig.channels.roll = "derived:roll";
+    attitudeConfig.channels.pitch = "channel-1";
+    attitudeConfig.channels.yaw = "channel-2";
+    useWorkbenchStore.getState().setAttitudeConfig(attitudeConfig);
+
+    useWorkbenchStore
+      .getState()
+      .ingestBytes(new TextEncoder().encode("1,2,3\n4,5,6\n"), 3_000);
+
+    expect(useWorkbenchStore.getState().attitudeSample).toMatchObject({
+      frameIndex: 1,
+      sourceValues: { inputMode: "euler", roll: 4, pitch: 5, yaw: 6 },
+    });
+  });
+
+  it("四元数零模帧被拒绝并保留最后一个有效姿态", () => {
+    const attitudeConfig = createDefaultWorkspaceConfig("simulator").attitudeConfig;
+    attitudeConfig.inputMode = "quaternion";
+    attitudeConfig.channels.w = "channel-0";
+    attitudeConfig.channels.x = "channel-1";
+    attitudeConfig.channels.y = "channel-2";
+    attitudeConfig.channels.z = "channel-3";
+    useWorkbenchStore.getState().setAttitudeConfig(attitudeConfig);
+    const encoder = new TextEncoder();
+
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("1,0,0,0\n"), 4_000);
+    const validSample = useWorkbenchStore.getState().attitudeSample;
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("0,0,0,0\n"), 5_000);
+
+    expect(validSample?.sourceValues).toEqual({
+      inputMode: "quaternion",
+      w: 1,
+      x: 0,
+      y: 0,
+      z: 0,
+    });
+    expect(useWorkbenchStore.getState().attitudeSample).toBe(validSample);
+  });
+
+  it("删除处理图输出时清理对应姿态映射与旧样本", () => {
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        {
+          id: "roll",
+          kind: "output",
+          input: "source",
+          name: "Roll",
+          color: "#46d89c",
+        },
+      ],
+    });
+    const attitudeConfig = createDefaultWorkspaceConfig("simulator").attitudeConfig;
+    attitudeConfig.channels.roll = "derived:roll";
+    attitudeConfig.channels.pitch = "channel-1";
+    attitudeConfig.channels.yaw = "channel-2";
+    useWorkbenchStore.getState().setAttitudeConfig(attitudeConfig);
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("1,2,3\n"), 6_000);
+    expect(useWorkbenchStore.getState().attitudeSample).not.toBeNull();
+
+    useWorkbenchStore.getState().setProcessingGraph({ enabled: false, nodes: [] });
+
+    expect(useWorkbenchStore.getState().attitudeConfig.channels.roll).toBe("");
+    expect(useWorkbenchStore.getState().attitudeSample).toBeNull();
+  });
+
   it("实时与回放使用互不共享的滤波状态", () => {
     useWorkbenchStore.getState().setProcessingGraph({
       enabled: true,
@@ -1523,7 +1643,7 @@ describe("workbenchStore", () => {
     const beforeActiveId = useWorkbenchStore.getState().activeWorkspaceId;
     const importedId = useWorkbenchStore.getState().importWorkspace({
       format: "vofa-ultra.workspace",
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: "默认工作区",
       config: createDefaultWorkspaceConfig("serial"),
     });
@@ -1596,19 +1716,25 @@ describe("workbenchStore", () => {
             lineEnding: "none",
             chartWindowSeconds: 30,
             processingGraph: { enabled: false, nodes: [] },
+            attitudeConfig: {
+              inputMode: "euler",
+              angleUnit: "degrees",
+              coordinateFrame: "enu-flu",
+            },
           },
         },
       ],
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 2 });
+    ).toMatchObject({ version: 3 });
   });
 
-  it("通过 rehydrate 把 v1 工作区写回 v2 且保留快照", async () => {
+  it("通过 rehydrate 把 v1 工作区写回 v3 且保留快照", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.processingGraph;
+    delete legacyConfig.attitudeConfig;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -1634,21 +1760,29 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState()).toMatchObject({
       activeWorkspaceId: "legacy",
       processingGraph: { enabled: false, nodes: [] },
+      attitudeConfig: { inputMode: "euler", angleUnit: "degrees", coordinateFrame: "enu-flu" },
       workspaces: [
         {
           id: "legacy",
-          config: { processingGraph: { enabled: false, nodes: [] } },
+          config: {
+            processingGraph: { enabled: false, nodes: [] },
+            attitudeConfig: {
+              inputMode: "euler",
+              angleUnit: "degrees",
+              coordinateFrame: "enu-flu",
+            },
+          },
         },
       ],
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 2 });
+    ).toMatchObject({ version: 3 });
   });
 
   it("拒绝并保留更高版本的持久化数据", async () => {
     const futureValue = JSON.stringify({
-      version: 3,
+      version: 4,
       state: {
         futureWorkspaceFormat: true,
         workspaces: [{ id: "future-only" }],
@@ -1661,10 +1795,10 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState()).toMatchObject({
       workspaceStorageStatus: "newer-version",
-      incompatibleStorageVersion: 3,
+      incompatibleStorageVersion: 4,
     });
     expect(() => useWorkbenchStore.getState().saveActiveWorkspace("不会保存")).toThrow(
-      /版本 3.*不能保存/,
+      /版本 4.*不能保存/,
     );
     expect(localStorage.getItem("vofa-ultra-workbench")).toBe(futureValue);
     useWorkbenchStore.persist.clearStorage();
@@ -2514,6 +2648,56 @@ describe("workbenchStore", () => {
       [7, 1, 2],
     ]);
     expect(enqueueSimulatorCaptureMock).not.toHaveBeenCalled();
+  });
+
+  it("回放批次生成姿态，时间线修订后立即清空旧样本", () => {
+    const attitudeConfig = createDefaultWorkspaceConfig("simulator").attitudeConfig;
+    attitudeConfig.channels.roll = "channel-0";
+    attitudeConfig.channels.pitch = "channel-1";
+    attitudeConfig.channels.yaw = "channel-2";
+    useWorkbenchStore.setState({
+      attitudeConfig,
+      replayStatus: "playing",
+      replaySessionId: 7,
+      replayGeneration: 1,
+      replayTimelineRevision: 0,
+      replayRevision: 1,
+      replayHeader: TEST_REPLAY_HEADER,
+      replayNextSequence: 1,
+    });
+
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_000,
+      dataBytes: 9,
+      records: [
+        {
+          direction: "rx",
+          timestampUs: 1_000,
+          data: Array.from(new TextEncoder().encode("7,8,9\n")),
+        },
+      ],
+    });
+    expect(useWorkbenchStore.getState().attitudeSample?.sourceValues).toEqual({
+      inputMode: "euler",
+      roll: 7,
+      pitch: 8,
+      yaw: 9,
+    });
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("paused", {
+        generation: 1,
+        timelineRevision: 1,
+        revision: 2,
+        header: undefined,
+      }),
+    );
+
+    expect(useWorkbenchStore.getState().attitudeSample).toBeNull();
   });
 
   it("启动 ACK 失败时停止已经进入 playing 的后端回放", async () => {

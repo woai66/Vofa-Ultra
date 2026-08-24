@@ -109,7 +109,7 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   });
 });
 
-test("处理图生成独立派生通道并随 v2 工作区往返", async ({ page }, testInfo) => {
+test("处理图生成独立派生通道并随 v3 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -163,7 +163,7 @@ test("处理图生成独立派生通道并随 v2 工作区往返", async ({ page
     schemaVersion: number;
     config: { processingGraph: ProcessingGraphConfig };
   };
-  expect(exported.schemaVersion).toBe(2);
+  expect(exported.schemaVersion).toBe(3);
   expect(exported.config.processingGraph).toMatchObject({
     enabled: true,
     nodes: [
@@ -184,6 +184,108 @@ test("处理图生成独立派生通道并随 v2 工作区往返", async ({ page
   await page.getByRole("button", { name: "处理", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "启用处理图" })).toBeChecked();
   await expect(page.locator(".processing-node")).toHaveCount(3);
+  expect(pageErrors).toEqual([]);
+});
+
+test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+
+  await page.setViewportSize({ width: 1_280, height: 800 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+  await page.getByRole("tab", { name: "姿态" }).click();
+
+  const configuration = page.getByRole("dialog", { name: "姿态通道配置" });
+  await expect(configuration).toBeVisible();
+  await configuration.getByRole("combobox", { name: "Roll 姿态通道" }).selectOption("channel-0");
+  await configuration.getByRole("combobox", { name: "Pitch 姿态通道" }).selectOption("channel-1");
+  await configuration.getByRole("combobox", { name: "Yaw 姿态通道" }).selectOption("channel-2");
+  await configuration.getByRole("button", { name: "关闭姿态配置" }).click();
+
+  const scene = page.getByRole("img", { name: "三维姿态视图" });
+  const canvas = scene.locator("canvas");
+  await expect(scene).toHaveAttribute("data-renderer", "ready");
+  await expect(page.locator(".attitude-panel .live-state")).toContainText("LIVE", {
+    timeout: 5_000,
+  });
+  const initialCanvas = await canvasScreenshotSignature(canvas);
+  expect(initialCanvas.width).toBeGreaterThan(400);
+  expect(initialCanvas.height).toBeGreaterThan(200);
+  expect(initialCanvas.bytes).toBeGreaterThan(10_000);
+  await expect
+    .poll(async () => (await canvasScreenshotSignature(canvas)).hash)
+    .not.toBe(initialCanvas.hash);
+
+  const rollReadout = page.getByLabel("当前姿态值").locator("dd").first();
+  await page.getByRole("button", { name: "冻结姿态显示" }).click();
+  await expect(page.locator(".attitude-panel .live-state")).toContainText("HOLD");
+  const frozenRoll = await rollReadout.textContent();
+  await page.waitForTimeout(500);
+  await expect(rollReadout).toHaveText(frozenRoll ?? "");
+  await expect
+    .poll(async () => {
+      const before = await canvasScreenshotSignature(canvas);
+      await page.waitForTimeout(120);
+      const after = await canvasScreenshotSignature(canvas);
+      return before.hash === after.hash;
+    })
+    .toBe(true);
+  const frozenCanvas = await canvasScreenshotSignature(canvas);
+
+  await page.getByRole("button", { name: "继续姿态显示" }).click();
+  await expect(page.locator(".attitude-panel .live-state")).toContainText("LIVE");
+  await expect.poll(async () => rollReadout.textContent()).not.toBe(frozenRoll);
+  await expect
+    .poll(async () => (await canvasScreenshotSignature(canvas)).hash)
+    .not.toBe(frozenCanvas.hash);
+
+  const mobileViewports = [
+    { width: 390, height: 844 },
+    { width: 320, height: 568 },
+  ];
+  await page.setViewportSize(mobileViewports[0]);
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+
+  for (const viewport of mobileViewports) {
+    await page.setViewportSize(viewport);
+    if (!(await configuration.isVisible())) {
+      await page.getByRole("button", { name: "配置姿态通道" }).click();
+    }
+    const layout = await configuration.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const targets = [...element.querySelectorAll("button, select")].map((target) => {
+        const targetRect = target.getBoundingClientRect();
+        return { width: targetRect.width, height: targetRect.height };
+      });
+      return {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+        documentWidth: document.documentElement.scrollWidth,
+        targets,
+      };
+    });
+    expect(layout.left).toBeGreaterThanOrEqual(0);
+    expect(layout.right).toBeLessThanOrEqual(viewport.width);
+    expect(layout.top).toBeGreaterThanOrEqual(0);
+    expect(layout.bottom).toBeLessThanOrEqual(viewport.height);
+    expect(layout.documentWidth).toBeLessThanOrEqual(viewport.width);
+    expect(layout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(true);
+  }
+
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-320-attitude.png"),
+    fullPage: true,
+  });
   expect(pageErrors).toEqual([]);
 });
 
@@ -566,9 +668,28 @@ async function clippedVisibleHeight(locator: Locator): Promise<number> {
   });
 }
 
+async function canvasScreenshotSignature(locator: Locator): Promise<{
+  width: number;
+  height: number;
+  hash: number;
+  bytes: number;
+}> {
+  const dimensions = await locator.evaluate((element) => {
+    const canvas = element as HTMLCanvasElement;
+    return { width: canvas.width, height: canvas.height };
+  });
+  const screenshot = await locator.screenshot({ animations: "disabled" });
+  let hash = 2_166_136_261;
+  for (const byte of screenshot) {
+    hash ^= byte;
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return { ...dimensions, hash: hash >>> 0, bytes: screenshot.byteLength };
+}
+
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({
-    version: 3,
+    version: 4,
     state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
   });
   await page.addInitScript((value) => {
@@ -577,7 +698,7 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("button", { name: "工作区" }).click();
-  await expect(page.getByRole("alert")).toContainText("版本 3 的较新配置");
+  await expect(page.getByRole("alert")).toContainText("版本 4 的较新配置");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();

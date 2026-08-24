@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Menu } from "lucide-react";
+import { ChartNoAxesCombined, Menu, Orbit } from "lucide-react";
 import { ActivityRail, type SidebarPanel } from "./components/ActivityRail";
+import { AttitudePanel } from "./components/AttitudePanel";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { TerminalPanel } from "./components/TerminalPanel";
@@ -13,11 +14,13 @@ import {
 } from "./store/workbenchStore";
 
 export type ThemeMode = "dark" | "light";
+type WorkspaceView = "waveform" | "attitude";
 
 export default function App() {
   const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>("connection");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [waveformMeasuring, setWaveformMeasuring] = useState(false);
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("waveform");
   const activeWorkspace = useWorkbenchStore(selectActiveWorkspace);
   const workspaceDirty = useWorkbenchStore(selectIsWorkspaceDirty);
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
@@ -47,6 +50,13 @@ export default function App() {
     }
     setSidebarPanel(panel);
     setSidebarOpen(true);
+  };
+
+  const selectWorkspaceView = (view: WorkspaceView) => {
+    if (view === "attitude") {
+      setWaveformMeasuring(false);
+    }
+    setWorkspaceView(view);
   };
 
   return (
@@ -79,6 +89,30 @@ export default function App() {
               {!replayLoaded && workspaceDirty ? " · 未保存" : ""}
             </span>
           </div>
+          <div className="workspace-view-tabs" role="tablist" aria-label="工作区视图">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceView === "waveform"}
+              data-active={workspaceView === "waveform"}
+              title="波形视图"
+              onClick={() => selectWorkspaceView("waveform")}
+            >
+              <ChartNoAxesCombined size={15} />
+              <span>波形</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceView === "attitude"}
+              data-active={workspaceView === "attitude"}
+              title="姿态视图"
+              onClick={() => selectWorkspaceView("attitude")}
+            >
+              <Orbit size={15} />
+              <span>姿态</span>
+            </button>
+          </div>
           <div className="workspace-header-meta">
             <span className="build-label">Vofa-Ultra</span>
             <span className="version-label">v0.1.0</span>
@@ -86,7 +120,11 @@ export default function App() {
         </header>
 
         <div className="workspace-content" data-waveform-measuring={waveformMeasuring}>
-          <WaveformPanel theme={theme} onMeasurementModeChange={setWaveformMeasuring} />
+          {workspaceView === "waveform" ? (
+            <WaveformPanel theme={theme} onMeasurementModeChange={setWaveformMeasuring} />
+          ) : (
+            <AttitudePanel theme={theme} />
+          )}
           <TerminalPanel />
         </div>
       </main>

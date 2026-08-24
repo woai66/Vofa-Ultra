@@ -73,6 +73,7 @@ export interface ProcessingOutputSample {
   readonly color: string;
   readonly value: number;
   readonly timestamp: number;
+  readonly frameIndex: number;
 }
 
 export type ProcessingGraphRuntimeStatus = "disabled" | "ready" | "suspended";

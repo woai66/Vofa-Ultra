@@ -314,6 +314,27 @@ describe("处理图运行时", () => {
     const samples = runtime.process([{ values: [4, 2], timestamp: 99 }]);
     expect(samples.map((sample) => sample.value)).toEqual([12, 8, 20, 5]);
     expect(samples.map((sample) => sample.timestamp)).toEqual([99, 99, 99, 99]);
+    expect(samples.map((sample) => sample.frameIndex)).toEqual([0, 0, 0, 0]);
+  });
+
+  it("为同一批中时间戳相同的帧保留独立帧序号", () => {
+    const runtime = new ProcessingGraphRuntime({
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        { id: "output", kind: "output", input: "source", name: "输出", color: "#123456" },
+      ],
+    });
+
+    const samples = runtime.process([
+      { values: [1], timestamp: 99 },
+      { values: [2], timestamp: 99 },
+    ]);
+
+    expect(samples.map((sample) => [sample.value, sample.frameIndex])).toEqual([
+      [1, 0],
+      [2, 1],
+    ]);
   });
 
   it("跨批维护 EMA 与移动平均状态，并在 gap 时不更新", () => {

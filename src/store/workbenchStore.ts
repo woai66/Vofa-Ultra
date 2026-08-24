@@ -2,6 +2,10 @@ import { create, type StoreApi } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 import { decodeBase64, formatHex } from "../core/codec";
 import {
+  extractLatestAttitudeSample,
+  parseAttitudeConfig,
+} from "../core/attitude";
+import {
   compileCommandTemplate,
   MAX_COMMAND_BYTES,
   renderCommandTemplate,
@@ -45,6 +49,7 @@ import {
   DEFAULT_WORKSPACE_ID,
   makeUniqueWorkspaceName,
   MAX_WORKSPACE_COUNT,
+  pruneAttitudeConfigForGraph,
   restoreWorkspaceConfig,
   restoreWorkspaceProfiles,
 } from "../core/workspaces";
@@ -131,6 +136,11 @@ import type {
   SerialTxPayload,
 } from "../types/serial";
 import type {
+  AttitudeChannelValue,
+  AttitudeConfig,
+  AttitudeSample,
+} from "../types/attitude";
+import type {
   ChannelSeries,
   CommandHistoryEntry,
   CommandTaskSnapshot,
@@ -146,14 +156,14 @@ import type {
 } from "../types/processingGraph";
 import type {
   ChartWindowSeconds,
-  WorkspaceExportV2,
+  WorkspaceExportV3,
   WorkspaceProfile,
 } from "../types/workspace";
 
 const MAX_POINTS_PER_CHANNEL = 2_000;
 const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY = 2_048;
-const WORKBENCH_STORAGE_VERSION = 2;
+const WORKBENCH_STORAGE_VERSION = 3;
 const APP_VERSION = "0.1.0";
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
@@ -243,6 +253,8 @@ export interface WorkbenchStore {
   channelVisibility: Record<string, boolean>;
   processingGraph: ProcessingGraphConfig;
   processingStatus: Readonly<ProcessingGraphSnapshot>;
+  attitudeConfig: AttitudeConfig;
+  attitudeSample: (AttitudeSample & { readonly receivedAt: number }) | null;
   terminalEntries: TerminalEntry[];
   displayMode: DisplayMode;
   sendMode: DisplayMode;
@@ -354,6 +366,7 @@ export interface WorkbenchStore {
   setChartWindowSeconds(seconds: ChartWindowSeconds): void;
   setProcessingGraph(config: ProcessingGraphConfig): void;
   retryProcessingGraph(): void;
+  setAttitudeConfig(config: AttitudeConfig): void;
   toggleChannel(channelId: string): void;
   clearTerminal(): void;
   clearChart(): void;
@@ -389,7 +402,7 @@ export interface WorkbenchStore {
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
   deleteWorkspace(id: string): Promise<boolean>;
-  importWorkspace(workspace: WorkspaceExportV2): string;
+  importWorkspace(workspace: WorkspaceExportV3): string;
 }
 
 type PersistedWorkbenchState = Pick<
@@ -404,6 +417,7 @@ type PersistedWorkbenchState = Pick<
   | "chartWindowSeconds"
   | "channelVisibility"
   | "processingGraph"
+  | "attitudeConfig"
   | "workspaces"
   | "activeWorkspaceId"
 >;
@@ -428,6 +442,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       channelVisibility: {},
       processingGraph: cloneProcessingGraph(INITIAL_WORKSPACE_CONFIG.processingGraph),
       processingStatus: liveProcessingRuntime.getSnapshot(),
+      attitudeConfig: parseAttitudeConfig(INITIAL_WORKSPACE_CONFIG.attitudeConfig),
+      attitudeSample: null,
       terminalEntries: [],
       displayMode: INITIAL_WORKSPACE_CONFIG.displayMode,
       sendMode: INITIAL_WORKSPACE_CONFIG.sendMode,
@@ -510,6 +526,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             !nativeRuntime && state.source !== "simulator"
               ? state.chartDataRevision + 1
               : state.chartDataRevision,
+          attitudeSample:
+            !nativeRuntime && state.source !== "simulator" ? null : state.attitudeSample,
           statusMessage: nativeRuntime ? state.statusMessage : "浏览器预览模式，仅使用模拟数据",
         }));
       },
@@ -548,6 +566,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             source,
             channels: [],
             processedChannels: [],
+            attitudeSample: null,
             chartDataRevision: state.chartDataRevision + 1,
             processingStatus: liveProcessingRuntime.getSnapshot(),
             connectionStatus: "disconnected",
@@ -574,6 +593,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           protocol,
           channels: [],
           processedChannels: [],
+          attitudeSample: null,
           chartDataRevision: state.chartDataRevision + 1,
           processingStatus: liveProcessingRuntime.getSnapshot(),
           statusMessage: protocolDisplayName(protocol) + " 已启用",
@@ -858,6 +878,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         ensureParser(state.protocol);
         const frames = protocolParser.push(bytes, timestamp);
         const processedSamples = liveProcessingRuntime.process(frames);
+        const attitudeSample = extractRuntimeAttitudeSample(
+          state.attitudeConfig,
+          frames,
+          processedSamples,
+        );
         if (state.numericLogStatus === "recording" && frames.length > 0) {
           enqueueNumericLogSamples(
             state.numericLogSessionId,
@@ -884,6 +909,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           channels: nextChannels,
           processedChannels: nextProcessedChannels,
           processingStatus: liveProcessingRuntime.getSnapshot(),
+          attitudeSample: attitudeSample ?? state.attitudeSample,
           terminalEntries: terminalEntry
             ? appendBounded(state.terminalEntries, terminalEntry, MAX_TERMINAL_ENTRIES)
             : state.terminalEntries,
@@ -1019,6 +1045,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           processingGraph: configuredGraph,
           processingStatus: activeProcessingRuntime(state).getSnapshot(),
           processedChannels: [],
+          attitudeConfig: pruneAttitudeConfigForGraph(state.attitudeConfig, configuredGraph),
+          attitudeSample: null,
           chartDataRevision: state.chartDataRevision + 1,
           channelVisibility: pruneDerivedChannelVisibility(
             state.channelVisibility,
@@ -1036,8 +1064,19 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         replayProcessingChannelBuffers.clear();
         set((state) => ({
           processedChannels: [],
+          attitudeSample: null,
           chartDataRevision: state.chartDataRevision + 1,
           processingStatus: activeProcessingRuntime(state).getSnapshot(),
+        }));
+      },
+      setAttitudeConfig: (attitudeConfig) => {
+        if (get().workspaceTransitionStatus !== "idle") {
+          return;
+        }
+        const parsed = parseAttitudeConfig(attitudeConfig);
+        set((state) => ({
+          attitudeConfig: pruneAttitudeConfigForGraph(parsed, state.processingGraph),
+          attitudeSample: null,
         }));
       },
       toggleChannel: (channelId) => {
@@ -1834,6 +1873,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           replayMarkers:
             replaySessionChanged || payload.status === "idle" ? [] : latest.replayMarkers,
           replayNextSequence: timelineChanged ? 1 : state.replayNextSequence,
+          attitudeSample:
+            replaySessionChanged || timelineChanged || payload.status === "idle"
+              ? null
+              : latest.attitudeSample,
           replayMessage: payload.message ?? "",
           statusMessage: replayStatusMessage(payload),
           chartDataRevision:
@@ -2046,6 +2089,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         chartWindowSeconds: state.chartWindowSeconds,
         channelVisibility: state.channelVisibility,
         processingGraph: state.processingGraph,
+        attitudeConfig: state.attitudeConfig,
         workspaces: state.workspaces,
         activeWorkspaceId: state.activeWorkspaceId,
       }),
@@ -2056,7 +2100,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             incompatibleStorageVersion: version,
           } as unknown as PersistedWorkbenchState;
         }
-        if (version !== 0 && version !== 1) {
+        if (version !== 0 && version !== 1 && version !== 2) {
           throw new Error(`不支持从持久化版本 ${version} 降级到 ${WORKBENCH_STORAGE_VERSION}`);
         }
         const config = restoreWorkspaceConfig(persistedState, INITIAL_WORKSPACE_CONFIG);
@@ -2064,7 +2108,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           isRecord(persistedState) ? persistedState.workspaces : undefined,
         );
         const workspaces =
-          version === 1 && restoredWorkspaces.length > 0
+          (version === 1 || version === 2) && restoredWorkspaces.length > 0
             ? restoredWorkspaces
             : [
                 createWorkspaceProfile(
@@ -2141,6 +2185,7 @@ function getSerialRecoveryCoordinator(): SerialReconnectCoordinator {
       resetLiveStreamBoundary(state.protocol);
       useWorkbenchStore.setState({
         processingStatus: liveProcessingRuntime.getSnapshot(),
+        attitudeSample: null,
         stats: { ...emptyStats(), startedAt: Date.now() },
       });
     },
@@ -2735,6 +2780,8 @@ async function applyWorkspaceSnapshot(
     channelVisibility: config.channelVisibility,
     processingGraph,
     processingStatus: liveProcessingRuntime.getSnapshot(),
+    attitudeConfig: config.attitudeConfig,
+    attitudeSample: null,
     channels: [],
     processedChannels: [],
     chartDataRevision: state.chartDataRevision + 1,
@@ -2808,6 +2855,7 @@ function resetLiveView(protocol: ProtocolKind, set: WorkbenchSet): void {
   set((state) => ({
     channels: [],
     processedChannels: [],
+    attitudeSample: null,
     chartDataRevision: state.chartDataRevision + 1,
     processingStatus: liveProcessingRuntime.getSnapshot(),
     terminalEntries: [],
@@ -2838,6 +2886,7 @@ function resetReplayView(protocol: ProtocolKind, set: WorkbenchSet): void {
   set((state) => ({
     channels: [],
     processedChannels: [],
+    attitudeSample: null,
     chartDataRevision: state.chartDataRevision + 1,
     processingStatus: replayProcessingRuntime.getSnapshot(),
     terminalEntries: [],
@@ -2906,6 +2955,11 @@ function ingestReplayBatch(
     }
   }
   const processedSamples = replayProcessingRuntime.process(processingFrames);
+  const attitudeSample = extractRuntimeAttitudeSample(
+    state.attitudeConfig,
+    processingFrames,
+    processedSamples,
+  );
   if (!state.chartPaused) {
     processedChannels = appendProcessedSamples(
       processedChannels,
@@ -2919,6 +2973,7 @@ function ingestReplayBatch(
     channels,
     processedChannels,
     processingStatus: replayProcessingRuntime.getSnapshot(),
+    attitudeSample: attitudeSample ?? state.attitudeSample,
     terminalEntries:
       terminalEntries.length > 0
         ? appendManyBounded(state.terminalEntries, terminalEntries, MAX_TERMINAL_ENTRIES)
@@ -2975,6 +3030,38 @@ function appendFrames(
     }
   }
   return nextChannels;
+}
+
+function extractRuntimeAttitudeSample(
+  config: AttitudeConfig,
+  frames: readonly ParsedFrame[],
+  processedSamples: readonly ProcessingOutputSample[],
+): (AttitudeSample & { readonly receivedAt: number }) | null {
+  const values: AttitudeChannelValue[] = [];
+  for (const [frameIndex, frame] of frames.entries()) {
+    const channelCount = Math.min(frame.values.length, MAX_PROTOCOL_CHANNELS);
+    for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
+      const value = frame.values[channelIndex];
+      if (value !== undefined) {
+        values.push({
+          frameIndex,
+          timestamp: frame.timestamp,
+          channelId: `channel-${channelIndex}`,
+          value,
+        });
+      }
+    }
+  }
+  for (const sample of processedSamples) {
+    values.push({
+      frameIndex: sample.frameIndex,
+      timestamp: sample.timestamp,
+      channelId: sample.channelId,
+      value: sample.value,
+    });
+  }
+  const sample = extractLatestAttitudeSample(config, values);
+  return sample ? { ...sample, receivedAt: Date.now() } : null;
 }
 
 function createNumericLogSamples(

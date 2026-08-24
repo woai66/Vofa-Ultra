@@ -10,7 +10,7 @@ import {
 } from "./workspaces";
 
 describe("工作区文件", () => {
-  it("以严格的 v2 格式往返处理图配置", () => {
+  it("以严格的 v3 格式往返处理图与姿态配置", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.serialConfig.portName = "COM7";
     config.protocol = "justfloat";
@@ -30,22 +30,27 @@ describe("工作区文件", () => {
         },
       ],
     };
+    config.attitudeConfig.channels.roll = "channel-0";
+    config.attitudeConfig.channels.pitch = "channel-1";
+    config.attitudeConfig.channels.yaw = "derived:output";
     const profile = createWorkspaceProfile("台架 A", config, "bench-a", 100);
 
     const parsed = parseWorkspaceExport(serializeWorkspace(profile));
 
     expect(parsed).toEqual({
       format: "vofa-ultra.workspace",
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: "台架 A",
       config,
     });
     expect(parsed.config).not.toBe(config);
     expect(parsed.config.serialConfig).not.toBe(config.serialConfig);
     expect(parsed.config.processingGraph).not.toBe(config.processingGraph);
+    expect(parsed.config.attitudeConfig).not.toBe(config.attitudeConfig);
+    expect(parsed.config.attitudeConfig.channels).not.toBe(config.attitudeConfig.channels);
   });
 
-  it("导入严格 v1 后规范化为禁用的 v2 处理图", () => {
+  it("导入严格 v1 后规范化为禁用处理图和空姿态映射", () => {
     const profile = createWorkspaceProfile(
       "旧工作区",
       createDefaultWorkspaceConfig("simulator"),
@@ -55,17 +60,85 @@ describe("工作区文件", () => {
     const exported = JSON.parse(serializeWorkspace(profile)) as Record<string, unknown>;
     const config = exported.config as Record<string, unknown>;
     delete config.processingGraph;
+    delete config.attitudeConfig;
     exported.schemaVersion = 1;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(2);
+    expect(parsed.schemaVersion).toBe(3);
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
+    expect(parsed.config.attitudeConfig.channels).toEqual({
+      roll: "",
+      pitch: "",
+      yaw: "",
+      w: "",
+      x: "",
+      y: "",
+      z: "",
+    });
+  });
+
+  it("导入严格 v2 后保留处理图并补充默认姿态配置", () => {
+    const profile = createWorkspaceProfile(
+      "v2 工作区",
+      createDefaultWorkspaceConfig("simulator"),
+      "legacy-v2",
+      100,
+    );
+    const exported = JSON.parse(serializeWorkspace(profile)) as Record<string, unknown>;
+    const config = exported.config as Record<string, unknown>;
+    delete config.attitudeConfig;
+    exported.schemaVersion = 2;
+
+    const parsed = parseWorkspaceExport(JSON.stringify(exported));
+
+    expect(parsed.schemaVersion).toBe(3);
+    expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
+    expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
+  });
+
+  it("严格校验 v3 姿态字段及其派生通道引用", () => {
+    const profile = createWorkspaceProfile(
+      "姿态工作区",
+      createDefaultWorkspaceConfig("simulator"),
+      "attitude",
+      100,
+    );
+    const exported = JSON.parse(serializeWorkspace(profile)) as Record<string, unknown>;
+    const config = exported.config as Record<string, unknown>;
+    const attitudeConfig = config.attitudeConfig as Record<string, unknown>;
+    const channels = attitudeConfig.channels as Record<string, unknown>;
+
+    expect(() =>
+      parseWorkspaceExport(
+        JSON.stringify({
+          ...exported,
+          config: {
+            ...config,
+            attitudeConfig: { ...attitudeConfig, rotationOrder: "zyx" },
+          },
+        }),
+      ),
+    ).toThrow(/未知字段/);
+    expect(() =>
+      parseWorkspaceExport(
+        JSON.stringify({
+          ...exported,
+          config: {
+            ...config,
+            attitudeConfig: {
+              ...attitudeConfig,
+              channels: { ...channels, roll: "derived:missing" },
+            },
+          },
+        }),
+      ),
+    ).toThrow(/未知派生通道/);
   });
 
   it.each([
     ["错误格式", { format: "other", schemaVersion: 1 }],
-    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 3 }],
+    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 4 }],
   ])("拒绝%s", (_label, overrides) => {
     const profile = createWorkspaceProfile(
       "默认工作区",
