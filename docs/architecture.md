@@ -103,6 +103,7 @@ worker 使用原子取消标记，断开不需要向可能已满的 TX 队列阻
 | 命令历史 | 100 条且 payload 合计 256 KiB | 固定会话历史内存并避免隐式持久化 |
 | 周期发送任务 | 1 个任务、1 个在途 `send()` | 不重入、不追赶遗漏周期、不制造突发队列 |
 | 捕获导出 | 1 个任务、单条记录最多 64 KiB | 保持 O\(单记录\) 内存并隔离磁盘任务 |
+| 回放索引 | 最多 65,536 个检查点，约 2 MiB | 长文件自压缩步长，定位内存保持硬上限 |
 
 当前手工发送面向命令与短帧。大文件传输将在后续版本使用独立的流式任务、进度和取消协议，不通过扩大上述
 上限实现。
@@ -208,12 +209,22 @@ worker 在目标同目录使用 `create_new` 创建唯一临时文件，完成�
 ## 有界历史回放
 
 回放是独立的非持久化运行模式，不加入工作区 `DataSource`。打开文件后，Rust worker 先流式扫描并验证版本、
-footer 统计和时间戳单调性；缺少 footer 或尾部截断只开放已验证的完整记录前缀，其他损坏进入 `error`。
-扫描不建立索引，播放时重新打开文件并只保留 `CaptureReader`、一个 lookahead record 和一个待确认批次。
+footer 统计和时间戳单调性；缺少 footer 或尾部截断只开放已验证的完整记录前缀，其他损坏进入 `error`。扫描同时
+建立自压缩稀疏索引，检查点保存下一条记录偏移、前序时间、记录数和 payload 字节数。索引最多 65,536 项、约
+2 MiB；达到上限后保留隔项并把记录步长翻倍，不改变 `.vucap` 格式。
 
 每个批次最多 128 KiB、128 条记录或 16 ms 捕获跨度，同时最多存在一个未 ACK 批次。`sessionId + generation +
 sequence` 共同隔离停止、重播和迟到事件；新 generation 先等待 `sequence=0` 启动 ACK，再以单调时钟按 1×
 调度。暂停、停止和关闭通过可唤醒控制通道打断定时或 ACK 等待，不依赖不可中断的长时间 sleep。
+
+Raw Data 可在 `ready / paused / completed` 状态请求 seek。worker 先进入 `seeking` 并立即返回新 generation，清除
+旧 pending batch、lookahead、时钟锚点和 ACK 屏障，再从严格满足 `checkpoint.positionUs < targetUs` 的最后检查点
+恢复 `CaptureReader` 累计统计并顺序定位；严格小于可避免跳过目标时间戳上的重复记录。定位成功进入 `paused`，
+目标为末尾时进入 `completed`。Stop、Close 和 shutdown 会在逐记录扫描间隙中断定位。成功 seek、Stop 归零以及
+完成后重播都会推进独立的 `timelineRevision`，前端据此一次性重置 parser、解码器、波形和终端。
+
+FireWater / JustFloat 不开放任意 seek。捕获 record 只是串口读写分片而非协议帧，从任意偏移重置增量 parser 会把
+半帧当作新帧；后端即使绕过 UI 也会拒绝。后续只有在引入协议同步点、隐藏预热或 parser 快照后才能安全开放。
 
 前端使用独立增量协议 parser、RX decoder 和流式 TX decoder，一批数据只提交一次 Zustand 更新。RX 进入协议、
 波形、终端和统计，TX 只进入终端和统计；显示时间由捕获起始 Unix 时间加相对微秒时间计算。播放不会修改
@@ -233,8 +244,9 @@ sequence` 共同隔离停止、重播和迟到事件；新 generation 先等待 
 1. Vitest 覆盖字节编解码、跨 chunk 协议解析、环形缓冲、状态 revision、恢复退避、命令历史双重边界、发送
    无重入/无追赶、捕获导出任务隔离、停止及迟到结果过滤。
 2. React 组件测试覆盖主要空状态、工作区命名、恢复控制、命令草稿导航、历史菜单、周期任务和导出控制。
-3. Playwright 覆盖模拟器端到端链路、TX 回显、Canvas 有效像素、工作区文件往返、录制入口权限、虚拟列表、
-   周期发送计数与停止、捕获导出入口权限、窄屏溢出、短窗口布局和同一 USB 设备跨端口名恢复。
+3. Playwright 覆盖模拟器端到端链路、TX 回显、Canvas 有效像素、工作区文件往返、录制入口权限、Raw 回放滑杆
+   拖动零 IPC/提交单次 seek、虚拟列表、周期发送计数与停止、捕获导出入口权限、窄屏溢出、短窗口布局和同一
+   USB 设备跨端口名恢复。
 4. GitHub Actions 在三个桌面系统执行 rustfmt、Clippy 和 Rust 测试，在 Node.js 22 上执行前端检查和浏览器
    验收。
 5. 正式发布前必须补充真实串口的长稳、拔插、流控和高波特率测试。

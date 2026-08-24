@@ -20,6 +20,7 @@ import {
   pauseReplay,
   playReplay,
   selectReplayFilePath,
+  seekReplay,
   stopReplay,
 } from "../services/replayClient";
 import {
@@ -80,6 +81,7 @@ vi.mock("../services/replayClient", () => ({
   pauseReplay: vi.fn(),
   playReplay: vi.fn(),
   selectReplayFilePath: vi.fn(),
+  seekReplay: vi.fn(),
   stopReplay: vi.fn(),
 }));
 
@@ -104,6 +106,7 @@ const openReplayMock = vi.mocked(openReplay);
 const pauseReplayMock = vi.mocked(pauseReplay);
 const playReplayMock = vi.mocked(playReplay);
 const selectReplayFilePathMock = vi.mocked(selectReplayFilePath);
+const seekReplayMock = vi.mocked(seekReplay);
 const stopReplayMock = vi.mocked(stopReplay);
 
 interface Deferred<T> {
@@ -152,6 +155,7 @@ function replayState(
     status,
     sessionId: 7,
     generation: 0,
+    timelineRevision: 0,
     revision: 1,
     path: "C:\\captures\\session.vucap",
     header: TEST_REPLAY_HEADER,
@@ -224,6 +228,7 @@ describe("workbenchStore", () => {
     pauseReplayMock.mockReset();
     playReplayMock.mockReset();
     selectReplayFilePathMock.mockReset();
+    seekReplayMock.mockReset();
     stopReplayMock.mockReset();
     localStorage.clear();
     useWorkbenchStore.persist.clearStorage();
@@ -295,6 +300,7 @@ describe("workbenchStore", () => {
       replayStatus: "idle",
       replaySessionId: 0,
       replayGeneration: 0,
+      replayTimelineRevision: 0,
       replayRevision: 0,
       replayPath: "",
       replayHeader: undefined,
@@ -1714,6 +1720,7 @@ describe("workbenchStore", () => {
     });
 
     await expect(useWorkbenchStore.getState().playReplay()).resolves.toBe(true);
+    expect(playReplayMock).toHaveBeenCalledWith(7, 0);
     expect(ackReplayBatchMock).toHaveBeenCalledWith(7, 1, 0);
     expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
 
@@ -1850,12 +1857,17 @@ describe("workbenchStore", () => {
     expect(ackReplayBatchMock).not.toHaveBeenCalled();
   });
 
-  it("暂停与停止回放时保留画面并回到文件起点", async () => {
+  it("暂停保留画面而停止回放会清空旧时间线并回到文件起点", async () => {
     pauseReplayMock.mockResolvedValue(
       replayState("paused", { generation: 3, revision: 3, positionUs: 20_000 }),
     );
     stopReplayMock.mockResolvedValue(
-      replayState("ready", { generation: 4, revision: 5, positionUs: 0 }),
+      replayState("ready", {
+        generation: 4,
+        timelineRevision: 1,
+        revision: 5,
+        positionUs: 0,
+      }),
     );
     useWorkbenchStore.setState({
       replayStatus: "playing",
@@ -1870,6 +1882,7 @@ describe("workbenchStore", () => {
     });
 
     await expect(useWorkbenchStore.getState().pauseReplay()).resolves.toBe(true);
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([{ text: "1" }]);
     await expect(useWorkbenchStore.getState().stopReplay()).resolves.toBe(true);
 
     expect(pauseReplayMock).toHaveBeenCalledWith(7, 2);
@@ -1877,8 +1890,85 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState()).toMatchObject({
       replayStatus: "ready",
       replayPositionUs: 0,
-      terminalEntries: [{ text: "1" }],
+      terminalEntries: [],
+      channels: [],
+      stats: { rxBytes: 0, txBytes: 0, rxFrames: 0 },
     });
+  });
+
+  it("Raw 回放定位只提交一次并在时间线切换完成后清空旧画面", async () => {
+    const rawHeader: ReplayCaptureHeader = { ...TEST_REPLAY_HEADER, protocol: "raw" };
+    seekReplayMock.mockResolvedValue(
+      replayState("seeking", {
+        header: rawHeader,
+        generation: 4,
+        timelineRevision: 0,
+        revision: 5,
+        positionUs: 20_000,
+      }),
+    );
+    useWorkbenchStore.setState({
+      replayStatus: "paused",
+      replaySessionId: 7,
+      replayGeneration: 3,
+      replayTimelineRevision: 0,
+      replayRevision: 4,
+      replayHeader: rawHeader,
+      replayPositionUs: 20_000,
+      replayDurationUs: 50_000,
+      replayNextSequence: 8,
+      terminalEntries: [
+        { id: 4, direction: "rx", timestamp: 1_020, text: "旧画面", hex: "", byteCount: 3 },
+      ],
+      stats: { rxBytes: 3, txBytes: 0, rxFrames: 1 },
+    });
+
+    await expect(useWorkbenchStore.getState().seekReplay(35_000)).resolves.toBe(true);
+    expect(seekReplayMock).toHaveBeenCalledWith(7, 3, 35_000);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      replayStatus: "seeking",
+      replayGeneration: 4,
+      replayNextSequence: 1,
+      terminalEntries: [{ text: "旧画面" }],
+    });
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("paused", {
+        header: rawHeader,
+        generation: 4,
+        timelineRevision: 1,
+        revision: 6,
+        positionUs: 35_000,
+      }),
+    );
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      replayStatus: "paused",
+      replayTimelineRevision: 1,
+      replayPositionUs: 35_000,
+      replayNextSequence: 1,
+      terminalEntries: [],
+      channels: [],
+      stats: { rxBytes: 0, txBytes: 0, rxFrames: 0 },
+    });
+  });
+
+  it("结构化协议和播放中状态拒绝定位", async () => {
+    useWorkbenchStore.setState({
+      replayStatus: "paused",
+      replaySessionId: 7,
+      replayGeneration: 3,
+      replayHeader: TEST_REPLAY_HEADER,
+      replayDurationUs: 50_000,
+    });
+    await expect(useWorkbenchStore.getState().seekReplay(10_000)).resolves.toBe(false);
+
+    useWorkbenchStore.setState({
+      replayStatus: "playing",
+      replayHeader: { ...TEST_REPLAY_HEADER, protocol: "raw" },
+    });
+    await expect(useWorkbenchStore.getState().seekReplay(10_000)).resolves.toBe(false);
+    expect(seekReplayMock).not.toHaveBeenCalled();
   });
 
   it("控制命令在途时忽略旧代次批次", () => {
@@ -1888,7 +1978,7 @@ describe("workbenchStore", () => {
       data: Array.from(new TextEncoder().encode("1\n")),
     };
 
-    for (const replayStatus of ["pausing", "stopping", "closing"] as const) {
+    for (const replayStatus of ["pausing", "seeking", "stopping", "closing"] as const) {
       useWorkbenchStore.setState({
         replayStatus,
         replaySessionId: 7,

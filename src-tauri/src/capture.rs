@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufWriter, ErrorKind, Read, Write};
+use std::io::{self, BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -345,6 +345,27 @@ impl<R: Read> CaptureReader<R> {
                 Err(error) => return Err(CaptureReadError::Io(error)),
             }
         }
+    }
+}
+
+impl<R: Read + Seek> CaptureReader<R> {
+    pub(crate) fn stream_position(&mut self) -> Result<u64, CaptureReadError> {
+        self.reader.stream_position().map_err(CaptureReadError::Io)
+    }
+
+    pub(crate) fn resume_from_verified(
+        mut self,
+        file_offset: u64,
+        data_bytes: u64,
+        record_count: u64,
+    ) -> Result<Self, CaptureReadError> {
+        self.reader
+            .seek(SeekFrom::Start(file_offset))
+            .map_err(CaptureReadError::Io)?;
+        self.data_bytes = data_bytes;
+        self.record_count = record_count;
+        self.done = false;
+        Ok(self)
     }
 }
 
@@ -1860,6 +1881,41 @@ mod tests {
             })
         );
         assert!(reader.next().is_none());
+    }
+
+    #[test]
+    fn resumes_from_verified_offset_with_footer_statistics() {
+        let budget = Arc::new(ByteBudget::new(1024));
+        let first = queued_record(&budget, CaptureDirection::Rx, 5, vec![1, 2]);
+        let second = queued_record(&budget, CaptureDirection::Tx, 8, vec![3, 4, 5]);
+        let mut bytes = file_with_header();
+        write_record(&mut bytes, &first).unwrap();
+        write_record(&mut bytes, &second).unwrap();
+        write_footer(&mut bytes, 5, 2).unwrap();
+
+        let mut scanned = CaptureReader::new(Cursor::new(bytes.clone())).unwrap();
+        assert!(matches!(scanned.next(), Some(Ok(CaptureItem::Record(_)))));
+        let checkpoint_offset = scanned.stream_position().unwrap();
+
+        let mut resumed = CaptureReader::new(Cursor::new(bytes))
+            .unwrap()
+            .resume_from_verified(checkpoint_offset, 2, 1)
+            .unwrap();
+        assert_eq!(
+            resumed.next().unwrap().unwrap(),
+            CaptureItem::Record(CaptureRecord {
+                direction: CaptureDirection::Tx,
+                timestamp_us: 8,
+                payload: vec![3, 4, 5],
+            })
+        );
+        assert_eq!(
+            resumed.next().unwrap().unwrap(),
+            CaptureItem::Footer(CaptureFooter {
+                data_bytes: 5,
+                record_count: 2,
+            })
+        );
     }
 
     #[test]

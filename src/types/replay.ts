@@ -6,6 +6,7 @@ export type ReplayStatus =
   | "ready"
   | "playing"
   | "paused"
+  | "seeking"
   | "stopping"
   | "completed"
   | "error";
@@ -29,6 +30,7 @@ export interface ReplayStatePayload {
   status: ReplayStatus;
   sessionId: number;
   generation: number;
+  timelineRevision: number;
   revision: number;
   path: string;
   header?: ReplayCaptureHeader;

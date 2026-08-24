@@ -57,6 +57,7 @@ import {
   pauseReplay as pauseReplayClient,
   playReplay as playReplayClient,
   selectReplayFilePath,
+  seekReplay as seekReplayClient,
   stopReplay as stopReplayClient,
 } from "../services/replayClient";
 import type { CaptureStatePayload, CaptureUiStatus } from "../types/capture";
@@ -232,6 +233,7 @@ export interface WorkbenchStore {
   replayStatus: ReplayUiStatus;
   replaySessionId: number;
   replayGeneration: number;
+  replayTimelineRevision: number;
   replayRevision: number;
   replayPath: string;
   replayHeader?: ReplayCaptureHeader;
@@ -294,6 +296,7 @@ export interface WorkbenchStore {
   openRecentCapture(): Promise<boolean>;
   playReplay(): Promise<boolean>;
   pauseReplay(): Promise<boolean>;
+  seekReplay(targetUs: number): Promise<boolean>;
   stopReplay(): Promise<boolean>;
   closeReplay(): Promise<boolean>;
   handleReplayState(payload: ReplayStatePayload): void;
@@ -383,6 +386,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       replayStatus: "idle",
       replaySessionId: 0,
       replayGeneration: 0,
+      replayTimelineRevision: 0,
       replayRevision: 0,
       replayPath: "",
       replayComplete: false,
@@ -1302,12 +1306,15 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return false;
         }
 
-        const shouldResetView = state.replayStatus === "ready" || state.replayStatus === "completed";
+        const shouldResetView = state.replayStatus === "ready";
         const previousGeneration = state.replayGeneration;
         const previousNextSequence = state.replayNextSequence;
         set({ replayStatus: "starting", replayMessage: "正在启动 1× 回放" });
         try {
-          const payload = await playReplayClient(state.replaySessionId);
+          const payload = await playReplayClient(
+            state.replaySessionId,
+            state.replayGeneration,
+          );
           get().handleReplayState(payload);
           if (shouldResetView) {
             resetReplayView(payload.header?.protocol ?? state.replayHeader.protocol, set);
@@ -1356,6 +1363,46 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           endRuntimeTransition(get, set, "controlling-replay");
         }
       },
+      seekReplay: async (targetUs) => {
+        const state = get();
+        if (
+          state.replayHeader?.protocol !== "raw" ||
+          !["ready", "paused", "completed"].includes(state.replayStatus) ||
+          !Number.isFinite(targetUs) ||
+          !beginRuntimeTransition(get, set, "controlling-replay")
+        ) {
+          return false;
+        }
+
+        const clampedTargetUs = Math.min(
+          state.replayDurationUs,
+          Math.max(0, Math.trunc(targetUs)),
+        );
+        if (clampedTargetUs === state.replayPositionUs) {
+          endRuntimeTransition(get, set, "controlling-replay");
+          return true;
+        }
+
+        set({
+          replayStatus: "seeking",
+          replayNextSequence: 1,
+          replayMessage: "正在定位回放",
+        });
+        try {
+          const payload = await seekReplayClient(
+            state.replaySessionId,
+            state.replayGeneration,
+            clampedTargetUs,
+          );
+          get().handleReplayState(payload);
+          return ["seeking", "paused", "completed"].includes(payload.status);
+        } catch (error) {
+          setReplayActionError(set, error, state.replayStatus);
+          return false;
+        } finally {
+          endRuntimeTransition(get, set, "controlling-replay");
+        }
+      },
       stopReplay: async () => {
         const state = get();
         if (
@@ -1395,7 +1442,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return;
         }
         if (
-          ["pausing", "stopping", "closing"].includes(state.replayStatus) &&
+          ["pausing", "seeking", "stopping", "closing"].includes(
+            state.replayStatus,
+          ) &&
           payload.status === "playing" &&
           payload.sessionId === state.replaySessionId &&
           payload.generation === state.replayGeneration
@@ -1406,10 +1455,17 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           payload.sessionId === state.replaySessionId &&
           payload.generation === state.replayGeneration &&
           payload.status === "playing";
+        const timelineChanged =
+          payload.sessionId === state.replaySessionId &&
+          payload.timelineRevision > state.replayTimelineRevision;
+        if (timelineChanged && payload.header) {
+          resetReplayView(payload.header.protocol, set);
+        }
         set({
           replayStatus: payload.status,
           replaySessionId: payload.sessionId,
           replayGeneration: payload.generation,
+          replayTimelineRevision: payload.timelineRevision,
           replayRevision: payload.revision,
           replayPath: payload.path,
           replayHeader: payload.header,
@@ -1420,6 +1476,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           replayDurationUs: payload.durationUs,
           replayDataBytes: payload.dataBytes,
           replayRecordCount: payload.recordCount,
+          replayNextSequence: timelineChanged ? 1 : state.replayNextSequence,
           replayMessage: payload.message ?? "",
           statusMessage: replayStatusMessage(payload),
         });
@@ -1913,7 +1970,9 @@ function hasReplaySession(state: WorkbenchStore): boolean {
 }
 
 function isReplayRunning(status: ReplayUiStatus): boolean {
-  return ["starting", "playing", "pausing", "paused", "stopping"].includes(status);
+  return ["starting", "playing", "pausing", "paused", "seeking", "stopping"].includes(
+    status,
+  );
 }
 
 function isReplayReceiving(status: ReplayUiStatus): boolean {
@@ -2419,6 +2478,8 @@ function replayStatusMessage(payload: ReplayStatePayload): string {
       return "正在以 1× 速度回放";
     case "paused":
       return "回放已暂停";
+    case "seeking":
+      return "正在定位回放";
     case "stopping":
       return "正在停止回放";
     case "completed":

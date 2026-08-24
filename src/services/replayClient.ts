@@ -23,9 +23,12 @@ export async function openReplay(path: string): Promise<ReplayStatePayload> {
   return invoke<ReplayStatePayload>("open_replay", { path });
 }
 
-export async function playReplay(sessionId: number): Promise<ReplayStatePayload> {
+export async function playReplay(
+  sessionId: number,
+  generation: number,
+): Promise<ReplayStatePayload> {
   requireTauriRuntime();
-  return invoke<ReplayStatePayload>("play_replay", { sessionId });
+  return invoke<ReplayStatePayload>("play_replay", { sessionId, generation });
 }
 
 export async function pauseReplay(
@@ -42,6 +45,15 @@ export async function stopReplay(
 ): Promise<ReplayStatePayload> {
   requireTauriRuntime();
   return invoke<ReplayStatePayload>("stop_replay", { sessionId, generation });
+}
+
+export async function seekReplay(
+  sessionId: number,
+  generation: number,
+  targetUs: number,
+): Promise<ReplayStatePayload> {
+  requireTauriRuntime();
+  return invoke<ReplayStatePayload>("seek_replay", { sessionId, generation, targetUs });
 }
 
 export async function closeReplay(sessionId: number): Promise<ReplayStatePayload> {

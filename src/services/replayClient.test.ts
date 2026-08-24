@@ -6,6 +6,7 @@ import {
   pauseReplay,
   playReplay,
   selectReplayFilePath,
+  seekReplay,
   stopReplay,
   subscribeToReplayEvents,
 } from "./replayClient";
@@ -49,16 +50,18 @@ describe("replayClient", () => {
     invokeMock.mockResolvedValue({ status: "ready" });
 
     await openReplay("C:\\captures\\session.vucap");
-    await playReplay(7);
+    await playReplay(7, 2);
     await pauseReplay(7, 3);
+    await seekReplay(7, 4, 25_000);
     await stopReplay(7, 3);
     await ackReplayBatch(7, 3, 4);
     await closeReplay(7);
 
     expect(invokeMock.mock.calls).toEqual([
       ["open_replay", { path: "C:\\captures\\session.vucap" }],
-      ["play_replay", { sessionId: 7 }],
+      ["play_replay", { sessionId: 7, generation: 2 }],
       ["pause_replay", { sessionId: 7, generation: 3 }],
+      ["seek_replay", { sessionId: 7, generation: 4, targetUs: 25_000 }],
       ["stop_replay", { sessionId: 7, generation: 3 }],
       ["ack_replay_batch", { sessionId: 7, generation: 3, sequence: 4 }],
       ["close_replay", { sessionId: 7 }],

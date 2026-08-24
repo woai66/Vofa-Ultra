@@ -25,6 +25,9 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SCAN_PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 const POSITION_EVENT_INTERVAL: Duration = Duration::from_millis(100);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const REPLAY_INDEX_MEMORY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+const REPLAY_INDEX_MAX_CHECKPOINTS: usize =
+    REPLAY_INDEX_MEMORY_LIMIT_BYTES / std::mem::size_of::<ReplayCheckpoint>();
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +35,7 @@ pub struct ReplayStatePayload {
     status: String,
     session_id: u64,
     generation: u64,
+    timeline_revision: u64,
     revision: u64,
     path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -108,6 +112,7 @@ struct SharedReplayState {
     status: ReplayStatus,
     session_id: u64,
     generation: u64,
+    timeline_revision: u64,
     revision: u64,
     path: String,
     header: Option<CaptureHeader>,
@@ -126,6 +131,7 @@ impl Default for SharedReplayState {
             status: ReplayStatus::Idle,
             session_id: 0,
             generation: 0,
+            timeline_revision: 0,
             revision: 0,
             path: String::new(),
             header: None,
@@ -146,6 +152,7 @@ impl SharedReplayState {
             status: self.status.as_str().to_owned(),
             session_id: self.session_id,
             generation: self.generation,
+            timeline_revision: self.timeline_revision,
             revision: self.revision,
             path: self.path.clone(),
             header: self.header.clone(),
@@ -166,6 +173,7 @@ impl SharedReplayState {
     fn reset_idle(&mut self) -> ReplayStatePayload {
         self.status = ReplayStatus::Idle;
         self.generation = next_generation(self.generation);
+        self.timeline_revision = 0;
         self.path.clear();
         self.header = None;
         self.complete = false;
@@ -185,6 +193,7 @@ enum ReplayStatus {
     Ready,
     Playing,
     Paused,
+    Seeking,
     Stopping,
     Completed,
     Error,
@@ -198,6 +207,7 @@ impl ReplayStatus {
             Self::Ready => "ready",
             Self::Playing => "playing",
             Self::Paused => "paused",
+            Self::Seeking => "seeking",
             Self::Stopping => "stopping",
             Self::Completed => "completed",
             Self::Error => "error",
@@ -268,6 +278,7 @@ impl ReplayWorkerHandle {
 enum ControlKind {
     Play,
     Pause,
+    Seek { target_us: u64 },
     Stop,
     Close,
 }
@@ -401,6 +412,7 @@ fn open_replay_inner(
         shared.status = ReplayStatus::Loading;
         shared.session_id = session_id;
         shared.generation = 0;
+        shared.timeline_revision = 0;
         shared.path = path_text;
         shared.header = Some(header);
         shared.complete = false;
@@ -446,8 +458,15 @@ pub fn play_replay(
     app: AppHandle,
     state: State<'_, ReplayState>,
     session_id: u64,
+    generation: u64,
 ) -> Result<ReplayStatePayload, String> {
-    request_control(&app, &state, session_id, None, ControlKind::Play)
+    request_control(
+        &app,
+        &state,
+        session_id,
+        Some(generation),
+        ControlKind::Play,
+    )
 }
 
 #[tauri::command]
@@ -463,6 +482,23 @@ pub fn pause_replay(
         session_id,
         Some(generation),
         ControlKind::Pause,
+    )
+}
+
+#[tauri::command]
+pub fn seek_replay(
+    app: AppHandle,
+    state: State<'_, ReplayState>,
+    session_id: u64,
+    generation: u64,
+    target_us: u64,
+) -> Result<ReplayStatePayload, String> {
+    request_control(
+        &app,
+        &state,
+        session_id,
+        Some(generation),
+        ControlKind::Seek { target_us },
     )
 }
 
@@ -687,6 +723,7 @@ fn control_kind_name(kind: ControlKind) -> &'static str {
     match kind {
         ControlKind::Play => "播放",
         ControlKind::Pause => "暂停",
+        ControlKind::Seek { .. } => "定位",
         ControlKind::Stop => "停止",
         ControlKind::Close => "关闭",
     }
@@ -780,6 +817,7 @@ impl ReplayCore {
             shared.status = ReplayStatus::Error;
             shared.session_id = session_id;
             shared.generation = 0;
+            shared.timeline_revision = 0;
             shared.path = path;
             shared.header = None;
             shared.complete = false;
@@ -854,6 +892,70 @@ struct ScanSummary {
     message: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReplayCheckpoint {
+    position_us: u64,
+    file_offset: u64,
+    record_count: u64,
+    data_bytes: u64,
+}
+
+struct ReplayIndex {
+    checkpoints: Vec<ReplayCheckpoint>,
+    stride_records: u64,
+}
+
+impl ReplayIndex {
+    fn new(origin_file_offset: u64) -> Self {
+        let mut checkpoints = Vec::with_capacity(REPLAY_INDEX_MAX_CHECKPOINTS);
+        checkpoints.push(ReplayCheckpoint {
+            position_us: 0,
+            file_offset: origin_file_offset,
+            record_count: 0,
+            data_bytes: 0,
+        });
+        Self {
+            checkpoints,
+            stride_records: 1,
+        }
+    }
+
+    fn observe(&mut self, position_us: u64, file_offset: u64, record_count: u64, data_bytes: u64) {
+        if !record_count.is_multiple_of(self.stride_records) {
+            return;
+        }
+        if self.checkpoints.len() == REPLAY_INDEX_MAX_CHECKPOINTS {
+            self.compact();
+        }
+        if record_count.is_multiple_of(self.stride_records) {
+            self.checkpoints.push(ReplayCheckpoint {
+                position_us,
+                file_offset,
+                record_count,
+                data_bytes,
+            });
+        }
+    }
+
+    fn checkpoint_before(&self, target_us: u64) -> ReplayCheckpoint {
+        let checkpoint_count = self.checkpoints.partition_point(|checkpoint| {
+            checkpoint.record_count == 0 || checkpoint.position_us < target_us
+        });
+        self.checkpoints[checkpoint_count.saturating_sub(1)]
+    }
+
+    fn compact(&mut self) {
+        let previous_len = self.checkpoints.len();
+        let mut write_index = 1;
+        for read_index in (2..previous_len).step_by(2) {
+            self.checkpoints[write_index] = self.checkpoints[read_index];
+            write_index += 1;
+        }
+        self.checkpoints.truncate(write_index);
+        self.stride_records = self.stride_records.saturating_mul(2).max(1);
+    }
+}
+
 #[derive(Default)]
 struct ScanAccumulator {
     stats: CaptureRecordStats,
@@ -880,7 +982,10 @@ impl ScanAccumulator {
 }
 
 enum ScanResult {
-    Ready(ScanSummary),
+    Ready {
+        summary: ScanSummary,
+        index: ReplayIndex,
+    },
     Closed,
     Failed(String),
 }
@@ -908,8 +1013,8 @@ fn run_replay_worker(
     );
     drop(reader);
 
-    let summary = match scan_result {
-        ScanResult::Ready(summary) => summary,
+    let (summary, index) = match scan_result {
+        ScanResult::Ready { summary, index } => (summary, index),
         ScanResult::Closed => return,
         ScanResult::Failed(message) => {
             core.publish_worker_error(&app, session_id, message);
@@ -928,6 +1033,7 @@ fn run_replay_worker(
         path,
         header,
         summary,
+        index,
         control_receiver,
         ack_receiver,
         shutdown,
@@ -949,6 +1055,11 @@ fn scan_capture(
     shutdown: &Arc<AtomicBool>,
 ) -> ScanResult {
     let mut accumulator = ScanAccumulator::default();
+    let origin_file_offset = match reader.stream_position() {
+        Ok(file_offset) => file_offset,
+        Err(error) => return ScanResult::Failed(error.to_string()),
+    };
+    let mut index = ReplayIndex::new(origin_file_offset);
     let mut last_progress = Instant::now();
 
     loop {
@@ -968,22 +1079,41 @@ fn scan_capture(
                 if let Err(message) = accumulator.observe(&record) {
                     return ScanResult::Failed(message);
                 }
+                let file_offset = match reader.stream_position() {
+                    Ok(file_offset) => file_offset,
+                    Err(error) => return ScanResult::Failed(error.to_string()),
+                };
+                index.observe(
+                    record.timestamp_us,
+                    file_offset,
+                    accumulator.stats.record_count(),
+                    accumulator.stats.data_bytes(),
+                );
                 if last_progress.elapsed() >= SCAN_PROGRESS_INTERVAL {
                     core.publish_scan_progress(app, session_id, &accumulator);
                     last_progress = Instant::now();
                 }
             }
             Some(Ok(CaptureItem::Footer(_))) => {
-                return ScanResult::Ready(accumulator.finish(true, None));
+                return ScanResult::Ready {
+                    summary: accumulator.finish(true, None),
+                    index,
+                };
             }
             Some(Err(error @ CaptureReadError::Truncated(_))) => {
                 let message = format!("捕获文件未正常结束，将回放已验证的完整记录前缀（{error}）");
-                return ScanResult::Ready(accumulator.finish(false, Some(message)));
+                return ScanResult::Ready {
+                    summary: accumulator.finish(false, Some(message)),
+                    index,
+                };
             }
             Some(Err(error)) => return ScanResult::Failed(error.to_string()),
             None => {
                 let message = "捕获文件缺少结束标记，将回放已验证的完整记录前缀".to_owned();
-                return ScanResult::Ready(accumulator.finish(false, Some(message)));
+                return ScanResult::Ready {
+                    summary: accumulator.finish(false, Some(message)),
+                    index,
+                };
             }
         }
     }
@@ -1050,6 +1180,46 @@ struct ReplayCursor {
     end_verified: bool,
 }
 
+enum SeekLocation {
+    Positioned(Box<ReplayCursor>),
+    Completed,
+    Interrupted(RuntimeControl),
+}
+
+fn locate_replay_cursor<F>(
+    path: &Path,
+    expected_header: &CaptureHeader,
+    summary: &ScanSummary,
+    checkpoint: ReplayCheckpoint,
+    target_us: u64,
+    mut poll_control: F,
+) -> Result<SeekLocation, String>
+where
+    F: FnMut() -> Result<Option<RuntimeControl>, String>,
+{
+    if let Some(control) = poll_control()? {
+        return Ok(SeekLocation::Interrupted(control));
+    }
+
+    let mut cursor = ReplayCursor::open_at(path, expected_header, checkpoint)?;
+    let at_end = target_us >= summary.duration_us;
+    loop {
+        if let Some(control) = poll_control()? {
+            return Ok(SeekLocation::Interrupted(control));
+        }
+
+        match cursor.next_record(summary)? {
+            Some(record) if !at_end && record.timestamp_us >= target_us => {
+                cursor.lookahead = Some(record);
+                return Ok(SeekLocation::Positioned(Box::new(cursor)));
+            }
+            Some(_) => {}
+            None if at_end => return Ok(SeekLocation::Completed),
+            None => return Err("回放文件在定位时提前结束".to_owned()),
+        }
+    }
+}
+
 impl ReplayCursor {
     fn open(path: &Path, expected_header: &CaptureHeader) -> Result<Self, String> {
         let file = File::open(path)
@@ -1064,6 +1234,34 @@ impl ReplayCursor {
             last_timestamp_us: None,
             data_bytes_read: 0,
             records_read: 0,
+            end_verified: false,
+        })
+    }
+
+    fn open_at(
+        path: &Path,
+        expected_header: &CaptureHeader,
+        checkpoint: ReplayCheckpoint,
+    ) -> Result<Self, String> {
+        let file = File::open(path)
+            .map_err(|error| format!("重新打开回放文件 {} 失败: {error}", path.display()))?;
+        let reader = CaptureReader::new(file).map_err(|error| error.to_string())?;
+        if reader.header() != expected_header {
+            return Err("回放文件在扫描后发生变化：文件头不一致".to_owned());
+        }
+        let reader = reader
+            .resume_from_verified(
+                checkpoint.file_offset,
+                checkpoint.data_bytes,
+                checkpoint.record_count,
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            reader,
+            lookahead: None,
+            last_timestamp_us: (checkpoint.record_count > 0).then_some(checkpoint.position_us),
+            data_bytes_read: checkpoint.data_bytes,
+            records_read: checkpoint.record_count,
             end_verified: false,
         })
     }
@@ -1222,6 +1420,28 @@ struct PlaybackAnchor {
     capture_us: u64,
 }
 
+fn clear_delivery_for_seek(
+    cursor: &mut Option<ReplayCursor>,
+    pending_batch: &mut Option<PendingBatch>,
+    waiting_start_ack: &mut bool,
+    anchor: &mut Option<PlaybackAnchor>,
+    next_sequence: &mut u64,
+) {
+    *cursor = None;
+    *pending_batch = None;
+    *waiting_start_ack = false;
+    *anchor = None;
+    *next_sequence = 1;
+}
+
+fn clamp_seek_target(target_us: u64, duration_us: u64) -> u64 {
+    target_us.min(duration_us)
+}
+
+fn seek_protocol_supported(protocol: &str) -> bool {
+    protocol == "raw"
+}
+
 struct ReplayRuntime {
     app: AppHandle,
     core: Arc<ReplayCore>,
@@ -1229,11 +1449,13 @@ struct ReplayRuntime {
     path: PathBuf,
     header: CaptureHeader,
     summary: ScanSummary,
+    index: ReplayIndex,
     control_receiver: mpsc::Receiver<ControlCommand>,
     ack_receiver: mpsc::Receiver<ReplayAck>,
     shutdown: Arc<AtomicBool>,
     mode: ReplayStatus,
     generation: u64,
+    timeline_revision: u64,
     next_sequence: u64,
     position_us: u64,
     cursor: Option<ReplayCursor>,
@@ -1258,6 +1480,7 @@ impl ReplayRuntime {
         path: PathBuf,
         header: CaptureHeader,
         summary: ScanSummary,
+        index: ReplayIndex,
         control_receiver: mpsc::Receiver<ControlCommand>,
         ack_receiver: mpsc::Receiver<ReplayAck>,
         shutdown: Arc<AtomicBool>,
@@ -1269,11 +1492,13 @@ impl ReplayRuntime {
             path,
             header,
             summary,
+            index,
             control_receiver,
             ack_receiver,
             shutdown,
             mode: ReplayStatus::Ready,
             generation: 0,
+            timeline_revision: 0,
             next_sequence: 1,
             position_us: 0,
             cursor: None,
@@ -1508,6 +1733,7 @@ impl ReplayRuntime {
         match command.kind {
             ControlKind::Play => self.handle_play(command),
             ControlKind::Pause => self.handle_pause(command),
+            ControlKind::Seek { target_us } => self.handle_seek(command, target_us),
             ControlKind::Stop => self.handle_stop(command),
             ControlKind::Close => self.handle_close(command),
         }
@@ -1535,6 +1761,7 @@ impl ReplayRuntime {
             self.cursor = None;
             self.pending_batch = None;
             self.position_us = 0;
+            self.timeline_revision = self.timeline_revision.saturating_add(1);
         }
 
         self.generation = next_generation(self.generation);
@@ -1543,6 +1770,7 @@ impl ReplayRuntime {
         self.anchor = None;
         self.mode = ReplayStatus::Playing;
         let generation = self.generation;
+        let timeline_revision = self.timeline_revision;
         let position_us = self.position_us;
         let message = self.summary.message.clone();
         let result = self
@@ -1550,12 +1778,126 @@ impl ReplayRuntime {
             .publish_transition(&self.app, self.session_id, move |shared| {
                 shared.status = ReplayStatus::Playing;
                 shared.generation = generation;
+                shared.timeline_revision = timeline_revision;
                 shared.position_us = position_us;
                 shared.message = message;
                 Ok(())
             });
         reply_transition(command, result)?;
         Ok(RuntimeControl::Continue)
+    }
+
+    fn handle_seek(
+        &mut self,
+        command: ControlCommand,
+        target_us: u64,
+    ) -> Result<RuntimeControl, String> {
+        if !seek_protocol_supported(&self.header.protocol) {
+            reply_control(command, Err("第一版仅支持定位 Raw 协议捕获文件".to_owned()));
+            return Ok(RuntimeControl::Continue);
+        }
+        if !matches!(
+            self.mode,
+            ReplayStatus::Ready | ReplayStatus::Paused | ReplayStatus::Completed
+        ) {
+            reply_control(
+                command,
+                Err("当前回放状态无法定位，请先暂停播放".to_owned()),
+            );
+            return Ok(RuntimeControl::Continue);
+        }
+
+        let target_us = clamp_seek_target(target_us, self.summary.duration_us);
+        self.generation = next_generation(self.generation);
+        clear_delivery_for_seek(
+            &mut self.cursor,
+            &mut self.pending_batch,
+            &mut self.waiting_start_ack,
+            &mut self.anchor,
+            &mut self.next_sequence,
+        );
+        self.mode = ReplayStatus::Seeking;
+        self.drain_stale_acks();
+        let generation = self.generation;
+        let result = self
+            .core
+            .publish_transition(&self.app, self.session_id, move |shared| {
+                shared.status = ReplayStatus::Seeking;
+                shared.generation = generation;
+                Ok(())
+            });
+        reply_transition(command, result)?;
+        self.locate_seek(target_us)
+    }
+
+    fn locate_seek(&mut self, target_us: u64) -> Result<RuntimeControl, String> {
+        let checkpoint = self.index.checkpoint_before(target_us);
+        let path = self.path.clone();
+        let header = self.header.clone();
+        let summary = self.summary.clone();
+        let location =
+            locate_replay_cursor(&path, &header, &summary, checkpoint, target_us, || {
+                self.poll_seek_control()
+            })?;
+        let cursor = match location {
+            SeekLocation::Positioned(cursor) => Some(*cursor),
+            SeekLocation::Completed => None,
+            SeekLocation::Interrupted(control) => return Ok(control),
+        };
+        if let Some(control) = self.poll_seek_control()? {
+            return Ok(control);
+        }
+        if self.mode != ReplayStatus::Seeking {
+            return Ok(RuntimeControl::Continue);
+        }
+
+        self.position_us = target_us;
+        self.timeline_revision = self.timeline_revision.saturating_add(1);
+        self.mode = if cursor.is_none() {
+            self.cursor = None;
+            ReplayStatus::Completed
+        } else {
+            self.cursor = cursor;
+            ReplayStatus::Paused
+        };
+        let status = self.mode;
+        let position_us = self.position_us;
+        let timeline_revision = self.timeline_revision;
+        let message = self.summary.message.clone();
+        self.core
+            .publish_transition(&self.app, self.session_id, move |shared| {
+                shared.status = status;
+                shared.timeline_revision = timeline_revision;
+                shared.position_us = position_us;
+                shared.message = message;
+                Ok(())
+            })?;
+        Ok(RuntimeControl::Continue)
+    }
+
+    fn poll_seek_control(&mut self) -> Result<Option<RuntimeControl>, String> {
+        if self.shutdown.load(Ordering::Acquire) {
+            self.publish_closed(None)?;
+            return Ok(Some(RuntimeControl::Exit));
+        }
+
+        loop {
+            match self.control_receiver.try_recv() {
+                Ok(command) => {
+                    let control = self.handle_control(command)?;
+                    if control == RuntimeControl::Exit || self.mode != ReplayStatus::Seeking {
+                        return Ok(Some(control));
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.drain_stale_acks();
+                    return Ok(None);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("回放控制通道意外关闭".to_owned());
+                }
+            }
+        }
     }
 
     fn handle_pause(&mut self, command: ControlCommand) -> Result<RuntimeControl, String> {
@@ -1622,12 +1964,15 @@ impl ReplayRuntime {
         self.cursor = None;
         self.pending_batch = None;
         self.position_us = 0;
+        self.timeline_revision = self.timeline_revision.saturating_add(1);
         self.mode = ReplayStatus::Ready;
+        let timeline_revision = self.timeline_revision;
         let message = self.summary.message.clone();
         let result = self
             .core
             .publish_transition(&self.app, self.session_id, move |shared| {
                 shared.status = ReplayStatus::Ready;
+                shared.timeline_revision = timeline_revision;
                 shared.position_us = 0;
                 shared.message = message;
                 Ok(())
@@ -1673,6 +2018,7 @@ impl ReplayRuntime {
             .publish_transition(&self.app, self.session_id, move |shared| {
                 shared.status = ReplayStatus::Idle;
                 shared.generation = generation;
+                shared.timeline_revision = 0;
                 shared.path.clear();
                 shared.header = None;
                 shared.complete = false;
@@ -1714,7 +2060,131 @@ fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::sync::atomic::AtomicU64;
+
     use super::*;
+    use crate::capture::{CAPTURE_MAGIC, CAPTURE_VERSION};
+    use crate::serial::SerialConfig;
+
+    static NEXT_TEMP_CAPTURE: AtomicU64 = AtomicU64::new(1);
+
+    struct TempCapture {
+        path: PathBuf,
+    }
+
+    impl Drop for TempCapture {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    fn raw_header() -> CaptureHeader {
+        CaptureHeader {
+            source: "serial".to_owned(),
+            protocol: "raw".to_owned(),
+            serial_config: SerialConfig {
+                port_name: "COM3".to_owned(),
+                baud_rate: 115_200,
+                data_bits: 8,
+                parity: "none".to_owned(),
+                stop_bits: 1,
+                flow_control: "none".to_owned(),
+                dtr: true,
+                rts: true,
+            },
+            started_at_unix_ms: 1_700_000_000_000,
+            time_unit: "microseconds".to_owned(),
+        }
+    }
+
+    fn temporary_capture(records: &[(u64, &[u8])], complete: bool) -> TempCapture {
+        let header_bytes = serde_json::to_vec(&raw_header()).unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&CAPTURE_MAGIC);
+        bytes.extend_from_slice(&CAPTURE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&header_bytes);
+
+        let mut data_bytes = 0_u64;
+        for (timestamp_us, payload) in records {
+            bytes.push(0x01);
+            bytes.push(0);
+            bytes.extend_from_slice(&0_u16.to_le_bytes());
+            bytes.extend_from_slice(&timestamp_us.to_le_bytes());
+            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(payload);
+            data_bytes += payload.len() as u64;
+        }
+        if complete {
+            bytes.push(0xff);
+            bytes.extend_from_slice(&[0_u8; 7]);
+            bytes.extend_from_slice(&data_bytes.to_le_bytes());
+            bytes.extend_from_slice(&(records.len() as u64).to_le_bytes());
+        } else {
+            bytes.extend_from_slice(&[0x01, 0x00, 0x00]);
+        }
+
+        let unique = NEXT_TEMP_CAPTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "vofa-ultra-replay-{}-{unique}.vucap",
+            std::process::id()
+        ));
+        fs::write(&path, bytes).unwrap();
+        TempCapture { path }
+    }
+
+    fn scan_test_capture(path: &Path) -> (CaptureHeader, ScanSummary, ReplayIndex) {
+        let file = File::open(path).unwrap();
+        let mut reader = CaptureReader::new(file).unwrap();
+        let header = reader.header().clone();
+        let mut index = ReplayIndex::new(reader.stream_position().unwrap());
+        let mut accumulator = ScanAccumulator::default();
+        let complete = loop {
+            match reader.next() {
+                Some(Ok(CaptureItem::Record(record))) => {
+                    accumulator.observe(&record).unwrap();
+                    index.observe(
+                        record.timestamp_us,
+                        reader.stream_position().unwrap(),
+                        accumulator.stats.record_count(),
+                        accumulator.stats.data_bytes(),
+                    );
+                }
+                Some(Ok(CaptureItem::Footer(_))) => break true,
+                Some(Err(CaptureReadError::Truncated(_))) => break false,
+                Some(Err(error)) => panic!("unexpected capture error: {error}"),
+                None => break false,
+            }
+        };
+        let message = (!complete).then(|| "文件不完整".to_owned());
+        (header, accumulator.finish(complete, message), index)
+    }
+
+    fn located_record(
+        capture: &TempCapture,
+        header: &CaptureHeader,
+        summary: &ScanSummary,
+        index: &ReplayIndex,
+        requested_us: u64,
+    ) -> Option<CaptureRecord> {
+        let target_us = clamp_seek_target(requested_us, summary.duration_us);
+        let location = locate_replay_cursor(
+            &capture.path,
+            header,
+            summary,
+            index.checkpoint_before(target_us),
+            target_us,
+            || Ok(None),
+        )
+        .unwrap();
+        match location {
+            SeekLocation::Positioned(mut cursor) => cursor.lookahead.take(),
+            SeekLocation::Completed => None,
+            SeekLocation::Interrupted(_) => panic!("seek unexpectedly interrupted"),
+        }
+    }
 
     fn record(timestamp_us: u64, payload_size: usize) -> CaptureRecord {
         CaptureRecord {
@@ -1816,11 +2286,180 @@ mod tests {
     }
 
     #[test]
+    fn sparse_index_is_bounded_and_locates_strictly_before_target() {
+        assert_eq!(std::mem::size_of::<ReplayCheckpoint>(), 32);
+        let mut index = ReplayIndex::new(64);
+        let records = (REPLAY_INDEX_MAX_CHECKPOINTS as u64) * 4;
+        for record_count in 1..=records {
+            index.observe(
+                record_count,
+                64 + record_count * 16,
+                record_count,
+                record_count * 2,
+            );
+        }
+
+        assert!(index.checkpoints.len() <= REPLAY_INDEX_MAX_CHECKPOINTS);
+        assert!(index.checkpoints.capacity() <= REPLAY_INDEX_MAX_CHECKPOINTS);
+        assert!(index.stride_records > 1);
+        assert!(
+            index.checkpoints.capacity() * std::mem::size_of::<ReplayCheckpoint>()
+                <= REPLAY_INDEX_MEMORY_LIMIT_BYTES
+        );
+        let target_us = records - 17;
+        let checkpoint = index.checkpoint_before(target_us);
+        assert!(checkpoint.position_us < target_us);
+        assert_eq!(
+            Some(checkpoint),
+            index.checkpoints.iter().copied().rfind(|candidate| {
+                candidate.record_count == 0 || candidate.position_us < target_us
+            })
+        );
+    }
+
+    #[test]
+    fn duplicate_timestamp_checkpoint_never_skips_exact_target() {
+        let mut index = ReplayIndex::new(100);
+        index.observe(10, 120, 1, 1);
+        index.observe(10, 140, 2, 2);
+        index.observe(10, 160, 3, 3);
+        index.observe(20, 180, 4, 4);
+
+        assert_eq!(index.checkpoint_before(10).record_count, 0);
+        assert_eq!(index.checkpoint_before(11).record_count, 3);
+        assert_eq!(index.checkpoint_before(20).record_count, 3);
+        assert_eq!(index.checkpoint_before(21).record_count, 4);
+    }
+
+    #[test]
+    fn seek_locates_zero_interval_exact_duplicate_duration_and_overflow() {
+        let capture = temporary_capture(
+            &[
+                (0, &[0x00]),
+                (10, &[0x0a]),
+                (10, &[0x0b]),
+                (20, &[0x14]),
+                (40, &[0x28]),
+            ],
+            true,
+        );
+        let (header, summary, index) = scan_test_capture(&capture.path);
+
+        let zero = located_record(&capture, &header, &summary, &index, 0).unwrap();
+        assert_eq!((zero.timestamp_us, zero.payload), (0, vec![0x00]));
+        let interval = located_record(&capture, &header, &summary, &index, 5).unwrap();
+        assert_eq!((interval.timestamp_us, interval.payload), (10, vec![0x0a]));
+        let duplicate = located_record(&capture, &header, &summary, &index, 10).unwrap();
+        assert_eq!(
+            (duplicate.timestamp_us, duplicate.payload),
+            (10, vec![0x0a])
+        );
+        let exact = located_record(&capture, &header, &summary, &index, 20).unwrap();
+        assert_eq!((exact.timestamp_us, exact.payload), (20, vec![0x14]));
+        assert!(located_record(&capture, &header, &summary, &index, 40).is_none());
+        assert!(located_record(&capture, &header, &summary, &index, u64::MAX).is_none());
+    }
+
+    #[test]
+    fn seek_preserves_truncated_verified_prefix() {
+        let capture = temporary_capture(&[(5, &[1]), (15, &[2]), (30, &[3])], false);
+        let (header, summary, index) = scan_test_capture(&capture.path);
+
+        assert!(!summary.complete);
+        let exact = located_record(&capture, &header, &summary, &index, 15).unwrap();
+        assert_eq!((exact.timestamp_us, exact.payload), (15, vec![2]));
+        assert!(located_record(&capture, &header, &summary, &index, 30).is_none());
+    }
+
+    #[test]
+    fn seek_clears_pending_delivery_and_rejects_old_ack_generation() {
+        let mut cursor = None;
+        let mut pending_batch = Some(PendingBatch {
+            start_us: 10,
+            end_us: 20,
+            data_bytes: 1,
+            records: vec![ReplayBatchRecordPayload {
+                direction: "rx".to_owned(),
+                timestamp_us: 20,
+                data: vec![1],
+            }],
+        });
+        let mut waiting_start_ack = true;
+        let mut anchor = Some(PlaybackAnchor {
+            instant: Instant::now(),
+            capture_us: 10,
+        });
+        let mut next_sequence = 9;
+        clear_delivery_for_seek(
+            &mut cursor,
+            &mut pending_batch,
+            &mut waiting_start_ack,
+            &mut anchor,
+            &mut next_sequence,
+        );
+
+        assert!(cursor.is_none());
+        assert!(pending_batch.is_none());
+        assert!(!waiting_start_ack);
+        assert!(anchor.is_none());
+        assert_eq!(next_sequence, 1);
+        let old_generation = 4;
+        let new_generation = next_generation(old_generation);
+        let old_ack = ReplayAck {
+            session_id: 1,
+            generation: old_generation,
+            sequence: 9,
+        };
+        assert!(!old_ack.matches(1, new_generation, 1));
+    }
+
+    #[test]
+    fn seek_location_honors_stop_and_close_interrupts() {
+        let capture = temporary_capture(&[(1, &[1]), (2, &[2]), (3, &[3])], true);
+        let (header, summary, index) = scan_test_capture(&capture.path);
+        let checkpoint = index.checkpoint_before(3);
+        let mut stop_polls = 0;
+        let stopped = locate_replay_cursor(&capture.path, &header, &summary, checkpoint, 3, || {
+            stop_polls += 1;
+            Ok((stop_polls == 2).then_some(RuntimeControl::Continue))
+        })
+        .unwrap();
+        assert!(matches!(
+            stopped,
+            SeekLocation::Interrupted(RuntimeControl::Continue)
+        ));
+
+        let closed = locate_replay_cursor(&capture.path, &header, &summary, checkpoint, 3, || {
+            Ok(Some(RuntimeControl::Exit))
+        })
+        .unwrap();
+        assert!(matches!(
+            closed,
+            SeekLocation::Interrupted(RuntimeControl::Exit)
+        ));
+    }
+
+    #[test]
+    fn seek_is_raw_only_and_target_is_clamped() {
+        assert!(seek_protocol_supported("raw"));
+        assert!(!seek_protocol_supported("firewater"));
+        assert!(!seek_protocol_supported("justfloat"));
+        assert_eq!(clamp_seek_target(5, 10), 5);
+        assert_eq!(clamp_seek_target(10, 10), 10);
+        assert_eq!(clamp_seek_target(u64::MAX, 10), 10);
+    }
+
+    #[test]
     fn idle_state_omits_optional_payload_fields() {
         let json = serde_json::to_value(SharedReplayState::default().snapshot()).unwrap();
 
         assert!(json.get("header").is_none());
         assert!(json.get("message").is_none());
+        assert_eq!(
+            json.get("timelineRevision")
+                .and_then(|value| value.as_u64()),
+            Some(0)
+        );
         assert_eq!(
             json.get("complete").and_then(|value| value.as_bool()),
             Some(false)

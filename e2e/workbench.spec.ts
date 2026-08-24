@@ -305,6 +305,55 @@ test("浏览器预览显示会话状态但不开放文件操作", async ({ page 
   expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth);
 });
 
+test("Raw 回放滑杆只在提交时发送一次定位命令", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await installTauriReplayMock(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "记录", exact: true }).click();
+  await page.getByRole("tab", { name: "回放" }).click();
+  const slider = page.getByRole("slider", { name: "回放位置" });
+  await expect(slider).toBeEnabled();
+  await expect(slider).toHaveAttribute("aria-valuetext", "00:00:01 / 00:00:03");
+  expect(Math.abs(Number(await slider.inputValue()) - 1_000_000)).toBeLessThanOrEqual(
+    3_500,
+  );
+
+  await slider.focus();
+  await slider.evaluate((element) => {
+    const input = element as HTMLInputElement;
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    valueSetter?.call(input, "1400000");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    valueSetter?.call(input, "2100000");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect(slider).toHaveValue("2100000");
+  await expect(slider).toHaveAttribute("aria-valuetext", "00:00:02 / 00:00:03");
+  expect(await replaySeekCalls(page)).toEqual([]);
+
+  await slider.dispatchEvent("pointerup");
+  await expect.poll(() => replaySeekCalls(page)).toHaveLength(1);
+  await slider.blur();
+  await page.waitForTimeout(50);
+  expect(await replaySeekCalls(page)).toEqual([
+    { sessionId: 7, generation: 2, targetUs: 2_100_000 },
+  ]);
+
+  await expect(page.getByLabel("回放状态")).toContainText("回放已暂停");
+  await expect(slider).toHaveValue("2100000");
+  expect(pageErrors).toEqual([]);
+});
+
 test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -347,6 +396,171 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
     fullPage: true,
   });
 });
+
+async function replaySeekCalls(page: Page): Promise<Record<string, number>[]> {
+  return page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { seekCalls: Record<string, number>[] };
+    };
+    return testWindow.__TAURI_TEST__.seekCalls;
+  });
+}
+
+async function installTauriReplayMock(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    type Callback = (data: unknown) => unknown;
+    type InvokeArgs = Record<string, unknown> | undefined;
+    const callbacks = new Map<number, Callback>();
+    const listeners = new Map<string, number[]>();
+    const seekCalls: Record<string, number>[] = [];
+    let nextCallbackId = 1;
+    let replayState = {
+      status: "paused",
+      sessionId: 7,
+      generation: 2,
+      timelineRevision: 0,
+      revision: 3,
+      path: "C:\\captures\\raw-session.vucap",
+      header: {
+        source: "serial",
+        protocol: "raw",
+        serialConfig: {
+          portName: "COM3",
+          baudRate: 115200,
+          dataBits: 8,
+          stopBits: 1,
+          parity: "none",
+          flowControl: "none",
+        },
+        startedAtUnixMs: 1_700_000_000_000,
+        timeUnit: "microseconds",
+      },
+      complete: true,
+      positionUs: 1_000_000,
+      durationUs: 3_500_000,
+      dataBytes: 4_096,
+      recordCount: 16,
+      message: "",
+    };
+
+    const emit = (event: string, payload: unknown) => {
+      for (const callbackId of listeners.get(event) ?? []) {
+        callbacks.get(callbackId)?.({ event, id: callbackId, payload });
+      }
+    };
+
+    const invoke = async (command: string, args: InvokeArgs): Promise<unknown> => {
+      if (command === "plugin:event|listen") {
+        const event = String(args?.event);
+        const handler = Number(args?.handler);
+        listeners.set(event, [...(listeners.get(event) ?? []), handler]);
+        return handler;
+      }
+      if (command === "plugin:event|unlisten") {
+        const event = String(args?.event);
+        const eventId = Number(args?.eventId);
+        listeners.set(
+          event,
+          (listeners.get(event) ?? []).filter((id) => id !== eventId),
+        );
+        return undefined;
+      }
+      if (command === "list_serial_ports") {
+        return [];
+      }
+      if (command === "get_serial_state") {
+        return { status: "disconnected", portName: "", generation: 0, revision: 0 };
+      }
+      if (command === "get_capture_state") {
+        return {
+          status: "idle",
+          sessionId: 0,
+          revision: 0,
+          path: "",
+          dataBytes: 0,
+          recordCount: 0,
+        };
+      }
+      if (command === "get_capture_export_state") {
+        return {
+          status: "idle",
+          phase: "idle",
+          jobId: 0,
+          revision: 0,
+          sourcePath: "",
+          destinationPath: "",
+          format: "csv",
+          direction: "both",
+          allowIncomplete: false,
+          totalInputBytes: 0,
+          processedInputBytes: 0,
+          processedDataBytes: 0,
+          processedRecords: 0,
+          exportedDataBytes: 0,
+          exportedRecords: 0,
+          outputBytes: 0,
+          sourceComplete: false,
+        };
+      }
+      if (command === "get_replay_state") {
+        return { ...replayState };
+      }
+      if (command === "seek_replay") {
+        const targetUs = Number(args?.targetUs);
+        seekCalls.push({
+          sessionId: Number(args?.sessionId),
+          generation: Number(args?.generation),
+          targetUs,
+        });
+        replayState = {
+          ...replayState,
+          status: "seeking",
+          generation: replayState.generation + 1,
+          revision: replayState.revision + 1,
+          message: "正在定位回放",
+        };
+        window.setTimeout(() => {
+          replayState = {
+            ...replayState,
+            status: "paused",
+            timelineRevision: replayState.timelineRevision + 1,
+            revision: replayState.revision + 1,
+            positionUs: targetUs,
+            message: "回放已定位",
+          };
+          emit("replay://state", { ...replayState });
+        }, 100);
+        return { ...replayState };
+      }
+      return undefined;
+    };
+
+    const testWindow = window as unknown as {
+      __TAURI_INTERNALS__: Record<string, unknown>;
+      __TAURI_EVENT_PLUGIN_INTERNALS__: Record<string, unknown>;
+      __TAURI_TEST__: { seekCalls: Record<string, number>[] };
+    };
+    testWindow.__TAURI_INTERNALS__ = {
+      invoke,
+      transformCallback: (callback: Callback, once = false) => {
+        const id = nextCallbackId;
+        nextCallbackId += 1;
+        callbacks.set(id, (data) => {
+          if (once) {
+            callbacks.delete(id);
+          }
+          return callback(data);
+        });
+        return id;
+      },
+      unregisterCallback: (id: number) => callbacks.delete(id),
+    };
+    testWindow.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+      unregisterListener: (_event: string, id: number) => callbacks.delete(id),
+    };
+    testWindow.__TAURI_TEST__ = { seekCalls };
+  });
+}
 
 async function installTauriSerialMock(page: Page): Promise<void> {
   await page.addInitScript(() => {
@@ -480,6 +694,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           status: "idle",
           sessionId: 0,
           generation: 0,
+          timelineRevision: 0,
           revision: 0,
           path: "",
           complete: false,

@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkbenchStore } from "../store/workbenchStore";
@@ -26,6 +26,7 @@ const replayHeader: ReplayCaptureHeader = {
 
 const playReplayMock = vi.fn(async () => true);
 const pauseReplayMock = vi.fn(async () => true);
+const seekReplayMock = vi.fn(async () => true);
 const stopReplayMock = vi.fn(async () => true);
 const closeReplayMock = vi.fn(async () => true);
 const selectCaptureExportSourceMock = vi.fn(async () => true);
@@ -45,6 +46,7 @@ function loadReplay(
     replayStatus: status,
     replaySessionId: 7,
     replayGeneration: 2,
+    replayTimelineRevision: 0,
     replayRevision: 3,
     replayPath: "C:\\captures\\session.vucap",
     replayHeader,
@@ -56,6 +58,7 @@ function loadReplay(
     replayMessage: "",
     playReplay: playReplayMock,
     pauseReplay: pauseReplayMock,
+    seekReplay: seekReplayMock,
     stopReplay: stopReplayMock,
     closeReplay: closeReplayMock,
     ...overrides,
@@ -103,6 +106,7 @@ describe("CapturePanel replay controls", () => {
     useWorkbenchStore.setState(initialState, true);
     playReplayMock.mockClear();
     pauseReplayMock.mockClear();
+    seekReplayMock.mockClear();
     stopReplayMock.mockClear();
     closeReplayMock.mockClear();
     selectCaptureExportSourceMock.mockClear();
@@ -129,9 +133,11 @@ describe("CapturePanel replay controls", () => {
     expect(screen.getByText("session.vucap")).toBeInTheDocument();
     expect(screen.getByText("C:\\captures\\session.vucap")).toBeInTheDocument();
 
-    const progress = screen.getByRole("progressbar", { name: "回放进度" });
-    expect(progress).toHaveAttribute("max", "3500000");
-    expect(progress).toHaveAttribute("value", "1000000");
+    const slider = screen.getByRole("slider", { name: "回放位置" });
+    expect(slider).toHaveAttribute("max", "3500000");
+    expect(slider).toHaveValue("1000000");
+    expect(slider).toBeDisabled();
+    expect(slider).toHaveAttribute("title", "结构化协议回放暂不支持定位");
     expect(screen.getByRole("button", { name: "播放" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "停止回放" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "关闭回放" })).toBeEnabled();
@@ -172,6 +178,40 @@ describe("CapturePanel replay controls", () => {
     expect(screen.getByRole("button", { name: "播放" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "停止回放" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "关闭回放" })).toBeDisabled();
+  });
+
+  it("Raw 回放滑杆拖动时只更新草稿并在松手时提交一次", () => {
+    loadReplay("paused", {
+      replayHeader: { ...replayHeader, protocol: "raw" },
+    });
+
+    render(<CapturePanel />);
+
+    const slider = screen.getByRole("slider", { name: "回放位置" });
+    expect(slider).toBeEnabled();
+    fireEvent.change(slider, { target: { value: "2100000" } });
+    expect(seekReplayMock).not.toHaveBeenCalled();
+    expect(screen.getByText("00:00:02 / 00:00:03")).toBeInTheDocument();
+
+    fireEvent.pointerUp(slider);
+    fireEvent.blur(slider);
+    expect(seekReplayMock).toHaveBeenCalledOnce();
+    expect(seekReplayMock).toHaveBeenCalledWith(2_100_000);
+  });
+
+  it("定位中允许停止或关闭但不能启动新播放", () => {
+    loadReplay("seeking", {
+      replayHeader: { ...replayHeader, protocol: "raw" },
+      replayPositionUs: 2_000_000,
+    });
+
+    render(<CapturePanel />);
+
+    expect(screen.getByText("正在定位")).toBeInTheDocument();
+    expect(screen.getByRole("slider", { name: "回放位置" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "播放" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "停止回放" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "关闭回放" })).toBeEnabled();
   });
 
   it("提供完整导出配置并在二进制模式禁止双向输出", async () => {

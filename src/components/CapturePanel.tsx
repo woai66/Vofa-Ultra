@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
   CircleDot,
@@ -112,12 +112,16 @@ export function CapturePanel() {
   const openRecentCapture = useWorkbenchStore((state) => state.openRecentCapture);
   const playReplay = useWorkbenchStore((state) => state.playReplay);
   const pauseReplay = useWorkbenchStore((state) => state.pauseReplay);
+  const seekReplay = useWorkbenchStore((state) => state.seekReplay);
   const stopReplay = useWorkbenchStore((state) => state.stopReplay);
   const closeReplay = useWorkbenchStore((state) => state.closeReplay);
   const [activeTab, setActiveTab] = useState<SessionTab>(() =>
     replaySessionId > 0 ? "replay" : "record",
   );
   const [now, setNow] = useState(Date.now());
+  const [replaySeekDraftUs, setReplaySeekDraftUs] = useState(replayPositionUs);
+  const replaySeekDraftRef = useRef(replayPositionUs);
+  const replaySeekDirtyRef = useRef(false);
 
   useEffect(() => {
     if (captureStatus !== "recording") {
@@ -127,16 +131,46 @@ export function CapturePanel() {
     return () => window.clearInterval(timer);
   }, [captureStatus]);
 
+  useEffect(() => {
+    if (replayStatus === "seeking" || replaySeekDirtyRef.current) {
+      return;
+    }
+    const positionUs = Math.min(replayPositionUs, replayDurationUs);
+    replaySeekDraftRef.current = positionUs;
+    setReplaySeekDraftUs(positionUs);
+  }, [replayDurationUs, replayPositionUs, replaySessionId, replayStatus]);
+
   const captureBusy = captureStatus === "starting" || captureStatus === "stopping";
   const isRecording = captureStatus === "recording";
   const runtimeBusy = runtimeTransitionStatus !== "idle";
   const replayLoaded = replaySessionId > 0 && replayStatus !== "idle";
-  const replayRunning = ["starting", "playing", "pausing", "paused", "stopping"].includes(
-    replayStatus,
-  );
-  const replayBusy = ["selecting", "loading", "starting", "pausing", "stopping", "closing"].includes(
-    replayStatus,
-  );
+  const replayRunning = [
+    "starting",
+    "playing",
+    "pausing",
+    "paused",
+    "seeking",
+    "stopping",
+  ].includes(replayStatus);
+  const replayBusy = [
+    "selecting",
+    "loading",
+    "starting",
+    "pausing",
+    "seeking",
+    "stopping",
+    "closing",
+  ].includes(replayStatus);
+  const canInterruptReplay = replayStatus === "seeking";
+  const canSeekReplay =
+    replayHeader?.protocol === "raw" &&
+    ["ready", "paused", "completed"].includes(replayStatus) &&
+    !runtimeBusy;
+  const replaySeekStepUs = Math.max(1, Math.floor(replayDurationUs / 1_000));
+  const replayDisplayPositionUs =
+    replaySeekDirtyRef.current || replayStatus === "seeking"
+      ? replaySeekDraftUs
+      : replayPositionUs;
   const canStartCapture =
     isNativeRuntime &&
     connectionStatus === "connected" &&
@@ -162,6 +196,25 @@ export function CapturePanel() {
   const elapsedMs = captureStartedAt
     ? Math.max(0, (captureEndedAt ?? now) - captureStartedAt)
     : 0;
+
+  const updateReplaySeekDraft = (value: string) => {
+    const targetUs = Math.min(replayDurationUs, Math.max(0, Number(value)));
+    replaySeekDirtyRef.current = true;
+    replaySeekDraftRef.current = targetUs;
+    setReplaySeekDraftUs(targetUs);
+  };
+  const commitReplaySeek = () => {
+    if (!replaySeekDirtyRef.current || !canSeekReplay) {
+      return;
+    }
+    replaySeekDirtyRef.current = false;
+    void seekReplay(replaySeekDraftRef.current);
+  };
+  const cancelReplaySeekDraft = () => {
+    replaySeekDirtyRef.current = false;
+    replaySeekDraftRef.current = replayPositionUs;
+    setReplaySeekDraftUs(replayPositionUs);
+  };
 
   return (
     <div className="sidebar-panel capture-sidebar-panel">
@@ -271,16 +324,27 @@ export function CapturePanel() {
               subtitle={replayHeader ? `${protocolName(replayHeader.protocol)} · 1×` : "VUCAP v1"}
             />
             <SessionMetrics
-              duration={`${formatDurationUs(replayPositionUs)} / ${formatDurationUs(replayDurationUs)}`}
+              duration={`${formatDurationUs(replayDisplayPositionUs)} / ${formatDurationUs(replayDurationUs)}`}
               dataBytes={replayDataBytes}
               recordCount={replayRecordCount}
             />
             {replayLoaded && (
-              <progress
-                className="replay-progress"
+              <input
+                className="replay-seek-slider"
+                type="range"
+                min={0}
                 max={Math.max(1, replayDurationUs)}
-                value={Math.min(replayPositionUs, replayDurationUs)}
-                aria-label="回放进度"
+                step={replaySeekStepUs}
+                value={Math.min(replaySeekDraftUs, replayDurationUs)}
+                aria-label="回放位置"
+                aria-valuetext={`${formatDurationUs(replayDisplayPositionUs)} / ${formatDurationUs(replayDurationUs)}`}
+                title={replaySeekTitle(replayHeader?.protocol, replayStatus)}
+                disabled={!canSeekReplay}
+                onChange={(event) => updateReplaySeekDraft(event.currentTarget.value)}
+                onPointerUp={commitReplaySeek}
+                onPointerCancel={cancelReplaySeekDraft}
+                onKeyUp={commitReplaySeek}
+                onBlur={commitReplaySeek}
               />
             )}
           </section>
@@ -346,7 +410,9 @@ export function CapturePanel() {
                   type="button"
                   aria-label="停止回放"
                   title="停止回放"
-                  disabled={!replayRunning || replayBusy || runtimeBusy}
+                  disabled={
+                    !replayRunning || (replayBusy && !canInterruptReplay) || runtimeBusy
+                  }
                   onClick={() => void stopReplay()}
                 >
                   <CircleStop size={17} />
@@ -356,7 +422,7 @@ export function CapturePanel() {
                   type="button"
                   aria-label="关闭回放"
                   title="关闭回放"
-                  disabled={replayBusy || runtimeBusy}
+                  disabled={(replayBusy && !canInterruptReplay) || runtimeBusy}
                   onClick={() => void closeReplay()}
                 >
                   <X size={18} />
@@ -790,6 +856,8 @@ function replayStatusLabel(status: ReplayUiStatus, runtimeStatus: string): strin
       return "正在暂停";
     case "paused":
       return "回放已暂停";
+    case "seeking":
+      return "正在定位";
     case "stopping":
       return "正在停止";
     case "completed":
@@ -801,6 +869,19 @@ function replayStatusLabel(status: ReplayUiStatus, runtimeStatus: string): strin
     default:
       return "未打开文件";
   }
+}
+
+function replaySeekTitle(protocol: string | undefined, status: ReplayUiStatus): string {
+  if (protocol !== "raw") {
+    return "结构化协议回放暂不支持定位";
+  }
+  if (status === "playing" || status === "pausing") {
+    return "暂停回放后可定位";
+  }
+  if (status === "seeking") {
+    return "正在定位回放";
+  }
+  return "拖动定位回放位置";
 }
 
 function captureDestinationLabel(isNativeRuntime: boolean, path: string): string {
