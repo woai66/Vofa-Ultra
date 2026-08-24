@@ -1,8 +1,8 @@
 # 架构说明
 
-本文描述 v0.1.0 基础、已落地的 v0.2 工作区/录制/回放/串口恢复/波形测量，以及 v0.3 命令工作流、流式导出和
-有界数据处理图。架构目标不是追求模块数量，而是让串口生命周期、数据所有权和故障语义足够清楚，使后续协议
-扩展和插件系统可以增量加入。
+本文描述 v0.1.0 基础、已落地的 v0.2 工作区/录制/回放/串口恢复/波形测量，以及 v0.3 命令工作流、流式导出、
+有界数据处理图和实时数值日志。架构目标不是追求模块数量，而是让串口生命周期、数据所有权和故障语义足够
+清楚，使后续协议扩展和插件系统可以增量加入。
 
 ## 总体结构
 
@@ -24,6 +24,10 @@ flowchart TB
     Parsers --> RawBuffers[基础通道缓冲]
     Parsers --> Processing[有界处理 DAG]
     Processing --> DerivedBuffers[派生通道缓冲]
+    Parsers --> NumericQueue[有界数值批次队列]
+    Processing --> NumericQueue
+    NumericQueue --> NumericWriter[Rust CSV writer]
+    NumericWriter --> NumericFile[动态通道长表 CSV]
     RawBuffers --> Views[uPlot 波形与虚拟终端]
     DerivedBuffers --> Views
     Views -->|模板 / 任务配置 / 取消| Commands[命令模板与调度器]
@@ -232,6 +236,27 @@ writer 线程负责格式编码、定期进度事件、flush、同步和完成 f
 继续运行。主动停止、断开和工作区切换则串行等待 writer 收尾。格式 reader 逐条读取并限制头部与单条记录为
 64 KiB，可区分未知版本、损坏、截断和正常完成；详见 [VUCAP 捕获文件格式](capture-format.md)。
 
+## 实时数值日志
+
+数值日志与 `.vucap` 是独立状态机和 writer，可以单独运行或并行运行，任一失败都不会联动中止另一方或串口。
+唯一实时入口位于 `protocolParser.push` 和 `ProcessingGraphRuntime.process` 之后、`chartPaused` 分支之前；同批基础
+帧和派生样本立即转成结构化行并进入前端队列，不从受暂停和 2,000 点环形上限影响的显示通道反向导出。Raw
+Data 与 replay 不进入这条链路。
+
+CSV 固定为 `sample_index,timestamp_unix_us,elapsed_us,channel_kind,channel_id,channel_name,value` 长表。动态标签、
+基础通道数量和处理图输出变化只增加后续行，不改变 header 或要求按不可靠的相同时间戳拼接宽表。Unix 时间来自
+帧完成时间并安全换算为微秒；Rust 接受批次时用 `Instant` 生成 `elapsed_us`，文件顺序由单调递增的
+`sample_index` 唯一定义。文本字段按 RFC 4180 转义，控制字符被拒绝，类似电子表格公式的前缀会加单引号。
+
+前端按最多 256 条拆分 IPC，并同时限制排队总量为 1 MiB 与 2,048 条；Rust 单批最多接受 512 条，`sync_channel`
+限制为 64 批，再以 4 MiB 内存预算和 4,096 条样本预算双重约束。两层都只串行提交并在满载时明确中止，不静默
+丢样。writer 每 250 ms 发布输出字节与样本计数，输出包含 UTF-8 BOM 和 CRLF 完整行。
+
+目标文件优先位于下载目录 `Vofa-Ultra`，失败时回退应用数据目录 `recordings`。writer 使用 `create_new` 写唯一
+`.csv.part`；正常停止后 flush、`sync_all` 并原子改名为 `.csv`。中止、磁盘错误或 panic 保留 `.part` 的可诊断
+前缀并在状态中返回实际路径，底层 I/O 失败时末行可能不完整。断开、自动重连边界、切换工作区和打开回放都会
+先 flush 前端队列并等待 writer 收尾；应用退出则由 Rust state Drop 中止并交给回收线程，最多等待 2 秒。
+
 ## 流式捕获导出
 
 捕获导出由独立的单任务 Rust worker 直接迭代 `CaptureReader`，不会借用回放批次，也不会把 payload 发送到
@@ -303,15 +328,15 @@ Stop、Close 和 shutdown 会在逐记录扫描间隙中断定位。成功 seek�
 ## 验证层次
 
 1. Vitest 覆盖字节编解码、命令模板语法/端序/上限、跨 chunk 协议解析、处理图编译/预算/跨批滤波状态、环形
-   缓冲、测量吸附与边界、状态 revision、恢复退避、命令历史双重边界、发送无重入/无追赶、捕获导出任务隔离和
-   迟到结果过滤。
+   缓冲、测量吸附与边界、状态 revision、恢复退避、命令历史双重边界、发送无重入/无追赶、数值日志前端队列、
+   捕获导出任务隔离和迟到结果过滤。
 2. React 组件测试覆盖主要空状态、工作区命名、恢复控制、变量光标插入与错误反馈、命令草稿导航、历史菜单、
-   周期任务、波形测量暂停恢复/选点/清理、处理图建图/循环拒绝/依赖删除/熔断重试和导出控制。
+   周期任务、波形测量暂停恢复/选点/清理、处理图建图/循环拒绝/依赖删除/熔断重试、数值记录和导出控制。
 3. Playwright 覆盖模拟器端到端链路、TX 回显、Canvas 有效像素、波形双游标测量、工作区文件往返、录制入口权限、
    Raw / FireWater / JustFloat 回放滑杆拖动零 IPC、提交单次 seek、实际吸附位置反馈、播放中切速不换代、
    虚拟列表、命令变量 TEXT / HEX 展开与非法表达式
    拒绝、周期发送计数与停止、处理图派生通道与工作区 v2、捕获导出入口权限、窄屏溢出、短窗口布局和同一 USB
-   设备跨端口名恢复。
+   设备跨端口名恢复，以及桌面模拟桥接下解析样本的数值 CSV 启停与批处理。
 4. GitHub Actions 在三个桌面系统执行 rustfmt、Clippy、Rust 测试和 `tauri build --no-bundle`，在 Node.js 22
    上执行前端检查和浏览器验收。
 5. 手动 workflow 或与项目版本一致的 `v*` 标签生成无签名 MSI、NSIS、DMG、DEB、AppImage，并验证产物非空、

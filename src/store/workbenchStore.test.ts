@@ -7,6 +7,13 @@ import {
   stopCapture,
 } from "../services/captureClient";
 import {
+  abortNumericLog,
+  enqueueNumericLogSamples,
+  resetNumericLogQueue,
+  startNumericLog,
+  stopNumericLog,
+} from "../services/numericLogClient";
+import {
   cancelCaptureExport,
   clearCaptureExport,
   selectCaptureExportDestinationPath,
@@ -32,6 +39,7 @@ import {
   sendSerial,
 } from "../services/serialClient";
 import type { CaptureStatePayload } from "../types/capture";
+import type { NumericLogStatePayload } from "../types/numericLog";
 import type {
   CaptureExportStatePayload,
   CaptureExportStatus,
@@ -75,6 +83,14 @@ vi.mock("../services/captureExportClient", () => ({
   startCaptureExport: vi.fn(),
 }));
 
+vi.mock("../services/numericLogClient", () => ({
+  abortNumericLog: vi.fn(),
+  enqueueNumericLogSamples: vi.fn(() => true),
+  resetNumericLogQueue: vi.fn(),
+  startNumericLog: vi.fn(),
+  stopNumericLog: vi.fn(),
+}));
+
 vi.mock("../services/replayClient", () => ({
   ackReplayBatch: vi.fn(),
   closeReplay: vi.fn(),
@@ -95,6 +111,11 @@ const sendSerialMock = vi.mocked(sendSerial);
 const enqueueSimulatorCaptureMock = vi.mocked(enqueueSimulatorCapture);
 const startCaptureMock = vi.mocked(startCapture);
 const stopCaptureMock = vi.mocked(stopCapture);
+const abortNumericLogMock = vi.mocked(abortNumericLog);
+const enqueueNumericLogSamplesMock = vi.mocked(enqueueNumericLogSamples);
+const resetNumericLogQueueMock = vi.mocked(resetNumericLogQueue);
+const startNumericLogMock = vi.mocked(startNumericLog);
+const stopNumericLogMock = vi.mocked(stopNumericLog);
 const cancelCaptureExportMock = vi.mocked(cancelCaptureExport);
 const clearCaptureExportMock = vi.mocked(clearCaptureExport);
 const selectCaptureExportDestinationPathMock = vi.mocked(
@@ -198,6 +219,21 @@ function captureExportState(
   };
 }
 
+function numericLogState(
+  status: NumericLogStatePayload["status"],
+  overrides: Partial<NumericLogStatePayload> = {},
+): NumericLogStatePayload {
+  return {
+    status,
+    sessionId: status === "idle" ? 0 : 17,
+    revision: status === "idle" ? 0 : 1,
+    path: status === "idle" ? "" : "C:\\captures\\numeric.csv",
+    outputBytes: 128,
+    sampleCount: 0,
+    ...overrides,
+  };
+}
+
 describe("workbenchStore", () => {
   beforeEach(async () => {
     useWorkbenchStore.getState().stopPeriodicSend();
@@ -221,6 +257,11 @@ describe("workbenchStore", () => {
     enqueueSimulatorCaptureMock.mockReset().mockReturnValue(true);
     startCaptureMock.mockReset();
     stopCaptureMock.mockReset();
+    abortNumericLogMock.mockReset();
+    enqueueNumericLogSamplesMock.mockReset().mockReturnValue(true);
+    resetNumericLogQueueMock.mockReset();
+    startNumericLogMock.mockReset();
+    stopNumericLogMock.mockReset();
     cancelCaptureExportMock.mockReset();
     clearCaptureExportMock.mockReset();
     selectCaptureExportDestinationPathMock.mockReset();
@@ -284,6 +325,15 @@ describe("workbenchStore", () => {
       captureDataBytes: 0,
       captureRecordCount: 0,
       captureMessage: "",
+      numericLogStatus: "idle",
+      numericLogSessionId: 0,
+      numericLogRevision: 0,
+      numericLogPath: "",
+      numericLogStartedAt: undefined,
+      numericLogEndedAt: undefined,
+      numericLogOutputBytes: 0,
+      numericLogSampleCount: 0,
+      numericLogMessage: "",
       captureExportStatus: "idle",
       captureExportPhase: "idle",
       captureExportJobId: 0,
@@ -1714,6 +1764,65 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(921_600);
   });
 
+  it("数值记录可与原始捕获并行并冻结数据源协议", async () => {
+    startNumericLogMock.mockResolvedValue(
+      numericLogState("recording", {
+        sessionId: 17,
+        revision: 3,
+        startedAtUnixMs: 1_000,
+      }),
+    );
+    startCaptureMock.mockResolvedValue({
+      status: "recording",
+      sessionId: 7,
+      revision: 3,
+      path: "C:\\captures\\session.vucap",
+      startedAtUnixMs: 1_000,
+      dataBytes: 0,
+      recordCount: 0,
+    });
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      connectionStatus: "connected",
+      protocol: "justfloat",
+    });
+
+    expect(await useWorkbenchStore.getState().startNumericLog()).toBe(true);
+    expect(startNumericLogMock).toHaveBeenCalledWith({
+      source: "simulator",
+      protocol: "justfloat",
+    });
+    expect(await useWorkbenchStore.getState().startCapture()).toBe(true);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      numericLogStatus: "recording",
+      numericLogSessionId: 17,
+      captureStatus: "recording",
+      captureSessionId: 7,
+    });
+
+    useWorkbenchStore.getState().setProtocol("raw");
+    await useWorkbenchStore.getState().setSource("serial");
+    useWorkbenchStore.getState().updateSerialConfig("baudRate", 57_600);
+    expect(useWorkbenchStore.getState().protocol).toBe("justfloat");
+    expect(useWorkbenchStore.getState().source).toBe("simulator");
+    expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(115_200);
+  });
+
+  it("Raw 协议拒绝启动数值记录且不调用后端", async () => {
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      connectionStatus: "connected",
+      protocol: "raw",
+    });
+
+    await expect(useWorkbenchStore.getState().startNumericLog()).resolves.toBe(false);
+    expect(startNumericLogMock).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      numericLogStatus: "error",
+      numericLogMessage: expect.stringMatching(/不产生数值通道/),
+    });
+  });
+
   it("暂停视图时仍把模拟器原始 RX 和 TX 送入录制队列", () => {
     useWorkbenchStore.setState({
       captureStatus: "recording",
@@ -1751,6 +1860,164 @@ describe("workbenchStore", () => {
       channels: [],
       terminalEntries: [],
       stats: { rxBytes: 3, txBytes: 2 },
+    });
+  });
+
+  it("波形暂停时仍记录基础与派生数值样本", () => {
+    useWorkbenchStore.getState().setProtocol("firewater");
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        { id: "scaled", kind: "affine", input: "source", gain: 2, offset: 1 },
+        {
+          id: "result",
+          kind: "output",
+          input: "scaled",
+          name: "Scaled",
+          color: "#55bde8",
+        },
+      ],
+    });
+    useWorkbenchStore.setState({
+      numericLogStatus: "recording",
+      numericLogSessionId: 17,
+      terminalPaused: true,
+      chartPaused: true,
+      connectionStatus: "connected",
+    });
+
+    useWorkbenchStore.getState().ingestBytes(
+      new TextEncoder().encode("temp:1,2\n"),
+      1_000,
+    );
+
+    expect(enqueueNumericLogSamplesMock).toHaveBeenCalledOnce();
+    expect(enqueueNumericLogSamplesMock).toHaveBeenCalledWith(
+      17,
+      [
+        {
+          timestampUnixUs: 1_000_000,
+          channelKind: "base",
+          channelId: "channel-0",
+          channelName: "temp",
+          value: 1,
+        },
+        {
+          timestampUnixUs: 1_000_000,
+          channelKind: "base",
+          channelId: "channel-1",
+          channelName: "CH 2",
+          value: 2,
+        },
+        {
+          timestampUnixUs: 1_000_000,
+          channelKind: "derived",
+          channelId: "derived:result",
+          channelName: "Scaled",
+          value: 3,
+        },
+      ],
+      expect.any(Function),
+    );
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      channels: [],
+      processedChannels: [],
+      terminalEntries: [],
+      stats: { rxFrames: 1 },
+    });
+  });
+
+  it("断开数据源前并行完成两类记录", async () => {
+    stopCaptureMock.mockResolvedValue({
+      status: "idle",
+      sessionId: 9,
+      revision: 6,
+      path: "C:\\captures\\complete.vucap",
+      endedAtUnixMs: 2_000,
+      dataBytes: 128,
+      recordCount: 4,
+    });
+    stopNumericLogMock.mockResolvedValue(
+      numericLogState("idle", {
+        sessionId: 17,
+        revision: 6,
+        path: "C:\\captures\\numeric.csv",
+        endedAtUnixMs: 2_000,
+        outputBytes: 256,
+        sampleCount: 6,
+      }),
+    );
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      connectionStatus: "connected",
+      captureStatus: "recording",
+      captureSessionId: 9,
+      numericLogStatus: "recording",
+      numericLogSessionId: 17,
+    });
+
+    await expect(useWorkbenchStore.getState().disconnect()).resolves.toBe(true);
+    expect(stopCaptureMock).toHaveBeenCalledOnce();
+    expect(stopNumericLogMock).toHaveBeenCalledOnce();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "disconnected",
+      captureStatus: "idle",
+      numericLogStatus: "idle",
+      numericLogSampleCount: 6,
+    });
+  });
+
+  it("数值记录收尾时忽略同一会话的迟到进度状态", async () => {
+    const stopping = deferred<NumericLogStatePayload>();
+    stopNumericLogMock.mockReturnValue(stopping.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      connectionStatus: "connected",
+      protocol: "firewater",
+      numericLogStatus: "recording",
+      numericLogSessionId: 17,
+      numericLogRevision: 3,
+      numericLogMessage: "",
+    });
+
+    const stopPromise = useWorkbenchStore.getState().stopNumericLog();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      numericLogStatus: "stopping",
+      numericLogMessage: "正在完成数值 CSV",
+    });
+
+    useWorkbenchStore.getState().handleNumericLogState(
+      numericLogState("recording", {
+        sessionId: 17,
+        revision: 4,
+        outputBytes: 256,
+        sampleCount: 6,
+        message: "记录中",
+      }),
+    );
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      numericLogStatus: "stopping",
+      numericLogRevision: 4,
+      numericLogOutputBytes: 256,
+      numericLogSampleCount: 6,
+      numericLogMessage: "正在完成数值 CSV",
+    });
+
+    stopping.resolve(
+      numericLogState("idle", {
+        sessionId: 17,
+        revision: 5,
+        path: "C:\\captures\\numeric.csv",
+        outputBytes: 320,
+        sampleCount: 8,
+      }),
+    );
+    await expect(stopPromise).resolves.toBe(true);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      numericLogStatus: "idle",
+      numericLogRevision: 5,
+      numericLogSampleCount: 8,
     });
   });
 

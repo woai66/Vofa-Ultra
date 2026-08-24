@@ -7,6 +7,7 @@ import {
   Download,
   FileCheck2,
   FileOutput,
+  FileSpreadsheet,
   FolderOpen,
   HardDrive,
   History,
@@ -28,14 +29,16 @@ import type {
   CaptureExportFormat,
   CaptureExportUiStatus,
 } from "../types/captureExport";
+import type { NumericLogUiStatus } from "../types/numericLog";
 import { REPLAY_SPEEDS, type ReplaySpeed, type ReplayUiStatus } from "../types/replay";
 import type { ProtocolKind } from "../types/serial";
 
-type SessionTab = "record" | "replay" | "export";
+type SessionTab = "record" | "numeric" | "replay" | "export";
 
 export function CapturePanel() {
   const isNativeRuntime = useWorkbenchStore((state) => state.isNativeRuntime);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
+  const protocol = useWorkbenchStore((state) => state.protocol);
   const captureStatus = useWorkbenchStore((state) => state.captureStatus);
   const capturePath = useWorkbenchStore((state) => state.capturePath);
   const captureStartedAt = useWorkbenchStore((state) => state.captureStartedAt);
@@ -43,6 +46,13 @@ export function CapturePanel() {
   const captureDataBytes = useWorkbenchStore((state) => state.captureDataBytes);
   const captureRecordCount = useWorkbenchStore((state) => state.captureRecordCount);
   const captureMessage = useWorkbenchStore((state) => state.captureMessage);
+  const numericLogStatus = useWorkbenchStore((state) => state.numericLogStatus);
+  const numericLogPath = useWorkbenchStore((state) => state.numericLogPath);
+  const numericLogStartedAt = useWorkbenchStore((state) => state.numericLogStartedAt);
+  const numericLogEndedAt = useWorkbenchStore((state) => state.numericLogEndedAt);
+  const numericLogOutputBytes = useWorkbenchStore((state) => state.numericLogOutputBytes);
+  const numericLogSampleCount = useWorkbenchStore((state) => state.numericLogSampleCount);
+  const numericLogMessage = useWorkbenchStore((state) => state.numericLogMessage);
   const captureExportStatus = useWorkbenchStore((state) => state.captureExportStatus);
   const captureExportPhase = useWorkbenchStore((state) => state.captureExportPhase);
   const captureExportSourcePath = useWorkbenchStore(
@@ -96,6 +106,8 @@ export function CapturePanel() {
   );
   const startCapture = useWorkbenchStore((state) => state.startCapture);
   const stopCapture = useWorkbenchStore((state) => state.stopCapture);
+  const startNumericLog = useWorkbenchStore((state) => state.startNumericLog);
+  const stopNumericLog = useWorkbenchStore((state) => state.stopNumericLog);
   const selectCaptureExportSource = useWorkbenchStore(
     (state) => state.selectCaptureExportSource,
   );
@@ -131,12 +143,12 @@ export function CapturePanel() {
   const replaySeekDirtyRef = useRef(false);
 
   useEffect(() => {
-    if (captureStatus !== "recording") {
+    if (captureStatus !== "recording" && numericLogStatus !== "recording") {
       return undefined;
     }
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
-  }, [captureStatus]);
+  }, [captureStatus, numericLogStatus]);
 
   useEffect(() => {
     if (replayStatus === "seeking" || replaySeekDirtyRef.current) {
@@ -149,6 +161,9 @@ export function CapturePanel() {
 
   const captureBusy = captureStatus === "starting" || captureStatus === "stopping";
   const isRecording = captureStatus === "recording";
+  const numericLogBusy =
+    numericLogStatus === "starting" || numericLogStatus === "stopping";
+  const isNumericLogging = numericLogStatus === "recording";
   const runtimeBusy = runtimeTransitionStatus !== "idle";
   const replayLoaded = replaySessionId > 0 && replayStatus !== "idle";
   const replayRunning = [
@@ -188,8 +203,20 @@ export function CapturePanel() {
     !runtimeBusy &&
     !captureBusy &&
     !replayLoaded;
+  const canStartNumericLog =
+    isNativeRuntime &&
+    connectionStatus === "connected" &&
+    protocol !== "raw" &&
+    workspaceTransitionStatus === "idle" &&
+    !runtimeBusy &&
+    !numericLogBusy &&
+    !replayLoaded;
   const canOpenReplay =
-    isNativeRuntime && workspaceTransitionStatus === "idle" && !runtimeBusy && !captureBusy;
+    isNativeRuntime &&
+    workspaceTransitionStatus === "idle" &&
+    !runtimeBusy &&
+    !captureBusy &&
+    !numericLogBusy;
   const captureActive = isRecording || captureBusy;
   const exportBusy = [
     "selecting-source",
@@ -205,6 +232,9 @@ export function CapturePanel() {
   );
   const elapsedMs = captureStartedAt
     ? Math.max(0, (captureEndedAt ?? now) - captureStartedAt)
+    : 0;
+  const numericLogElapsedMs = numericLogStartedAt
+    ? Math.max(0, (numericLogEndedAt ?? now) - numericLogStartedAt)
     : 0;
 
   const updateReplaySeekDraft = (value: string) => {
@@ -253,6 +283,17 @@ export function CapturePanel() {
           onClick={() => setActiveTab("record")}
         >
           录制
+        </button>
+        <button
+          id="numeric-tab"
+          type="button"
+          role="tab"
+          aria-controls="numeric-panel"
+          aria-selected={activeTab === "numeric"}
+          data-active={activeTab === "numeric"}
+          onClick={() => setActiveTab("numeric")}
+        >
+          数值
         </button>
         <button
           id="replay-tab"
@@ -329,6 +370,67 @@ export function CapturePanel() {
           {capturePath && <SessionFile path={capturePath} />}
           {captureMessage && (
             <SessionFeedback message={captureMessage} isError={captureStatus === "error"} />
+          )}
+        </div>
+      ) : activeTab === "numeric" ? (
+        <div id="numeric-panel" role="tabpanel" aria-labelledby="numeric-tab">
+          <section className="capture-status-section" aria-label="数值记录状态">
+            <SessionState
+              status={numericLogStatus}
+              title={numericLogStatusLabel(numericLogStatus)}
+              subtitle={numericLogDestinationLabel(isNativeRuntime, protocol)}
+            />
+            <SessionMetrics
+              duration={formatDuration(numericLogElapsedMs)}
+              dataBytes={numericLogOutputBytes}
+              recordCount={numericLogSampleCount}
+              dataLabel="输出"
+              countLabel="样本"
+            />
+          </section>
+
+          <section className="sidebar-section capture-action-section">
+            {isNumericLogging || numericLogStatus === "stopping" ? (
+              <button
+                className="danger-button capture-action-button"
+                type="button"
+                disabled={numericLogBusy || runtimeBusy}
+                onClick={() => void stopNumericLog()}
+              >
+                <CircleStop size={16} />
+                停止数值记录
+              </button>
+            ) : (
+              <button
+                className="primary-button capture-action-button"
+                type="button"
+                disabled={!canStartNumericLog}
+                onClick={() => void startNumericLog()}
+              >
+                <FileSpreadsheet size={16} />
+                开始数值记录
+              </button>
+            )}
+            {!isNativeRuntime && (
+              <span className="capture-availability">仅桌面应用支持数值文件记录</span>
+            )}
+            {isNativeRuntime && connectionStatus !== "connected" && (
+              <span className="capture-availability">连接数据源后可开始数值记录</span>
+            )}
+            {isNativeRuntime && protocol === "raw" && (
+              <span className="capture-availability">结构化协议可记录数值通道</span>
+            )}
+            {replayLoaded && (
+              <span className="capture-availability">关闭回放后可开始数值记录</span>
+            )}
+          </section>
+
+          {numericLogPath && <SessionFile path={numericLogPath} label="数值文件" />}
+          {numericLogMessage && (
+            <SessionFeedback
+              message={numericLogMessage}
+              isError={numericLogStatus === "error"}
+            />
           )}
         </div>
       ) : activeTab === "replay" ? (
@@ -692,7 +794,7 @@ function SessionState({
   title,
   subtitle,
 }: {
-  status: CaptureUiStatus | ReplayUiStatus | CaptureExportUiStatus;
+  status: CaptureUiStatus | NumericLogUiStatus | ReplayUiStatus | CaptureExportUiStatus;
   title: string;
   subtitle: string;
 }) {
@@ -752,10 +854,14 @@ function SessionMetrics({
   duration,
   dataBytes,
   recordCount,
+  dataLabel = "数据",
+  countLabel = "记录",
 }: {
   duration: string;
   dataBytes: number;
   recordCount: number;
+  dataLabel?: string;
+  countLabel?: string;
 }) {
   return (
     <div className="capture-metrics" data-wide={duration.includes("/")}>
@@ -766,12 +872,12 @@ function SessionMetrics({
       </div>
       <div>
         <HardDrive size={15} />
-        <span>数据</span>
+        <span>{dataLabel}</span>
         <strong>{formatBytes(dataBytes)}</strong>
       </div>
       <div>
         <FileCheck2 size={15} />
-        <span>记录</span>
+        <span>{countLabel}</span>
         <strong>{recordCount.toLocaleString()}</strong>
       </div>
     </div>
@@ -873,6 +979,21 @@ function captureStatusLabel(status: CaptureUiStatus): string {
   }
 }
 
+function numericLogStatusLabel(status: NumericLogUiStatus): string {
+  switch (status) {
+    case "starting":
+      return "正在创建 CSV";
+    case "recording":
+      return "正在记录数值";
+    case "stopping":
+      return "正在完成 CSV";
+    case "error":
+      return "数值记录异常";
+    default:
+      return "未记录数值";
+  }
+}
+
 function replayStatusLabel(status: ReplayUiStatus, runtimeStatus: string): string {
   if (runtimeStatus === "selecting-replay") {
     return "正在选择文件";
@@ -928,6 +1049,19 @@ function captureDestinationLabel(isNativeRuntime: boolean, path: string): string
     return "浏览器预览";
   }
   return path ? "VUCAP v1" : "桌面文件";
+}
+
+function numericLogDestinationLabel(
+  isNativeRuntime: boolean,
+  protocol: ProtocolKind,
+): string {
+  if (!isNativeRuntime) {
+    return "浏览器预览";
+  }
+  if (protocol === "raw") {
+    return "无数值通道";
+  }
+  return `CSV 长表 · ${getProtocolDefinition(protocol).displayName}`;
 }
 
 function formatDuration(milliseconds: number): string {

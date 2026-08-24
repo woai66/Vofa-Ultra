@@ -85,6 +85,33 @@ JSON 头使用 UTF-8，字段采用 camelCase：
 - 输出先写目标同目录临时文件并同步，再通过备份/恢复流程替换目标。取消、损坏或写入失败不提交半成品。
 - 导出前后比较源文件长度和修改时间；活动录制期间禁止启动导出，回放可使用独立文件句柄并行读取。
 
+## 实时数值 CSV
+
+实时数值 CSV 不是 `.vucap` 的另一种编码，也不同于上述捕获导出。它只接受 FireWater / JustFloat 实时解析出的
+有限标量；基础帧与可用的处理图输出分别写入 `base`、`derived` 行。Raw Data、TX 和历史回放不进入该文件。
+
+文件使用 UTF-8 BOM、CRLF 和固定表头：
+
+```text
+sample_index,timestamp_unix_us,elapsed_us,channel_kind,channel_id,channel_name,value
+```
+
+- `sample_index`：从 0 开始、按文件行递增的可靠顺序。
+- `timestamp_unix_us`：协议帧完成时的 Unix 微秒时间；同一输入 chunk 完成的多帧可以相同。
+- `elapsed_us`：Rust 接受该 IPC 批次时相对日志启动的单调微秒时间；同批行可以相同。
+- `channel_kind`：`base` 或 `derived`。
+- `channel_id`：基础通道为 `channel-0..15`，派生通道为稳定的 `derived:<output-id>`。
+- `channel_name`：帧标签、基础回退名或处理图输出名。
+- `value`：Rust `f64` 的有限十进制表示。
+
+动态出现、消失或改名的通道不会改变列集合。文本按 RFC 4180 转义；控制字符被拒绝，首个非空白字符为
+`= + - @` 时在字段前加单引号，避免电子表格公式注入。前端每批最多发送 256 行，同时限制 1 MiB 与 2,048 行；
+Rust 单批最多接受 512 行，writer 队列限制 64 批、4 MiB 与 4,096 行。任何溢出都进入 `error`，不会静默丢行。
+
+文件自动写入与捕获相同的目录策略，先以唯一 `.csv.part` 创建。正常停止会 flush、`sync_all` 后原子改名为
+`.csv`；失败或主动中止保留 `.part` 的可诊断前缀并报告实际路径，底层 I/O 故障时末行可能不完整。数值日志和
+`.vucap` 生命周期独立，可以并行，单方失败不影响另一方或实时连接。
+
 ## 兼容策略
 
 reader 必须先验证 magic 和版本，再分配 JSON 或 payload 缓冲。v1 reader 不接受未来版本；后续版本如改变记录

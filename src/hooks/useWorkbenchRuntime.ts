@@ -16,6 +16,10 @@ import {
   getReplayState,
   subscribeToReplayEvents,
 } from "../services/replayClient";
+import {
+  getNumericLogState,
+  subscribeToNumericLogEvents,
+} from "../services/numericLogClient";
 import { startSimulator } from "../services/simulator";
 import {
   disposeWorkbenchRuntime,
@@ -33,6 +37,7 @@ export function useWorkbenchRuntime(): void {
   const handleSerialState = useWorkbenchStore((state) => state.handleSerialState);
   const handleSerialTx = useWorkbenchStore((state) => state.handleSerialTx);
   const handleCaptureState = useWorkbenchStore((state) => state.handleCaptureState);
+  const handleNumericLogState = useWorkbenchStore((state) => state.handleNumericLogState);
   const handleCaptureExportState = useWorkbenchStore(
     (state) => state.handleCaptureExportState,
   );
@@ -106,6 +111,34 @@ export function useWorkbenchRuntime(): void {
       dispose();
     };
   }, [handleCaptureState]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let dispose: () => void = () => undefined;
+
+    void subscribeToNumericLogEvents({ onState: handleNumericLogState })
+      .then(async (unlisten) => {
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+        dispose = unlisten;
+        if (isTauriRuntime()) {
+          const snapshot = await getNumericLogState();
+          if (!cancelled) {
+            handleNumericLogState(snapshot);
+          }
+        }
+      })
+      .catch((error: unknown) => {
+        console.error("初始化数值记录状态监听失败", error);
+      });
+
+    return () => {
+      cancelled = true;
+      dispose();
+    };
+  }, [handleNumericLogState]);
 
   useEffect(() => {
     let cancelled = false;

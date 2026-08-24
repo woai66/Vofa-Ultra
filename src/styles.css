@@ -262,7 +262,7 @@ textarea:disabled {
 
 .session-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-0);

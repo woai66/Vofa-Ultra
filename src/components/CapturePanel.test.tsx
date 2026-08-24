@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { CaptureExportUiStatus } from "../types/captureExport";
+import type { NumericLogUiStatus } from "../types/numericLog";
 import type { ReplayCaptureHeader, ReplayUiStatus } from "../types/replay";
 import { CapturePanel } from "./CapturePanel";
 
@@ -35,6 +36,8 @@ const useRecentCaptureForExportMock = vi.fn(() => true);
 const startCaptureExportMock = vi.fn(async () => true);
 const cancelCaptureExportMock = vi.fn(async () => true);
 const clearCaptureExportMock = vi.fn(async () => true);
+const startNumericLogMock = vi.fn(async () => true);
+const stopNumericLogMock = vi.fn(async () => true);
 
 function loadReplay(
   status: ReplayUiStatus,
@@ -102,6 +105,34 @@ function loadExport(
   });
 }
 
+function loadNumericLog(
+  status: NumericLogUiStatus,
+  overrides: Partial<ReturnType<typeof useWorkbenchStore.getState>> = {},
+): void {
+  useWorkbenchStore.setState({
+    isNativeRuntime: true,
+    source: "simulator",
+    protocol: "firewater",
+    connectionStatus: "connected",
+    workspaceTransitionStatus: "idle",
+    runtimeTransitionStatus: "idle",
+    replayStatus: "idle",
+    replaySessionId: 0,
+    numericLogStatus: status,
+    numericLogSessionId: status === "idle" ? 0 : 17,
+    numericLogRevision: status === "idle" ? 0 : 3,
+    numericLogPath: status === "idle" ? "" : "C:\\captures\\numeric.csv.part",
+    numericLogStartedAt: status === "idle" ? undefined : Date.now() - 2_000,
+    numericLogEndedAt: undefined,
+    numericLogOutputBytes: status === "idle" ? 0 : 2_048,
+    numericLogSampleCount: status === "idle" ? 0 : 128,
+    numericLogMessage: "",
+    startNumericLog: startNumericLogMock,
+    stopNumericLog: stopNumericLogMock,
+    ...overrides,
+  });
+}
+
 describe("CapturePanel replay controls", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -118,6 +149,8 @@ describe("CapturePanel replay controls", () => {
     startCaptureExportMock.mockClear();
     cancelCaptureExportMock.mockClear();
     clearCaptureExportMock.mockClear();
+    startNumericLogMock.mockClear();
+    stopNumericLogMock.mockClear();
   });
 
   afterEach(() => cleanup());
@@ -156,6 +189,52 @@ describe("CapturePanel replay controls", () => {
     expect(screen.getByRole("button", { name: "播放" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "停止回放" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "关闭回放" })).toBeEnabled();
+  });
+
+  it("结构化实时连接可启动独立数值记录", async () => {
+    const user = userEvent.setup();
+    loadNumericLog("idle");
+
+    render(<CapturePanel />);
+    await user.click(screen.getByRole("tab", { name: "数值" }));
+
+    expect(screen.getByLabelText("数值记录状态")).toHaveTextContent("未记录数值");
+    expect(screen.getByText("CSV 长表 · FireWater")).toBeInTheDocument();
+    const startButton = screen.getByRole("button", { name: "开始数值记录" });
+    expect(startButton).toBeEnabled();
+    await user.click(startButton);
+    expect(startNumericLogMock).toHaveBeenCalledOnce();
+  });
+
+  it("Raw 与浏览器预览明确禁用数值文件记录", async () => {
+    const user = userEvent.setup();
+    loadNumericLog("idle", { protocol: "raw" });
+
+    render(<CapturePanel />);
+    await user.click(screen.getByRole("tab", { name: "数值" }));
+
+    expect(screen.getByRole("button", { name: "开始数值记录" })).toBeDisabled();
+    expect(screen.getByText("结构化协议可记录数值通道")).toBeVisible();
+
+    act(() => useWorkbenchStore.setState({ isNativeRuntime: false }));
+    expect(screen.getByRole("button", { name: "开始数值记录" })).toBeDisabled();
+    expect(screen.getByText("仅桌面应用支持数值文件记录")).toBeVisible();
+  });
+
+  it("数值记录中呈现独立指标、文件和停止控制", async () => {
+    const user = userEvent.setup();
+    loadNumericLog("recording", { numericLogMessage: "正在流式写入数值" });
+
+    render(<CapturePanel />);
+    await user.click(screen.getByRole("tab", { name: "数值" }));
+
+    expect(screen.getByLabelText("数值记录状态")).toHaveTextContent("正在记录数值");
+    expect(screen.getByText("2.0 KiB")).toBeInTheDocument();
+    expect(screen.getByText("128")).toBeInTheDocument();
+    expect(screen.getByText("numeric.csv.part")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("正在流式写入数值");
+    await user.click(screen.getByRole("button", { name: "停止数值记录" }));
+    expect(stopNumericLogMock).toHaveBeenCalledOnce();
   });
 
   it("播放中允许切换白名单倍速并动态呈现当前值", async () => {

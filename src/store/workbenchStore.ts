@@ -62,6 +62,13 @@ import {
   startCaptureExport as startCaptureExportClient,
 } from "../services/captureExportClient";
 import {
+  abortNumericLog as abortNumericLogClient,
+  enqueueNumericLogSamples,
+  resetNumericLogQueue,
+  startNumericLog as startNumericLogClient,
+  stopNumericLog as stopNumericLogClient,
+} from "../services/numericLogClient";
+import {
   cancelSerialConnect,
   connectSerial,
   disconnectSerial,
@@ -95,6 +102,11 @@ import type {
   ReplayUiStatus,
 } from "../types/replay";
 import { REPLAY_SPEEDS } from "../types/replay";
+import type {
+  NumericLogSample,
+  NumericLogStatePayload,
+  NumericLogUiStatus,
+} from "../types/numericLog";
 import type {
   ConnectionStatus,
   DataSource,
@@ -182,6 +194,7 @@ let replayProcessingRuntime = new ProcessingGraphRuntime(
   INITIAL_WORKSPACE_CONFIG.processingGraph,
 );
 let captureStopPromise: Promise<boolean> | null = null;
+let numericLogStopPromise: Promise<boolean> | null = null;
 let serialRecoveryCoordinator: SerialReconnectCoordinator | null = null;
 let serialConnectOperation = 0;
 let serialRecoverySettingOperation = 0;
@@ -196,6 +209,8 @@ type RuntimeTransitionStatus =
   | "disconnecting"
   | "starting-capture"
   | "stopping-capture"
+  | "starting-numeric-log"
+  | "stopping-numeric-log"
   | "selecting-replay"
   | "opening-replay"
   | "controlling-replay"
@@ -247,6 +262,15 @@ export interface WorkbenchStore {
   captureDataBytes: number;
   captureRecordCount: number;
   captureMessage: string;
+  numericLogStatus: NumericLogUiStatus;
+  numericLogSessionId: number;
+  numericLogRevision: number;
+  numericLogPath: string;
+  numericLogStartedAt?: number;
+  numericLogEndedAt?: number;
+  numericLogOutputBytes: number;
+  numericLogSampleCount: number;
+  numericLogMessage: string;
   captureExportStatus: CaptureExportUiStatus;
   captureExportPhase: CaptureExportStatePayload["phase"];
   captureExportJobId: number;
@@ -323,6 +347,9 @@ export interface WorkbenchStore {
   startCapture(): Promise<boolean>;
   stopCapture(): Promise<boolean>;
   handleCaptureState(payload: CaptureStatePayload): void;
+  startNumericLog(): Promise<boolean>;
+  stopNumericLog(): Promise<boolean>;
+  handleNumericLogState(payload: NumericLogStatePayload): void;
   selectCaptureExportSource(): Promise<boolean>;
   useRecentCaptureForExport(): boolean;
   setCaptureExportFormat(format: CaptureExportFormat): void;
@@ -411,6 +438,13 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       captureDataBytes: 0,
       captureRecordCount: 0,
       captureMessage: "",
+      numericLogStatus: "idle",
+      numericLogSessionId: 0,
+      numericLogRevision: 0,
+      numericLogPath: "",
+      numericLogOutputBytes: 0,
+      numericLogSampleCount: 0,
+      numericLogMessage: "",
       captureExportStatus: "idle",
       captureExportPhase: "idle",
       captureExportJobId: 0,
@@ -464,6 +498,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           get().workspaceTransitionStatus !== "idle" ||
           get().runtimeTransitionStatus !== "idle" ||
           isCaptureActive(get().captureStatus) ||
+          isNumericLogActive(get().numericLogStatus) ||
           hasReplaySession(get())
         ) {
           return;
@@ -508,6 +543,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           get().runtimeTransitionStatus !== "idle" ||
           isRecoveryActivePhase(get().serialRecovery.phase) ||
           isCaptureActive(get().captureStatus) ||
+          isNumericLogActive(get().numericLogStatus) ||
           hasReplaySession(get())
         ) {
           return;
@@ -529,6 +565,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           get().runtimeTransitionStatus !== "idle" ||
           isRecoveryActivePhase(get().serialRecovery.phase) ||
           isCaptureActive(get().captureStatus) ||
+          isNumericLogActive(get().numericLogStatus) ||
           hasReplaySession(get())
         ) {
           return;
@@ -604,7 +641,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           if (hadReplaySession) {
             resetLiveView(get().protocol, set);
           }
-          if (hasCaptureToStop(get()) && !(await stopCurrentCapture(get, set))) {
+          if (!(await stopCurrentRecordings(get, set))) {
             set({ statusMessage: "结束录制失败，未连接数据源" });
             return;
           }
@@ -669,7 +706,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         stopCurrentCommandTask("connection-change");
         try {
           await getSerialRecoveryCoordinator().cancel("manual-disconnect", true);
-          if (!(await stopCurrentCapture(get, set))) {
+          if (!(await stopCurrentRecordings(get, set))) {
             set({ statusMessage: "结束录制失败，未断开数据源" });
             return false;
           }
@@ -800,6 +837,13 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         ensureParser(state.protocol);
         const frames = protocolParser.push(bytes, timestamp);
         const processedSamples = liveProcessingRuntime.process(frames);
+        if (state.numericLogStatus === "recording" && frames.length > 0) {
+          enqueueNumericLogSamples(
+            state.numericLogSessionId,
+            createNumericLogSamples(frames, processedSamples, state.channels),
+            handleNumericLogQueueError,
+          );
+        }
         const nextChannels = state.chartPaused
           ? state.channels
           : appendFrames(state.channels, frames, state.channelVisibility);
@@ -867,8 +911,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             payload,
             previousStatus,
           );
-          if (!recoveryOwnsCaptureBoundary && hasCaptureToStop(state)) {
-            void stopCurrentCapture(get, set);
+          if (!recoveryOwnsCaptureBoundary && hasRecordingToStop(state)) {
+            void stopCurrentRecordings(get, set);
           }
           return;
         }
@@ -880,8 +924,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             payload.message ?? serialStatusMessage(payload.status, payload.portName),
         });
         getSerialRecoveryCoordinator().observeState(payload, previousStatus);
-        if (payload.status === "disconnected" && hasCaptureToStop(state)) {
-          void stopCurrentCapture(get, set);
+        if (payload.status === "disconnected" && hasRecordingToStop(state)) {
+          void stopCurrentRecordings(get, set);
         }
       },
 
@@ -1083,6 +1127,105 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           captureDataBytes: payload.dataBytes,
           captureRecordCount: payload.recordCount,
           captureMessage: payload.message ?? "",
+        });
+      },
+      startNumericLog: async () => {
+        const state = get();
+        if (
+          state.workspaceTransitionStatus !== "idle" ||
+          state.runtimeTransitionStatus !== "idle" ||
+          isNumericLogActive(state.numericLogStatus) ||
+          hasReplaySession(state)
+        ) {
+          return false;
+        }
+        if (!state.isNativeRuntime) {
+          set({
+            numericLogStatus: "error",
+            numericLogMessage: "浏览器预览不支持数值文件记录",
+          });
+          return false;
+        }
+        if (state.connectionStatus !== "connected") {
+          set({
+            numericLogStatus: "error",
+            numericLogMessage: "请先连接数据源再开始数值记录",
+          });
+          return false;
+        }
+        if (state.protocol === "raw") {
+          set({
+            numericLogStatus: "error",
+            numericLogMessage: "Raw Data 不产生数值通道，请选择结构化协议",
+          });
+          return false;
+        }
+
+        if (!beginRuntimeTransition(get, set, "starting-numeric-log")) {
+          return false;
+        }
+        set({
+          numericLogStatus: "starting",
+          numericLogMessage: "正在创建数值 CSV",
+        });
+        try {
+          const payload = await startNumericLogClient({
+            source: state.source,
+            protocol: state.protocol,
+          });
+          get().handleNumericLogState(payload);
+          return payload.status === "recording";
+        } catch (error) {
+          set({
+            numericLogStatus: "error",
+            numericLogMessage: getErrorMessage(error),
+          });
+          return false;
+        } finally {
+          endRuntimeTransition(get, set, "starting-numeric-log");
+        }
+      },
+      stopNumericLog: async () => {
+        if (!hasNumericLogToStop(get())) {
+          return true;
+        }
+        if (numericLogStopPromise) {
+          return numericLogStopPromise;
+        }
+        if (!beginRuntimeTransition(get, set, "stopping-numeric-log")) {
+          return false;
+        }
+        try {
+          return await stopCurrentNumericLog(get, set);
+        } finally {
+          endRuntimeTransition(get, set, "stopping-numeric-log");
+        }
+      },
+      handleNumericLogState: (payload) => {
+        const state = get();
+        if (payload.revision < state.numericLogRevision) {
+          return;
+        }
+        const preserveLocalStatus =
+          payload.sessionId === state.numericLogSessionId &&
+          ((state.numericLogStatus === "stopping" && payload.status === "recording") ||
+            (state.numericLogStatus === "error" &&
+              (payload.status === "recording" || payload.status === "stopping")));
+        if (payload.status === "idle" || payload.status === "error") {
+          resetNumericLogQueue();
+        }
+        set({
+          numericLogStatus: preserveLocalStatus ? state.numericLogStatus : payload.status,
+          numericLogSessionId: payload.sessionId,
+          numericLogRevision: payload.revision,
+          numericLogPath: payload.path,
+          numericLogStartedAt: payload.startedAtUnixMs,
+          numericLogEndedAt: payload.endedAtUnixMs,
+          numericLogOutputBytes: payload.outputBytes,
+          numericLogSampleCount: payload.sampleCount,
+          numericLogMessage: preserveLocalStatus
+            ? state.numericLogMessage
+            : (payload.message ?? ""),
         });
       },
       selectCaptureExportSource: async () => {
@@ -1397,7 +1540,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
         try {
           await getSerialRecoveryCoordinator().cancel("replay-open", true);
-          if (!(await stopCurrentCapture(get, set))) {
+          if (!(await stopCurrentRecordings(get, set))) {
             set({ replayMessage: "捕获文件尚未完成，无法开始回放" });
             return false;
           }
@@ -1735,7 +1878,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           state.workspaceTransitionStatus !== "idle" ||
           state.runtimeTransitionStatus !== "idle" ||
           state.isRefreshingPorts ||
-          isCaptureTransitioning(state.captureStatus)
+          isCaptureTransitioning(state.captureStatus) ||
+          isNumericLogTransitioning(state.numericLogStatus)
         ) {
           return false;
         }
@@ -1760,7 +1904,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           state.workspaceTransitionStatus !== "idle" ||
           state.runtimeTransitionStatus !== "idle" ||
           state.isRefreshingPorts ||
-          isCaptureTransitioning(state.captureStatus)
+          isCaptureTransitioning(state.captureStatus) ||
+          isNumericLogTransitioning(state.numericLogStatus)
         ) {
           return false;
         }
@@ -1906,7 +2051,7 @@ function getSerialRecoveryCoordinator(): SerialReconnectCoordinator {
       await cancelPendingSerialConnection();
     },
     prepareCaptureBoundary: () =>
-      stopCurrentCapture(useWorkbenchStore.getState, useWorkbenchStore.setState),
+      stopCurrentRecordings(useWorkbenchStore.getState, useWorkbenchStore.setState),
     applyBackendState: (payload) => {
       useWorkbenchStore.getState().handleSerialState(payload);
     },
@@ -2109,6 +2254,14 @@ function isCaptureActive(status: CaptureUiStatus): boolean {
   return status === "starting" || status === "recording" || status === "stopping";
 }
 
+function isNumericLogTransitioning(status: NumericLogUiStatus): boolean {
+  return status === "starting" || status === "stopping";
+}
+
+function isNumericLogActive(status: NumericLogUiStatus): boolean {
+  return status === "starting" || status === "recording" || status === "stopping";
+}
+
 function isCaptureExportBusy(status: CaptureExportUiStatus): boolean {
   return [
     "selecting-source",
@@ -2148,6 +2301,17 @@ function hasCaptureToStop(state: WorkbenchStore): boolean {
     isCaptureActive(state.captureStatus) ||
     (state.captureStatus === "error" && state.captureSessionId > 0)
   );
+}
+
+function hasNumericLogToStop(state: WorkbenchStore): boolean {
+  return (
+    isNumericLogActive(state.numericLogStatus) ||
+    (state.numericLogStatus === "error" && state.numericLogSessionId > 0)
+  );
+}
+
+function hasRecordingToStop(state: WorkbenchStore): boolean {
+  return hasCaptureToStop(state) || hasNumericLogToStop(state);
 }
 
 function hasReplaySession(state: WorkbenchStore): boolean {
@@ -2222,13 +2386,60 @@ async function stopCurrentCapture(get: WorkbenchGet, set: WorkbenchSet): Promise
   }
 }
 
+async function stopCurrentNumericLog(
+  get: WorkbenchGet,
+  set: WorkbenchSet,
+): Promise<boolean> {
+  const state = get();
+  if (!hasNumericLogToStop(state)) {
+    return true;
+  }
+  if (numericLogStopPromise) {
+    return numericLogStopPromise;
+  }
+  if (!state.isNativeRuntime) {
+    return false;
+  }
+
+  set({ numericLogStatus: "stopping", numericLogMessage: "正在完成数值 CSV" });
+  const pending = (async () => {
+    try {
+      const payload = await stopNumericLogClient();
+      get().handleNumericLogState(payload);
+      return payload.status !== "recording" && payload.status !== "stopping";
+    } catch (error) {
+      set({ numericLogStatus: "error", numericLogMessage: getErrorMessage(error) });
+      return false;
+    }
+  })();
+  numericLogStopPromise = pending;
+  try {
+    return await pending;
+  } finally {
+    if (numericLogStopPromise === pending) {
+      numericLogStopPromise = null;
+    }
+  }
+}
+
+async function stopCurrentRecordings(
+  get: WorkbenchGet,
+  set: WorkbenchSet,
+): Promise<boolean> {
+  const [captureStopped, numericLogStopped] = await Promise.all([
+    stopCurrentCapture(get, set),
+    stopCurrentNumericLog(get, set),
+  ]);
+  return captureStopped && numericLogStopped;
+}
+
 async function prepareAndOpenReplay(
   path: string,
   get: WorkbenchGet,
   set: WorkbenchSet,
 ): Promise<boolean> {
   stopCurrentCommandTask("replay-open");
-  if (!(await stopCurrentCapture(get, set))) {
+  if (!(await stopCurrentRecordings(get, set))) {
     set({ replayMessage: "捕获文件尚未完成，无法打开回放" });
     return false;
   }
@@ -2325,6 +2536,22 @@ function handleCaptureQueueError(error: Error): void {
     });
 }
 
+function handleNumericLogQueueError(error: Error): void {
+  const state = useWorkbenchStore.getState();
+  if (state.numericLogStatus !== "recording") {
+    return;
+  }
+  useWorkbenchStore.setState({
+    numericLogStatus: "error",
+    numericLogMessage: error.message,
+  });
+  void abortNumericLogClient(error.message)
+    .then((payload) => useWorkbenchStore.getState().handleNumericLogState(payload))
+    .catch((abortError) => {
+      useWorkbenchStore.setState({ numericLogMessage: getErrorMessage(abortError) });
+    });
+}
+
 async function cancelPendingSerialConnection(): Promise<SerialStatePayload> {
   const cancelled = await cancelSerialConnect();
   const payload =
@@ -2391,7 +2618,7 @@ async function applyWorkspaceSnapshot(
     set({ statusMessage: `关闭回放失败，未切换到“${target.name}”` });
     return false;
   }
-  if (!(await stopCurrentCapture(get, set))) {
+  if (!(await stopCurrentRecordings(get, set))) {
     set({ statusMessage: `结束录制失败，未切换到“${target.name}”` });
     return false;
   }
@@ -2664,6 +2891,55 @@ function appendFrames(
     }
   }
   return nextChannels;
+}
+
+function createNumericLogSamples(
+  frames: readonly ParsedFrame[],
+  processedSamples: readonly ProcessingOutputSample[],
+  channels: readonly ChannelSeries[],
+): NumericLogSample[] {
+  const samples: NumericLogSample[] = [];
+  for (const frame of frames) {
+    const timestampUnixUs = toUnixMicroseconds(frame.timestamp);
+    if (timestampUnixUs === null) {
+      continue;
+    }
+    const channelCount = Math.min(frame.values.length, MAX_PROTOCOL_CHANNELS);
+    for (let index = 0; index < channelCount; index += 1) {
+      const value = frame.values[index];
+      if (value === undefined || !Number.isFinite(value)) {
+        continue;
+      }
+      const label = frame.labels?.[index]?.trim();
+      samples.push({
+        timestampUnixUs,
+        channelKind: "base",
+        channelId: `channel-${index}`,
+        channelName: label || channels[index]?.name || `CH ${index + 1}`,
+        value,
+      });
+    }
+  }
+
+  for (const sample of processedSamples) {
+    const timestampUnixUs = toUnixMicroseconds(sample.timestamp);
+    if (timestampUnixUs === null || !Number.isFinite(sample.value)) {
+      continue;
+    }
+    samples.push({
+      timestampUnixUs,
+      channelKind: "derived",
+      channelId: sample.channelId,
+      channelName: sample.name,
+      value: sample.value,
+    });
+  }
+  return samples;
+}
+
+function toUnixMicroseconds(timestampMs: number): number | null {
+  const timestampUs = Math.round(timestampMs * 1_000);
+  return Number.isSafeInteger(timestampUs) && timestampUs >= 0 ? timestampUs : null;
 }
 
 function appendProcessedSamples(

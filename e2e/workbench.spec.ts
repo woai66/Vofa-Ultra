@@ -598,6 +598,11 @@ test("浏览器预览显示会话状态但不开放文件操作", async ({ page 
   await expect(page.getByText("仅桌面应用支持文件录制")).toBeVisible();
   await expect(page.getByLabel("录制状态")).toContainText("未录制");
 
+  await page.getByRole("tab", { name: "数值" }).click();
+  await expect(page.getByRole("button", { name: "开始数值记录" })).toBeDisabled();
+  await expect(page.getByText("仅桌面应用支持数值文件记录")).toBeVisible();
+  await expect(page.getByLabel("数值记录状态")).toContainText("未记录数值");
+
   await page.getByRole("tab", { name: "回放" }).click();
   await expect(page.getByRole("button", { name: "打开捕获文件" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "回放最近录制" })).toBeDisabled();
@@ -789,6 +794,71 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
   });
 });
 
+test("桌面实时链路批量记录解析后的数值 CSV", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await installTauriSerialMock(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "连接设备" }).click();
+  await expect(page.getByText("COM3 已连接")).toBeVisible();
+  await page.getByRole("button", { name: "记录", exact: true }).click();
+  await page.getByRole("tab", { name: "数值" }).click();
+  await page.getByRole("button", { name: "开始数值记录" }).click();
+  await expect(page.getByLabel("数值记录状态")).toContainText("正在记录数值");
+
+  await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { emitNumericData(): void };
+    };
+    testWindow.__TAURI_TEST__.emitNumericData();
+  });
+  await expect.poll(() =>
+    page.evaluate(() => {
+      const testWindow = window as unknown as {
+        __TAURI_TEST__: { numericLogBatches: unknown[][] };
+      };
+      return testWindow.__TAURI_TEST__.numericLogBatches.length;
+    }),
+  ).toBe(1);
+  await expect(page.locator("#numeric-panel").getByText("2", { exact: true })).toBeVisible();
+
+  const batches = await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { numericLogBatches: unknown[][] };
+    };
+    return testWindow.__TAURI_TEST__.numericLogBatches;
+  });
+  expect(batches).toEqual([
+    [
+      {
+        timestampUnixUs: 1_700_000_000_000_000,
+        channelKind: "base",
+        channelId: "channel-0",
+        channelName: "CH 1",
+        value: 1,
+      },
+      {
+        timestampUnixUs: 1_700_000_000_000_000,
+        channelKind: "base",
+        channelId: "channel-1",
+        channelName: "CH 2",
+        value: 2,
+      },
+    ],
+  ]);
+
+  await page.getByRole("button", { name: "停止数值记录" }).click();
+  await expect(page.getByLabel("数值记录状态")).toContainText("未记录数值");
+  await expect(page.getByText("numeric.csv", { exact: true })).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});
+
 async function replaySeekCalls(page: Page): Promise<Record<string, number>[]> {
   return page.evaluate(() => {
     const testWindow = window as unknown as {
@@ -895,6 +965,16 @@ async function installTauriReplayMock(
           path: "",
           dataBytes: 0,
           recordCount: 0,
+        };
+      }
+      if (command === "get_numeric_log_state") {
+        return {
+          status: "idle",
+          sessionId: 0,
+          revision: 0,
+          path: "",
+          outputBytes: 0,
+          sampleCount: 0,
         };
       }
       if (command === "get_capture_export_state") {
@@ -1033,6 +1113,16 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       generation: 0,
       revision: 0,
     };
+    let numericLogState = {
+      status: "idle",
+      sessionId: 0,
+      revision: 0,
+      path: "",
+      outputBytes: 0,
+      sampleCount: 0,
+      message: "",
+    };
+    const numericLogBatches: unknown[][] = [];
 
     const emit = (event: string, payload: unknown) => {
       for (const callbackId of listeners.get(event) ?? []) {
@@ -1116,6 +1206,54 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           recordCount: 0,
         };
       }
+      if (command === "get_numeric_log_state") {
+        return { ...numericLogState };
+      }
+      if (command === "start_numeric_log") {
+        numericLogState = {
+          status: "recording",
+          sessionId: 17,
+          revision: numericLogState.revision + 1,
+          path: "C:\\captures\\numeric.csv",
+          outputBytes: 116,
+          sampleCount: 0,
+          message: "",
+        };
+        emit("numeric-log://state", { ...numericLogState });
+        return { ...numericLogState };
+      }
+      if (command === "append_numeric_log") {
+        const samples = (args?.samples as unknown[]) ?? [];
+        numericLogBatches.push(samples);
+        numericLogState = {
+          ...numericLogState,
+          revision: numericLogState.revision + 1,
+          outputBytes: numericLogState.outputBytes + samples.length * 48,
+          sampleCount: numericLogState.sampleCount + samples.length,
+        };
+        emit("numeric-log://state", { ...numericLogState });
+        return undefined;
+      }
+      if (command === "stop_numeric_log") {
+        numericLogState = {
+          ...numericLogState,
+          status: "idle",
+          revision: numericLogState.revision + 1,
+          message: "",
+        };
+        emit("numeric-log://state", { ...numericLogState });
+        return { ...numericLogState };
+      }
+      if (command === "abort_numeric_log") {
+        numericLogState = {
+          ...numericLogState,
+          status: "error",
+          revision: numericLogState.revision + 1,
+          message: String(args?.message ?? "数值记录已中止"),
+        };
+        emit("numeric-log://state", { ...numericLogState });
+        return { ...numericLogState };
+      }
       if (command === "get_capture_export_state") {
         return {
           status: "idle",
@@ -1159,7 +1297,12 @@ async function installTauriSerialMock(page: Page): Promise<void> {
     const testWindow = window as unknown as {
       __TAURI_INTERNALS__: Record<string, unknown>;
       __TAURI_EVENT_PLUGIN_INTERNALS__: Record<string, unknown>;
-      __TAURI_TEST__: Record<string, () => void>;
+      __TAURI_TEST__: {
+        emitNumericData(): void;
+        loseDevice(): void;
+        restoreDevice(): void;
+        numericLogBatches: unknown[][];
+      };
     };
     testWindow.__TAURI_INTERNALS__ = {
       invoke,
@@ -1180,6 +1323,15 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       unregisterListener: (_event: string, id: number) => callbacks.delete(id),
     };
     testWindow.__TAURI_TEST__ = {
+      numericLogBatches,
+      emitNumericData: () => {
+        emit("serial://data", {
+          data: "MSwyCg==",
+          byteCount: 4,
+          receivedAt: 1_700_000_000_000,
+          generation: serialState.generation,
+        });
+      },
       loseDevice: () => {
         ports = [];
         serialState = {
