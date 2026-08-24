@@ -2,6 +2,66 @@ import { readFile } from "node:fs/promises";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { ProcessingGraphConfig } from "../src/types/processingGraph";
 
+async function expectValidTabPanelReferences(page: Page, tablistName: string): Promise<void> {
+  const tabs = page.getByRole("tablist", { name: tablistName }).getByRole("tab");
+  const count = await tabs.count();
+  for (let index = 0; index < count; index += 1) {
+    const targetId = await tabs.nth(index).getAttribute("aria-controls");
+    expect(targetId).toBeTruthy();
+    await expect(page.locator(`#${targetId}`)).toHaveCount(1);
+  }
+}
+
+test("标签组支持标准键盘导航", async ({ page }) => {
+  await page.goto("/");
+
+  const waveformTab = page.getByRole("tab", { name: "波形" });
+  const attitudeTab = page.getByRole("tab", { name: "姿态" });
+  const waveformPanel = page.locator("#workspace-waveform-panel");
+  const attitudePanel = page.locator("#workspace-attitude-panel");
+  await expectValidTabPanelReferences(page, "工作区视图");
+  await expect(waveformPanel).toBeVisible();
+  await expect(attitudePanel).toBeHidden();
+  await waveformTab.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(attitudeTab).toBeFocused();
+  await expect(attitudeTab).toHaveAttribute("aria-selected", "true");
+  await expect(attitudeTab).toHaveAttribute("tabindex", "0");
+  await expect(waveformTab).toHaveAttribute("tabindex", "-1");
+  await expect(attitudePanel).toBeVisible();
+  await expect(waveformPanel).toBeHidden();
+  await expect(attitudePanel.getByRole("heading", { name: "3D 姿态" })).toBeVisible();
+  await page.keyboard.press("Home");
+  await expect(waveformTab).toBeFocused();
+  await expect(waveformPanel).toBeVisible();
+  await expect(attitudePanel).toBeHidden();
+
+  await page.getByRole("button", { name: "记录", exact: true }).click();
+  const recordTab = page.getByRole("tab", { name: "录制" });
+  const exportTab = page.getByRole("tab", { name: "导出" });
+  const recordPanel = page.locator("#record-panel");
+  const exportPanel = page.locator("#export-panel");
+  await expectValidTabPanelReferences(page, "会话模式");
+  await expect(recordPanel).toBeVisible();
+  await expect(exportPanel).toBeHidden();
+  await recordTab.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(exportTab).toBeFocused();
+  await expect(exportTab).toHaveAttribute("aria-selected", "true");
+  await expect(exportPanel).toBeVisible();
+  await expect(recordPanel).toBeHidden();
+  await expect(exportPanel.getByRole("region", { name: "导出状态" })).toBeVisible();
+  await page.keyboard.press("ArrowRight");
+  await expect(recordTab).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(exportTab).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(recordTab).toBeFocused();
+  await expect(recordTab).toHaveAttribute("aria-selected", "true");
+  await expect(recordPanel).toBeVisible();
+  await expect(exportPanel).toBeHidden();
+});
+
 test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));

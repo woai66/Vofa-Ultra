@@ -1,6 +1,15 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { ChartNoAxesCombined, LoaderCircle, Menu, Orbit } from "lucide-react";
 import { APP_DISPLAY_VERSION } from "./core/appMetadata";
+import { getHorizontalTabTarget } from "./core/tabNavigation";
 import { ActivityRail, type SidebarPanel } from "./components/ActivityRail";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -14,7 +23,9 @@ import {
 } from "./store/workbenchStore";
 
 export type ThemeMode = "dark" | "light";
-type WorkspaceView = "waveform" | "attitude";
+
+const WORKSPACE_VIEWS = ["waveform", "attitude"] as const;
+type WorkspaceView = (typeof WORKSPACE_VIEWS)[number];
 
 const loadAttitudePanel = () => import("./components/AttitudePanel");
 const AttitudePanel = lazy(async () => {
@@ -27,6 +38,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [waveformMeasuring, setWaveformMeasuring] = useState(false);
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("waveform");
+  const workspaceTabRefs = useRef<Partial<Record<WorkspaceView, HTMLButtonElement>>>({});
   const activeWorkspace = useWorkbenchStore(selectActiveWorkspace);
   const workspaceDirty = useWorkbenchStore(selectIsWorkspaceDirty);
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
@@ -65,6 +77,19 @@ export default function App() {
     setWorkspaceView(view);
   };
 
+  const handleWorkspaceTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    current: WorkspaceView,
+  ) => {
+    const target = getHorizontalTabTarget(WORKSPACE_VIEWS, current, event.key);
+    if (!target) {
+      return;
+    }
+    event.preventDefault();
+    selectWorkspaceView(target);
+    workspaceTabRefs.current[target]?.focus();
+  };
+
   return (
     <div className="app-shell" data-sidebar-open={sidebarOpen}>
       <ActivityRail activePanel={sidebarPanel} onSelect={selectSidebarPanel} />
@@ -95,24 +120,43 @@ export default function App() {
               {!replayLoaded && workspaceDirty ? " · 未保存" : ""}
             </span>
           </div>
-          <div className="workspace-view-tabs" role="tablist" aria-label="工作区视图">
+          <div
+            className="workspace-view-tabs"
+            role="tablist"
+            aria-label="工作区视图"
+            aria-orientation="horizontal"
+          >
             <button
+              id="workspace-waveform-tab"
               type="button"
               role="tab"
+              aria-controls="workspace-waveform-panel"
               aria-selected={workspaceView === "waveform"}
+              tabIndex={workspaceView === "waveform" ? 0 : -1}
               data-active={workspaceView === "waveform"}
               title="波形视图"
+              ref={(element) => {
+                workspaceTabRefs.current.waveform = element ?? undefined;
+              }}
+              onKeyDown={(event) => handleWorkspaceTabKeyDown(event, "waveform")}
               onClick={() => selectWorkspaceView("waveform")}
             >
               <ChartNoAxesCombined size={15} />
               <span>波形</span>
             </button>
             <button
+              id="workspace-attitude-tab"
               type="button"
               role="tab"
+              aria-controls="workspace-attitude-panel"
               aria-selected={workspaceView === "attitude"}
+              tabIndex={workspaceView === "attitude" ? 0 : -1}
               data-active={workspaceView === "attitude"}
               title="姿态视图"
+              ref={(element) => {
+                workspaceTabRefs.current.attitude = element ?? undefined;
+              }}
+              onKeyDown={(event) => handleWorkspaceTabKeyDown(event, "attitude")}
               onFocus={() => void loadAttitudePanel()}
               onPointerEnter={() => void loadAttitudePanel()}
               onClick={() => selectWorkspaceView("attitude")}
@@ -128,18 +172,41 @@ export default function App() {
         </header>
 
         <div className="workspace-content" data-waveform-measuring={waveformMeasuring}>
-          {workspaceView === "waveform" ? (
+          <WorkspaceTabPanel view="waveform" activeView={workspaceView}>
             <WaveformPanel theme={theme} onMeasurementModeChange={setWaveformMeasuring} />
-          ) : (
+          </WorkspaceTabPanel>
+          <WorkspaceTabPanel view="attitude" activeView={workspaceView}>
             <Suspense fallback={<AttitudePanelFallback />}>
               <AttitudePanel theme={theme} />
             </Suspense>
-          )}
+          </WorkspaceTabPanel>
           <TerminalPanel />
         </div>
       </main>
 
       <StatusBar />
+    </div>
+  );
+}
+
+function WorkspaceTabPanel({
+  view,
+  activeView,
+  children,
+}: {
+  view: WorkspaceView;
+  activeView: WorkspaceView;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      id={`workspace-${view}-panel`}
+      className="workspace-view-panel"
+      role="tabpanel"
+      aria-labelledby={`workspace-${view}-tab`}
+      hidden={activeView !== view}
+    >
+      {activeView === view ? children : null}
     </div>
   );
 }

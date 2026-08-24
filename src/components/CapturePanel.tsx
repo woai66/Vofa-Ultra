@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import {
   CheckCircle2,
   CircleDot,
@@ -24,6 +30,7 @@ import {
   getProtocolDefinition,
   protocolSupportsReplaySeek,
 } from "../core/protocols";
+import { getHorizontalTabTarget } from "../core/tabNavigation";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import {
   CAPTURE_MARKER_COLORS,
@@ -42,7 +49,8 @@ import type { NumericLogUiStatus } from "../types/numericLog";
 import { REPLAY_SPEEDS, type ReplaySpeed, type ReplayUiStatus } from "../types/replay";
 import type { ProtocolKind } from "../types/serial";
 
-type SessionTab = "record" | "numeric" | "replay" | "export";
+const SESSION_TABS = ["record", "numeric", "replay", "export"] as const;
+type SessionTab = (typeof SESSION_TABS)[number];
 
 const UTF8_ENCODER = new TextEncoder();
 
@@ -173,6 +181,7 @@ export function CapturePanel() {
   const [activeTab, setActiveTab] = useState<SessionTab>(() =>
     replaySessionId > 0 ? "replay" : "record",
   );
+  const sessionTabRefs = useRef<Partial<Record<SessionTab, HTMLButtonElement>>>({});
   const [now, setNow] = useState(Date.now());
   const [markerLabel, setMarkerLabel] = useState("");
   const [markerColor, setMarkerColor] = useState<CaptureMarkerColor>("blue");
@@ -235,6 +244,17 @@ export function CapturePanel() {
     replaySeekDirtyRef.current || replayStatus === "seeking"
       ? replaySeekDraftUs
       : replayPositionUs;
+  const replaySubtitle = replayHeader
+    ? [
+        getProtocolDefinition(replayHeader.protocol).displayName,
+        `VUCAP v${replayFormatVersion}`,
+        `${replaySpeed}×`,
+      ].join(" · ")
+    : "VUCAP";
+  const replayPositionLabel = [
+    formatDurationUs(replayDisplayPositionUs),
+    formatDurationUs(replayDurationUs),
+  ].join(" / ");
   const canStartCapture =
     isNativeRuntime &&
     connectionStatus === "connected" &&
@@ -305,6 +325,18 @@ export function CapturePanel() {
       setMarkerLabel("");
     }
   };
+  const handleSessionTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    current: SessionTab,
+  ) => {
+    const target = getHorizontalTabTarget(SESSION_TABS, current, event.key);
+    if (!target) {
+      return;
+    }
+    event.preventDefault();
+    setActiveTab(target);
+    sessionTabRefs.current[target]?.focus();
+  };
 
   return (
     <div className="sidebar-panel capture-sidebar-panel">
@@ -316,14 +348,24 @@ export function CapturePanel() {
         <Database size={20} />
       </div>
 
-      <div className="session-tabs" role="tablist" aria-label="会话模式">
+      <div
+        className="session-tabs"
+        role="tablist"
+        aria-label="会话模式"
+        aria-orientation="horizontal"
+      >
         <button
           id="record-tab"
           type="button"
           role="tab"
           aria-controls="record-panel"
           aria-selected={activeTab === "record"}
+          tabIndex={activeTab === "record" ? 0 : -1}
           data-active={activeTab === "record"}
+          ref={(element) => {
+            sessionTabRefs.current.record = element ?? undefined;
+          }}
+          onKeyDown={(event) => handleSessionTabKeyDown(event, "record")}
           onClick={() => setActiveTab("record")}
         >
           录制
@@ -334,7 +376,12 @@ export function CapturePanel() {
           role="tab"
           aria-controls="numeric-panel"
           aria-selected={activeTab === "numeric"}
+          tabIndex={activeTab === "numeric" ? 0 : -1}
           data-active={activeTab === "numeric"}
+          ref={(element) => {
+            sessionTabRefs.current.numeric = element ?? undefined;
+          }}
+          onKeyDown={(event) => handleSessionTabKeyDown(event, "numeric")}
           onClick={() => setActiveTab("numeric")}
         >
           数值
@@ -345,7 +392,12 @@ export function CapturePanel() {
           role="tab"
           aria-controls="replay-panel"
           aria-selected={activeTab === "replay"}
+          tabIndex={activeTab === "replay" ? 0 : -1}
           data-active={activeTab === "replay"}
+          ref={(element) => {
+            sessionTabRefs.current.replay = element ?? undefined;
+          }}
+          onKeyDown={(event) => handleSessionTabKeyDown(event, "replay")}
           onClick={() => setActiveTab("replay")}
         >
           回放
@@ -356,15 +408,19 @@ export function CapturePanel() {
           role="tab"
           aria-controls="export-panel"
           aria-selected={activeTab === "export"}
+          tabIndex={activeTab === "export" ? 0 : -1}
           data-active={activeTab === "export"}
+          ref={(element) => {
+            sessionTabRefs.current.export = element ?? undefined;
+          }}
+          onKeyDown={(event) => handleSessionTabKeyDown(event, "export")}
           onClick={() => setActiveTab("export")}
         >
           导出
         </button>
       </div>
 
-      {activeTab === "record" ? (
-        <div id="record-panel" role="tabpanel" aria-labelledby="record-tab">
+      <SessionTabPanel tab="record" activeTab={activeTab}>
           <section className="capture-status-section" aria-label="录制状态">
             <SessionState
               status={captureStatus}
@@ -483,9 +539,8 @@ export function CapturePanel() {
           {captureMessage && (
             <SessionFeedback message={captureMessage} isError={captureStatus === "error"} />
           )}
-        </div>
-      ) : activeTab === "numeric" ? (
-        <div id="numeric-panel" role="tabpanel" aria-labelledby="numeric-tab">
+      </SessionTabPanel>
+      <SessionTabPanel tab="numeric" activeTab={activeTab}>
           <section className="capture-status-section" aria-label="数值记录状态">
             <SessionState
               status={numericLogStatus}
@@ -544,21 +599,16 @@ export function CapturePanel() {
               isError={numericLogStatus === "error"}
             />
           )}
-        </div>
-      ) : activeTab === "replay" ? (
-        <div id="replay-panel" role="tabpanel" aria-labelledby="replay-tab">
+      </SessionTabPanel>
+      <SessionTabPanel tab="replay" activeTab={activeTab}>
           <section className="capture-status-section" aria-label="回放状态">
             <SessionState
               status={replayStatus}
               title={replayStatusLabel(replayStatus, runtimeTransitionStatus)}
-              subtitle={
-                replayHeader
-                  ? `${getProtocolDefinition(replayHeader.protocol).displayName} · VUCAP v${replayFormatVersion} · ${replaySpeed}×`
-                  : "VUCAP"
-              }
+              subtitle={replaySubtitle}
             />
             <SessionMetrics
-              duration={`${formatDurationUs(replayDisplayPositionUs)} / ${formatDurationUs(replayDurationUs)}`}
+              duration={replayPositionLabel}
               dataBytes={replayDataBytes}
               recordCount={replayRecordCount}
               markerCount={replayMarkerCount}
@@ -573,7 +623,7 @@ export function CapturePanel() {
                   step={replaySeekStepUs}
                   value={Math.min(replaySeekDraftUs, replayDurationUs)}
                   aria-label="回放位置"
-                  aria-valuetext={`${formatDurationUs(replayDisplayPositionUs)} / ${formatDurationUs(replayDurationUs)}`}
+                  aria-valuetext={replayPositionLabel}
                   title={replaySeekTitle(replayHeader?.protocol, replayStatus)}
                   disabled={!canSeekReplay}
                   onChange={(event) => updateReplaySeekDraft(event.currentTarget.value)}
@@ -722,9 +772,8 @@ export function CapturePanel() {
           {replayMessage && (
             <SessionFeedback message={replayMessage} isError={replayStatus === "error"} />
           )}
-        </div>
-      ) : (
-        <div id="export-panel" role="tabpanel" aria-labelledby="export-tab">
+      </SessionTabPanel>
+      <SessionTabPanel tab="export" activeTab={activeTab}>
           <section className="capture-status-section" aria-label="导出状态">
             <SessionState
               status={captureExportStatus}
@@ -932,8 +981,28 @@ export function CapturePanel() {
               isError={captureExportStatus === "error"}
             />
           )}
-        </div>
-      )}
+      </SessionTabPanel>
+    </div>
+  );
+}
+
+function SessionTabPanel({
+  tab,
+  activeTab,
+  children,
+}: {
+  tab: SessionTab;
+  activeTab: SessionTab;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      id={`${tab}-panel`}
+      role="tabpanel"
+      aria-labelledby={`${tab}-tab`}
+      hidden={activeTab !== tab}
+    >
+      {activeTab === tab ? children : null}
     </div>
   );
 }

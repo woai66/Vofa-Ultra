@@ -196,6 +196,55 @@ describe("CapturePanel replay controls", () => {
     expect(screen.getByRole("button", { name: "关闭回放" })).toBeEnabled();
   });
 
+  it("会话标签支持循环方向键、Home、End 和单一 Tab 停靠点", async () => {
+    const user = userEvent.setup();
+    render(<CapturePanel />);
+
+    const recordTab = screen.getByRole("tab", { name: "录制" });
+    const numericTab = screen.getByRole("tab", { name: "数值" });
+    const replayTab = screen.getByRole("tab", { name: "回放" });
+    const exportTab = screen.getByRole("tab", { name: "导出" });
+    const panels = {
+      record: document.getElementById("record-panel"),
+      numeric: document.getElementById("numeric-panel"),
+      replay: document.getElementById("replay-panel"),
+      export: document.getElementById("export-panel"),
+    };
+    expect(recordTab).toHaveAttribute("tabindex", "0");
+    expect(numericTab).toHaveAttribute("tabindex", "-1");
+    expect(replayTab).toHaveAttribute("tabindex", "-1");
+    expect(exportTab).toHaveAttribute("tabindex", "-1");
+    expect(recordTab).toHaveAttribute("aria-controls", "record-panel");
+    expect(numericTab).toHaveAttribute("aria-controls", "numeric-panel");
+    expect(replayTab).toHaveAttribute("aria-controls", "replay-panel");
+    expect(exportTab).toHaveAttribute("aria-controls", "export-panel");
+    expect(panels.record).not.toHaveAttribute("hidden");
+    expect(panels.numeric).toHaveAttribute("hidden");
+    expect(panels.replay).toHaveAttribute("hidden");
+    expect(panels.export).toHaveAttribute("hidden");
+
+    recordTab.focus();
+    await user.keyboard("{ArrowLeft}");
+    expect(exportTab).toHaveFocus();
+    expect(exportTab).toHaveAttribute("aria-selected", "true");
+    expect(document.getElementById("export-panel")).toBe(panels.export);
+    expect(panels.export).not.toHaveAttribute("hidden");
+    expect(panels.record).toHaveAttribute("hidden");
+    expect(panels.export).toContainElement(
+      screen.getByRole("region", { name: "导出状态" }),
+    );
+
+    await user.keyboard("{ArrowRight}");
+    expect(recordTab).toHaveFocus();
+    await user.keyboard("{End}");
+    expect(exportTab).toHaveFocus();
+    await user.keyboard("{Home}");
+    expect(recordTab).toHaveFocus();
+    expect(recordTab).toHaveAttribute("aria-selected", "true");
+    expect(panels.record).not.toHaveAttribute("hidden");
+    expect(panels.export).toHaveAttribute("hidden");
+  });
+
   it("结构化实时连接可启动独立数值记录", async () => {
     const user = userEvent.setup();
     loadNumericLog("idle");

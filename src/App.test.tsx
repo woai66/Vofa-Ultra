@@ -45,6 +45,46 @@ describe("App", () => {
     expect(await screen.findByRole("img", { name: "三维姿态视图" })).toBeInTheDocument();
   });
 
+  it("工作区标签支持循环方向键、Home、End 和单一 Tab 停靠点", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const waveformTab = screen.getByRole("tab", { name: "波形" });
+    const attitudeTab = screen.getByRole("tab", { name: "姿态" });
+    const waveformPanel = document.getElementById("workspace-waveform-panel");
+    const attitudePanel = document.getElementById("workspace-attitude-panel");
+    expect(waveformTab).toHaveAttribute("tabindex", "0");
+    expect(attitudeTab).toHaveAttribute("tabindex", "-1");
+    expect(waveformTab).toHaveAttribute("aria-controls", "workspace-waveform-panel");
+    expect(attitudeTab).toHaveAttribute("aria-controls", "workspace-attitude-panel");
+    expect(waveformPanel).not.toHaveAttribute("hidden");
+    expect(attitudePanel).toHaveAttribute("hidden");
+
+    waveformTab.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(attitudeTab).toHaveFocus();
+    expect(attitudeTab).toHaveAttribute("aria-selected", "true");
+    expect(attitudeTab).toHaveAttribute("tabindex", "0");
+    expect(waveformTab).toHaveAttribute("tabindex", "-1");
+    expect(document.getElementById("workspace-attitude-panel")).toBe(attitudePanel);
+    expect(attitudePanel).not.toHaveAttribute("hidden");
+    expect(waveformPanel).toHaveAttribute("hidden");
+    expect(attitudePanel).toContainElement(
+      await screen.findByRole("heading", { name: "3D 姿态" }),
+    );
+
+    await user.keyboard("{Home}");
+    expect(waveformTab).toHaveFocus();
+    expect(waveformTab).toHaveAttribute("aria-selected", "true");
+    expect(waveformPanel).not.toHaveAttribute("hidden");
+    expect(attitudePanel).toHaveAttribute("hidden");
+
+    await user.keyboard("{ArrowLeft}");
+    expect(attitudeTab).toHaveFocus();
+    await user.keyboard("{End}");
+    expect(attitudeTab).toHaveFocus();
+  });
+
   it("从侧栏保存命名工作区并更新标题", async () => {
     const user = userEvent.setup();
     render(<App />);
