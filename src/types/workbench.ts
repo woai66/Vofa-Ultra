@@ -42,6 +42,7 @@ export interface CommandHistoryEntry {
   lineEnding: LineEnding;
   payloadBytes: number;
   encodedBytes: number;
+  variableCount: number;
   sentAt: number;
   repeatCount: number;
 }

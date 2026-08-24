@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
@@ -92,6 +92,62 @@ test("有界命令历史与可取消周期发送形成完整工作流", async ({
   await expect(taskStatus).toHaveText(stoppedStatus ?? "");
 });
 
+test("安全命令变量逐次展开且非法表达式零发送", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+
+  const input = page.getByRole("textbox", { name: "发送内容" });
+  await input.fill("${seq}");
+  await expect(
+    page.getByLabel("命令模板包含 1 个变量，最终 1 字节"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "展开周期发送设置" }).click();
+  await page.getByRole("spinbutton", { name: "发送间隔（毫秒）" }).fill("20");
+  await page.getByRole("spinbutton", { name: "发送次数" }).fill("3");
+  await page.getByRole("button", { name: "启动" }).click();
+
+  const taskStatus = page.getByRole("status", { name: "周期发送状态" });
+  await expect(taskStatus).toContainText("已完成 3 次发送", { timeout: 5_000 });
+  const txLines = page.locator('.terminal-line[data-direction="tx"]');
+  await expect(txLines).toHaveCount(3);
+  await expect(txLines.locator("code")).toHaveText(["1", "2", "3"]);
+
+  const sendFormat = page.getByRole("group", { name: "发送格式" });
+  await sendFormat.getByRole("button", { name: "HEX" }).click();
+  await input.fill("${seq:u16le}");
+  await expect(
+    page.getByLabel("命令模板包含 1 个变量，最终 2 字节"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect(txLines).toHaveCount(4);
+  await page
+    .getByRole("group", { name: "接收显示格式" })
+    .getByRole("button", { name: "HEX" })
+    .click();
+  await expect(txLines.last().locator("code")).toHaveText("01 00");
+  const txStats = page.locator(".transfer-stats span").filter({ hasText: "TX" });
+  const transmittedBeforeInvalidTemplate = await txStats.textContent();
+
+  await sendFormat.getByRole("button", { name: "文本" }).click();
+  await input.fill("${globalThis.process}");
+  await expect(page.getByRole("alert")).toContainText("命令变量名称无效");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "启动" })).toBeDisabled();
+  await page.waitForTimeout(80);
+  await expect(txStats).toHaveText(transmittedBeforeInvalidTemplate ?? "");
+  await expect(page.getByRole("button", { name: "命令历史，2 条" })).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});
+
 test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
@@ -126,6 +182,12 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   await lineEnding.selectOption("none");
   await page.getByRole("button", { name: "展开周期发送设置" }).click();
   await expect(page.locator(".command-workflow")).toBeVisible();
+  await page.getByRole("button", { name: "插入命令变量" }).click();
+  const variableDialog = page.getByRole("dialog", { name: "命令变量" });
+  await expect(variableDialog).toBeVisible();
+  expect(await clippedVisibleHeight(variableDialog.getByRole("button").first())).toBeGreaterThanOrEqual(
+    52,
+  );
 
   const dimensions = await page.evaluate(() => ({
     viewportWidth: window.innerWidth,
@@ -244,15 +306,48 @@ test("命名工作区可保存、切换、导出并重新导入", async ({ page 
 test("短窗口仍可操作发送栏", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 520 });
   await page.goto("/");
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
 
   await expect(page.getByRole("textbox", { name: "发送内容" })).toBeInViewport();
   await expect(page.getByRole("button", { name: "发送", exact: true })).toBeInViewport();
+  await page
+    .getByRole("group", { name: "发送格式" })
+    .getByRole("button", { name: "HEX" })
+    .click();
+  const variableTrigger = page.getByRole("button", { name: "插入命令变量" });
+  await variableTrigger.click();
+  const variableDialog = page.getByRole("dialog", { name: "命令变量" });
+  const firstVariable = variableDialog.getByRole("button").first();
+  await expect(firstVariable).toBeFocused();
+  expect(await clippedVisibleHeight(firstVariable)).toBeGreaterThanOrEqual(48);
+  await page.keyboard.press("Escape");
+  await expect(variableDialog).toHaveCount(0);
+  await expect(variableTrigger).toBeFocused();
   const dimensions = await page.evaluate(() => ({
     viewportHeight: window.innerHeight,
     documentHeight: document.documentElement.scrollHeight,
   }));
   expect(dimensions.documentHeight).toBeLessThanOrEqual(dimensions.viewportHeight);
 });
+
+async function clippedVisibleHeight(locator: Locator): Promise<number> {
+  return locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    let top = Math.max(0, rect.top);
+    let bottom = Math.min(window.innerHeight, rect.bottom);
+    let ancestor = element.parentElement;
+    while (ancestor) {
+      const style = getComputedStyle(ancestor);
+      if ([style.overflow, style.overflowY].some((value) => value !== "visible")) {
+        const ancestorRect = ancestor.getBoundingClientRect();
+        top = Math.max(top, ancestorRect.top);
+        bottom = Math.min(bottom, ancestorRect.bottom);
+      }
+      ancestor = ancestor.parentElement;
+    }
+    return Math.max(0, bottom - top);
+  });
+}
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({

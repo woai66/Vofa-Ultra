@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommandHistoryEntry } from "../types/workbench";
 import {
+  compileCommandTemplate,
+  renderCommandTemplate,
+  type CommandTemplateContext,
+  type CompiledCommandTemplate,
+} from "./commandTemplate";
+import {
   appendCommandHistory,
   CommandScheduler,
   commandHistoryPayloadBytes,
@@ -36,6 +42,7 @@ function historyEntry(
     lineEnding: "none",
     payloadBytes: commandHistoryPayloadBytes(value),
     encodedBytes: commandHistoryPayloadBytes(value),
+    variableCount: 0,
     sentAt: 1_000,
     ...overrides,
   };
@@ -43,26 +50,43 @@ function historyEntry(
 
 function task(overrides: Partial<CommandTaskRequest> = {}): CommandTaskRequest {
   return {
-    value: "PING",
-    mode: "text",
+    template: compileCommandTemplate("PING", "text"),
     lineEnding: "lf",
-    bytes: new TextEncoder().encode("PING\n"),
     intervalMs: 100,
     repeatCount: 3,
     ...overrides,
   };
 }
 
-function schedulerHarness(send: (command: PreparedCommand) => Promise<void>) {
+function schedulerHarness(
+  send: (command: PreparedCommand) => Promise<void>,
+  prepare: typeof prepareCommand = prepareCommand,
+) {
   const snapshots: ReturnType<CommandScheduler["getSnapshot"]>[] = [];
   const scheduler = new CommandScheduler({
     now: Date.now,
     setTimer: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
     clearTimer: (timer) => globalThis.clearTimeout(timer as ReturnType<typeof setTimeout>),
+    prepare,
     send,
     onSnapshot: (snapshot) => snapshots.push(snapshot),
   });
   return { scheduler, snapshots };
+}
+
+function prepareCommand(
+  template: CompiledCommandTemplate,
+  lineEnding: PreparedCommand["lineEnding"],
+  context: CommandTemplateContext,
+): PreparedCommand {
+  const rendered = renderCommandTemplate(template, context, lineEnding);
+  return {
+    value: template.source,
+    mode: template.mode,
+    lineEnding,
+    bytes: rendered.bytes,
+    variableCount: rendered.variableCount,
+  };
 }
 
 async function flushPromises(): Promise<void> {
@@ -77,10 +101,19 @@ afterEach(() => {
 describe("command history", () => {
   it("仅合并连续且格式完全相同的命令", () => {
     let history = appendCommandHistory([], historyEntry("PING"));
-    history = appendCommandHistory(history, historyEntry("PING", { sentAt: 2_000 }));
+    history = appendCommandHistory(
+      history,
+      historyEntry("PING", { encodedBytes: 7, variableCount: 1, sentAt: 2_000 }),
+    );
 
     expect(history).toEqual([
-      expect.objectContaining({ value: "PING", repeatCount: 2, sentAt: 2_000 }),
+      expect.objectContaining({
+        value: "PING",
+        encodedBytes: 7,
+        variableCount: 1,
+        repeatCount: 2,
+        sentAt: 2_000,
+      }),
     ]);
 
     history = appendCommandHistory(
@@ -157,6 +190,28 @@ describe("CommandScheduler", () => {
     expect(send).toHaveBeenCalledTimes(3);
   });
 
+  it("逐次渲染发送序号和当前时间，同时冻结任务起始时间", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const sent: string[] = [];
+    const { scheduler } = schedulerHarness(async (command) => {
+      sent.push(new TextDecoder().decode(command.bytes));
+    });
+
+    scheduler.start(
+      task({
+        template: compileCommandTemplate("${seq}:${unix_ms}:${task_unix_ms}", "text"),
+        lineEnding: "none",
+        intervalMs: 20,
+        repeatCount: 3,
+      }),
+    );
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(40);
+
+    expect(sent).toEqual(["1:1000:1000", "2:1020:1000", "3:1040:1000"]);
+  });
+
   it("停止时隔离迟到成功，并在当前发送完成前拒绝新任务", async () => {
     vi.useFakeTimers();
     const pending = deferred<void>();
@@ -214,10 +269,58 @@ describe("CommandScheduler", () => {
     });
   });
 
+  it("已有成功后下一次渲染失败时保留成功计数且不发送无效命令", async () => {
+    vi.useFakeTimers();
+    const send = vi.fn<(command: PreparedCommand) => Promise<void>>().mockResolvedValue(undefined);
+    const prepare = vi.fn<typeof prepareCommand>((template, lineEnding, context) => {
+      if (context.sequence === 2) {
+        throw new Error("命令变量 seq 的值超出 u8 范围");
+      }
+      return prepareCommand(template, lineEnding, context);
+    });
+    const { scheduler } = schedulerHarness(send, prepare);
+
+    scheduler.start(task({ repeatCount: 3, intervalMs: 20 }));
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(scheduler.getSnapshot()).toMatchObject({
+      status: "error",
+      sentCount: 1,
+      lastError: "命令变量 seq 的值超出 u8 范围",
+    });
+  });
+
+  it("成功快照的同步订阅停止任务时不遗留下一次计时器", async () => {
+    const setTimer = vi.fn(() => 1);
+    const scheduler = new CommandScheduler({
+      now: Date.now,
+      setTimer,
+      clearTimer: vi.fn(),
+      prepare: prepareCommand,
+      send: vi.fn().mockResolvedValue(undefined),
+      onSnapshot: (snapshot) => {
+        if (snapshot.status === "running" && snapshot.sentCount === 1) {
+          scheduler.stop("user");
+        }
+      },
+    });
+
+    scheduler.start(task({ repeatCount: null }));
+    await flushPromises();
+
+    expect(scheduler.getSnapshot()).toMatchObject({ status: "stopped", sentCount: 1 });
+    expect(setTimer).not.toHaveBeenCalled();
+  });
+
   it("拒绝空 payload 和越界参数", () => {
     const { scheduler } = schedulerHarness(async () => undefined);
 
-    expect(() => scheduler.start(task({ bytes: new Uint8Array() }))).toThrow("不能为空");
+    expect(() =>
+      scheduler.start(task({ template: compileCommandTemplate("", "text") })),
+    ).toThrow("不能为空");
     expect(() => scheduler.start(task({ intervalMs: 19 }))).toThrow("发送间隔");
     expect(() => scheduler.start(task({ repeatCount: 100_001 }))).toThrow("发送次数");
   });

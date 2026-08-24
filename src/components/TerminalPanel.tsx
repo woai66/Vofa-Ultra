@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowDownToLine,
+  Braces,
   CirclePause,
   Download,
   Eraser,
@@ -13,6 +14,12 @@ import {
   Timer,
   Trash2,
 } from "lucide-react";
+import {
+  COMMAND_VARIABLE_INSERTIONS,
+  compileCommandTemplate,
+  MAX_COMMAND_TEMPLATE_BYTES,
+  renderCommandTemplate,
+} from "../core/commandTemplate";
 import {
   MAX_COMMAND_INTERVAL_MS,
   MAX_COMMAND_REPEAT_COUNT,
@@ -32,6 +39,12 @@ interface CommandDraft {
   value: string;
   mode: DisplayMode;
   lineEnding: LineEnding;
+}
+
+interface CommandTemplatePreview {
+  byteCount: number;
+  variableCount: number;
+  error: string;
 }
 
 export function TerminalPanel() {
@@ -60,21 +73,36 @@ export function TerminalPanel() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const variableTriggerRef = useRef<HTMLButtonElement>(null);
+  const variableListRef = useRef<HTMLDivElement>(null);
   const historyCursorRef = useRef<number | null>(null);
   const historyDraftRef = useRef<CommandDraft | null>(null);
+  const pendingSelectionRef = useRef<number | null>(null);
   const [message, setMessage] = useState("");
   const [sendError, setSendError] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [variablesOpen, setVariablesOpen] = useState(false);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [intervalText, setIntervalText] = useState("1000");
   const [repeatMode, setRepeatMode] = useState<RepeatMode>("count");
   const [repeatCountText, setRepeatCountText] = useState("10");
   const hasPayload = message.length > 0 || lineEnding !== "none";
+  const templatePreview = useMemo(
+    () => previewCommandTemplate(message, sendMode, lineEnding),
+    [lineEnding, message, sendMode],
+  );
+  const availableVariables = useMemo(
+    () => COMMAND_VARIABLE_INSERTIONS.filter((item) => item.mode === sendMode),
+    [sendMode],
+  );
+  const visibleError = templatePreview.error || sendError;
   const taskActive = commandTask.status === "running" || commandTask.status === "stopping";
   const workflowVisible = workflowOpen || taskActive;
   const canStartPeriodic =
     connectionStatus === "connected" &&
     message.length > 0 &&
+    !templatePreview.error &&
+    templatePreview.byteCount > 0 &&
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
     !taskActive;
@@ -98,17 +126,35 @@ export function TerminalPanel() {
   }, [commandTask.status]);
 
   useEffect(() => {
-    if (!historyOpen) {
+    if (!historyOpen && !variablesOpen) {
       return undefined;
     }
     const closeOnOutsidePointer = (event: PointerEvent) => {
       if (!composerRef.current?.contains(event.target as Node)) {
         setHistoryOpen(false);
+        setVariablesOpen(false);
       }
     };
     document.addEventListener("pointerdown", closeOnOutsidePointer);
     return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, [historyOpen]);
+  }, [historyOpen, variablesOpen]);
+
+  useEffect(() => {
+    const selection = pendingSelectionRef.current;
+    const textarea = textareaRef.current;
+    if (selection === null || !textarea) {
+      return;
+    }
+    pendingSelectionRef.current = null;
+    textarea.focus();
+    textarea.setSelectionRange(selection, selection);
+  }, [message, variablesOpen]);
+
+  useEffect(() => {
+    if (variablesOpen) {
+      variableListRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    }
+  }, [variablesOpen]);
 
   const resetHistoryNavigation = () => {
     historyCursorRef.current = null;
@@ -119,6 +165,21 @@ export function TerminalPanel() {
     setMessage(draft.value);
     setSendMode(draft.mode);
     setLineEnding(draft.lineEnding);
+    setSendError("");
+    setVariablesOpen(false);
+  };
+
+  const insertVariable = (token: string) => {
+    const textarea = textareaRef.current;
+    const selectionStart = textarea?.selectionStart ?? message.length;
+    const selectionEnd = textarea?.selectionEnd ?? selectionStart;
+    const nextMessage =
+      message.slice(0, selectionStart) + token + message.slice(selectionEnd);
+    pendingSelectionRef.current = selectionStart + token.length;
+    setMessage(nextMessage);
+    setSendError("");
+    setVariablesOpen(false);
+    resetHistoryNavigation();
   };
 
   const recallHistory = (index: number) => {
@@ -171,7 +232,7 @@ export function TerminalPanel() {
   };
 
   const submit = async () => {
-    if (!hasPayload || taskActive || isSendingCommand) {
+    if (!hasPayload || templatePreview.error || taskActive || isSendingCommand) {
       return;
     }
     setSendError("");
@@ -333,6 +394,8 @@ export function TerminalPanel() {
                 disabled={isWorkspaceTransitioning}
                 onClick={() => {
                   resetHistoryNavigation();
+                  setSendError("");
+                  setVariablesOpen(false);
                   setSendMode("text");
                 }}
               >
@@ -344,6 +407,8 @@ export function TerminalPanel() {
                 disabled={isWorkspaceTransitioning}
                 onClick={() => {
                   resetHistoryNavigation();
+                  setSendError("");
+                  setVariablesOpen(false);
                   setSendMode("hex");
                 }}
               >
@@ -362,6 +427,7 @@ export function TerminalPanel() {
                 disabled={isWorkspaceTransitioning}
                 onChange={(event) => {
                   resetHistoryNavigation();
+                  setSendError("");
                   setLineEnding(event.target.value as LineEnding);
                 }}
               >
@@ -380,17 +446,44 @@ export function TerminalPanel() {
               id="send-payload"
               name="send-payload"
               aria-label="发送内容"
+              aria-invalid={Boolean(templatePreview.error)}
+              aria-describedby={
+                visibleError
+                  ? "command-send-error"
+                  : hasPayload
+                    ? "command-template-summary"
+                    : undefined
+              }
               rows={1}
+              maxLength={MAX_COMMAND_TEMPLATE_BYTES}
               value={message}
               spellCheck={false}
               placeholder={sendMode === "hex" ? "01 03 00 00 00 02 C4 0B" : "输入要发送的内容"}
               onChange={(event) => {
                 setMessage(event.target.value);
+                setSendError("");
                 resetHistoryNavigation();
               }}
               onKeyDown={handleKeyDown}
             />
           </div>
+          <button
+            ref={variableTriggerRef}
+            className="icon-button composer-icon-button command-variable-trigger"
+            type="button"
+            aria-label="插入命令变量"
+            title="插入命令变量"
+            aria-haspopup="dialog"
+            aria-controls="command-variable-popover"
+            aria-expanded={variablesOpen}
+            data-active={variablesOpen}
+            onClick={() => {
+              setHistoryOpen(false);
+              setVariablesOpen((open) => !open);
+            }}
+          >
+            <Braces size={16} />
+          </button>
           <button
             className="icon-button composer-icon-button command-history-trigger"
             type="button"
@@ -398,7 +491,10 @@ export function TerminalPanel() {
             title="命令历史"
             aria-expanded={historyOpen}
             disabled={commandHistory.length === 0}
-            onClick={() => setHistoryOpen((open) => !open)}
+            onClick={() => {
+              setVariablesOpen(false);
+              setHistoryOpen((open) => !open);
+            }}
           >
             <History size={16} />
             {commandHistory.length > 0 && (
@@ -413,7 +509,11 @@ export function TerminalPanel() {
             aria-expanded={workflowVisible}
             data-active={workflowVisible}
             disabled={taskActive}
-            onClick={() => setWorkflowOpen((open) => !open)}
+            onClick={() => {
+              setHistoryOpen(false);
+              setVariablesOpen(false);
+              setWorkflowOpen((open) => !open);
+            }}
           >
             <Timer size={16} />
           </button>
@@ -435,6 +535,7 @@ export function TerminalPanel() {
               disabled={
                 connectionStatus !== "connected" ||
                 !hasPayload ||
+                Boolean(templatePreview.error) ||
                 isWorkspaceTransitioning ||
                 isSendingCommand
               }
@@ -445,6 +546,17 @@ export function TerminalPanel() {
             </button>
           )}
         </div>
+
+        {hasPayload && !templatePreview.error && (
+          <span
+            id="command-template-summary"
+            className="command-template-summary"
+            data-dynamic={templatePreview.variableCount > 0}
+            aria-label={`命令模板包含 ${templatePreview.variableCount} 个变量，最终 ${templatePreview.byteCount} 字节`}
+          >
+            {templatePreview.variableCount} 个变量 · {templatePreview.byteCount} B
+          </span>
+        )}
 
         {workflowVisible && (
           <div className="command-workflow" aria-label="周期发送设置">
@@ -570,7 +682,10 @@ export function TerminalPanel() {
                   >
                     <code>{historyPreview(entry)}</code>
                     <span>
-                      {entry.mode.toUpperCase()} · {lineEndingLabel(entry.lineEnding)} · {entry.encodedBytes} B
+                      {entry.mode.toUpperCase()} · {lineEndingLabel(entry.lineEnding)} ·{" "}
+                      {entry.variableCount > 0
+                        ? `最近 ${entry.encodedBytes} B`
+                        : `${entry.encodedBytes} B`}
                       {entry.repeatCount > 1 ? ` · ×${entry.repeatCount}` : ""}
                     </span>
                   </button>
@@ -579,14 +694,78 @@ export function TerminalPanel() {
           </div>
         )}
 
-        {sendError && (
-          <span className="send-error" role="alert">
-            {sendError}
+        {variablesOpen && (
+          <div
+            id="command-variable-popover"
+            className="command-variable-popover"
+            role="dialog"
+            aria-label="命令变量"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setVariablesOpen(false);
+                variableTriggerRef.current?.focus();
+              }
+            }}
+          >
+            <div className="command-variable-header">
+              <div>
+                <Braces size={14} />
+                <strong>命令变量</strong>
+                <span>{sendMode.toUpperCase()}</span>
+              </div>
+            </div>
+            <div ref={variableListRef} className="command-variable-list">
+              {availableVariables.map((item) => (
+                <button
+                  key={item.token}
+                  type="button"
+                  aria-label={`插入${item.label} ${item.token}`}
+                  onClick={() => insertVariable(item.token)}
+                >
+                  <code>{item.token}</code>
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {visibleError && (
+          <span id="command-send-error" className="send-error" role="alert">
+            {visibleError}
           </span>
         )}
       </div>
     </section>
   );
+}
+
+function previewCommandTemplate(
+  value: string,
+  mode: DisplayMode,
+  lineEnding: LineEnding,
+): CommandTemplatePreview {
+  try {
+    const template = compileCommandTemplate(value, mode);
+    const nowMs = Date.now();
+    const rendered = renderCommandTemplate(
+      template,
+      { sequence: 1, nowMs, taskStartedAtMs: nowMs },
+      lineEnding,
+    );
+    return {
+      byteCount: rendered.bytes.length,
+      variableCount: rendered.variableCount,
+      error: "",
+    };
+  } catch (error) {
+    return {
+      byteCount: 0,
+      variableCount: 0,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function formatTaskSummary(task: CommandTaskSnapshot): string {

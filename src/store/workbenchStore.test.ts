@@ -342,6 +342,77 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().commandHistory).toHaveLength(2);
   });
 
+  it("手动发送以序号 1 展开变量并在历史中保留原始模板", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_123_456);
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    const template = "seq=${seq} now=${unix_ms} start=${task_unix_ms}";
+
+    await useWorkbenchStore.getState().send(template, "text", "lf");
+
+    const txEntries = useWorkbenchStore
+      .getState()
+      .terminalEntries.filter((entry) => entry.direction === "tx");
+    expect(txEntries.map((entry) => entry.text)).toEqual([
+      "seq=1 now=1700000123456 start=1700000123456\\n",
+    ]);
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([
+      expect.objectContaining({
+        value: template,
+        encodedBytes: 44,
+        variableCount: 3,
+        repeatCount: 1,
+      }),
+    ]);
+  });
+
+  it("HEX 变量作为定宽字节进入 TX 链路", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+
+    await useWorkbenchStore.getState().send("AA ${seq:u16le} 55", "hex", "none");
+
+    const txEntry = useWorkbenchStore
+      .getState()
+      .terminalEntries.find((entry) => entry.direction === "tx");
+    expect(txEntry?.hex).toBe("AA 01 00 55");
+    expect(useWorkbenchStore.getState().commandHistory[0]).toMatchObject({
+      value: "AA ${seq:u16le} 55",
+      encodedBytes: 4,
+      variableCount: 1,
+    });
+  });
+
+  it("非法变量在发送前失败且不产生 TX、历史或任务", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+
+    await expect(
+      useWorkbenchStore.getState().send("${globalThis.process}", "text", "none"),
+    ).rejects.toThrow("名称无效");
+    expect(() =>
+      useWorkbenchStore
+        .getState()
+        .startPeriodicSend("${seq + 1}", "text", "none", 20, 3),
+    ).toThrow("名称无效");
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      commandHistory: [],
+      commandTask: { status: "idle", sentCount: 0 },
+    });
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.filter((entry) => entry.direction === "tx"),
+    ).toEqual([]);
+  });
+
   it("发送失败不写入历史且释放发送互斥状态", async () => {
     sendSerialMock.mockRejectedValueOnce(new Error("TX 队列已满"));
     useWorkbenchStore.setState({
@@ -388,6 +459,35 @@ describe("workbenchStore", () => {
         .getState()
         .terminalEntries.filter((entry) => entry.direction === "tx"),
     ).toHaveLength(3);
+  });
+
+  it("周期发送逐次展开序号和当前时间并冻结任务起始时间", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    const template = "${seq}:${unix_ms}:${task_unix_ms}";
+
+    useWorkbenchStore.getState().startPeriodicSend(template, "text", "none", 20, 3);
+    await vi.advanceTimersByTimeAsync(40);
+
+    const txEntries = useWorkbenchStore
+      .getState()
+      .terminalEntries.filter((entry) => entry.direction === "tx");
+    expect(txEntries.map((entry) => entry.text)).toEqual([
+      "1:1000:1000",
+      "2:1020:1000",
+      "3:1040:1000",
+    ]);
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([
+      expect.objectContaining({
+        value: template,
+        variableCount: 3,
+        repeatCount: 3,
+      }),
+    ]);
   });
 
   it("持续任务可立即停止且不会再产生定时发送", async () => {

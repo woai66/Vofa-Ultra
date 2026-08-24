@@ -1435,6 +1435,11 @@ textarea:focus {
   background: var(--surface-1);
 }
 
+.terminal-panel {
+  position: relative;
+  overflow: visible;
+}
+
 .panel-toolbar {
   display: flex;
   min-width: 0;
@@ -1751,7 +1756,7 @@ textarea:focus {
   display: grid;
   min-width: 0;
   align-items: center;
-  grid-template-columns: auto minmax(120px, 1fr) 30px 30px 76px;
+  grid-template-columns: auto minmax(120px, 1fr) 30px 30px 30px 76px;
   gap: 7px;
 }
 
@@ -1844,6 +1849,22 @@ textarea:focus {
 .send-button[data-action="stop"]:hover:not(:disabled) {
   border-color: var(--amber);
   background: var(--surface-hover);
+}
+
+.command-template-summary {
+  min-width: 0;
+  align-self: flex-end;
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+  line-height: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-template-summary[data-dynamic="true"] {
+  color: var(--cyan);
 }
 
 .command-workflow {
@@ -1962,7 +1983,8 @@ textarea:focus {
   padding: 0 10px;
 }
 
-.command-history-popover {
+.command-history-popover,
+.command-variable-popover {
   position: absolute;
   z-index: 50;
   right: 10px;
@@ -1978,7 +2000,12 @@ textarea:focus {
   background: var(--surface-0);
 }
 
-.command-history-header {
+.command-variable-popover {
+  width: min(420px, calc(100% - 20px));
+}
+
+.command-history-header,
+.command-variable-header {
   display: flex;
   min-height: 38px;
   align-items: center;
@@ -1987,7 +2014,8 @@ textarea:focus {
   border-bottom: 1px solid var(--border);
 }
 
-.command-history-header > div {
+.command-history-header > div,
+.command-variable-header > div {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -1995,12 +2023,63 @@ textarea:focus {
   gap: 7px;
 }
 
-.command-history-header strong {
+.command-history-header strong,
+.command-variable-header strong {
   color: var(--text);
   font-size: 11px;
 }
 
-.command-history-header span {
+.command-history-header span,
+.command-variable-header span {
+  color: var(--text-subtle);
+  font-size: 9px;
+}
+
+.command-variable-list {
+  display: grid;
+  min-height: 0;
+  overflow-y: auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.command-variable-list > button {
+  display: grid;
+  min-width: 0;
+  min-height: 48px;
+  align-content: center;
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--chart-grid);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  gap: 3px;
+}
+
+.command-variable-list > button:nth-child(odd) {
+  border-right: 1px solid var(--chart-grid);
+}
+
+.command-variable-list > button:hover {
+  background: var(--surface-hover);
+}
+
+.command-variable-list code,
+.command-variable-list span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-variable-list code {
+  color: var(--cyan);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+}
+
+.command-variable-list span {
   color: var(--text-subtle);
   font-size: 9px;
 }
@@ -2186,9 +2265,9 @@ textarea:focus {
 
   .send-main-row {
     grid-template-areas:
-      "options options options options"
-      "payload history workflow send";
-    grid-template-columns: minmax(0, 1fr) 30px 30px 68px;
+      "options options options options options"
+      "payload variable history workflow send";
+    grid-template-columns: minmax(0, 1fr) 30px 30px 30px 68px;
   }
 
   .send-options {
@@ -2197,6 +2276,10 @@ textarea:focus {
 
   .send-payload-field {
     grid-area: payload;
+  }
+
+  .command-variable-trigger {
+    grid-area: variable;
   }
 
   .command-history-trigger {
@@ -2363,7 +2446,7 @@ textarea:focus {
   }
 
   .send-main-row {
-    grid-template-columns: minmax(0, 1fr) 44px 44px 68px;
+    grid-template-columns: minmax(0, 1fr) 44px 44px 44px 68px;
   }
 
   .send-payload-field,
@@ -2384,12 +2467,22 @@ textarea:focus {
     min-height: 44px;
   }
 
-  .command-history-header {
+  .command-history-header,
+  .command-variable-header {
     min-height: 52px;
   }
 
-  .command-history-list > button {
+  .command-history-list > button,
+  .command-variable-list > button {
     min-height: 52px;
+  }
+
+  .command-variable-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .command-variable-list > button:nth-child(odd) {
+    border-right: 0;
   }
 }
 

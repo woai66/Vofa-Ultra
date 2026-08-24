@@ -1,6 +1,13 @@
 import { create, type StoreApi } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
-import { decodeBase64, encodeOutbound, formatHex } from "../core/codec";
+import { decodeBase64, formatHex } from "../core/codec";
+import {
+  compileCommandTemplate,
+  MAX_COMMAND_BYTES,
+  renderCommandTemplate,
+  type CommandTemplateContext,
+  type CompiledCommandTemplate,
+} from "../core/commandTemplate";
 import {
   appendCommandHistory,
   CommandScheduler,
@@ -111,7 +118,6 @@ import type {
 const MAX_POINTS_PER_CHANNEL = 2_000;
 const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY = 2_048;
-const MAX_SEND_BYTES = 64 * 1024;
 const WORKBENCH_STORAGE_VERSION = 1;
 const APP_VERSION = "0.1.0";
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
@@ -696,29 +702,28 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       send: async (value, mode, lineEnding) => {
-        const bytes = encodeOutbound(value, mode, lineEnding);
-        if (bytes.length === 0) {
+        const template = compileCommandTemplate(value, mode);
+        const nowMs = Date.now();
+        const command = prepareCommandTemplate(template, lineEnding, {
+          sequence: 1,
+          nowMs,
+          taskStartedAtMs: nowMs,
+        });
+        if (command.bytes.length === 0) {
           return;
         }
-        assertCommandSize(bytes);
-        await executePreparedCommand({ value, mode, lineEnding, bytes }, "manual", get, set);
+        await executePreparedCommand(command, "manual", get, set);
       },
 
       startPeriodicSend: (value, mode, lineEnding, intervalMs, repeatCount) => {
         if (value.length === 0) {
           throw new Error("发送内容不能为空");
         }
-        const bytes = encodeOutbound(value, mode, lineEnding);
-        if (bytes.length === 0) {
-          throw new Error("发送内容不能为空");
-        }
-        assertCommandSize(bytes);
+        const template = compileCommandTemplate(value, mode);
         assertCommandCanStart(get());
         getCommandScheduler().start({
-          value,
-          mode,
+          template,
           lineEnding,
-          bytes,
           intervalMs,
           repeatCount,
         });
@@ -1823,9 +1828,10 @@ function getCommandScheduler(): CommandScheduler {
   }
 
   commandScheduler = new CommandScheduler({
-    now: Date.now,
+    now: () => Date.now(),
     setTimer: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
     clearTimer: (timer) => globalThis.clearTimeout(timer as ReturnType<typeof setTimeout>),
+    prepare: prepareCommandTemplate,
     send: (command) =>
       executePreparedCommand(
         command,
@@ -1868,9 +1874,24 @@ function assertCommandCanSend(state: WorkbenchStore): void {
 }
 
 function assertCommandSize(bytes: Uint8Array): void {
-  if (bytes.length > MAX_SEND_BYTES) {
-    throw new Error(`单次发送不能超过 ${MAX_SEND_BYTES / 1024} KiB，请拆分后重试`);
+  if (bytes.length > MAX_COMMAND_BYTES) {
+    throw new Error(`单次发送不能超过 ${MAX_COMMAND_BYTES / 1024} KiB，请拆分后重试`);
   }
+}
+
+function prepareCommandTemplate(
+  template: CompiledCommandTemplate,
+  lineEnding: LineEnding,
+  context: CommandTemplateContext,
+): PreparedCommand {
+  const rendered = renderCommandTemplate(template, context, lineEnding);
+  return {
+    value: template.source,
+    mode: template.mode,
+    lineEnding,
+    bytes: rendered.bytes,
+    variableCount: rendered.variableCount,
+  };
 }
 
 async function executePreparedCommand(
@@ -1911,6 +1932,7 @@ async function executePreparedCommand(
         lineEnding: command.lineEnding,
         payloadBytes: commandHistoryPayloadBytes(command.value),
         encodedBytes: command.bytes.length,
+        variableCount: command.variableCount,
         sentAt,
       }),
     }));

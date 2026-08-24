@@ -1,5 +1,9 @@
 import type { DisplayMode, LineEnding } from "../types/serial";
 import type { CommandHistoryEntry, CommandTaskSnapshot } from "../types/workbench";
+import type {
+  CommandTemplateContext,
+  CompiledCommandTemplate,
+} from "./commandTemplate";
 
 export const MAX_COMMAND_HISTORY_ENTRIES = 100;
 export const MAX_COMMAND_HISTORY_PAYLOAD_BYTES = 256 * 1024;
@@ -21,9 +25,12 @@ export interface PreparedCommand {
   mode: DisplayMode;
   lineEnding: LineEnding;
   bytes: Uint8Array;
+  variableCount: number;
 }
 
-export interface CommandTaskRequest extends PreparedCommand {
+export interface CommandTaskRequest {
+  template: CompiledCommandTemplate;
+  lineEnding: LineEnding;
   intervalMs: number;
   repeatCount: number | null;
 }
@@ -32,8 +39,17 @@ export interface CommandSchedulerDependencies {
   now(): number;
   setTimer(callback: () => void, delayMs: number): unknown;
   clearTimer(timer: unknown): void;
+  prepare(
+    template: CompiledCommandTemplate,
+    lineEnding: LineEnding,
+    context: CommandTemplateContext,
+  ): PreparedCommand;
   send(command: PreparedCommand): Promise<void>;
   onSnapshot(snapshot: CommandTaskSnapshot): void;
+}
+
+interface ScheduledCommandTask extends CommandTaskRequest {
+  taskStartedAtMs: number;
 }
 
 export function createInitialCommandTaskSnapshot(): CommandTaskSnapshot {
@@ -70,6 +86,7 @@ export function appendCommandHistory(
       {
         ...last,
         encodedBytes: entry.encodedBytes,
+        variableCount: entry.variableCount,
         sentAt: entry.sentAt,
         repeatCount: last.repeatCount + 1,
       },
@@ -118,21 +135,23 @@ export class CommandScheduler {
 
     this.clearScheduledTimer();
     const operation = ++this.operation;
-    const task: CommandTaskRequest = {
+    const taskStartedAtMs = this.dependencies.now();
+    const task: ScheduledCommandTask = {
       ...request,
-      bytes: Uint8Array.from(request.bytes),
+      taskStartedAtMs,
     };
+    const firstCommand = this.prepareCommand(task, 1, taskStartedAtMs);
     this.updateSnapshot({
       status: "running",
       intervalMs: task.intervalMs,
       repeatCount: task.repeatCount,
       sentCount: 0,
       message: "周期发送运行中",
-      startedAt: this.dependencies.now(),
+      startedAt: taskStartedAtMs,
       finishedAt: undefined,
       lastError: undefined,
     });
-    void this.dispatch(operation, task);
+    void this.dispatch(operation, task, firstCommand);
   }
 
   stop(reason: CommandTaskStopReason = "user"): boolean {
@@ -155,14 +174,25 @@ export class CommandScheduler {
     return true;
   }
 
-  private async dispatch(operation: number, task: CommandTaskRequest): Promise<void> {
+  private async dispatch(
+    operation: number,
+    task: ScheduledCommandTask,
+    preparedCommand?: PreparedCommand,
+  ): Promise<void> {
     if (operation !== this.operation || this.snapshot.status !== "running") {
       return;
     }
 
     this.inFlight = true;
     try {
-      await this.dependencies.send(task);
+      const command =
+        preparedCommand ??
+        this.prepareCommand(
+          task,
+          this.snapshot.sentCount + 1,
+          this.dependencies.now(),
+        );
+      await this.dependencies.send(command);
     } catch (error) {
       this.inFlight = false;
       if (operation !== this.operation) {
@@ -203,6 +233,9 @@ export class CommandScheduler {
       sentCount,
       message: "周期发送运行中",
     });
+    if (operation !== this.operation || this.snapshot.status !== "running") {
+      return;
+    }
     const timer = this.dependencies.setTimer(() => {
       if (this.timer === timer) {
         this.timer = undefined;
@@ -234,6 +267,25 @@ export class CommandScheduler {
     }
   }
 
+  private prepareCommand(
+    task: ScheduledCommandTask,
+    sequence: number,
+    nowMs: number,
+  ): PreparedCommand {
+    const command = this.dependencies.prepare(task.template, task.lineEnding, {
+      sequence,
+      nowMs,
+      taskStartedAtMs: task.taskStartedAtMs,
+    });
+    if (command.bytes.length === 0) {
+      throw new Error("发送内容不能为空");
+    }
+    return {
+      ...command,
+      bytes: Uint8Array.from(command.bytes),
+    };
+  }
+
   private updateSnapshot(snapshot: CommandTaskSnapshot): void {
     this.snapshot = snapshot;
     this.dependencies.onSnapshot({ ...snapshot });
@@ -241,7 +293,7 @@ export class CommandScheduler {
 }
 
 function validateCommandTaskRequest(request: CommandTaskRequest): void {
-  if (request.bytes.length === 0) {
+  if (request.template.source.length === 0) {
     throw new Error("发送内容不能为空");
   }
   if (
