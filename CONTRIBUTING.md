@@ -5,6 +5,7 @@
 ## 开始之前
 
 - 缺陷和功能建议先搜索现有 Issue。
+- 提交缺陷前先按[故障排查矩阵](docs/troubleshooting.md)完成最小隔离，避免用“没有波形”代替原始 RX 证据。
 - 大型功能、协议 API 或数据格式变更，请先提交设计讨论。
 - 安全问题不要公开披露，按 [安全策略](SECURITY.md) 报告。
 - 提交的代码必须是原创或许可证兼容，并在 PR 中说明第三方来源。
@@ -78,8 +79,9 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-f
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-涉及真实串口时，还需记录操作系统、适配器芯片、参数、测试时长，以及连接、收发、拔插和重连结果。烧录和
-硬件操作由测试者手动完成。
+涉及真实串口时，按[硬件兼容性证据规范](docs/hardware-compatibility.md)记录操作系统、适配器芯片、驱动、
+完整参数、测试时长，以及连接、收发、拔插和重连的逐项结果。只记录 USB 唯一序列号是否存在，不提交其值。
+新结果使用[硬件兼容性报告表单](.github/ISSUE_TEMPLATE/hardware_report.yml)，烧录和硬件操作由测试者手动完成。
 
 涉及协议解析、环形缓冲、处理图、Store 摄入或回放批处理的改动必须运行 `pnpm benchmark`，并在 PR 中记录
 `artifacts/performance/summary.md` 的结果。Linux CI 结果是绝对预算的权威依据；放宽

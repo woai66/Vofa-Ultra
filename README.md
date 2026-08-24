@@ -11,6 +11,14 @@ Vofa-Ultra 学习 VOFA+ 与
 
 ![Vofa-Ultra 实时串口工作台](docs/images/workbench.png)
 
+## 文档入口
+
+- [用户手册](docs/user-guide.md)：从模拟器和真实串口连接，到处理、录制、回放、导出与工作区。
+- [故障排查矩阵](docs/troubleshooting.md)：按症状定位连接、解析、文件、3D 渲染和性能问题。
+- [硬件兼容性清单](docs/hardware-compatibility.md)：只记录带完整环境、参数和结果证据的真实设备测试。
+
+当前硬件清单为空，不代表设备不兼容；它表示项目尚未收录达到公开复核门槛的实测记录。
+
 ## 当前能力
 
 - 枚举串口，配置波特率、数据位、校验位、停止位、流控、DTR 与 RTS。

@@ -73,8 +73,8 @@ job 通过受保护的 `release-draft` Environment 创建 draft，不会调用 P
 | Windows | MSI 与 NSIS 各完成安装、启动、升级覆盖和卸载；记录系统版本 |
 | macOS | DMG 完成安装、首次启动和卸载；正式版记录签名与 notarization 结果 |
 | Linux | DEB 与 AppImage 各完成启动和卸载/清理；记录发行版、桌面与 WebKit 版本 |
-| 串口芯片 | 至少两种 USB 串口芯片完成枚举、连接、双向收发、拔插和自动重连 |
-| 控制线 | 分别验证无流控、软件流控、硬件流控、DTR 与 RTS；记录设备和串口参数 |
+| 串口芯片 | 关联硬件报告 Issue；至少两种 USB 串口芯片完成枚举、连接、双向收发、拔插和自动重连 |
+| 控制线 | 在硬件报告中分别验证无流控、软件流控、硬件流控、DTR 与 RTS；记录设备和完整参数 |
 | 数据链路 | FireWater、JustFloat、Raw、录制、回放、导出、处理图与姿态视图完成冒烟 |
 | 安全与法律 | 核对 capability、CSP、SBOM、NOTICE、许可证选择和依赖变更 |
 | 签名 | v1.0 稳定版的 Windows/macOS/Linux 发布策略均有可验证签名或明确平台说明 |
@@ -82,6 +82,9 @@ job 通过受保护的 `release-draft` Environment 创建 draft，不会调用 P
 | 兼容性 | 机器清单与实现一致；历史读取、未来版本保护、弃用周期和迁移说明均有测试或 review 证据 |
 
 应用安装、真实串口和控制线操作必须由用户手动执行；自动化结果不能替代这些检查。
+硬件记录必须符合[硬件兼容性证据规范](hardware-compatibility.md)，并使用
+[硬件兼容性报告表单](../.github/ISSUE_TEMPLATE/hardware_report.yml)。发布者应在 draft 中引用报告 Issue，
+逐项核对原始证据与未验证能力；只能记录 USB 唯一序列号是否存在，不能复制其值。
 
 ## 发布规则
 

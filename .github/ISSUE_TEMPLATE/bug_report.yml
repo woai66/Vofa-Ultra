@@ -7,7 +7,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        感谢报告问题。公开内容请先删除设备序列号、密钥和业务数据。
+        感谢报告问题。提交前请先按[故障排查矩阵](../../docs/troubleshooting.md)完成最小隔离。
+        公开内容请先删除设备序列号、密钥、业务数据和用户绝对路径。
+        可复核的真实设备测试请改用[硬件兼容性报告](hardware_report.yml)。
 
   - type: textarea
     id: summary
@@ -58,7 +60,7 @@ body:
     id: serial
     attributes:
       label: 串口环境
-      description: 适配器芯片、波特率、数据位、校验、停止位和流控；无硬件时填写“不适用”。
+      description: 适配器芯片、驱动、VID/PID 和完整串口参数；不要填写 USB 序列号值，无硬件时填写“不适用”。
     validations:
       required: true
 
