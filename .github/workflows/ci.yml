@@ -20,15 +20,15 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 22.23.2
           cache: pnpm
 
       - name: Install dependencies
@@ -45,7 +45,7 @@ jobs:
 
       - name: Upload browser diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-test-results
           path: test-results
@@ -65,7 +65,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -78,21 +78,22 @@ jobs:
             patchelf
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 22.23.2
           cache: pnpm
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
+          toolchain: 1.98.0
           components: rustfmt, clippy
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: src-tauri -> target
 
@@ -111,6 +112,9 @@ jobs:
       - name: Validate package metadata
         run: pnpm check:package
 
+      - name: Validate dependency licenses and SBOM
+        run: pnpm supply-chain:check
+
       - name: Build desktop executable
         run: pnpm tauri build --ci --no-bundle
 
@@ -121,7 +125,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Linux system dependencies
         run: |
@@ -133,10 +137,12 @@ jobs:
             patchelf
 
       - name: Set up minimum supported Rust
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.88.0
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: src-tauri -> target
 
@@ -158,17 +164,20 @@ jobs:
         include:
           - os: ubuntu-22.04
             platform: linux
+            rust_target: x86_64-unknown-linux-gnu
             bundles: deb,appimage
           - os: windows-latest
             platform: windows
+            rust_target: x86_64-pc-windows-msvc
             bundles: msi,nsis
           - os: macos-latest
             platform: macos
+            rust_target: x86_64-apple-darwin
             bundles: dmg
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -181,19 +190,22 @@ jobs:
             patchelf
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 22.23.2
           cache: pnpm
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.98.0
+          targets: ${{ matrix.rust_target }}
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: src-tauri -> target
 
@@ -203,14 +215,17 @@ jobs:
       - name: Validate package metadata
         run: pnpm check:package
 
+      - name: Fetch Rust dependencies for target
+        run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.rust_target }}
+
       - name: Build unsigned bundles
-        run: pnpm tauri build --ci --no-sign --bundles "${{ matrix.bundles }}"
+        run: pnpm tauri build --ci --no-sign --target ${{ matrix.rust_target }} --bundles "${{ matrix.bundles }}"
 
-      - name: Stage bundles and checksums
-        run: pnpm package:collect ${{ matrix.platform }}
+      - name: Stage bundles, supply-chain metadata, and checksums
+        run: pnpm package:collect ${{ matrix.platform }} ${{ matrix.rust_target }}
 
-      - name: Upload unsigned bundles
-        uses: actions/upload-artifact@v4
+      - name: Upload unsigned bundles and release metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vofa-ultra-${{ matrix.platform }}-${{ github.run_number }}
           path: artifacts/${{ matrix.platform }}

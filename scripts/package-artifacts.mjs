@@ -11,38 +11,49 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const PACKAGE_PATH = path.join(PROJECT_ROOT, "package.json");
 const TAURI_CONFIG_PATH = path.join(PROJECT_ROOT, "src-tauri", "tauri.conf.json");
 const CARGO_MANIFEST_PATH = path.join(PROJECT_ROOT, "src-tauri", "Cargo.toml");
+const LICENSE_PATH = path.join(PROJECT_ROOT, "LICENSE");
+const BUNDLE_SUPPLY_CHAIN_ROOT = path.join(
+  PROJECT_ROOT,
+  "src-tauri",
+  "gen",
+  "supply-chain",
+);
 const DEFAULT_BUNDLE_ROOT = path.join(PROJECT_ROOT, "src-tauri", "target", "release", "bundle");
 
 const PLATFORM_ARTIFACTS = {
   linux: [
     {
       label: "Debian package",
-      matches: (file_path) =>
-        has_parent(file_path, "deb") && file_path.toLowerCase().endsWith(".deb"),
+      matches: (file_path, bundle_root) =>
+        has_parent(bundle_root, file_path, "deb")
+          && file_path.toLowerCase().endsWith(".deb"),
     },
     {
       label: "AppImage",
-      matches: (file_path) =>
-        has_parent(file_path, "appimage") && file_path.endsWith(".AppImage"),
+      matches: (file_path, bundle_root) =>
+        has_parent(bundle_root, file_path, "appimage") && file_path.endsWith(".AppImage"),
     },
   ],
   macos: [
     {
       label: "macOS disk image",
-      matches: (file_path) =>
-        has_parent(file_path, "dmg") && file_path.toLowerCase().endsWith(".dmg"),
+      matches: (file_path, bundle_root) =>
+        has_parent(bundle_root, file_path, "dmg")
+          && file_path.toLowerCase().endsWith(".dmg"),
     },
   ],
   windows: [
     {
       label: "Windows Installer package",
-      matches: (file_path) =>
-        has_parent(file_path, "msi") && file_path.toLowerCase().endsWith(".msi"),
+      matches: (file_path, bundle_root) =>
+        has_parent(bundle_root, file_path, "msi")
+          && file_path.toLowerCase().endsWith(".msi"),
     },
     {
       label: "NSIS installer",
-      matches: (file_path) =>
-        has_parent(file_path, "nsis") && file_path.toLowerCase().endsWith(".exe"),
+      matches: (file_path, bundle_root) =>
+        has_parent(bundle_root, file_path, "nsis")
+          && file_path.toLowerCase().endsWith(".exe"),
     },
   ],
 };
@@ -51,12 +62,38 @@ function fail(message) {
   throw new Error(message);
 }
 
-function has_parent(file_path, directory_name) {
-  return path
-    .relative(DEFAULT_BUNDLE_ROOT, file_path)
+export function has_parent(bundle_root, file_path, directory_name) {
+  const relative_path = path.relative(bundle_root, file_path);
+  if (path.isAbsolute(relative_path)
+    || relative_path === ".."
+    || relative_path.startsWith(`..${path.sep}`)) {
+    return false;
+  }
+  return relative_path
     .split(path.sep)
     .slice(0, -1)
     .some((segment) => segment.toLowerCase() === directory_name.toLowerCase());
+}
+
+export function bundle_root_for_target(target_triple, uses_target_directory) {
+  if (!uses_target_directory) {
+    return DEFAULT_BUNDLE_ROOT;
+  }
+  if (typeof target_triple !== "string" || !/^[a-z0-9_.-]+$/i.test(target_triple)) {
+    fail(`Invalid Rust target for bundle directory: ${target_triple}`);
+  }
+  return path.join(
+    PROJECT_ROOT,
+    "src-tauri",
+    "target",
+    target_triple,
+    "release",
+    "bundle",
+  );
+}
+
+export function bundle_filename_has_version(file_name, version) {
+  return file_name.split("_").includes(version);
 }
 
 function read_json(file_path) {
@@ -66,6 +103,10 @@ function read_json(file_path) {
 function normalized_path(file_path) {
   const normalized = path.normalize(path.resolve(file_path));
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function compare_stable(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function read_cargo_package() {
@@ -78,6 +119,7 @@ function read_cargo_package() {
         cargo_command,
         [
           "metadata",
+          "--locked",
           "--no-deps",
           "--format-version",
           "1",
@@ -128,12 +170,30 @@ function verify_package_metadata() {
     );
   }
 
+  if (
+    package_manifest.license !== cargo_package.license
+    || package_manifest.license !== tauri_config.bundle?.license
+  ) {
+    fail(
+      `Package licenses differ: package.json=${package_manifest.license}, `
+        + `tauri.conf.json=${tauri_config.bundle?.license}, Cargo.toml=${cargo_package.license}`,
+    );
+  }
+
   if (tauri_config.bundle?.active !== true) {
     fail("Tauri bundling must be active");
   }
 
   if (tauri_config.bundle.targets !== "all") {
     fail('Tauri bundle targets must be "all"; CI narrows targets per platform');
+  }
+
+  if (tauri_config.build?.beforeBuildCommand !== "pnpm build:desktop") {
+    fail("Tauri beforeBuildCommand must generate supply-chain artifacts before compilation");
+  }
+
+  if (tauri_config.bundle.resources?.["gen/supply-chain/*"] !== "supply-chain/") {
+    fail("Tauri bundle resources must include generated supply-chain artifacts");
   }
 
   if (!Array.isArray(tauri_config.bundle.icon) || tauri_config.bundle.icon.length === 0) {
@@ -208,7 +268,11 @@ async function hash_file(file_path) {
   return hash.digest("hex");
 }
 
-async function collect_artifacts(platform_name) {
+async function collect_artifacts(platform_name, explicit_target) {
+  const {
+    resolve_target_triple,
+    verify_supply_chain_artifacts,
+  } = await import("./supply-chain.mjs");
   const artifact_specs = PLATFORM_ARTIFACTS[platform_name];
   if (!artifact_specs) {
     fail(
@@ -218,7 +282,11 @@ async function collect_artifacts(platform_name) {
   }
 
   const version = verify_package_metadata();
-  const bundle_root = DEFAULT_BUNDLE_ROOT;
+  const target_triple = resolve_target_triple(explicit_target);
+  const configured_target = explicit_target
+    ?? process.env.TAURI_ENV_TARGET_TRIPLE
+    ?? process.env.CARGO_BUILD_TARGET;
+  const bundle_root = bundle_root_for_target(target_triple, Boolean(configured_target));
   const output_directory = path.join(PROJECT_ROOT, "artifacts", platform_name);
 
   if (!existsSync(bundle_root)) {
@@ -233,7 +301,9 @@ async function collect_artifacts(platform_name) {
   const selected_files = new Set();
 
   for (const artifact_spec of artifact_specs) {
-    const matches = bundle_files.filter(artifact_spec.matches);
+    const matches = bundle_files.filter((file_path) => (
+      artifact_spec.matches(file_path, bundle_root)
+    ));
     if (matches.length === 0) {
       fail(`Missing ${artifact_spec.label} in ${bundle_root}`);
     }
@@ -242,15 +312,14 @@ async function collect_artifacts(platform_name) {
     }
   }
 
-  const sorted_files = [...selected_files].sort((left, right) => left.localeCompare(right));
+  const sorted_files = [...selected_files].sort(compare_stable);
   const file_names = new Set();
-  const checksum_lines = [];
 
   await mkdir(output_directory, { recursive: true });
 
   for (const source_path of sorted_files) {
     const file_name = path.basename(source_path);
-    if (!file_name.includes(version)) {
+    if (!bundle_filename_has_version(file_name, version)) {
       fail(`Bundle filename does not contain version ${version}: ${file_name}`);
     }
     if (file_names.has(file_name)) {
@@ -264,7 +333,37 @@ async function collect_artifacts(platform_name) {
 
     file_names.add(file_name);
     await copyFile(source_path, path.join(output_directory, file_name));
-    checksum_lines.push(`${await hash_file(source_path)}  ${file_name}`);
+  }
+
+  const license_name = path.basename(LICENSE_PATH);
+  if (file_names.has(license_name)) {
+    fail(`Artifact filename collision: ${license_name}`);
+  }
+  await copyFile(LICENSE_PATH, path.join(output_directory, license_name));
+  file_names.add(license_name);
+
+  const supply_chain = await verify_supply_chain_artifacts({
+    output_directory: BUNDLE_SUPPLY_CHAIN_ROOT,
+    platform_name,
+    target_triple,
+  });
+  for (const supply_chain_name of supply_chain.file_names) {
+    if (file_names.has(supply_chain_name)) {
+      fail(`Artifact filename collision: ${supply_chain_name}`);
+    }
+    await copyFile(
+      path.join(BUNDLE_SUPPLY_CHAIN_ROOT, supply_chain_name),
+      path.join(output_directory, supply_chain_name),
+    );
+    file_names.add(supply_chain_name);
+  }
+
+  const checksum_lines = [];
+  const staged_files = (await list_files(output_directory))
+    .sort((left, right) => compare_stable(path.basename(left), path.basename(right)));
+  for (const staged_path of staged_files) {
+    const staged_name = path.basename(staged_path);
+    checksum_lines.push(`${await hash_file(staged_path)}  ${staged_name}`);
   }
 
   await writeFile(
@@ -273,12 +372,14 @@ async function collect_artifacts(platform_name) {
     "utf8",
   );
   console.log(
-    `Staged ${sorted_files.length} ${platform_name} bundle(s) in ${output_directory}`,
+    `Staged ${sorted_files.length} ${platform_name} bundle(s) and `
+      + `${supply_chain.component_count} dependency records for ${target_triple} `
+      + `in ${output_directory}`,
   );
 }
 
 async function main() {
-  const [command, platform_name] = process.argv.slice(2);
+  const [command, platform_name, target_triple] = process.argv.slice(2);
 
   if (command === "verify") {
     verify_package_metadata();
@@ -286,14 +387,21 @@ async function main() {
   }
 
   if (command === "collect" && platform_name) {
-    await collect_artifacts(platform_name);
+    await collect_artifacts(platform_name, target_triple);
     return;
   }
 
-  fail("Usage: package-artifacts.mjs verify | collect <linux|macos|windows>");
+  fail(
+    "Usage: package-artifacts.mjs verify "
+      + "| collect <linux|macos|windows> [target-triple]",
+  );
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+const is_main = process.argv[1]
+  && normalized_path(process.argv[1]) === normalized_path(fileURLToPath(import.meta.url));
+if (is_main) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}

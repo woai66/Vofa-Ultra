@@ -367,6 +367,25 @@ Stop、Close 和 shutdown 会在逐记录扫描间隙中断定位。成功 seek�
 - 浏览器预览：串口入口禁用，只允许使用模拟器。
 - WebGL 创建失败：仅姿态场景降级并显示稳定错误，配置、数值读数和其他数据链路继续工作。
 
+## 供应链发布边界
+
+供应链生成器严格解析 `pnpm-lock.yaml` v9 的生产图，并结合
+`cargo metadata --frozen --locked --filter-platform <target>` 的正常依赖闭包构建每 target CycloneDX 1.6。
+`node_modules` 只提供已安装 optional 状态、包元数据和法律文本。开发/构建依赖、npm optional peer、其他目标分支及
+系统 WebView/动态库不进入运行时 SBOM。许可证表达式先通过审核别名规范化，再交给标准 SPDX 解析器；允许策略对
+`OR` 选择合规分支，对 `AND` 要求全部合规，缺失、未知或没有合规选择的表达式会终止构建。
+
+SBOM 不写时间、随机序列号或本机路径，组件、依赖边和 notices 采用稳定排序，并绑定五份仓库输入的 SHA-256。
+NOTICE 扫描依赖包顶层许可证、版权与作者文件，按内容哈希去重；缺少许可证正文默认失败，只允许精确 purl/version
+引用仓库内固定文本。正文规范化后必须按许可证边界截取，并命中策略中已审核的完整条款 SHA-256；`OR` 只选择有
+完整正文证据的分支，`AND` 要求每个标识都有证据，关键句、截断文本、链接声明和 SPDX 元数据都不会被当成条款。
+生成结果再由 CycloneDX 官方严格 Schema 校验器、内部引用完整性和 NOTICE inventory 检查共同验证。
+
+Tauri 的 `beforeBuildCommand` 在 Rust 编译前生成受控目录，并把 SBOM、第三方 notices 和供应链校验值嵌入资源。
+collector 只扫描完整 target 对应的 bundle 目录，接受项目元数据、输入摘要、inventory 和哈希均有效的文件，复制后
+连同项目 `LICENSE` 和安装包重新计算总 `SHA256SUMS`。完整安装包仍受 runner、系统包、WebView 和签名环境影响，
+当前只承诺锁定边界内的供应链元数据确定性，不承诺安装包字节级可复现。
+
 ## 验证层次
 
 1. Vitest 覆盖字节编解码、命令模板语法/端序/上限、跨 chunk 协议解析、处理图编译/预算/跨批滤波状态、姿态
@@ -380,10 +399,10 @@ Stop、Close 和 shutdown 会在逐记录扫描间隙中断定位。成功 seek�
    虚拟列表、命令变量 TEXT / HEX 展开与非法表达式
    拒绝、周期发送计数与停止、处理图派生通道与工作区 v3、捕获导出入口权限、窄屏溢出、短窗口布局和同一 USB
    设备跨端口名恢复，以及桌面模拟桥接下解析样本的数值 CSV 启停与批处理。
-4. GitHub Actions 在三个桌面系统执行 rustfmt、Clippy、Rust 测试和 `tauri build --no-bundle`，在 Node.js 22
-   上执行前端检查和浏览器验收。
+4. GitHub Actions 在三个桌面系统执行 rustfmt、Clippy、Rust 测试、目标过滤的许可证/SBOM 门禁和
+   `tauri build --no-bundle`，在 Node.js 22 上执行前端检查和浏览器验收。
 5. 手动 workflow 或与项目版本一致的 `v*` 标签生成无签名 MSI、NSIS、DMG、DEB、AppImage，并验证产物非空、
-   文件名版本和逐文件 SHA-256；不会自动创建 GitHub Release。
+   文件名版本、嵌入/sidecar 供应链材料和逐文件 SHA-256；不会自动创建 GitHub Release。
 6. 正式发布前必须补充候选包安装/卸载冒烟，以及真实串口的长稳、拔插、流控和高波特率测试。
 
 ## 扩展原则

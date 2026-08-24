@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm build:desktop",
     "frontendDist": "../dist"
   },
   "app": {
@@ -40,6 +40,9 @@
     "copyright": "Copyright (c) 2026 Vofa-Ultra contributors",
     "license": "MIT",
     "licenseFile": "../LICENSE",
+    "resources": {
+      "gen/supply-chain/*": "supply-chain/"
+    },
     "category": "DeveloperTool",
     "shortDescription": "A modern cross-platform serial workbench",
     "longDescription": "Vofa-Ultra is a bounded and diagnosable serial workbench for embedded development."

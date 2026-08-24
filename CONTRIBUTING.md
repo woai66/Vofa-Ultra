@@ -36,6 +36,7 @@ pnpm tauri dev
 - `docs/<name>`
 - `refactor/<name>`
 - `test/<name>`
+- `chore/<name>`
 
 提交信息使用简化 Conventional Commits：
 
@@ -56,6 +57,9 @@ docs: document protocol limits
 - 新协议遵循[内置协议贡献契约](docs/protocols.md)，支持任意分包，并覆盖跨 chunk 帧尾、损坏帧和超长输入。
 - UI 变更同时检查 1440 x 900 和 390 x 844，不产生页面级横向溢出。
 - 不扩大 Tauri capability 或 CSP，除非 PR 解释需求、威胁面和替代方案。
+- 新增依赖必须通过 `supply-chain-policy.json`；许可证表达式、正文指纹、包内 notices 或 target 闭包变化需重点 review。
+- 代码、协议夹具、图标、截图和其他资产若来自第三方，PR 必须记录原始 URL、版本/commit、许可证及修改内容。
+- 不接受来源不明的复制内容；修改 MPL-2.0 覆盖文件时必须保存对应源码获取方式和补丁。
 
 ## 验证
 
@@ -64,6 +68,7 @@ docs: document protocol limits
 ```bash
 pnpm check
 pnpm check:package
+pnpm supply-chain:check
 pnpm test:e2e
 pnpm tauri build --ci --no-bundle
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
@@ -78,7 +83,8 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 普通 push 和 PR 只验证三平台最终桌面二进制，不生成安装包。需要检查打包链路时，手动运行 `CI` workflow；
 与 `package.json`、`tauri.conf.json` 和 `Cargo.toml` 版本一致的 `v*` 标签也会触发打包。workflow 只上传无签名
-MSI、NSIS、DMG、DEB、AppImage 及逐文件 SHA-256，不创建 GitHub Release。
+MSI、NSIS、DMG、DEB、AppImage、平台 CycloneDX、第三方 notices、项目许可证及逐文件 SHA-256，不创建
+GitHub Release。
 
 版本标签、正式 Release、签名和公证属于发布者操作。候选包生成成功不能替代目标系统上的安装、启动、卸载和
 串口硬件冒烟记录。AppImage 从 Actions artifact 下载后可能需要重新添加可执行权限。

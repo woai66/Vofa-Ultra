@@ -1,0 +1,368 @@
+{
+  "schemaVersion": 3,
+  "allowedLicenses": [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "MIT-0",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "MPL-2.0"
+  ],
+  "allowedExceptions": [
+    "LLVM-exception"
+  ],
+  "licenseAliases": {
+    "Apache-2.0 / MIT": "Apache-2.0 OR MIT",
+    "Apache-2.0/MIT": "Apache-2.0 OR MIT",
+    "BSD-3-Clause/MIT": "BSD-3-Clause OR MIT",
+    "MIT / Apache-2.0": "MIT OR Apache-2.0",
+    "MIT/Apache-2.0": "MIT OR Apache-2.0",
+    "Unlicense/MIT": "Unlicense OR MIT"
+  },
+  "licenseEvidence": {
+    "MIT": {
+      "start": "permission is hereby granted, free of charge",
+      "end": "dealings in the software.",
+      "hashes": [
+        "56959050891f7b737ac4e803051170c7197f02df73d80bd9a78d968e305bf558"
+      ]
+    },
+    "Apache-2.0": {
+      "start": "apache license version 2.0, january 2004",
+      "end": "end of terms and conditions",
+      "hashes": [
+        "31ee9b875ba3336ede8eace6b272a4cc28f7c07fffee1d50053e523090581b4c",
+        "34f3ddaa5c2d91036d528327f8f5fbc61781796ba9a8439fb9d2d76c49fca2a0",
+        "95cef6332b35354c12f9d666ab9ff47002e6f7ef937924896882b2e0cdb7a0d6"
+      ]
+    },
+    "BSD-2-Clause": {
+      "start": "redistribution and use in source and binary forms",
+      "end": "possibility of such damage.",
+      "hashes": [
+        "a63ef1112ebbd402f4b08567180951af8e947e407c24ee835882c6ffa65195d0"
+      ]
+    },
+    "BSD-3-Clause": {
+      "start": "redistribution and use in source and binary forms",
+      "end": "possibility of such damage.",
+      "hashes": [
+        "98fbd586372c22ed6ebb52f48c8a97ed944f908f521f7fb5c2fa6866b8983d41",
+        "e67a28b98bc45809b4963df778c62512492386503bfb2d148039abcf2d3525a7"
+      ]
+    },
+    "ISC": {
+      "start": "permission to use, copy, modify, and/or distribute this software",
+      "end": "performance of this software.",
+      "hashes": [
+        "a2a686418bbdbf37f28aaf01ff3aef45cfe077a641470465923c8c23fcbe08f9"
+      ]
+    },
+    "Zlib": {
+      "start": "this software is provided 'as-is'",
+      "end": "source distribution.",
+      "hashes": [
+        "e55faa763bcd59bae623300f4a73de60a6059b2bd745560b262989ed1691ee5f"
+      ]
+    },
+    "0BSD": {
+      "start": "permission to use, copy, modify, and/or distribute this software",
+      "end": "performance of this software.",
+      "hashes": [
+        "08e6cbaeaf49ec3bb90e15e4f5a18c018eae23c7a1431f60f6a2f32306cdb707"
+      ]
+    },
+    "CC0-1.0": {
+      "start": "cc0 1.0 universal",
+      "end": "this cc0 or use of the work.",
+      "hashes": [
+        "3e344e9a0123a0f26d4b2893ec6ba6f477cc2293b64c1598453248b7c9ee50dc"
+      ]
+    },
+    "Unicode-3.0": {
+      "start": "notice to user: carefully read the following legal agreement.",
+      "end": "authorization of the copyright holder.",
+      "hashes": [
+        "72e0619c17e1110919c62cac788753acea751d7fe761c4bd5d83a08dae8c20a3"
+      ]
+    },
+    "Unlicense": {
+      "start": "this is free and unencumbered software released into the public domain.",
+      "end": "http://unlicense.org/",
+      "hashes": [
+        "b77ba73078e2e823044f9797c7db54d39bfb8991f42b39118139d3b5a1a3b73c"
+      ]
+    },
+    "MPL-2.0": {
+      "start": "mozilla public license version 2.0",
+      "end": "defined by the mozilla public license, v. 2.0.",
+      "hashes": [
+        "da4c44c6f085e773c147576dd132ed4985b336dca115e13d73555d0aaef1f87b",
+        "ff2cdf42be92e5494108a9b5cd07e72be235341a1721ccb1e9c93853d7722943"
+      ]
+    }
+  },
+  "reviewRequiredLicenses": [
+    "MPL-2.0"
+  ],
+  "reviewedComponents": {
+    "pkg:cargo/cssparser-macros@0.6.1": {
+      "selectedLicense": "MPL-2.0",
+      "reason": "File-level weak copyleft reviewed for the locked CSS parser macro crate."
+    },
+    "pkg:cargo/cssparser@0.36.0": {
+      "selectedLicense": "MPL-2.0",
+      "reason": "File-level weak copyleft reviewed for the locked CSS parser crate."
+    },
+    "pkg:cargo/dtoa-short@0.3.5": {
+      "selectedLicense": "MPL-2.0",
+      "reason": "File-level weak copyleft reviewed for the locked dtoa helper crate."
+    },
+    "pkg:cargo/option-ext@0.2.0": {
+      "selectedLicense": "MPL-2.0",
+      "reason": "File-level weak copyleft reviewed for the locked option extension crate."
+    },
+    "pkg:cargo/selectors@0.36.1": {
+      "selectedLicense": "MPL-2.0",
+      "reason": "File-level weak copyleft reviewed for the locked selector engine crate."
+    },
+    "pkg:cargo/serialport@4.9.0": {
+      "selectedLicense": "MPL-2.0",
+      "reason": "File-level weak copyleft reviewed for the direct serial port dependency."
+    }
+  },
+  "noticeFileSets": {
+    "alloc-no-stdlib": [
+      {
+        "kind": "license",
+        "path": "legal/third-party/alloc-no-stdlib-BSD-3-Clause.txt",
+        "source": "https://raw.githubusercontent.com/dropbox/rust-alloc-no-stdlib/ae42d22078b98549e987d2f03d12df7b984fde47/LICENSE",
+        "sha256": "c0c56f26d9c051cac4d200c34c84e7ae9aaa853e01a982a1df08b09931e518ae"
+      }
+    ],
+    "defmt": [
+      {
+        "kind": "license",
+        "path": "legal/third-party/defmt-MIT.txt",
+        "source": "https://raw.githubusercontent.com/knurling-rs/defmt/4a8cdb44891ed57b8ff5a023b6bec7137c48708f/LICENSE-MIT",
+        "sha256": "0d17b75c1867fd568bcbb735f329d0d4253846c4b756a65e4d440c1e4bd59187"
+      }
+    ],
+    "dlopen2": [
+      {
+        "kind": "license",
+        "path": "legal/third-party/dlopen2-MIT.txt",
+        "source": "https://raw.githubusercontent.com/OpenByteDev/dlopen2/cc80e4a0a90d499b677fdf7743699b4b3a43a989/LICENSE",
+        "sha256": "39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2"
+      }
+    ],
+    "libappindicator": [
+      {
+        "kind": "license",
+        "path": "legal/third-party/libappindicator-rs-MIT.txt",
+        "source": "https://raw.githubusercontent.com/tauri-apps/libappindicator-rs/eafd1e3682a1247f595410266091e9684021cb6f/LICENSE-MIT",
+        "sha256": "eb227437252b2a7a9c1fc342c93ade1f3d7ce38cc6dd754f613db07d53ceff0b"
+      }
+    ],
+    "objc2": [
+      {
+        "kind": "notice",
+        "path": "legal/third-party/objc2-LICENSE.md",
+        "source": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md",
+        "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54"
+      },
+      {
+        "kind": "license",
+        "path": "legal/third-party/SPDX-MIT.txt",
+        "source": "https://raw.githubusercontent.com/spdx/license-list-data/a7918826c70a62330cbd7bf392f0bcb8f3afaeab/text/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+      }
+    ],
+    "rust-unic": [
+      {
+        "kind": "license",
+        "path": "legal/third-party/rust-unic-MIT.txt",
+        "source": "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/LICENSE-MIT",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+      },
+      {
+        "kind": "notice",
+        "path": "legal/third-party/rust-unic-COPYRIGHT.md",
+        "source": "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/COPYRIGHT.md",
+        "sha256": "f5c342c49f3ac804f3e8e7bb62a8040a44c50d47bb36902b1abd13f66a1adf8b"
+      }
+    ],
+    "spdx-mit": [
+      {
+        "kind": "license",
+        "path": "legal/third-party/SPDX-MIT.txt",
+        "source": "https://raw.githubusercontent.com/spdx/license-list-data/a7918826c70a62330cbd7bf392f0bcb8f3afaeab/text/MIT.txt",
+        "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+      }
+    ],
+    "selectors": [
+      {
+        "kind": "license",
+        "path": "legal/third-party/SPDX-MPL-2.0.txt",
+        "source": "https://raw.githubusercontent.com/spdx/license-list-data/a7918826c70a62330cbd7bf392f0bcb8f3afaeab/text/MPL-2.0.txt",
+        "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+      }
+    ],
+    "webview2-rs": [
+      {
+        "kind": "license",
+        "path": "legal/third-party/webview2-rs-MIT.txt",
+        "source": "https://raw.githubusercontent.com/wravery/webview2-rs/b74dc5e2b394044bea5191052868ce7a106c202c/LICENSE",
+        "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+      }
+    ]
+  },
+  "noticeOverrides": {
+    "pkg:cargo/alloc-stdlib@0.2.4": {
+      "selectedLicense": "BSD-3-Clause",
+      "fileSet": "alloc-no-stdlib",
+      "reason": "The crate archive omits the workspace-root BSD license."
+    },
+    "pkg:cargo/defmt-parser@1.0.0": {
+      "selectedLicense": "MIT",
+      "fileSet": "defmt",
+      "reason": "The crate archive omits the workspace-root MIT license."
+    },
+    "pkg:cargo/selectors@0.36.1": {
+      "selectedLicense": "MPL-2.0",
+      "fileSet": "selectors",
+      "reason": "The crate archive references MPL-2.0 but omits its full text."
+    },
+    "pkg:cargo/serialport@4.9.0": {
+      "selectedLicense": "MPL-2.0",
+      "fileSet": "selectors",
+      "reason": "The crate archive contains an MPL link notice but omits the full MPL-2.0 terms."
+    },
+    "pkg:cargo/siphasher@1.0.3": {
+      "selectedLicense": "MIT",
+      "fileSet": "spdx-mit",
+      "reason": "The crate archive contains a dual-license pointer but omits both complete license texts."
+    },
+    "pkg:cargo/unic-char-property@0.9.0": {
+      "selectedLicense": "MIT",
+      "fileSet": "rust-unic",
+      "reason": "The crate archive omits the UNIC workspace license and copyright files."
+    },
+    "pkg:cargo/unic-char-range@0.9.0": {
+      "selectedLicense": "MIT",
+      "fileSet": "rust-unic",
+      "reason": "The crate archive omits the UNIC workspace license and copyright files."
+    },
+    "pkg:cargo/unic-common@0.9.0": {
+      "selectedLicense": "MIT",
+      "fileSet": "rust-unic",
+      "reason": "The crate archive omits the UNIC workspace license and copyright files."
+    },
+    "pkg:cargo/unic-ucd-ident@0.9.0": {
+      "selectedLicense": "MIT",
+      "fileSet": "rust-unic",
+      "reason": "The crate archive omits the UNIC workspace license and copyright files."
+    },
+    "pkg:cargo/unic-ucd-version@0.9.0": {
+      "selectedLicense": "MIT",
+      "fileSet": "rust-unic",
+      "reason": "The crate archive omits the UNIC workspace license and copyright files."
+    },
+    "pkg:cargo/webview2-com-macros@0.8.1": {
+      "selectedLicense": "MIT",
+      "fileSet": "webview2-rs",
+      "reason": "The crate archive omits the webview2-rs workspace MIT license."
+    },
+    "pkg:cargo/webview2-com-sys@0.38.2": {
+      "selectedLicense": "MIT",
+      "fileSet": "webview2-rs",
+      "reason": "The crate archive omits the webview2-rs workspace MIT license."
+    },
+    "pkg:cargo/webview2-com@0.38.2": {
+      "selectedLicense": "MIT",
+      "fileSet": "webview2-rs",
+      "reason": "The crate archive omits the webview2-rs workspace MIT license."
+    },
+    "pkg:cargo/dlopen2@0.8.2": {
+      "selectedLicense": "MIT",
+      "fileSet": "dlopen2",
+      "reason": "The crate archive omits the repository-root MIT license."
+    },
+    "pkg:cargo/dlopen2_derive@0.4.3": {
+      "selectedLicense": "MIT",
+      "fileSet": "dlopen2",
+      "reason": "The crate archive omits the repository-root MIT license."
+    },
+    "pkg:cargo/libappindicator-sys@0.9.0": {
+      "selectedLicense": "MIT",
+      "fileSet": "libappindicator",
+      "reason": "The crate archive omits the workspace-root MIT license."
+    },
+    "pkg:cargo/block2@0.6.2": {
+      "selectedLicense": "MIT",
+      "fileSet": "objc2",
+      "reason": "The crate archive omits the objc2 workspace license materials."
+    },
+    "pkg:cargo/dispatch2@0.3.1": {
+      "selectedLicense": "MIT",
+      "fileSet": "objc2",
+      "reason": "The crate archive omits the objc2 workspace license materials."
+    },
+    "pkg:cargo/objc2-app-kit@0.3.2": {
+      "selectedLicense": "MIT",
+      "fileSet": "objc2",
+      "reason": "The crate archive omits the objc2 workspace license materials."
+    },
+    "pkg:cargo/objc2-core-foundation@0.3.2": {
+      "selectedLicense": "MIT",
+      "fileSet": "objc2",
+      "reason": "The crate archive omits the objc2 workspace license materials."
+    },
+    "pkg:cargo/objc2-core-graphics@0.3.2": {
+      "selectedLicense": "MIT",
+      "fileSet": "objc2",
+      "reason": "The crate archive omits the objc2 workspace license materials."
+    },
+    "pkg:cargo/objc2-encode@4.1.0": {
+      "selectedLicense": "MIT",
+      "fileSet": "objc2",
+      "reason": "The crate archive omits the objc2 workspace license materials."
+    },
+    "pkg:cargo/objc2-exception-helper@0.1.1": {
+      "selectedLicense": "MIT",
+      "fileSet": "objc2",
+      "reason": "The crate archive omits the objc2 workspace license materials."
+    },
+    "pkg:cargo/objc2-foundation@0.3.2": {
+      "selectedLicense": "MIT",
+      "fileSet": "objc2",
+      "reason": "The crate archive omits the objc2 workspace license materials."
+    },
+    "pkg:cargo/objc2-io-surface@0.3.2": {
+      "selectedLicense": "MIT",
+      "fileSet": "objc2",
+      "reason": "The crate archive omits the objc2 workspace license materials."
+    },
+    "pkg:cargo/objc2-web-kit@0.3.2": {
+      "selectedLicense": "MIT",
+      "fileSet": "objc2",
+      "reason": "The crate archive omits the objc2 workspace license materials."
+    },
+    "pkg:cargo/objc2@0.6.4": {
+      "selectedLicense": "MIT",
+      "fileSet": "objc2",
+      "reason": "The crate archive omits the objc2 workspace license materials."
+    },
+    "pkg:npm/%40tauri-apps/plugin-dialog@2.7.2": {
+      "selectedLicense": "MIT",
+      "fileSet": "spdx-mit",
+      "reason": "The package contains SPDX metadata but omits complete MIT and Apache-2.0 terms."
+    }
+  }
+}

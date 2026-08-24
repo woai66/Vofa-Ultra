@@ -31,6 +31,7 @@ Vofa-Ultra 学习 VOFA+ 与
 - 可取消的串口自动重连：用 VID、PID 与非空 USB 序列号识别原设备，跨端口名恢复且不猜测歧义设备。
 - 256 条有界恢复事件与 128 KiB 脱敏诊断导出，不包含端口名、序列号、原始错误或收发载荷。
 - Vitest 单元 / 组件测试、Playwright 浏览器验收、三平台桌面集成构建和按需无签名候选包。
+- 每目标 CycloneDX 1.6、许可证允许策略、第三方 notices、应用内嵌资源和完整发布文件校验。
 
 ## 快速开始
 
@@ -66,20 +67,27 @@ GitHub Actions 的普通 push 和 PR 会在 Windows、macOS、Linux 执行最终
 - Windows：MSI 与 NSIS 安装程序。
 - macOS：DMG 磁盘映像。
 - Linux：DEB 与 AppImage。
-- 每个平台独立的 `SHA256SUMS`。
+- 每个完整 Rust target 独立的 CycloneDX 1.6 SBOM、第三方许可证/NOTICE 原文、项目 `LICENSE` 和供应链校验清单。
+- 覆盖安装包与上述发布材料的 `SHA256SUMS`。
 
 这些产物保留在对应 Actions run 的 artifact 中 14 天，不会自动创建 GitHub Release。它们明确不含代码签名或
 macOS 公证，操作系统可能显示安全警告；正式发布前仍需在目标系统完成安装、启动、卸载和真实串口冒烟测试。
+第三方 notices 与 SBOM 也会嵌入应用资源，下载 sidecar 和安装内容来自同一次生成。生成范围、许可证策略和
+可复现边界见[供应链发布说明](docs/supply-chain.md)。
 本地生成当前平台的无签名包可运行：
 
 ```bash
 pnpm check:package
 # Windows
-pnpm tauri build --ci --no-sign --bundles msi,nsis
+pnpm supply-chain:check x86_64-pc-windows-msvc
+pnpm tauri build --ci --no-sign --target x86_64-pc-windows-msvc --bundles msi,nsis
+pnpm package:collect windows x86_64-pc-windows-msvc
 # macOS
-pnpm tauri build --ci --no-sign --bundles dmg
+pnpm tauri build --ci --no-sign --target x86_64-apple-darwin --bundles dmg
+pnpm package:collect macos x86_64-apple-darwin
 # Linux
-pnpm tauri build --ci --no-sign --bundles deb,appimage
+pnpm tauri build --ci --no-sign --target x86_64-unknown-linux-gnu --bundles deb,appimage
+pnpm package:collect linux x86_64-unknown-linux-gnu
 ```
 
 ## 协议输入
@@ -265,6 +273,7 @@ AA 55 ${seq:u16le} ${task_unix_ms:u64be}
 ```bash
 pnpm check
 pnpm check:package
+pnpm supply-chain:check
 pnpm test:e2e
 pnpm tauri build --ci --no-bundle
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
@@ -272,10 +281,12 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-f
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-`pnpm check` 会依次执行 ESLint、TypeScript 类型检查、Vitest 和生产构建。构建会验证姿态视图保持动态加载、
-Three.js 不进入首屏静态依赖图；首屏上限为 650 KiB / gzip 200 KiB，姿态模块上限为 650 KiB / gzip 180 KiB。
+`pnpm check` 会依次执行 ESLint、TypeScript 类型检查、Vitest、工具脚本测试和生产构建。构建会验证姿态视图
+保持动态加载、Three.js 不进入首屏静态依赖图；首屏上限为 650 KiB / gzip 200 KiB，姿态模块上限为
+650 KiB / gzip 180 KiB。
 `package.json` 是界面和诊断报告的版本来源；`pnpm check:package` 使用 `cargo metadata` 核对 npm、Tauri、Cargo
-版本与 bundle 元数据。Playwright 会验证模拟数据链路、
+版本、许可证与 bundle 元数据。`pnpm supply-chain:check` 按当前 Rust target 验证 npm 生产依赖和 Cargo 正常依赖
+闭包，未知或不可接受许可证会令检查失败，并用官方严格 Schema 校验 CycloneDX 1.6。Playwright 会验证模拟数据链路、
 Canvas 有效像素、处理图派生通道与工作区 v3 往返、录制与回放入口权限、Raw 回放拖动期间零 IPC 且提交时
 恰好一次定位、播放中切速不换代、有界命令历史、安全变量的 TEXT / HEX 展开与拒绝边界、周期发送启停、
 390 px 窄屏无页面级
