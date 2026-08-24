@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import type { Plugin, Rollup } from "vite";
 
@@ -9,9 +10,13 @@ const ATTITUDE_JS_LIMIT_BYTES = 650 * 1024;
 const ATTITUDE_JS_GZIP_LIMIT_BYTES = 180 * 1024;
 const ATTITUDE_PANEL_MODULE = "/src/components/AttitudePanel.tsx";
 const THREE_MODULE_SEGMENT = "/node_modules/three/";
+const APP_VERSION = readAppVersion();
 
 export default defineConfig({
   plugins: [react(), frontendBundleBudget()],
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   clearScreen: false,
   server: {
     port: 1420,
@@ -163,4 +168,14 @@ function normalizeModuleId(moduleId: string): string {
 
 function formatSize(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} KiB`;
+}
+
+function readAppVersion(): string {
+  const packageManifest = JSON.parse(
+    readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+  ) as { version?: unknown };
+  if (typeof packageManifest.version !== "string" || packageManifest.version.length === 0) {
+    throw new Error("package.json version 必须是非空字符串");
+  }
+  return packageManifest.version;
 }

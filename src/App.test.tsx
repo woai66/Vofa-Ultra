@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
+import { APP_DISPLAY_VERSION } from "./core/appMetadata";
 import App from "./App";
 
 vi.mock("./components/AttitudeScene", () => ({
@@ -19,6 +20,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "数据终端" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "启动模拟" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "处理" })).toBeEnabled();
+    expect(screen.getByText(APP_DISPLAY_VERSION, { selector: ".version-label" })).toBeVisible();
   });
 
   it("从活动导航打开处理图编辑器", async () => {

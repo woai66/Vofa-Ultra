@@ -274,8 +274,8 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 `pnpm check` 会依次执行 ESLint、TypeScript 类型检查、Vitest 和生产构建。构建会验证姿态视图保持动态加载、
 Three.js 不进入首屏静态依赖图；首屏上限为 650 KiB / gzip 200 KiB，姿态模块上限为 650 KiB / gzip 180 KiB。
-`pnpm check:package` 使用
-`cargo metadata` 核对 npm、Tauri、Cargo 版本与 bundle 元数据。Playwright 会验证模拟数据链路、
+`package.json` 是界面和诊断报告的版本来源；`pnpm check:package` 使用 `cargo metadata` 核对 npm、Tauri、Cargo
+版本与 bundle 元数据。Playwright 会验证模拟数据链路、
 Canvas 有效像素、处理图派生通道与工作区 v3 往返、录制与回放入口权限、Raw 回放拖动期间零 IPC 且提交时
 恰好一次定位、播放中切速不换代、有界命令历史、安全变量的 TEXT / HEX 展开与拒绝边界、周期发送启停、
 390 px 窄屏无页面级

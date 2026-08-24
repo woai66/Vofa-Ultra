@@ -94,8 +94,9 @@ token；已经进入 `connecting` 时还会推进 generation 并发布 `disconne
 起点，保留已有波形与终端历史。
 
 诊断使用 256 条内存环，JSON 导出上限为 128 KiB。报告只包含稳定错误码、相对时间、重试计数、generation、
-revision 和脱敏串口参数；不包含端口名、USB 序列号、原始错误、绝对路径或 RX / TX 数据。大小超限时从最旧事件
-开始裁剪，并保留丢弃计数。
+revision 和脱敏串口参数；不包含端口名、USB 序列号、原始错误、绝对路径或 RX / TX 数据。应用版本与标题栏均由
+构建从 `package.json` 注入，Tauri/Cargo 清单由 package gate 交叉校验。大小超限时从最旧事件开始裁剪，并保留
+丢弃计数。
 
 ## Worker 调度与边界
 

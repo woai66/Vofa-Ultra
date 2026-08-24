@@ -1,5 +1,6 @@
 import { create, type StoreApi } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
+import { APP_VERSION } from "../core/appMetadata";
 import { decodeBase64, formatHex } from "../core/codec";
 import {
   extractLatestAttitudeSample,
@@ -164,7 +165,6 @@ const MAX_POINTS_PER_CHANNEL = 2_000;
 const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY = 2_048;
 const WORKBENCH_STORAGE_VERSION = 3;
-const APP_VERSION = "0.1.0";
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
   phase: "off",

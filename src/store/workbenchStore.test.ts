@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { APP_VERSION } from "../core/appMetadata";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
 import { createDefaultWorkspaceConfig, createWorkspaceProfile } from "../core/workspaces";
 import {
@@ -392,6 +393,10 @@ describe("workbenchStore", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("诊断报告使用构建注入的应用版本", () => {
+    expect(useWorkbenchStore.getState().getSerialDiagnostics().appVersion).toBe(APP_VERSION);
   });
 
   it("仅在成功发送后记录会话历史并合并连续重复项", async () => {

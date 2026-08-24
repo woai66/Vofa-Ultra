@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { ChartNoAxesCombined, LoaderCircle, Menu, Orbit } from "lucide-react";
+import { APP_DISPLAY_VERSION } from "./core/appMetadata";
 import { ActivityRail, type SidebarPanel } from "./components/ActivityRail";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -122,7 +123,7 @@ export default function App() {
           </div>
           <div className="workspace-header-meta">
             <span className="build-label">Vofa-Ultra</span>
-            <span className="version-label">v0.1.0</span>
+            <span className="version-label">{APP_DISPLAY_VERSION}</span>
           </div>
         </header>
 
