@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Vofa-Ultra 主窗口默认权限",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save"]
 }

@@ -36,6 +36,13 @@ import {
   stopCapture as stopCaptureClient,
 } from "../services/captureClient";
 import {
+  cancelCaptureExport as cancelCaptureExportClient,
+  clearCaptureExport as clearCaptureExportClient,
+  selectCaptureExportDestinationPath,
+  selectCaptureExportSourcePath,
+  startCaptureExport as startCaptureExportClient,
+} from "../services/captureExportClient";
+import {
   cancelSerialConnect,
   connectSerial,
   disconnectSerial,
@@ -53,6 +60,12 @@ import {
   stopReplay as stopReplayClient,
 } from "../services/replayClient";
 import type { CaptureStatePayload, CaptureUiStatus } from "../types/capture";
+import type {
+  CaptureExportDirection,
+  CaptureExportFormat,
+  CaptureExportStatePayload,
+  CaptureExportUiStatus,
+} from "../types/captureExport";
 import type {
   ReplayBatchPayload,
   ReplayCaptureHeader,
@@ -140,6 +153,7 @@ let serialConnectOperation = 0;
 let serialRecoverySettingOperation = 0;
 let commandScheduler: CommandScheduler | null = null;
 let commandSendInFlight = false;
+let captureExportDialogOperation = 0;
 
 type RuntimeTransitionStatus =
   | "idle"
@@ -195,6 +209,26 @@ export interface WorkbenchStore {
   captureDataBytes: number;
   captureRecordCount: number;
   captureMessage: string;
+  captureExportStatus: CaptureExportUiStatus;
+  captureExportPhase: CaptureExportStatePayload["phase"];
+  captureExportJobId: number;
+  captureExportRevision: number;
+  captureExportSourcePath: string;
+  captureExportDestinationPath: string;
+  captureExportFormat: CaptureExportFormat;
+  captureExportDirection: CaptureExportDirection;
+  captureExportAllowIncomplete: boolean;
+  captureExportTotalInputBytes: number;
+  captureExportProcessedInputBytes: number;
+  captureExportProcessedDataBytes: number;
+  captureExportProcessedRecords: number;
+  captureExportExportedDataBytes: number;
+  captureExportExportedRecords: number;
+  captureExportOutputBytes: number;
+  captureExportSourceComplete: boolean;
+  captureExportStartedAt?: number;
+  captureExportEndedAt?: number;
+  captureExportMessage: string;
   replayStatus: ReplayUiStatus;
   replaySessionId: number;
   replayGeneration: number;
@@ -247,6 +281,15 @@ export interface WorkbenchStore {
   startCapture(): Promise<boolean>;
   stopCapture(): Promise<boolean>;
   handleCaptureState(payload: CaptureStatePayload): void;
+  selectCaptureExportSource(): Promise<boolean>;
+  useRecentCaptureForExport(): boolean;
+  setCaptureExportFormat(format: CaptureExportFormat): void;
+  setCaptureExportDirection(direction: CaptureExportDirection): void;
+  setCaptureExportAllowIncomplete(allow: boolean): void;
+  startCaptureExport(): Promise<boolean>;
+  cancelCaptureExport(): Promise<boolean>;
+  clearCaptureExport(): Promise<boolean>;
+  handleCaptureExportState(payload: CaptureExportStatePayload): void;
   openReplayFile(): Promise<boolean>;
   openRecentCapture(): Promise<boolean>;
   playReplay(): Promise<boolean>;
@@ -319,6 +362,24 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       captureDataBytes: 0,
       captureRecordCount: 0,
       captureMessage: "",
+      captureExportStatus: "idle",
+      captureExportPhase: "idle",
+      captureExportJobId: 0,
+      captureExportRevision: 0,
+      captureExportSourcePath: "",
+      captureExportDestinationPath: "",
+      captureExportFormat: "csv",
+      captureExportDirection: "both",
+      captureExportAllowIncomplete: false,
+      captureExportTotalInputBytes: 0,
+      captureExportProcessedInputBytes: 0,
+      captureExportProcessedDataBytes: 0,
+      captureExportProcessedRecords: 0,
+      captureExportExportedDataBytes: 0,
+      captureExportExportedRecords: 0,
+      captureExportOutputBytes: 0,
+      captureExportSourceComplete: false,
+      captureExportMessage: "",
       replayStatus: "idle",
       replaySessionId: 0,
       replayGeneration: 0,
@@ -905,6 +966,271 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           captureDataBytes: payload.dataBytes,
           captureRecordCount: payload.recordCount,
           captureMessage: payload.message ?? "",
+        });
+      },
+      selectCaptureExportSource: async () => {
+        const state = get();
+        if (!state.isNativeRuntime) {
+          set({
+            captureExportStatus: "error",
+            captureExportPhase: "done",
+            captureExportMessage: "浏览器预览不支持捕获文件导出",
+          });
+          return false;
+        }
+        if (isCaptureActive(state.captureStatus)) {
+          set({ captureExportMessage: "录制进行中，请先完成当前捕获文件" });
+          return false;
+        }
+        if (isCaptureExportBusy(state.captureExportStatus)) {
+          return false;
+        }
+
+        const operation = ++captureExportDialogOperation;
+        const fallbackStatus = state.captureExportStatus;
+        const fallbackPhase = state.captureExportPhase;
+        const fallbackMessage = state.captureExportMessage;
+        set({
+          captureExportStatus: "selecting-source",
+          captureExportMessage: "正在选择源捕获文件",
+        });
+        try {
+          const path = await selectCaptureExportSourcePath();
+          if (operation !== captureExportDialogOperation) {
+            return false;
+          }
+          if (!path) {
+            set({
+              captureExportStatus: fallbackStatus,
+              captureExportPhase: fallbackPhase,
+              captureExportMessage: fallbackMessage,
+            });
+            return false;
+          }
+          set({
+            ...captureExportDraft(path),
+            captureExportMessage: "已选择源捕获文件",
+          });
+          return true;
+        } catch (error) {
+          if (operation === captureExportDialogOperation) {
+            set({
+              captureExportStatus: "error",
+              captureExportPhase: "done",
+              captureExportMessage: getErrorMessage(error),
+            });
+          }
+          return false;
+        }
+      },
+      useRecentCaptureForExport: () => {
+        const state = get();
+        if (
+          !state.capturePath ||
+          isCaptureActive(state.captureStatus) ||
+          isCaptureExportBusy(state.captureExportStatus)
+        ) {
+          return false;
+        }
+        captureExportDialogOperation += 1;
+        set({
+          ...captureExportDraft(state.capturePath),
+          captureExportMessage: "已选用最近录制",
+        });
+        return true;
+      },
+      setCaptureExportFormat: (format) => {
+        const state = get();
+        if (isCaptureExportBusy(state.captureExportStatus)) {
+          return;
+        }
+        set({
+          ...(isCaptureExportTerminal(state.captureExportStatus)
+            ? captureExportDraft(state.captureExportSourcePath)
+            : {}),
+          captureExportFormat: format,
+          captureExportDirection:
+            format === "binary" && state.captureExportDirection === "both"
+              ? "rx"
+              : state.captureExportDirection,
+          captureExportDestinationPath: "",
+        });
+      },
+      setCaptureExportDirection: (direction) => {
+        const state = get();
+        if (
+          isCaptureExportBusy(state.captureExportStatus) ||
+          (state.captureExportFormat === "binary" && direction === "both")
+        ) {
+          return;
+        }
+        set({
+          ...(isCaptureExportTerminal(state.captureExportStatus)
+            ? captureExportDraft(state.captureExportSourcePath)
+            : {}),
+          captureExportDirection: direction,
+          captureExportDestinationPath: "",
+        });
+      },
+      setCaptureExportAllowIncomplete: (allow) => {
+        const state = get();
+        if (isCaptureExportBusy(state.captureExportStatus)) {
+          return;
+        }
+        set({
+          ...(isCaptureExportTerminal(state.captureExportStatus)
+            ? captureExportDraft(state.captureExportSourcePath)
+            : {}),
+          captureExportAllowIncomplete: allow,
+        });
+      },
+      startCaptureExport: async () => {
+        const state = get();
+        if (!state.isNativeRuntime) {
+          set({
+            captureExportStatus: "error",
+            captureExportPhase: "done",
+            captureExportMessage: "浏览器预览不支持捕获文件导出",
+          });
+          return false;
+        }
+        if (!state.captureExportSourcePath) {
+          set({ captureExportMessage: "请先选择要导出的捕获文件" });
+          return false;
+        }
+        if (isCaptureActive(state.captureStatus)) {
+          set({ captureExportMessage: "录制进行中，请先完成当前捕获文件" });
+          return false;
+        }
+        if (isCaptureExportBusy(state.captureExportStatus)) {
+          return false;
+        }
+
+        const operation = ++captureExportDialogOperation;
+        const fallbackStatus = state.captureExportStatus;
+        const fallbackPhase = state.captureExportPhase;
+        const fallbackMessage = state.captureExportMessage;
+        const sourcePath = state.captureExportSourcePath;
+        const format = state.captureExportFormat;
+        const direction = state.captureExportDirection;
+        const allowIncomplete = state.captureExportAllowIncomplete;
+        set({
+          captureExportStatus: "selecting-destination",
+          captureExportMessage: "正在选择导出位置",
+        });
+        try {
+          const destinationPath = await selectCaptureExportDestinationPath(
+            sourcePath,
+            format,
+          );
+          if (operation !== captureExportDialogOperation) {
+            return false;
+          }
+          if (!destinationPath) {
+            set({
+              captureExportStatus: fallbackStatus,
+              captureExportPhase: fallbackPhase,
+              captureExportMessage: fallbackMessage,
+            });
+            return false;
+          }
+          set({
+            captureExportStatus: "starting",
+            captureExportPhase: "preparing",
+            captureExportDestinationPath: destinationPath,
+            captureExportMessage: "正在启动流式导出",
+          });
+          const payload = await startCaptureExportClient({
+            sourcePath,
+            destinationPath,
+            format,
+            direction,
+            allowIncomplete,
+          });
+          if (operation !== captureExportDialogOperation) {
+            return false;
+          }
+          get().handleCaptureExportState(payload);
+          return payload.status === "running";
+        } catch (error) {
+          if (operation === captureExportDialogOperation) {
+            set({
+              captureExportStatus: "error",
+              captureExportPhase: "done",
+              captureExportMessage: getErrorMessage(error),
+            });
+          }
+          return false;
+        }
+      },
+      cancelCaptureExport: async () => {
+        const state = get();
+        if (state.captureExportStatus !== "running" || state.captureExportJobId === 0) {
+          return state.captureExportStatus === "cancelled";
+        }
+        const jobId = state.captureExportJobId;
+        set({
+          captureExportStatus: "cancelling",
+          captureExportMessage: "正在取消导出",
+        });
+        try {
+          const payload = await cancelCaptureExportClient(jobId);
+          get().handleCaptureExportState(payload);
+          return payload.status === "cancelling" || payload.status === "cancelled";
+        } catch (error) {
+          if (get().captureExportJobId === jobId) {
+            set({
+              captureExportStatus: "running",
+              captureExportMessage: `取消导出失败：${getErrorMessage(error)}`,
+            });
+          }
+          return false;
+        }
+      },
+      clearCaptureExport: async () => {
+        if (isCaptureExportBusy(get().captureExportStatus) || !get().isNativeRuntime) {
+          return false;
+        }
+        captureExportDialogOperation += 1;
+        try {
+          const payload = await clearCaptureExportClient();
+          get().handleCaptureExportState(payload);
+          return payload.status === "idle";
+        } catch (error) {
+          set({ captureExportMessage: getErrorMessage(error) });
+          return false;
+        }
+      },
+      handleCaptureExportState: (payload) => {
+        const state = get();
+        if (
+          payload.jobId < state.captureExportJobId ||
+          (payload.jobId === state.captureExportJobId &&
+            payload.revision <= state.captureExportRevision)
+        ) {
+          return;
+        }
+        set({
+          captureExportStatus: payload.status,
+          captureExportPhase: payload.phase,
+          captureExportJobId: payload.jobId,
+          captureExportRevision: payload.revision,
+          captureExportSourcePath: payload.sourcePath,
+          captureExportDestinationPath: payload.destinationPath,
+          captureExportFormat: payload.format || state.captureExportFormat,
+          captureExportDirection: payload.direction || state.captureExportDirection,
+          captureExportAllowIncomplete: payload.allowIncomplete,
+          captureExportTotalInputBytes: payload.totalInputBytes,
+          captureExportProcessedInputBytes: payload.processedInputBytes,
+          captureExportProcessedDataBytes: payload.processedDataBytes,
+          captureExportProcessedRecords: payload.processedRecords,
+          captureExportExportedDataBytes: payload.exportedDataBytes,
+          captureExportExportedRecords: payload.exportedRecords,
+          captureExportOutputBytes: payload.outputBytes,
+          captureExportSourceComplete: payload.sourceComplete,
+          captureExportStartedAt: payload.startedAtUnixMs,
+          captureExportEndedAt: payload.endedAtUnixMs,
+          captureExportMessage: payload.message ?? "",
         });
       },
       openReplayFile: async () => {
@@ -1539,6 +1865,40 @@ function isCaptureTransitioning(status: CaptureUiStatus): boolean {
 
 function isCaptureActive(status: CaptureUiStatus): boolean {
   return status === "starting" || status === "recording" || status === "stopping";
+}
+
+function isCaptureExportBusy(status: CaptureExportUiStatus): boolean {
+  return [
+    "selecting-source",
+    "selecting-destination",
+    "starting",
+    "running",
+    "cancelling",
+  ].includes(status);
+}
+
+function isCaptureExportTerminal(status: CaptureExportUiStatus): boolean {
+  return status === "completed" || status === "cancelled" || status === "error";
+}
+
+function captureExportDraft(sourcePath: string): Partial<WorkbenchStore> {
+  return {
+    captureExportStatus: "idle",
+    captureExportPhase: "idle",
+    captureExportSourcePath: sourcePath,
+    captureExportDestinationPath: "",
+    captureExportTotalInputBytes: 0,
+    captureExportProcessedInputBytes: 0,
+    captureExportProcessedDataBytes: 0,
+    captureExportProcessedRecords: 0,
+    captureExportExportedDataBytes: 0,
+    captureExportExportedRecords: 0,
+    captureExportOutputBytes: 0,
+    captureExportSourceComplete: false,
+    captureExportStartedAt: undefined,
+    captureExportEndedAt: undefined,
+    captureExportMessage: "",
+  };
 }
 
 function hasCaptureToStop(state: WorkbenchStore): boolean {

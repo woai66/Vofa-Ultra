@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::capture::{
     CaptureDirection, CaptureHeader, CaptureItem, CaptureReadError, CaptureReader, CaptureRecord,
+    CaptureRecordStats,
 };
 
 const CONTROL_QUEUE_CAPACITY: usize = 16;
@@ -733,8 +734,8 @@ impl ReplayCore {
                 return None;
             }
             shared.duration_us = accumulator.duration_us();
-            shared.data_bytes = accumulator.data_bytes;
-            shared.record_count = accumulator.record_count;
+            shared.data_bytes = accumulator.stats.data_bytes();
+            shared.record_count = accumulator.stats.record_count();
             Some(shared.touch())
         });
         if let Some(payload) = payload {
@@ -855,40 +856,24 @@ struct ScanSummary {
 
 #[derive(Default)]
 struct ScanAccumulator {
-    last_timestamp_us: Option<u64>,
-    data_bytes: u64,
-    record_count: u64,
+    stats: CaptureRecordStats,
 }
 
 impl ScanAccumulator {
     fn observe(&mut self, record: &CaptureRecord) -> Result<(), String> {
-        if self
-            .last_timestamp_us
-            .map(|last| record.timestamp_us < last)
-            .unwrap_or(false)
-        {
-            return Err(format!(
-                "捕获记录时间戳从 {} 微秒回退到 {} 微秒",
-                self.last_timestamp_us.unwrap_or(0),
-                record.timestamp_us
-            ));
-        }
-        self.last_timestamp_us = Some(record.timestamp_us);
-        self.data_bytes = self.data_bytes.saturating_add(record.payload.len() as u64);
-        self.record_count = self.record_count.saturating_add(1);
-        Ok(())
+        self.stats.observe(record)
     }
 
     fn duration_us(&self) -> u64 {
-        self.last_timestamp_us.unwrap_or(0)
+        self.stats.duration_us()
     }
 
     fn finish(self, complete: bool, message: Option<String>) -> ScanSummary {
         ScanSummary {
             complete,
-            duration_us: self.duration_us(),
-            data_bytes: self.data_bytes,
-            record_count: self.record_count,
+            duration_us: self.stats.duration_us(),
+            data_bytes: self.stats.data_bytes(),
+            record_count: self.stats.record_count(),
             message,
         }
     }
@@ -1747,8 +1732,8 @@ mod tests {
 
         let error = accumulator.observe(&record(9, 1)).unwrap_err();
         assert!(error.contains("回退"));
-        assert_eq!(accumulator.data_bytes, 5);
-        assert_eq!(accumulator.record_count, 2);
+        assert_eq!(accumulator.stats.data_bytes(), 5);
+        assert_eq!(accumulator.stats.record_count(), 2);
     }
 
     #[test]

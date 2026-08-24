@@ -292,6 +292,12 @@ test("浏览器预览显示会话状态但不开放文件操作", async ({ page 
   await expect(page.getByText("仅桌面应用支持捕获文件回放")).toBeVisible();
   await expect(page.getByLabel("回放状态")).toContainText("未打开文件");
 
+  await page.getByRole("tab", { name: "导出" }).click();
+  await expect(page.getByRole("button", { name: "选择捕获文件" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "选择位置并导出" })).toBeDisabled();
+  await expect(page.getByText("仅桌面应用支持捕获文件导出")).toBeVisible();
+  await expect(page.getByLabel("导出状态")).toContainText("等待导出");
+
   const dimensions = await page.evaluate(() => ({
     viewportWidth: window.innerWidth,
     documentWidth: document.documentElement.scrollWidth,
@@ -446,6 +452,27 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           path: "",
           dataBytes: 0,
           recordCount: 0,
+        };
+      }
+      if (command === "get_capture_export_state") {
+        return {
+          status: "idle",
+          phase: "idle",
+          jobId: 0,
+          revision: 0,
+          sourcePath: "",
+          destinationPath: "",
+          format: "csv",
+          direction: "both",
+          allowIncomplete: false,
+          totalInputBytes: 0,
+          processedInputBytes: 0,
+          processedDataBytes: 0,
+          processedRecords: 0,
+          exportedDataBytes: 0,
+          exportedRecords: 0,
+          outputBytes: 0,
+          sourceComplete: false,
         };
       }
       if (command === "get_replay_state") {

@@ -262,7 +262,7 @@ textarea:disabled {
 
 .session-tabs {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-0);
@@ -319,19 +319,29 @@ textarea:disabled {
   background: var(--accent);
 }
 
+.capture-state[data-status="running"] .capture-state-dot {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+  background: var(--accent);
+}
+
 .capture-state[data-status="starting"] .capture-state-dot,
 .capture-state[data-status="stopping"] .capture-state-dot,
 .capture-state[data-status="selecting"] .capture-state-dot,
 .capture-state[data-status="loading"] .capture-state-dot,
 .capture-state[data-status="pausing"] .capture-state-dot,
-.capture-state[data-status="closing"] .capture-state-dot {
+.capture-state[data-status="closing"] .capture-state-dot,
+.capture-state[data-status="selecting-source"] .capture-state-dot,
+.capture-state[data-status="selecting-destination"] .capture-state-dot,
+.capture-state[data-status="cancelling"] .capture-state-dot {
   border-color: var(--amber);
   background: var(--amber);
 }
 
 .capture-state[data-status="ready"] .capture-state-dot,
 .capture-state[data-status="paused"] .capture-state-dot,
-.capture-state[data-status="completed"] .capture-state-dot {
+.capture-state[data-status="completed"] .capture-state-dot,
+.capture-state[data-status="cancelled"] .capture-state-dot {
   border-color: var(--cyan);
   background: var(--cyan);
 }
@@ -502,6 +512,34 @@ textarea:disabled {
 .capture-feedback {
   padding-top: 12px;
   border-top: 1px solid var(--border);
+}
+
+.export-source-section,
+.export-options-section,
+.export-action-section {
+  align-items: stretch;
+}
+
+.export-source-button,
+.export-action-button,
+.export-clear-button {
+  width: 100%;
+  margin: 0;
+}
+
+.export-prefix-toggle {
+  height: auto;
+  min-height: 40px;
+  gap: 10px;
+}
+
+.export-prefix-toggle span {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.export-prefix-toggle input {
+  flex: 0 0 auto;
 }
 
 .capture-status-item {
@@ -2200,6 +2238,9 @@ textarea:focus {
   .capture-action-button,
   .replay-open-button,
   .replay-recent-button,
+  .export-source-button,
+  .export-action-button,
+  .export-clear-button,
   .replay-controls .primary-button,
   .replay-control-button,
   .workspace-save-actions button,

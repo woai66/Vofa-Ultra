@@ -4,6 +4,10 @@ import {
   subscribeToCaptureEvents,
 } from "../services/captureClient";
 import {
+  getCaptureExportState,
+  subscribeToCaptureExportEvents,
+} from "../services/captureExportClient";
+import {
   getSerialState,
   isTauriRuntime,
   subscribeToSerialEvents,
@@ -29,6 +33,9 @@ export function useWorkbenchRuntime(): void {
   const handleSerialState = useWorkbenchStore((state) => state.handleSerialState);
   const handleSerialTx = useWorkbenchStore((state) => state.handleSerialTx);
   const handleCaptureState = useWorkbenchStore((state) => state.handleCaptureState);
+  const handleCaptureExportState = useWorkbenchStore(
+    (state) => state.handleCaptureExportState,
+  );
   const handleReplayState = useWorkbenchStore((state) => state.handleReplayState);
   const handleReplayBatch = useWorkbenchStore((state) => state.handleReplayBatch);
 
@@ -99,6 +106,34 @@ export function useWorkbenchRuntime(): void {
       dispose();
     };
   }, [handleCaptureState]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let dispose: () => void = () => undefined;
+
+    void subscribeToCaptureExportEvents({ onState: handleCaptureExportState })
+      .then(async (unlisten) => {
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+        dispose = unlisten;
+        if (isTauriRuntime()) {
+          const snapshot = await getCaptureExportState();
+          if (!cancelled) {
+            handleCaptureExportState(snapshot);
+          }
+        }
+      })
+      .catch((error: unknown) => {
+        console.error("初始化捕获导出状态监听失败", error);
+      });
+
+    return () => {
+      cancelled = true;
+      dispose();
+    };
+  }, [handleCaptureExportState]);
 
   useEffect(() => {
     let cancelled = false;

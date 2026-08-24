@@ -4,7 +4,9 @@ import {
   CircleDot,
   CircleStop,
   Database,
+  Download,
   FileCheck2,
+  FileOutput,
   FolderOpen,
   HardDrive,
   History,
@@ -17,9 +19,14 @@ import {
 } from "lucide-react";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { CaptureUiStatus } from "../types/capture";
+import type {
+  CaptureExportDirection,
+  CaptureExportFormat,
+  CaptureExportUiStatus,
+} from "../types/captureExport";
 import type { ReplayUiStatus } from "../types/replay";
 
-type SessionTab = "record" | "replay";
+type SessionTab = "record" | "replay" | "export";
 
 export function CapturePanel() {
   const isNativeRuntime = useWorkbenchStore((state) => state.isNativeRuntime);
@@ -31,6 +38,40 @@ export function CapturePanel() {
   const captureDataBytes = useWorkbenchStore((state) => state.captureDataBytes);
   const captureRecordCount = useWorkbenchStore((state) => state.captureRecordCount);
   const captureMessage = useWorkbenchStore((state) => state.captureMessage);
+  const captureExportStatus = useWorkbenchStore((state) => state.captureExportStatus);
+  const captureExportPhase = useWorkbenchStore((state) => state.captureExportPhase);
+  const captureExportSourcePath = useWorkbenchStore(
+    (state) => state.captureExportSourcePath,
+  );
+  const captureExportDestinationPath = useWorkbenchStore(
+    (state) => state.captureExportDestinationPath,
+  );
+  const captureExportFormat = useWorkbenchStore((state) => state.captureExportFormat);
+  const captureExportDirection = useWorkbenchStore(
+    (state) => state.captureExportDirection,
+  );
+  const captureExportAllowIncomplete = useWorkbenchStore(
+    (state) => state.captureExportAllowIncomplete,
+  );
+  const captureExportTotalInputBytes = useWorkbenchStore(
+    (state) => state.captureExportTotalInputBytes,
+  );
+  const captureExportProcessedInputBytes = useWorkbenchStore(
+    (state) => state.captureExportProcessedInputBytes,
+  );
+  const captureExportExportedDataBytes = useWorkbenchStore(
+    (state) => state.captureExportExportedDataBytes,
+  );
+  const captureExportExportedRecords = useWorkbenchStore(
+    (state) => state.captureExportExportedRecords,
+  );
+  const captureExportOutputBytes = useWorkbenchStore(
+    (state) => state.captureExportOutputBytes,
+  );
+  const captureExportSourceComplete = useWorkbenchStore(
+    (state) => state.captureExportSourceComplete,
+  );
+  const captureExportMessage = useWorkbenchStore((state) => state.captureExportMessage);
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
   const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
   const replayPath = useWorkbenchStore((state) => state.replayPath);
@@ -49,6 +90,24 @@ export function CapturePanel() {
   );
   const startCapture = useWorkbenchStore((state) => state.startCapture);
   const stopCapture = useWorkbenchStore((state) => state.stopCapture);
+  const selectCaptureExportSource = useWorkbenchStore(
+    (state) => state.selectCaptureExportSource,
+  );
+  const useRecentCaptureForExport = useWorkbenchStore(
+    (state) => state.useRecentCaptureForExport,
+  );
+  const setCaptureExportFormat = useWorkbenchStore(
+    (state) => state.setCaptureExportFormat,
+  );
+  const setCaptureExportDirection = useWorkbenchStore(
+    (state) => state.setCaptureExportDirection,
+  );
+  const setCaptureExportAllowIncomplete = useWorkbenchStore(
+    (state) => state.setCaptureExportAllowIncomplete,
+  );
+  const startCaptureExport = useWorkbenchStore((state) => state.startCaptureExport);
+  const cancelCaptureExport = useWorkbenchStore((state) => state.cancelCaptureExport);
+  const clearCaptureExport = useWorkbenchStore((state) => state.clearCaptureExport);
   const openReplayFile = useWorkbenchStore((state) => state.openReplayFile);
   const openRecentCapture = useWorkbenchStore((state) => state.openRecentCapture);
   const playReplay = useWorkbenchStore((state) => state.playReplay);
@@ -87,6 +146,19 @@ export function CapturePanel() {
     !replayLoaded;
   const canOpenReplay =
     isNativeRuntime && workspaceTransitionStatus === "idle" && !runtimeBusy && !captureBusy;
+  const captureActive = isRecording || captureBusy;
+  const exportBusy = [
+    "selecting-source",
+    "selecting-destination",
+    "starting",
+    "running",
+    "cancelling",
+  ].includes(captureExportStatus);
+  const canChooseExportSource = isNativeRuntime && !captureActive && !exportBusy;
+  const canStartExport = canChooseExportSource && Boolean(captureExportSourcePath);
+  const exportHasResult = ["completed", "cancelled", "error"].includes(
+    captureExportStatus,
+  );
   const elapsedMs = captureStartedAt
     ? Math.max(0, (captureEndedAt ?? now) - captureStartedAt)
     : 0;
@@ -123,6 +195,17 @@ export function CapturePanel() {
           onClick={() => setActiveTab("replay")}
         >
           回放
+        </button>
+        <button
+          id="export-tab"
+          type="button"
+          role="tab"
+          aria-controls="export-panel"
+          aria-selected={activeTab === "export"}
+          data-active={activeTab === "export"}
+          onClick={() => setActiveTab("export")}
+        >
+          导出
         </button>
       </div>
 
@@ -179,7 +262,7 @@ export function CapturePanel() {
             <SessionFeedback message={captureMessage} isError={captureStatus === "error"} />
           )}
         </div>
-      ) : (
+      ) : activeTab === "replay" ? (
         <div id="replay-panel" role="tabpanel" aria-labelledby="replay-tab">
           <section className="capture-status-section" aria-label="回放状态">
             <SessionState
@@ -287,6 +370,216 @@ export function CapturePanel() {
             <SessionFeedback message={replayMessage} isError={replayStatus === "error"} />
           )}
         </div>
+      ) : (
+        <div id="export-panel" role="tabpanel" aria-labelledby="export-tab">
+          <section className="capture-status-section" aria-label="导出状态">
+            <SessionState
+              status={captureExportStatus}
+              title={captureExportStatusLabel(captureExportStatus, captureExportPhase)}
+              subtitle={`${captureExportFormatName(captureExportFormat)} · ${captureExportDirectionLabel(
+                captureExportDirection,
+              )}`}
+            />
+            <ExportMetrics
+              inputBytes={captureExportProcessedInputBytes}
+              totalInputBytes={captureExportTotalInputBytes}
+              outputBytes={captureExportOutputBytes}
+              dataBytes={captureExportExportedDataBytes}
+              recordCount={captureExportExportedRecords}
+            />
+            {(exportBusy || exportHasResult) && captureExportTotalInputBytes > 0 && (
+              <progress
+                className="replay-progress export-progress"
+                max={captureExportTotalInputBytes}
+                value={Math.min(
+                  captureExportProcessedInputBytes,
+                  captureExportTotalInputBytes,
+                )}
+                aria-label="导出进度"
+              />
+            )}
+          </section>
+
+          <section className="sidebar-section export-source-section">
+            <span className="field-label">源捕获文件</span>
+            <button
+              className="secondary-button export-source-button"
+              type="button"
+              disabled={!canChooseExportSource}
+              onClick={() => void selectCaptureExportSource()}
+            >
+              <FolderOpen size={16} />
+              选择捕获文件
+            </button>
+            <button
+              className="secondary-button export-source-button"
+              type="button"
+              disabled={!canChooseExportSource || !capturePath}
+              onClick={useRecentCaptureForExport}
+            >
+              <History size={16} />
+              使用最近录制
+            </button>
+            {!isNativeRuntime && (
+              <span className="capture-availability">仅桌面应用支持捕获文件导出</span>
+            )}
+            {captureActive && (
+              <span className="capture-availability">完成当前录制后可开始导出</span>
+            )}
+          </section>
+
+          {captureExportSourcePath && (
+            <SessionFile label="源文件" path={captureExportSourcePath} />
+          )}
+
+          <section className="sidebar-section export-options-section">
+            <span className="field-label" id="capture-export-format-label">
+              导出格式
+            </span>
+            <div
+              className="segmented-control export-format-control"
+              role="radiogroup"
+              aria-labelledby="capture-export-format-label"
+            >
+              {(["csv", "jsonl", "binary"] as const).map((format) => (
+                <button
+                  key={format}
+                  type="button"
+                  role="radio"
+                  aria-checked={captureExportFormat === format}
+                  data-active={captureExportFormat === format}
+                  disabled={exportBusy}
+                  onClick={() => setCaptureExportFormat(format)}
+                >
+                  {captureExportFormatName(format)}
+                </button>
+              ))}
+            </div>
+
+            <span className="field-label" id="capture-export-direction-label">
+              数据方向
+            </span>
+            <div
+              className="segmented-control export-direction-control"
+              role="radiogroup"
+              aria-labelledby="capture-export-direction-label"
+            >
+              {(
+                [
+                  ["both", "双向"],
+                  ["rx", "RX"],
+                  ["tx", "TX"],
+                ] as const
+              ).map(([direction, label]) => (
+                <button
+                  key={direction}
+                  type="button"
+                  role="radio"
+                  aria-checked={captureExportDirection === direction}
+                  data-active={captureExportDirection === direction}
+                  disabled={
+                    exportBusy ||
+                    (captureExportFormat === "binary" && direction === "both")
+                  }
+                  title={
+                    captureExportFormat === "binary" && direction === "both"
+                      ? "二进制文件必须保留单一方向"
+                      : undefined
+                  }
+                  onClick={() => setCaptureExportDirection(direction)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <label className="toggle-row standalone export-prefix-toggle">
+              <span>允许导出不完整文件的有效前缀</span>
+              <input
+                type="checkbox"
+                checked={captureExportAllowIncomplete}
+                disabled={exportBusy}
+                onChange={(event) =>
+                  setCaptureExportAllowIncomplete(event.target.checked)
+                }
+              />
+            </label>
+          </section>
+
+          <section className="sidebar-section export-action-section">
+            {exportBusy && !["selecting-source", "selecting-destination"].includes(
+              captureExportStatus,
+            ) ? (
+              <button
+                className="danger-button export-action-button"
+                type="button"
+                disabled={
+                  captureExportStatus === "starting" ||
+                  captureExportStatus === "cancelling" ||
+                  captureExportPhase === "committing"
+                }
+                onClick={() => void cancelCaptureExport()}
+              >
+                <CircleStop size={16} />
+                {captureExportStatus === "starting"
+                  ? "正在启动导出"
+                  : captureExportPhase === "committing"
+                    ? "正在提交文件"
+                    : "取消导出"}
+              </button>
+            ) : (
+              <button
+                className="primary-button export-action-button"
+                type="button"
+                disabled={!canStartExport}
+                onClick={() => void startCaptureExport()}
+              >
+                <Download size={16} />
+                选择位置并导出
+              </button>
+            )}
+            {exportHasResult && (
+              <button
+                className="secondary-button export-clear-button"
+                type="button"
+                onClick={() => void clearCaptureExport()}
+              >
+                <RotateCcw size={16} />
+                清除导出结果
+              </button>
+            )}
+          </section>
+
+          {captureExportStatus === "completed" && (
+            <section className="sidebar-section replay-control-section">
+              <div
+                className="replay-integrity"
+                data-complete={captureExportSourceComplete}
+              >
+                {captureExportSourceComplete ? (
+                  <CheckCircle2 size={15} />
+                ) : (
+                  <TriangleAlert size={15} />
+                )}
+                <span>
+                  {captureExportSourceComplete
+                    ? "源捕获完整，导出已提交"
+                    : "已提交源文件的有效记录前缀"}
+                </span>
+              </div>
+            </section>
+          )}
+
+          {captureExportDestinationPath && (
+            <SessionFile label="导出文件" path={captureExportDestinationPath} />
+          )}
+          {captureExportMessage && (
+            <SessionFeedback
+              message={captureExportMessage}
+              isError={captureExportStatus === "error"}
+            />
+          )}
+        </div>
       )}
     </div>
   );
@@ -297,7 +590,7 @@ function SessionState({
   title,
   subtitle,
 }: {
-  status: CaptureUiStatus | ReplayUiStatus;
+  status: CaptureUiStatus | ReplayUiStatus | CaptureExportUiStatus;
   title: string;
   subtitle: string;
 }) {
@@ -307,6 +600,47 @@ function SessionState({
       <div>
         <strong>{title}</strong>
         <span>{subtitle}</span>
+      </div>
+    </div>
+  );
+}
+
+function ExportMetrics({
+  inputBytes,
+  totalInputBytes,
+  outputBytes,
+  dataBytes,
+  recordCount,
+}: {
+  inputBytes: number;
+  totalInputBytes: number;
+  outputBytes: number;
+  dataBytes: number;
+  recordCount: number;
+}) {
+  const progress = totalInputBytes > 0
+    ? Math.min(100, Math.round((inputBytes / totalInputBytes) * 100))
+    : 0;
+  return (
+    <div className="capture-metrics export-metrics">
+      <div>
+        <HardDrive size={15} />
+        <span>源进度</span>
+        <strong title={`${formatBytes(inputBytes)} / ${formatBytes(totalInputBytes)}`}>
+          {progress}%
+        </strong>
+      </div>
+      <div>
+        <FileOutput size={15} />
+        <span>输出</span>
+        <strong title={`有效载荷 ${formatBytes(dataBytes)}`}>
+          {formatBytes(outputBytes)}
+        </strong>
+      </div>
+      <div>
+        <FileCheck2 size={15} />
+        <span>记录</span>
+        <strong>{recordCount.toLocaleString()}</strong>
       </div>
     </div>
   );
@@ -342,14 +676,72 @@ function SessionMetrics({
   );
 }
 
-function SessionFile({ path }: { path: string }) {
+function SessionFile({ path, label = "捕获文件" }: { path: string; label?: string }) {
   return (
     <section className="sidebar-section capture-file-section">
-      <span className="field-label">捕获文件</span>
+      <span className="field-label">{label}</span>
       <strong title={path}>{fileName(path)}</strong>
       <code title={path}>{path}</code>
     </section>
   );
+}
+
+function captureExportStatusLabel(
+  status: CaptureExportUiStatus,
+  phase: string,
+): string {
+  if (status === "running") {
+    switch (phase) {
+      case "preparing":
+        return "正在准备导出";
+      case "finalizing":
+        return "正在刷新文件";
+      case "committing":
+        return "正在提交文件";
+      default:
+        return "正在流式导出";
+    }
+  }
+  switch (status) {
+    case "selecting-source":
+      return "正在选择源文件";
+    case "selecting-destination":
+      return "正在选择导出位置";
+    case "starting":
+      return "正在启动导出";
+    case "cancelling":
+      return "正在取消导出";
+    case "completed":
+      return "导出已完成";
+    case "cancelled":
+      return "导出已取消";
+    case "error":
+      return "导出失败";
+    default:
+      return "等待导出";
+  }
+}
+
+function captureExportFormatName(format: CaptureExportFormat): string {
+  switch (format) {
+    case "jsonl":
+      return "JSONL";
+    case "binary":
+      return "BIN";
+    default:
+      return "CSV";
+  }
+}
+
+function captureExportDirectionLabel(direction: CaptureExportDirection): string {
+  switch (direction) {
+    case "rx":
+      return "仅 RX";
+    case "tx":
+      return "仅 TX";
+    default:
+      return "RX + TX";
+  }
 }
 
 function SessionFeedback({ message, isError }: { message: string; isError: boolean }) {

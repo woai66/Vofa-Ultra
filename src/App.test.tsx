@@ -45,5 +45,10 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "打开捕获文件" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "回放最近录制" })).toBeDisabled();
     expect(screen.getByText("仅桌面应用支持捕获文件回放")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "导出" }));
+    expect(screen.getByRole("button", { name: "选择捕获文件" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "选择位置并导出" })).toBeDisabled();
+    expect(screen.getByText("仅桌面应用支持捕获文件导出")).toBeInTheDocument();
   });
 });

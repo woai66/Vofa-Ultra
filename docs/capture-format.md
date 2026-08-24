@@ -73,6 +73,17 @@ JSON 头使用 UTF-8，字段采用 camelCase：
 - 会话、代次和序列号共同过滤停止或重播后的迟到事件；暂停和停止可立即唤醒等待中的 worker。
 - 前端只通过原生文件选择器取得路径，文件读取仍由 Rust 完成，不授予 WebView 通用文件系统权限。
 
+## 导出边界
+
+- 导出直接在 Rust worker 中流式迭代 `CaptureReader`，IPC 只发送进度和终态，不传输 payload。
+- CSV 每条记录包含 `record_index`、`timestamp_us`、`unix_time_us`、`direction`、`payload_length` 和
+  `payload_hex`。不输出不可信文本字段，避免电子表格公式注入和控制字符歧义。
+- JSONL 首行为 capture metadata，中间为 Base64 payload 的 record，末行为完整性和计数 summary。
+- BIN 只按记录顺序拼接显式选择的 RX 或 TX payload；不允许双向输出，因为裸字节流无法保留方向。
+- 不完整文件默认拒绝；用户明确允许后只提交已验证的完整记录前缀，并标记 `sourceComplete=false`。
+- 输出先写目标同目录临时文件并同步，再通过备份/恢复流程替换目标。取消、损坏或写入失败不提交半成品。
+- 导出前后比较源文件长度和修改时间；活动录制期间禁止启动导出，回放可使用独立文件句柄并行读取。
+
 ## 兼容策略
 
 reader 必须先验证 magic 和版本，再分配 JSON 或 payload 缓冲。v1 reader 不接受未来版本；后续版本如改变记录

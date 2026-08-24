@@ -98,6 +98,45 @@ pub struct CaptureRecord {
     pub payload: Vec<u8>,
 }
 
+#[derive(Default)]
+pub(crate) struct CaptureRecordStats {
+    last_timestamp_us: Option<u64>,
+    data_bytes: u64,
+    record_count: u64,
+}
+
+impl CaptureRecordStats {
+    pub(crate) fn observe(&mut self, record: &CaptureRecord) -> Result<(), String> {
+        if self
+            .last_timestamp_us
+            .map(|last| record.timestamp_us < last)
+            .unwrap_or(false)
+        {
+            return Err(format!(
+                "捕获记录时间戳从 {} 微秒回退到 {} 微秒",
+                self.last_timestamp_us.unwrap_or(0),
+                record.timestamp_us
+            ));
+        }
+        self.last_timestamp_us = Some(record.timestamp_us);
+        self.data_bytes = self.data_bytes.saturating_add(record.payload.len() as u64);
+        self.record_count = self.record_count.saturating_add(1);
+        Ok(())
+    }
+
+    pub(crate) fn duration_us(&self) -> u64 {
+        self.last_timestamp_us.unwrap_or(0)
+    }
+
+    pub(crate) fn data_bytes(&self) -> u64 {
+        self.data_bytes
+    }
+
+    pub(crate) fn record_count(&self) -> u64 {
+        self.record_count
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureFooter {
     pub data_bytes: u64,
@@ -378,6 +417,24 @@ impl CaptureState {
             transition: Arc::clone(&self.transition),
             core: Arc::clone(&self.core),
         }
+    }
+
+    pub(crate) fn has_active_capture(&self) -> Result<bool, String> {
+        let _transition = self
+            .transition
+            .lock()
+            .map_err(|_| "录制生命周期锁已损坏".to_owned())?;
+        self.core
+            .shared
+            .lock()
+            .map_err(|_| "录制状态锁已损坏".to_owned())
+            .map(|shared| {
+                matches!(
+                    shared.status,
+                    CaptureStatus::Recording | CaptureStatus::Stopping
+                ) || shared.worker.is_some()
+                    || shared.finalizing.is_some()
+            })
     }
 }
 

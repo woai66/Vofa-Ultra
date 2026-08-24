@@ -7,6 +7,13 @@ import {
   stopCapture,
 } from "../services/captureClient";
 import {
+  cancelCaptureExport,
+  clearCaptureExport,
+  selectCaptureExportDestinationPath,
+  selectCaptureExportSourcePath,
+  startCaptureExport,
+} from "../services/captureExportClient";
+import {
   ackReplayBatch,
   closeReplay,
   openReplay,
@@ -23,6 +30,10 @@ import {
   sendSerial,
 } from "../services/serialClient";
 import type { CaptureStatePayload } from "../types/capture";
+import type {
+  CaptureExportStatePayload,
+  CaptureExportStatus,
+} from "../types/captureExport";
 import type {
   ReplayCaptureHeader,
   ReplayStatePayload,
@@ -54,6 +65,14 @@ vi.mock("../services/captureClient", () => ({
   stopCapture: vi.fn(),
 }));
 
+vi.mock("../services/captureExportClient", () => ({
+  cancelCaptureExport: vi.fn(),
+  clearCaptureExport: vi.fn(),
+  selectCaptureExportDestinationPath: vi.fn(),
+  selectCaptureExportSourcePath: vi.fn(),
+  startCaptureExport: vi.fn(),
+}));
+
 vi.mock("../services/replayClient", () => ({
   ackReplayBatch: vi.fn(),
   closeReplay: vi.fn(),
@@ -72,6 +91,13 @@ const sendSerialMock = vi.mocked(sendSerial);
 const enqueueSimulatorCaptureMock = vi.mocked(enqueueSimulatorCapture);
 const startCaptureMock = vi.mocked(startCapture);
 const stopCaptureMock = vi.mocked(stopCapture);
+const cancelCaptureExportMock = vi.mocked(cancelCaptureExport);
+const clearCaptureExportMock = vi.mocked(clearCaptureExport);
+const selectCaptureExportDestinationPathMock = vi.mocked(
+  selectCaptureExportDestinationPath,
+);
+const selectCaptureExportSourcePathMock = vi.mocked(selectCaptureExportSourcePath);
+const startCaptureExportMock = vi.mocked(startCaptureExport);
 const ackReplayBatchMock = vi.mocked(ackReplayBatch);
 const closeReplayMock = vi.mocked(closeReplay);
 const openReplayMock = vi.mocked(openReplay);
@@ -138,6 +164,32 @@ function replayState(
   };
 }
 
+function captureExportState(
+  status: CaptureExportStatus,
+  overrides: Partial<CaptureExportStatePayload> = {},
+): CaptureExportStatePayload {
+  return {
+    status,
+    phase: status === "running" ? "reading" : status === "idle" ? "idle" : "done",
+    jobId: status === "idle" ? 0 : 7,
+    revision: status === "idle" ? 0 : 1,
+    sourcePath: status === "idle" ? "" : "C:\\captures\\session.vucap",
+    destinationPath: status === "idle" ? "" : "C:\\captures\\session.csv",
+    format: "csv",
+    direction: "both",
+    allowIncomplete: false,
+    totalInputBytes: 4_096,
+    processedInputBytes: status === "completed" ? 4_096 : 1_024,
+    processedDataBytes: 512,
+    processedRecords: 8,
+    exportedDataBytes: 512,
+    exportedRecords: 8,
+    outputBytes: 1_024,
+    sourceComplete: status === "completed",
+    ...overrides,
+  };
+}
+
 describe("workbenchStore", () => {
   beforeEach(async () => {
     useWorkbenchStore.getState().stopPeriodicSend();
@@ -161,6 +213,11 @@ describe("workbenchStore", () => {
     enqueueSimulatorCaptureMock.mockReset().mockReturnValue(true);
     startCaptureMock.mockReset();
     stopCaptureMock.mockReset();
+    cancelCaptureExportMock.mockReset();
+    clearCaptureExportMock.mockReset();
+    selectCaptureExportDestinationPathMock.mockReset();
+    selectCaptureExportSourcePathMock.mockReset();
+    startCaptureExportMock.mockReset();
     ackReplayBatchMock.mockReset().mockResolvedValue(undefined);
     closeReplayMock.mockReset();
     openReplayMock.mockReset();
@@ -215,6 +272,26 @@ describe("workbenchStore", () => {
       captureDataBytes: 0,
       captureRecordCount: 0,
       captureMessage: "",
+      captureExportStatus: "idle",
+      captureExportPhase: "idle",
+      captureExportJobId: 0,
+      captureExportRevision: 0,
+      captureExportSourcePath: "",
+      captureExportDestinationPath: "",
+      captureExportFormat: "csv",
+      captureExportDirection: "both",
+      captureExportAllowIncomplete: false,
+      captureExportTotalInputBytes: 0,
+      captureExportProcessedInputBytes: 0,
+      captureExportProcessedDataBytes: 0,
+      captureExportProcessedRecords: 0,
+      captureExportExportedDataBytes: 0,
+      captureExportExportedRecords: 0,
+      captureExportOutputBytes: 0,
+      captureExportSourceComplete: false,
+      captureExportStartedAt: undefined,
+      captureExportEndedAt: undefined,
+      captureExportMessage: "",
       replayStatus: "idle",
       replaySessionId: 0,
       replayGeneration: 0,
@@ -1392,6 +1469,138 @@ describe("workbenchStore", () => {
       connectionStatus: "connected",
       captureStatus: "stopping",
       statusMessage: "结束录制失败，未断开数据源",
+    });
+  });
+
+  it("选择源文件后按格式生成请求且二进制强制单一方向", async () => {
+    selectCaptureExportSourcePathMock.mockResolvedValue(
+      "C:\\captures\\session.vucap",
+    );
+    selectCaptureExportDestinationPathMock.mockResolvedValue(
+      "C:\\captures\\session.bin",
+    );
+    startCaptureExportMock.mockResolvedValue(
+      captureExportState("running", {
+        phase: "reading",
+        destinationPath: "C:\\captures\\session.bin",
+        format: "binary",
+        direction: "rx",
+      }),
+    );
+    useWorkbenchStore.setState({ isNativeRuntime: true });
+
+    await expect(
+      useWorkbenchStore.getState().selectCaptureExportSource(),
+    ).resolves.toBe(true);
+    useWorkbenchStore.getState().setCaptureExportFormat("binary");
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureExportStatus: "idle",
+      captureExportFormat: "binary",
+      captureExportDirection: "rx",
+      captureExportSourcePath: "C:\\captures\\session.vucap",
+    });
+
+    await expect(useWorkbenchStore.getState().startCaptureExport()).resolves.toBe(true);
+    expect(selectCaptureExportDestinationPathMock).toHaveBeenCalledWith(
+      "C:\\captures\\session.vucap",
+      "binary",
+    );
+    expect(startCaptureExportMock).toHaveBeenCalledWith({
+      sourcePath: "C:\\captures\\session.vucap",
+      destinationPath: "C:\\captures\\session.bin",
+      format: "binary",
+      direction: "rx",
+      allowIncomplete: false,
+    });
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureExportStatus: "running",
+      captureExportJobId: 7,
+      captureExportDestinationPath: "C:\\captures\\session.bin",
+    });
+  });
+
+  it("录制活跃时拒绝选择或启动导出且不打开文件对话框", async () => {
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      captureStatus: "recording",
+      captureExportSourcePath: "C:\\captures\\older.vucap",
+    });
+
+    await expect(
+      useWorkbenchStore.getState().selectCaptureExportSource(),
+    ).resolves.toBe(false);
+    await expect(useWorkbenchStore.getState().startCaptureExport()).resolves.toBe(false);
+    expect(selectCaptureExportSourcePathMock).not.toHaveBeenCalled();
+    expect(selectCaptureExportDestinationPathMock).not.toHaveBeenCalled();
+    expect(startCaptureExportMock).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState().captureExportMessage).toContain("完成当前捕获文件");
+  });
+
+  it("按任务和修订过滤迟到导出状态并可取消当前任务", async () => {
+    useWorkbenchStore.getState().handleCaptureExportState(
+      captureExportState("running", { jobId: 7, revision: 3 }),
+    );
+    useWorkbenchStore.getState().handleCaptureExportState(
+      captureExportState("completed", {
+        jobId: 6,
+        revision: 99,
+        outputBytes: 99_999,
+      }),
+    );
+    useWorkbenchStore.getState().handleCaptureExportState(
+      captureExportState("completed", {
+        jobId: 7,
+        revision: 3,
+        outputBytes: 88_888,
+      }),
+    );
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureExportStatus: "running",
+      captureExportJobId: 7,
+      captureExportRevision: 3,
+      captureExportOutputBytes: 1_024,
+    });
+
+    cancelCaptureExportMock.mockResolvedValue(
+      captureExportState("cancelling", {
+        phase: "reading",
+        jobId: 7,
+        revision: 4,
+      }),
+    );
+    await expect(useWorkbenchStore.getState().cancelCaptureExport()).resolves.toBe(true);
+    expect(cancelCaptureExportMock).toHaveBeenCalledWith(7);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureExportStatus: "cancelling",
+      captureExportRevision: 4,
+    });
+
+    useWorkbenchStore.getState().handleCaptureExportState(
+      captureExportState("cancelled", { jobId: 7, revision: 5 }),
+    );
+    expect(useWorkbenchStore.getState().captureExportStatus).toBe("cancelled");
+  });
+
+  it("修改已完成任务的导出选项会进入新草稿", () => {
+    useWorkbenchStore.getState().handleCaptureExportState(
+      captureExportState("completed", {
+        jobId: 7,
+        revision: 4,
+        message: "导出完成",
+      }),
+    );
+
+    useWorkbenchStore.getState().setCaptureExportDirection("tx");
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureExportStatus: "idle",
+      captureExportPhase: "idle",
+      captureExportSourcePath: "C:\\captures\\session.vucap",
+      captureExportDestinationPath: "",
+      captureExportDirection: "tx",
+      captureExportOutputBytes: 0,
+      captureExportExportedRecords: 0,
+      captureExportMessage: "",
     });
   });
 
