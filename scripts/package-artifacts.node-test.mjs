@@ -440,6 +440,18 @@ test("rejects non-canonical, duplicate, reordered, and extended JSON", () => {
   );
 });
 
+test("runs feature branches once through pull requests", () => {
+  const workflow = parse_yaml(
+    readFileSync(path.join(PROJECT_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
+  );
+  assert.deepEqual(workflow.on.push, {
+    branches: ["main"],
+    tags: ["v*"],
+  });
+  assert.equal(workflow.on.pull_request, null);
+  assert.equal(workflow.on.workflow_dispatch, null);
+});
+
 test("pins tag-only provenance for platform builds and aggregate release assets", () => {
   const workflow = parse_yaml(
     readFileSync(path.join(PROJECT_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
