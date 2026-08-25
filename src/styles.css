@@ -3420,7 +3420,7 @@ textarea:focus {
   display: grid;
   min-width: 0;
   align-items: center;
-  grid-template-columns: auto minmax(120px, 1fr) 30px 30px 30px 76px;
+  grid-template-columns: auto minmax(120px, 1fr) 30px 30px 30px 30px 76px;
   gap: 7px;
 }
 
@@ -3648,7 +3648,8 @@ textarea:focus {
 }
 
 .command-history-popover,
-.command-variable-popover {
+.command-variable-popover,
+.modbus-builder-popover {
   position: absolute;
   z-index: 50;
   right: 10px;
@@ -3666,6 +3667,187 @@ textarea:focus {
 
 .command-variable-popover {
   width: min(420px, calc(100% - 20px));
+}
+
+.modbus-builder-popover {
+  width: min(620px, calc(100% - 20px));
+  margin: 0;
+}
+
+.modbus-builder-header {
+  display: flex;
+  min-height: 40px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modbus-builder-header > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  color: var(--text-muted);
+  gap: 7px;
+}
+
+.modbus-builder-header strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.modbus-builder-header span {
+  color: var(--cyan);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+}
+
+.modbus-builder-grid {
+  display: grid;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+  grid-template-columns: minmax(180px, 2fr) repeat(3, minmax(84px, 1fr));
+  gap: 9px;
+}
+
+.modbus-field {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 6px;
+}
+
+.modbus-field > span,
+.modbus-coil-field legend {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.modbus-field > small {
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 8px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modbus-field > input,
+.modbus-field > select,
+.modbus-field > textarea {
+  width: 100%;
+  min-width: 0;
+  grid-column: 1 / -1;
+}
+
+.modbus-field > input,
+.modbus-field > select {
+  height: 32px;
+  padding: 0 8px;
+  font-size: 10px;
+}
+
+.modbus-field > textarea {
+  min-height: 50px;
+  max-height: 96px;
+  resize: vertical;
+  padding: 7px 8px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.modbus-operation-field {
+  grid-column: span 1;
+}
+
+.modbus-values-field {
+  grid-column: 1 / -1;
+}
+
+.modbus-coil-field {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.modbus-coil-field legend {
+  margin-bottom: 4px;
+  padding: 0;
+}
+
+.modbus-coil-field .segmented-control {
+  width: 100%;
+}
+
+.modbus-coil-field .segmented-control button {
+  flex: 1 1 50%;
+}
+
+.modbus-frame-preview {
+  display: grid;
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: 9px 10px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+  gap: 6px;
+}
+
+.modbus-frame-preview > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 9px;
+  gap: 8px;
+}
+
+.modbus-frame-preview small {
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 8px;
+}
+
+.modbus-frame-preview code {
+  min-width: 0;
+  overflow-x: auto;
+  color: var(--cyan);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.modbus-frame-preview[data-invalid="true"] {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+
+.modbus-builder-error {
+  color: var(--danger);
+  font-size: 9px;
+  line-height: 16px;
+}
+
+.modbus-builder-actions {
+  display: flex;
+  min-height: 46px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 7px 10px;
+}
+
+.modbus-builder-actions .primary-button {
+  min-height: 32px;
+  padding: 0 10px;
 }
 
 .command-history-header,
@@ -3939,9 +4121,9 @@ textarea:focus {
 
   .send-main-row {
     grid-template-areas:
-      "options options options options options"
-      "payload variable history workflow send";
-    grid-template-columns: minmax(0, 1fr) 30px 30px 30px 68px;
+      "options options options options options options"
+      "payload modbus variable history workflow send";
+    grid-template-columns: minmax(0, 1fr) 30px 30px 30px 30px 68px;
   }
 
   .send-options {
@@ -3950,6 +4132,10 @@ textarea:focus {
 
   .send-payload-field {
     grid-area: payload;
+  }
+
+  .command-modbus-trigger {
+    grid-area: modbus;
   }
 
   .command-variable-trigger {
@@ -4350,11 +4536,21 @@ textarea:focus {
   }
 
   .send-main-row {
-    grid-template-columns: minmax(0, 1fr) 44px 44px 44px 68px;
+    grid-template-areas:
+      "options options options options options"
+      "payload payload payload payload payload"
+      "modbus variable history workflow send";
+    grid-template-columns: 44px 44px 44px 44px minmax(68px, 1fr);
   }
 
   .send-payload-field,
   .send-composer textarea {
+    height: 44px;
+  }
+
+  .composer-icon-button,
+  .modbus-builder-header .icon-button {
+    width: 44px;
     height: 44px;
   }
 
@@ -4372,8 +4568,47 @@ textarea:focus {
   }
 
   .command-history-header,
-  .command-variable-header {
+  .command-variable-header,
+  .modbus-builder-header {
     min-height: 52px;
+  }
+
+  .modbus-builder-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .modbus-builder-popover {
+    position: fixed;
+    top: 8px;
+    right: 8px;
+    bottom: auto;
+    left: 8px;
+    width: auto;
+    max-height: calc(100vh - 16px);
+  }
+
+  .modbus-operation-field,
+  .modbus-values-field {
+    grid-column: 1 / -1;
+  }
+
+  .modbus-field > input,
+  .modbus-field > select,
+  .modbus-coil-field .segmented-control {
+    min-height: 44px;
+  }
+
+  .modbus-field > textarea {
+    height: 64px;
+    min-height: 64px;
+  }
+
+  .modbus-builder-actions {
+    min-height: 58px;
+  }
+
+  .modbus-builder-actions .primary-button {
+    min-height: 44px;
   }
 
   .command-history-list > button,

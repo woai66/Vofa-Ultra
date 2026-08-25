@@ -2,6 +2,10 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
+import {
+  MAX_MODBUS_VALUE_TEXT_CHARACTERS,
+  MAX_MODBUS_WRITE_COILS,
+} from "../core/modbusRtu";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { TerminalEntry } from "../types/workbench";
 import { TerminalPanel } from "./TerminalPanel";
@@ -260,6 +264,144 @@ describe("TerminalPanel", () => {
           .terminalEntries.find((entry) => entry.direction === "tx")?.hex,
       ).toBe("01 00");
     });
+  });
+
+  it("将 Modbus RTU 帧填入 HEX 草稿但只通过原发送入口产生 TX", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
+    const builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+    const operation = within(builder).getByRole("combobox", { name: "Modbus 功能" });
+    expect(operation).toHaveFocus();
+    expect(within(operation).getAllByRole("option")).toHaveLength(8);
+    expect(within(builder).getByLabelText("Modbus RTU 帧预览")).toHaveTextContent(
+      "01 03 00 00 00 01 84 0A",
+    );
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.filter((entry) => entry.direction === "tx"),
+    ).toEqual([]);
+
+    await user.click(within(builder).getByRole("button", { name: "填入发送框" }));
+    expect(screen.queryByRole("dialog", { name: "Modbus RTU 构帧器" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "发送内容" })).toHaveValue(
+      "01 03 00 00 00 01 84 0A",
+    );
+    expect(
+      within(screen.getByRole("group", { name: "发送格式" })).getByRole("button", {
+        name: "HEX",
+      }),
+    ).toHaveAttribute("data-active", "true");
+    expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("none");
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.filter((entry) => entry.direction === "tx"),
+    ).toEqual([]);
+
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(useWorkbenchStore.getState().commandHistory[0]).toMatchObject({
+        mode: "hex",
+        lineEnding: "none",
+        encodedBytes: 8,
+      });
+      expect(
+        useWorkbenchStore
+          .getState()
+          .terminalEntries.find((entry) => entry.direction === "tx")?.hex,
+      ).toBe("01 03 00 00 00 01 84 0A");
+    });
+  });
+
+  it("工作区切换期间关闭并禁用 Modbus RTU 构帧器", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const trigger = screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" });
+
+    await user.click(trigger);
+    expect(screen.getByRole("dialog", { name: "Modbus RTU 构帧器" })).toBeVisible();
+
+    useWorkbenchStore.setState({ workspaceTransitionStatus: "switching" });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Modbus RTU 构帧器" })).not.toBeInTheDocument();
+      expect(trigger).toBeDisabled();
+    });
+    expect(screen.getByRole("textbox", { name: "发送内容" })).toHaveValue("");
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      sendMode: "text",
+      lineEnding: "none",
+    });
+  });
+
+  it("允许输入带常见分隔符的最大多线圈请求", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
+    const builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+    await user.selectOptions(
+      within(builder).getByRole("combobox", { name: "Modbus 功能" }),
+      "write-multiple-coils",
+    );
+    const input = within(builder).getByRole("textbox", {
+      name: "Modbus 多线圈值",
+    });
+    const maximumValues = Array.from(
+      { length: MAX_MODBUS_WRITE_COILS },
+      (_, index) => (index % 2 === 0 ? "1" : "0"),
+    ).join(", ");
+
+    expect(maximumValues.length).toBeGreaterThan(4_096);
+    expect(maximumValues.length).toBeLessThanOrEqual(MAX_MODBUS_VALUE_TEXT_CHARACTERS);
+    expect(input).toHaveAttribute("maxlength", String(MAX_MODBUS_VALUE_TEXT_CHARACTERS));
+    fireEvent.change(input, { target: { value: maximumValues } });
+    expect(input).toHaveValue(maximumValues);
+    expect(within(builder).getByRole("button", { name: "填入发送框" })).toBeEnabled();
+  });
+
+  it("在构帧器中拒绝读广播和越过末地址的范围并可用 Escape 关闭", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const trigger = screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" });
+
+    await user.click(trigger);
+    let builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+    await user.clear(within(builder).getByRole("textbox", { name: "Modbus 站号" }));
+    await user.type(within(builder).getByRole("textbox", { name: "Modbus 站号" }), "0");
+    expect(within(builder).getByRole("status")).toHaveTextContent(
+      "读取请求不能使用广播站号 0",
+    );
+    expect(within(builder).getByRole("button", { name: "填入发送框" })).toBeDisabled();
+
+    await user.selectOptions(
+      within(builder).getByRole("combobox", { name: "Modbus 功能" }),
+      "write-multiple-registers",
+    );
+    expect(within(builder).getByText(/广播 · 无响应/)).toBeVisible();
+    await user.clear(within(builder).getByRole("textbox", { name: "Modbus 起始地址" }));
+    await user.type(
+      within(builder).getByRole("textbox", { name: "Modbus 起始地址" }),
+      "65535",
+    );
+    expect(within(builder).getByRole("status")).toHaveTextContent(
+      "请求范围不能超过地址 65535",
+    );
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Modbus RTU 构帧器" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+    expect(within(builder).getByRole("combobox", { name: "Modbus 功能" })).toHaveValue(
+      "read-holding-registers",
+    );
   });
 
   it("用相同变量替换原选区时仍恢复输入焦点和光标", async () => {

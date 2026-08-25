@@ -9,6 +9,7 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowDownToLine,
+  Blocks,
   Braces,
   CirclePause,
   Download,
@@ -43,6 +44,7 @@ import {
   terminalEntryPayload,
   type TerminalDirectionFilter,
 } from "../core/terminalSearch";
+import { formatModbusRtuFrame } from "../core/modbusRtu";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { DisplayMode, LineEnding } from "../types/serial";
 import type {
@@ -50,6 +52,7 @@ import type {
   CommandTaskSnapshot,
   TerminalEntry,
 } from "../types/workbench";
+import { ModbusRtuBuilder } from "./ModbusRtuBuilder";
 
 type RepeatMode = "count" | "continuous";
 
@@ -93,6 +96,7 @@ export function TerminalPanel() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const modbusTriggerRef = useRef<HTMLButtonElement>(null);
   const variableTriggerRef = useRef<HTMLButtonElement>(null);
   const variableListRef = useRef<HTMLDivElement>(null);
   const historyCursorRef = useRef<number | null>(null);
@@ -102,6 +106,7 @@ export function TerminalPanel() {
   const [sendError, setSendError] = useState("");
   const [manualSendPending, setManualSendPending] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [modbusOpen, setModbusOpen] = useState(false);
   const [variablesOpen, setVariablesOpen] = useState(false);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [intervalText, setIntervalText] = useState("1000");
@@ -171,18 +176,19 @@ export function TerminalPanel() {
   }, [commandTask.status]);
 
   useEffect(() => {
-    if (!historyOpen && !variablesOpen) {
+    if (!historyOpen && !modbusOpen && !variablesOpen) {
       return undefined;
     }
     const closeOnOutsidePointer = (event: PointerEvent) => {
       if (!composerRef.current?.contains(event.target as Node)) {
         setHistoryOpen(false);
+        setModbusOpen(false);
         setVariablesOpen(false);
       }
     };
     document.addEventListener("pointerdown", closeOnOutsidePointer);
     return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, [historyOpen, variablesOpen]);
+  }, [historyOpen, modbusOpen, variablesOpen]);
 
   useEffect(() => {
     const selection = pendingSelectionRef.current;
@@ -193,13 +199,19 @@ export function TerminalPanel() {
     pendingSelectionRef.current = null;
     textarea.focus();
     textarea.setSelectionRange(selection, selection);
-  }, [message, variablesOpen]);
+  }, [message, modbusOpen, variablesOpen]);
 
   useEffect(() => {
     if (variablesOpen) {
       variableListRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
     }
   }, [variablesOpen]);
+
+  useEffect(() => {
+    if (isWorkspaceTransitioning) {
+      setModbusOpen(false);
+    }
+  }, [isWorkspaceTransitioning]);
 
   const resetHistoryNavigation = () => {
     historyCursorRef.current = null;
@@ -225,6 +237,18 @@ export function TerminalPanel() {
     setSendError("");
     setVariablesOpen(false);
     resetHistoryNavigation();
+  };
+
+  const applyModbusFrame = (frame: Uint8Array) => {
+    if (isWorkspaceTransitioning) {
+      return;
+    }
+    const value = formatModbusRtuFrame(frame);
+    pendingSelectionRef.current = value.length;
+    resetHistoryNavigation();
+    setHistoryOpen(false);
+    setModbusOpen(false);
+    applyDraft({ value, mode: "hex", lineEnding: "none" });
   };
 
   const recallHistory = (index: number) => {
@@ -587,6 +611,24 @@ export function TerminalPanel() {
             />
           </div>
           <button
+            ref={modbusTriggerRef}
+            className="icon-button composer-icon-button command-modbus-trigger"
+            type="button"
+            aria-label={modbusOpen ? "关闭 Modbus RTU 构帧器" : "打开 Modbus RTU 构帧器"}
+            title="Modbus RTU 构帧器"
+            aria-haspopup="dialog"
+            aria-expanded={modbusOpen}
+            data-active={modbusOpen}
+            disabled={isWorkspaceTransitioning}
+            onClick={() => {
+              setHistoryOpen(false);
+              setVariablesOpen(false);
+              setModbusOpen((open) => !open);
+            }}
+          >
+            <Blocks size={16} />
+          </button>
+          <button
             ref={variableTriggerRef}
             className="icon-button composer-icon-button command-variable-trigger"
             type="button"
@@ -598,6 +640,7 @@ export function TerminalPanel() {
             data-active={variablesOpen}
             onClick={() => {
               setHistoryOpen(false);
+              setModbusOpen(false);
               setVariablesOpen((open) => !open);
             }}
           >
@@ -611,6 +654,7 @@ export function TerminalPanel() {
             aria-expanded={historyOpen}
             disabled={commandHistory.length === 0}
             onClick={() => {
+              setModbusOpen(false);
               setVariablesOpen(false);
               setHistoryOpen((open) => !open);
             }}
@@ -630,6 +674,7 @@ export function TerminalPanel() {
             disabled={taskActive}
             onClick={() => {
               setHistoryOpen(false);
+              setModbusOpen(false);
               setVariablesOpen(false);
               setWorkflowOpen((open) => !open);
             }}
@@ -675,6 +720,16 @@ export function TerminalPanel() {
           >
             {templatePreview.variableCount} 个变量 · {templatePreview.byteCount} B
           </span>
+        )}
+
+        {modbusOpen && (
+          <ModbusRtuBuilder
+            onApply={applyModbusFrame}
+            onClose={() => {
+              setModbusOpen(false);
+              modbusTriggerRef.current?.focus();
+            }}
+          />
         )}
 
         {workflowVisible && (

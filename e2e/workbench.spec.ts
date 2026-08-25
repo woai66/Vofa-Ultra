@@ -666,6 +666,77 @@ test("有界命令历史与可取消周期发送形成完整工作流", async ({
   await expect(taskStatus).toHaveText(stoppedStatus ?? "");
 });
 
+test("Modbus RTU 构帧经统一发送链路工作且窄屏可操作", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+  await page.getByRole("button", { name: "打开 Modbus RTU 构帧器" }).click();
+  let builder = page.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+  await expect(builder.getByLabel("Modbus RTU 帧预览")).toHaveText(
+    "01 03 00 00 00 01 84 0A",
+  );
+  await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
+  await builder.getByRole("button", { name: "填入发送框" }).click();
+  await expect(page.getByRole("textbox", { name: "发送内容" })).toHaveValue(
+    "01 03 00 00 00 01 84 0A",
+  );
+  await expect(page.getByRole("combobox", { name: "行尾" })).toHaveValue("none");
+  await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await page
+    .getByRole("group", { name: "接收显示格式" })
+    .getByRole("button", { name: "HEX" })
+    .click();
+  await expect(page.locator('.terminal-line[data-direction="tx"] code')).toHaveText(
+    "01 03 00 00 00 01 84 0A",
+  );
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await page.getByRole("button", { name: "打开 Modbus RTU 构帧器" }).click();
+  builder = page.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+  await builder.getByRole("textbox", { name: "Modbus 站号" }).fill("0");
+  await expect(builder.getByRole("status")).toContainText("读取请求不能使用广播站号 0");
+  await expect(builder.getByRole("button", { name: "填入发送框" })).toBeDisabled();
+
+  const layout = await builder.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const targets = [...element.querySelectorAll("button, input, select")]
+      .filter((target) => {
+        const targetRect = target.getBoundingClientRect();
+        return targetRect.width > 0 && targetRect.height > 0;
+      })
+      .map((target) => {
+        const targetRect = target.getBoundingClientRect();
+        return { width: targetRect.width, height: targetRect.height };
+      });
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      documentWidth: document.documentElement.scrollWidth,
+      targets,
+    };
+  });
+  expect(layout.left).toBeGreaterThanOrEqual(0);
+  expect(layout.right).toBeLessThanOrEqual(320);
+  expect(layout.top).toBeGreaterThanOrEqual(0);
+  expect(layout.bottom).toBeLessThanOrEqual(568);
+  expect(layout.documentWidth).toBeLessThanOrEqual(320);
+  expect(layout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("mobile-modbus-builder.png"), fullPage: true });
+  expect(pageErrors).toEqual([]);
+});
+
 test("安全命令变量逐次展开且非法表达式零发送", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
