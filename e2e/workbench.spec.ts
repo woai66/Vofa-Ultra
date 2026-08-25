@@ -666,7 +666,7 @@ test("有界命令历史与可取消周期发送形成完整工作流", async ({
   await expect(taskStatus).toHaveText(stoppedStatus ?? "");
 });
 
-test("Modbus RTU 构帧经统一发送链路工作且窄屏可操作", async ({ page }, testInfo) => {
+test("Modbus RTU 构帧和单事务主站经统一链路工作且窄屏可操作", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -698,6 +698,16 @@ test("Modbus RTU 构帧经统一发送链路工作且窄屏可操作", async ({ 
   await expect(page.locator('.terminal-line[data-direction="tx"] code')).toHaveText(
     "01 03 00 00 00 01 84 0A",
   );
+
+  await page.getByRole("button", { name: "打开 Modbus RTU 构帧器" }).click();
+  builder = page.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+  await builder.getByRole("button", { name: "执行事务" }).click();
+  await expect(builder.getByText("完成")).toBeVisible();
+  await expect(page.getByRole("button", { name: "命令历史，1 条" })).toBeVisible();
+  await builder.getByText("完成").click();
+  await expect(builder.getByText("0:0")).toBeVisible();
+  await expect(builder.getByText("01 03 02 00 00 B8 44")).toBeVisible();
+  await builder.getByRole("button", { name: "关闭 Modbus RTU 构帧器" }).click();
 
   await page.setViewportSize({ width: 320, height: 568 });
   await page.getByRole("button", { name: "关闭侧栏" }).click();

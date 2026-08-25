@@ -1,6 +1,7 @@
 mod capture;
 mod capture_export;
 mod extensions;
+mod modbus_rtu;
 mod numeric_log;
 mod replay;
 mod serial;
@@ -26,8 +27,8 @@ use replay::{
     pause_replay, play_replay, seek_replay, set_replay_speed, stop_replay, ReplayState,
 };
 use serial::{
-    cancel_serial_connect, connect_serial, disconnect_serial, get_serial_state, list_serial_ports,
-    send_serial, SerialState,
+    cancel_modbus_transaction, cancel_serial_connect, connect_serial, disconnect_serial,
+    get_serial_state, list_serial_ports, send_serial, start_modbus_transaction, SerialState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -47,6 +48,8 @@ pub fn run() {
             cancel_serial_connect,
             disconnect_serial,
             send_serial,
+            start_modbus_transaction,
+            cancel_modbus_transaction,
             get_capture_state,
             start_capture,
             stop_capture,

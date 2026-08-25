@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   SerialConfig,
   SerialDataPayload,
+  SerialModbusTransactionPayload,
   SerialPortInfo,
   SerialStatePayload,
   SerialTxPayload,
@@ -12,6 +13,7 @@ export interface SerialEventHandlers {
   onData(payload: SerialDataPayload): void;
   onState(payload: SerialStatePayload): void;
   onTx(payload: SerialTxPayload): void;
+  onModbusTransaction(payload: SerialModbusTransactionPayload): void;
 }
 
 export function isTauriRuntime(): boolean {
@@ -48,6 +50,24 @@ export async function sendSerial(data: Uint8Array): Promise<void> {
   await invoke("send_serial", { data: Array.from(data) });
 }
 
+export async function startSerialModbusTransaction(
+  transactionId: number,
+  request: Uint8Array,
+  timeoutMs: number,
+): Promise<void> {
+  requireTauriRuntime();
+  await invoke("start_modbus_transaction", {
+    transactionId,
+    request: Array.from(request),
+    timeoutMs,
+  });
+}
+
+export async function cancelSerialModbusTransaction(transactionId: number): Promise<boolean> {
+  requireTauriRuntime();
+  return invoke<boolean>("cancel_modbus_transaction", { transactionId });
+}
+
 export async function subscribeToSerialEvents(
   handlers: SerialEventHandlers,
 ): Promise<UnlistenFn> {
@@ -59,6 +79,9 @@ export async function subscribeToSerialEvents(
     listen<SerialDataPayload>("serial://data", ({ payload }) => handlers.onData(payload)),
     listen<SerialStatePayload>("serial://state", ({ payload }) => handlers.onState(payload)),
     listen<SerialTxPayload>("serial://tx", ({ payload }) => handlers.onTx(payload)),
+    listen<SerialModbusTransactionPayload>("serial://modbus-transaction", ({ payload }) =>
+      handlers.onModbusTransaction(payload),
+    ),
   ]);
 
   return () => {

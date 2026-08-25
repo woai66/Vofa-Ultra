@@ -1,33 +1,53 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileInput, Network, X } from "lucide-react";
+import { FileInput, Network, Play, Square, Trash2, X } from "lucide-react";
 import {
   buildModbusRtuRequest,
   formatModbusRtuFrame,
   MAX_MODBUS_READ_BITS,
   MAX_MODBUS_READ_REGISTERS,
   MAX_MODBUS_RTU_UNIT_ID,
+  MAX_MODBUS_TRANSACTION_TIMEOUT_MS,
   MAX_MODBUS_VALUE_TEXT_CHARACTERS,
+  MIN_MODBUS_TRANSACTION_TIMEOUT_MS,
   MODBUS_RTU_OPERATION_OPTIONS,
   parseModbusCoilValues,
   parseModbusRegisterValues,
   parseModbusUnsignedInteger,
   type ModbusRtuOperation,
   type ModbusRtuRequest,
+  type ModbusRtuTransactionRecord,
+  type ModbusRtuTransactionSnapshot,
 } from "../core/modbusRtu";
 
 interface ModbusRtuBuilderProps {
   onApply(frame: Uint8Array): void;
+  onExecute(request: ModbusRtuRequest, timeoutMs: number): Promise<boolean>;
+  onCancel(): Promise<boolean>;
+  onClearHistory(): void;
   onClose(): void;
+  canExecute: boolean;
+  transaction: ModbusRtuTransactionSnapshot;
+  transactions: readonly ModbusRtuTransactionRecord[];
 }
 
 interface ModbusRtuPreview {
+  request: ModbusRtuRequest | null;
   frame: Uint8Array | null;
   hex: string;
   error: string;
   broadcast: boolean;
 }
 
-export function ModbusRtuBuilder({ onApply, onClose }: ModbusRtuBuilderProps) {
+export function ModbusRtuBuilder({
+  onApply,
+  onExecute,
+  onCancel,
+  onClearHistory,
+  onClose,
+  canExecute,
+  transaction,
+  transactions,
+}: ModbusRtuBuilderProps) {
   const operationRef = useRef<HTMLSelectElement>(null);
   const [operation, setOperation] = useState<ModbusRtuOperation>("read-holding-registers");
   const [unitIdText, setUnitIdText] = useState("1");
@@ -37,6 +57,8 @@ export function ModbusRtuBuilder({ onApply, onClose }: ModbusRtuBuilderProps) {
   const [singleRegisterText, setSingleRegisterText] = useState("0");
   const [multipleCoilsText, setMultipleCoilsText] = useState("1, 0");
   const [multipleRegistersText, setMultipleRegistersText] = useState("0, 1");
+  const [timeoutText, setTimeoutText] = useState("1000");
+  const [actionError, setActionError] = useState("");
   const preview = useMemo<ModbusRtuPreview>(() => {
     try {
       const request = createRequest({
@@ -51,6 +73,7 @@ export function ModbusRtuBuilder({ onApply, onClose }: ModbusRtuBuilderProps) {
       });
       const frame = buildModbusRtuRequest(request);
       return {
+        request,
         frame,
         hex: formatModbusRtuFrame(frame),
         error: "",
@@ -58,6 +81,7 @@ export function ModbusRtuBuilder({ onApply, onClose }: ModbusRtuBuilderProps) {
       };
     } catch (error) {
       return {
+        request: null,
         frame: null,
         hex: "",
         error: error instanceof Error ? error.message : String(error),
@@ -82,6 +106,24 @@ export function ModbusRtuBuilder({ onApply, onClose }: ModbusRtuBuilderProps) {
   const submit = () => {
     if (preview.frame) {
       onApply(preview.frame);
+    }
+  };
+
+  const execute = async () => {
+    if (!preview.request || !preview.frame || !canExecute) {
+      return;
+    }
+    try {
+      const timeoutMs = parseModbusUnsignedInteger(
+        timeoutText,
+        "响应超时",
+        MAX_MODBUS_TRANSACTION_TIMEOUT_MS,
+        MIN_MODBUS_TRANSACTION_TIMEOUT_MS,
+      );
+      setActionError("");
+      await onExecute(preview.request, timeoutMs);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -287,11 +329,97 @@ export function ModbusRtuBuilder({ onApply, onClose }: ModbusRtuBuilderProps) {
         )}
       </div>
 
+      {(transaction.status !== "idle" || transactions.length > 0) && (
+        <section className="modbus-transaction-section" aria-label="Modbus RTU 事务结果">
+          <header>
+            <div>
+              <strong>事务结果</strong>
+              <span>{transactions.length} / 32</span>
+            </div>
+            <button
+              className="icon-button compact"
+              type="button"
+              aria-label="清空 Modbus RTU 事务结果"
+              title="清空结果"
+              disabled={transactions.length === 0}
+              onClick={onClearHistory}
+            >
+              <Trash2 size={13} />
+            </button>
+          </header>
+          {transaction.status !== "idle" && (
+            <div
+              className="modbus-transaction-active"
+              role="status"
+              data-status={transaction.status}
+            >
+              <span className="modbus-transaction-dot" />
+              <strong>{transactionStatusLabel(transaction.status)}</strong>
+              <span>{transaction.message}</span>
+            </div>
+          )}
+          {transactions.length > 0 && (
+            <div className="modbus-transaction-list">
+              {transactions.map((record) => (
+                <TransactionResult key={`${record.generation}-${record.transactionId}`} record={record} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       <footer className="modbus-builder-actions">
-        <button className="primary-button" type="submit" disabled={!preview.frame}>
+        <label className="modbus-timeout-field">
+          <span>响应超时</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            aria-label="Modbus 响应超时毫秒"
+            min={MIN_MODBUS_TRANSACTION_TIMEOUT_MS}
+            max={MAX_MODBUS_TRANSACTION_TIMEOUT_MS}
+            step={100}
+            value={timeoutText}
+            disabled={transaction.status !== "idle"}
+            onChange={(event) => {
+              setTimeoutText(event.target.value);
+              setActionError("");
+            }}
+          />
+          <small>ms</small>
+        </label>
+        <div className="modbus-builder-action-buttons">
+          <button className="secondary-button" type="submit" disabled={!preview.frame}>
           <FileInput size={15} />
           填入发送框
-        </button>
+          </button>
+          {transaction.status !== "idle" ? (
+            <button
+              className="primary-button"
+              type="button"
+              data-action="stop"
+              disabled={transaction.status === "cancelling"}
+              onClick={() => void onCancel()}
+            >
+              <Square size={14} />
+              {transaction.status === "cancelling" ? "取消中" : "取消事务"}
+            </button>
+          ) : (
+            <button
+              className="primary-button"
+              type="button"
+              disabled={!preview.frame || !canExecute}
+              onClick={() => void execute()}
+            >
+              <Play size={15} />
+              执行事务
+            </button>
+          )}
+        </div>
+        {actionError && (
+          <span className="modbus-builder-error" role="alert">
+            {actionError}
+          </span>
+        )}
       </footer>
     </form>
   );
@@ -375,4 +503,93 @@ function isReadOperation(operation: ModbusRtuOperation): boolean {
 
 function isSingleWrite(operation: ModbusRtuOperation): boolean {
   return operation === "write-single-coil" || operation === "write-single-register";
+}
+
+function TransactionResult({ record }: { record: ModbusRtuTransactionRecord }) {
+  return (
+    <details className="modbus-transaction-result" data-status={record.status}>
+      <summary>
+        <span className="modbus-transaction-dot" />
+        <strong>{terminalStatusLabel(record.status)}</strong>
+        <span>{operationLabel(record.request.operation)}</span>
+        <time dateTime={new Date(record.endedAt).toISOString()}>{record.durationMs} ms</time>
+      </summary>
+      <div className="modbus-transaction-detail">
+        <p>{formatTransactionResult(record)}</p>
+        <dl>
+          <div>
+            <dt>TX</dt>
+            <dd>{record.requestHex}</dd>
+          </div>
+          {record.responseHex && (
+            <div>
+              <dt>RX</dt>
+              <dd>{record.responseHex}</dd>
+            </div>
+          )}
+        </dl>
+      </div>
+    </details>
+  );
+}
+
+function transactionStatusLabel(status: ModbusRtuTransactionSnapshot["status"]): string {
+  switch (status) {
+    case "queued":
+      return "等待总线";
+    case "waiting":
+      return "等待响应";
+    case "cancelling":
+      return "正在取消";
+    case "idle":
+      return "空闲";
+  }
+}
+
+function terminalStatusLabel(status: ModbusRtuTransactionRecord["status"]): string {
+  switch (status) {
+    case "completed":
+      return "完成";
+    case "exception":
+      return "设备异常";
+    case "timeout":
+      return "超时";
+    case "cancelled":
+      return "已取消";
+    case "error":
+      return "失败";
+  }
+}
+
+function operationLabel(operation: ModbusRtuOperation): string {
+  return MODBUS_RTU_OPERATION_OPTIONS.find((option) => option.value === operation)?.label ?? operation;
+}
+
+function formatTransactionResult(record: ModbusRtuTransactionRecord): string {
+  const result = record.result;
+  if (!result) {
+    return record.message;
+  }
+  switch (result.kind) {
+    case "bits": {
+      const values = result.values
+        .slice(0, 16)
+        .map((value, index) => `${record.request.address + index}:${value ? 1 : 0}`)
+        .join("  ");
+      return result.values.length > 16 ? `${values}  +${result.values.length - 16}` : values;
+    }
+    case "registers": {
+      const values = result.values
+        .slice(0, 12)
+        .map((value, index) => `${record.request.address + index}:${value}`)
+        .join("  ");
+      return result.values.length > 12 ? `${values}  +${result.values.length - 12}` : values;
+    }
+    case "write-confirmation":
+      return `地址 ${result.address} · ${result.quantity} 项写入已确认`;
+    case "broadcast":
+      return "广播写入已完成，不等待设备响应";
+    case "exception":
+      return `异常 0x${result.exceptionCode.toString(16).padStart(2, "0").toUpperCase()} · ${result.exceptionName}`;
+  }
 }

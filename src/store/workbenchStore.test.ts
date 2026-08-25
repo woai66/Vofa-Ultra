@@ -6,6 +6,10 @@ import {
   createInitialAutoResponderSnapshot,
 } from "../core/autoResponder";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
+import {
+  createInitialModbusRtuTransactionSnapshot,
+  simulateModbusRtuResponse,
+} from "../core/modbusRtu";
 import { createEmptyProtocolHealth } from "../core/protocols";
 import { createDefaultWorkspaceConfig, createWorkspaceProfile } from "../core/workspaces";
 import {
@@ -41,11 +45,13 @@ import {
   stopReplay,
 } from "../services/replayClient";
 import {
+  cancelSerialModbusTransaction,
   cancelSerialConnect,
   connectSerial,
   disconnectSerial,
   listSerialPorts,
   sendSerial,
+  startSerialModbusTransaction,
 } from "../services/serialClient";
 import type { CaptureStatePayload } from "../types/capture";
 import type { NumericLogStatePayload } from "../types/numericLog";
@@ -74,10 +80,12 @@ vi.mock("../services/serialClient", async (importOriginal) => {
   return {
     ...actual,
     cancelSerialConnect: vi.fn(),
+    cancelSerialModbusTransaction: vi.fn(),
     connectSerial: vi.fn(),
     disconnectSerial: vi.fn(),
     listSerialPorts: vi.fn(),
     sendSerial: vi.fn(),
+    startSerialModbusTransaction: vi.fn(),
   };
 });
 
@@ -119,10 +127,12 @@ vi.mock("../services/replayClient", () => ({
 }));
 
 const cancelSerialConnectMock = vi.mocked(cancelSerialConnect);
+const cancelSerialModbusTransactionMock = vi.mocked(cancelSerialModbusTransaction);
 const connectSerialMock = vi.mocked(connectSerial);
 const disconnectSerialMock = vi.mocked(disconnectSerial);
 const listSerialPortsMock = vi.mocked(listSerialPorts);
 const sendSerialMock = vi.mocked(sendSerial);
+const startSerialModbusTransactionMock = vi.mocked(startSerialModbusTransaction);
 const enqueueSimulatorCaptureMock = vi.mocked(enqueueSimulatorCapture);
 const enqueueCaptureMarkerMock = vi.mocked(enqueueCaptureMarker);
 const resetSimulatorCaptureQueueMock = vi.mocked(resetSimulatorCaptureQueue);
@@ -199,6 +209,10 @@ function quickCommand(overrides: Partial<QuickCommand> = {}): QuickCommand {
     lineEnding: "crlf",
     ...overrides,
   };
+}
+
+function testBase64(bytes: Uint8Array): string {
+  return btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
 }
 
 function replayState(
@@ -279,6 +293,7 @@ describe("workbenchStore", () => {
   beforeEach(async () => {
     useWorkbenchStore.getState().stopPeriodicSend();
     useWorkbenchStore.getState().stopAutoResponder();
+    await useWorkbenchStore.getState().cancelModbusTransaction();
     await useWorkbenchStore.getState().setSerialRecoveryEnabled(false);
     useWorkbenchStore.getState().clearSerialDiagnostics();
     cancelSerialConnectMock.mockReset().mockResolvedValue({
@@ -287,6 +302,7 @@ describe("workbenchStore", () => {
       generation: 0,
       revision: 0,
     });
+    cancelSerialModbusTransactionMock.mockReset().mockResolvedValue(true);
     connectSerialMock.mockReset();
     disconnectSerialMock.mockReset().mockResolvedValue({
       status: "disconnected",
@@ -296,6 +312,7 @@ describe("workbenchStore", () => {
     });
     listSerialPortsMock.mockReset();
     sendSerialMock.mockReset().mockResolvedValue(undefined);
+    startSerialModbusTransactionMock.mockReset().mockResolvedValue(undefined);
     enqueueSimulatorCaptureMock.mockReset().mockReturnValue(true);
     enqueueCaptureMarkerMock.mockReset().mockReturnValue(true);
     resetSimulatorCaptureQueueMock.mockReset();
@@ -352,6 +369,8 @@ describe("workbenchStore", () => {
       commandTask: createInitialCommandTaskSnapshot(),
       autoResponderRules: [],
       autoResponder: createInitialAutoResponderSnapshot(),
+      modbusTransaction: createInitialModbusRtuTransactionSnapshot(),
+      modbusTransactions: [],
       isSendingCommand: false,
       commandSendOrigin: null,
       terminalPaused: false,
@@ -505,6 +524,204 @@ describe("workbenchStore", () => {
       encodedBytes: 4,
       variableCount: 1,
     });
+  });
+
+  it("模拟器完成单次 Modbus 读事务并保留结构化结果但不写命令历史", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    const request = {
+      operation: "read-holding-registers" as const,
+      unitId: 1,
+      address: 10,
+      quantity: 2,
+    };
+
+    await expect(
+      useWorkbenchStore.getState().startModbusTransaction(request, 1_000),
+    ).resolves.toBe(true);
+    expect(useWorkbenchStore.getState().modbusTransaction).toMatchObject({
+      status: "waiting",
+      request,
+      startedAt: 1_700_000_000_000,
+    });
+    await expect(
+      useWorkbenchStore.getState().send("PING", "text", "none"),
+    ).rejects.toThrow("Modbus RTU 事务进行中");
+
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("idle");
+    expect(useWorkbenchStore.getState().modbusTransactions[0]).toMatchObject({
+      status: "completed",
+      request,
+      result: { kind: "registers", values: [10, 11] },
+      durationMs: 60,
+    });
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
+    expect(
+      useWorkbenchStore.getState().terminalEntries.map((entry) => entry.direction),
+    ).toEqual(["tx", "rx"]);
+    expect(useWorkbenchStore.getState().stats).toMatchObject({ txBytes: 8, rxBytes: 9 });
+  });
+
+  it("原生事务使用独立后端命令并按 generation 忽略迟到事件", async () => {
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+    });
+    const request = {
+      operation: "read-coils" as const,
+      unitId: 2,
+      address: 0,
+      quantity: 9,
+    };
+    const response = simulateModbusRtuResponse(request);
+    expect(response).not.toBeNull();
+
+    await useWorkbenchStore.getState().startModbusTransaction(request, 750);
+    const active = useWorkbenchStore.getState().modbusTransaction;
+    expect(startSerialModbusTransactionMock).toHaveBeenCalledWith(
+      active.transactionId,
+      active.requestFrame,
+      750,
+    );
+    useWorkbenchStore.getState().handleModbusTransaction({
+      transactionId: active.transactionId,
+      status: "completed",
+      request: testBase64(active.requestFrame),
+      response: testBase64(response!),
+      startedAt: 1_000,
+      endedAt: 1_010,
+      durationMs: 10,
+      generation: 6,
+      message: "迟到响应",
+    });
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("queued");
+
+    useWorkbenchStore.getState().handleModbusTransaction({
+      transactionId: active.transactionId,
+      status: "waiting",
+      request: testBase64(active.requestFrame),
+      startedAt: 1_000,
+      durationMs: 0,
+      generation: 7,
+      message: "等待响应",
+    });
+    useWorkbenchStore.getState().handleModbusTransaction({
+      transactionId: active.transactionId,
+      status: "completed",
+      request: testBase64(active.requestFrame),
+      response: testBase64(response!),
+      startedAt: 1_000,
+      endedAt: 1_010,
+      durationMs: 10,
+      generation: 7,
+      message: "事务完成",
+    });
+
+    expect(useWorkbenchStore.getState().modbusTransactions[0]).toMatchObject({
+      status: "completed",
+      generation: 7,
+      result: {
+        kind: "bits",
+        values: [true, false, false, true, false, false, true, false, false],
+      },
+    });
+  });
+
+  it("取消原生事务后保持已发送写请求的风险提示", async () => {
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 4,
+    });
+    const request = {
+      operation: "write-single-register" as const,
+      unitId: 1,
+      address: 2,
+      value: 9,
+    };
+
+    await useWorkbenchStore.getState().startModbusTransaction(request, 500);
+    const active = useWorkbenchStore.getState().modbusTransaction;
+    useWorkbenchStore.getState().handleModbusTransaction({
+      transactionId: active.transactionId,
+      status: "waiting",
+      request: testBase64(active.requestFrame),
+      startedAt: 1_000,
+      durationMs: 0,
+      generation: 4,
+      message: "等待响应",
+    });
+    await expect(useWorkbenchStore.getState().cancelModbusTransaction()).resolves.toBe(true);
+    expect(cancelSerialModbusTransactionMock).toHaveBeenCalledWith(active.transactionId);
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("cancelling");
+
+    useWorkbenchStore.getState().handleModbusTransaction({
+      transactionId: active.transactionId,
+      status: "cancelled",
+      request: testBase64(active.requestFrame),
+      startedAt: 1_000,
+      endedAt: 1_020,
+      durationMs: 20,
+      generation: 4,
+      errorCode: "cancelled-after-transmit",
+      message: "事务已取消，但请求已经发出，写操作可能已被设备执行",
+    });
+    expect(useWorkbenchStore.getState().modbusTransactions[0]).toMatchObject({
+      status: "cancelled",
+      errorCode: "cancelled-after-transmit",
+    });
+  });
+
+  it("运行环境卸载会在监听移除前本地终结原生事务", async () => {
+    const backendCancellation = deferred<boolean>();
+    cancelSerialModbusTransactionMock.mockReturnValueOnce(backendCancellation.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 8,
+    });
+    const request = {
+      operation: "write-single-register" as const,
+      unitId: 1,
+      address: 2,
+      value: 9,
+    };
+
+    await useWorkbenchStore.getState().startModbusTransaction(request, 500);
+    const active = useWorkbenchStore.getState().modbusTransaction;
+    expect(active.status).toBe("queued");
+    expect(active.startedAt).toBeUndefined();
+
+    disposeWorkbenchRuntime();
+
+    expect(cancelSerialModbusTransactionMock).toHaveBeenCalledWith(active.transactionId);
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("idle");
+    expect(useWorkbenchStore.getState().modbusTransactions[0]).toMatchObject({
+      transactionId: active.transactionId,
+      status: "cancelled",
+      errorCode: "cancelled-after-transmit",
+    });
+    expect(useWorkbenchStore.getState().modbusTransactions[0]?.message).toContain(
+      "写操作可能已被设备执行",
+    );
+    await expect(
+      useWorkbenchStore.getState().send("NEXT", "text", "none"),
+    ).resolves.toBeUndefined();
+    expect(sendSerialMock).toHaveBeenCalledOnce();
+
+    backendCancellation.resolve(true);
+    await flushPromises();
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("idle");
   });
 
   it("非法变量在发送前失败且不产生 TX、历史或任务", async () => {

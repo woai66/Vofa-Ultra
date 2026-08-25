@@ -3677,6 +3677,7 @@ textarea:focus {
 
 .modbus-builder-popover {
   width: min(620px, calc(100% - 20px));
+  max-height: min(560px, calc(100vh - 120px));
   margin: 0;
 }
 
@@ -3843,17 +3844,244 @@ textarea:focus {
 }
 
 .modbus-builder-actions {
-  display: flex;
-  min-height: 46px;
+  display: grid;
+  min-height: 54px;
   flex: 0 0 auto;
   align-items: center;
-  justify-content: flex-end;
+  grid-template-columns: 150px minmax(0, 1fr);
   padding: 7px 10px;
+  gap: 8px;
 }
 
-.modbus-builder-actions .primary-button {
+.modbus-builder-actions .primary-button,
+.modbus-builder-actions .secondary-button {
   min-height: 32px;
   padding: 0 10px;
+}
+
+.modbus-builder-action-buttons {
+  display: flex;
+  min-width: 0;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.modbus-timeout-field {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 5px;
+}
+
+.modbus-timeout-field > span {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-size: 8px;
+}
+
+.modbus-timeout-field input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 7px;
+  font-size: 10px;
+}
+
+.modbus-timeout-field small {
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 8px;
+}
+
+.modbus-builder-actions > .modbus-builder-error {
+  grid-column: 1 / -1;
+}
+
+.modbus-transaction-section {
+  display: flex;
+  min-height: 0;
+  flex: 0 1 auto;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-0);
+}
+
+.modbus-transaction-section > header {
+  display: flex;
+  min-height: 34px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 6px 3px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modbus-transaction-section > header > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.modbus-transaction-section > header strong {
+  color: var(--text);
+  font-size: 9px;
+}
+
+.modbus-transaction-section > header span {
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 8px;
+}
+
+.modbus-transaction-active {
+  display: grid;
+  min-width: 0;
+  min-height: 32px;
+  flex: 0 0 auto;
+  grid-template-columns: 8px auto minmax(0, 1fr);
+  align-items: center;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--amber);
+  gap: 6px;
+}
+
+.modbus-transaction-active strong {
+  font-size: 9px;
+}
+
+.modbus-transaction-active > span:last-child {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modbus-transaction-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.modbus-transaction-active .modbus-transaction-dot {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.modbus-transaction-list {
+  min-height: 0;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.modbus-transaction-result {
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.modbus-transaction-result:last-child {
+  border-bottom: 0;
+}
+
+.modbus-transaction-result[data-status="completed"] {
+  color: var(--accent);
+}
+
+.modbus-transaction-result[data-status="exception"],
+.modbus-transaction-result[data-status="timeout"],
+.modbus-transaction-result[data-status="cancelled"] {
+  color: var(--amber);
+}
+
+.modbus-transaction-result[data-status="error"] {
+  color: var(--danger);
+}
+
+.modbus-transaction-result summary {
+  display: grid;
+  min-width: 0;
+  min-height: 32px;
+  grid-template-columns: 8px auto minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 5px 10px;
+  cursor: pointer;
+  gap: 6px;
+  list-style: none;
+}
+
+.modbus-transaction-result summary::-webkit-details-marker {
+  display: none;
+}
+
+.modbus-transaction-result summary strong {
+  font-size: 9px;
+}
+
+.modbus-transaction-result summary > span:nth-child(3) {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modbus-transaction-result summary time {
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 8px;
+}
+
+.modbus-transaction-detail {
+  display: grid;
+  min-width: 0;
+  padding: 7px 10px 9px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-1);
+  gap: 7px;
+}
+
+.modbus-transaction-detail p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+  line-height: 15px;
+}
+
+.modbus-transaction-detail dl {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  gap: 4px;
+}
+
+.modbus-transaction-detail dl > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 5px;
+}
+
+.modbus-transaction-detail dt,
+.modbus-transaction-detail dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 8px;
+  line-height: 14px;
+}
+
+.modbus-transaction-detail dt {
+  color: var(--text-subtle);
+}
+
+.modbus-transaction-detail dd {
+  overflow-wrap: anywhere;
+  color: var(--cyan);
 }
 
 .command-history-header,
@@ -4768,9 +4996,36 @@ textarea:focus {
 
   .modbus-builder-actions {
     min-height: 58px;
+    grid-template-columns: 1fr;
   }
 
-  .modbus-builder-actions .primary-button {
+  .modbus-builder-actions .primary-button,
+  .modbus-builder-actions .secondary-button,
+  .modbus-timeout-field input,
+  .modbus-transaction-section > header .icon-button,
+  .modbus-transaction-result summary {
+    min-height: 44px;
+  }
+
+  .modbus-builder-action-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .modbus-timeout-field {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .modbus-transaction-section > header {
+    min-height: 52px;
+  }
+
+  .modbus-transaction-section > header .icon-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .modbus-transaction-active {
     min-height: 44px;
   }
 

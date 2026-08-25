@@ -40,6 +40,7 @@ export function useWorkbenchRuntime(): void {
   const handleSerialData = useWorkbenchStore((state) => state.handleSerialData);
   const handleSerialState = useWorkbenchStore((state) => state.handleSerialState);
   const handleSerialTx = useWorkbenchStore((state) => state.handleSerialTx);
+  const handleModbusTransaction = useWorkbenchStore((state) => state.handleModbusTransaction);
   const handleCaptureState = useWorkbenchStore((state) => state.handleCaptureState);
   const handleNumericLogState = useWorkbenchStore((state) => state.handleNumericLogState);
   const handleCaptureExportState = useWorkbenchStore(
@@ -59,6 +60,7 @@ export function useWorkbenchRuntime(): void {
       onData: handleSerialData,
       onState: handleSerialState,
       onTx: handleSerialTx,
+      onModbusTransaction: handleModbusTransaction,
     })
       .then(async (unlisten) => {
         if (cancelled) {
@@ -85,11 +87,12 @@ export function useWorkbenchRuntime(): void {
 
     return () => {
       cancelled = true;
-      dispose();
       disposeWorkbenchRuntime();
+      dispose();
     };
   }, [
     handleSerialData,
+    handleModbusTransaction,
     handleSerialState,
     handleSerialTx,
     initializeExtensionRuntime,

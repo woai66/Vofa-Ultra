@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
 import {
+  createInitialModbusRtuTransactionSnapshot,
   MAX_MODBUS_VALUE_TEXT_CHARACTERS,
   MAX_MODBUS_WRITE_COILS,
 } from "../core/modbusRtu";
@@ -52,6 +53,8 @@ describe("TerminalPanel", () => {
       terminalEntries: [],
       commandHistory: [],
       quickCommands: [],
+      modbusTransaction: createInitialModbusRtuTransactionSnapshot(),
+      modbusTransactions: [],
       commandTask: createInitialCommandTaskSnapshot(),
       isSendingCommand: false,
       displayMode: "text",
@@ -321,6 +324,41 @@ describe("TerminalPanel", () => {
           .terminalEntries.find((entry) => entry.direction === "tx")?.hex,
       ).toBe("01 03 00 00 00 01 84 0A");
     });
+  });
+
+  it("直接执行 Modbus RTU 单事务并展开结构化结果与原始帧", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
+    const builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+    expect(within(builder).getByRole("spinbutton", { name: "Modbus 响应超时毫秒" })).toHaveValue(
+      1000,
+    );
+    await user.click(within(builder).getByRole("button", { name: "执行事务" }));
+
+    await waitFor(() => {
+      expect(within(builder).getByText("完成")).toBeVisible();
+    });
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
+    expect(useWorkbenchStore.getState().modbusTransactions[0]).toMatchObject({
+      status: "completed",
+      result: { kind: "registers", values: [0] },
+    });
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.map((entry) => entry.direction),
+    ).toEqual(["tx", "rx"]);
+
+    const summary = within(builder).getByText("完成").closest("summary");
+    expect(summary).not.toBeNull();
+    await user.click(summary!);
+    const details = summary!.closest("details")!;
+    expect(within(details).getByText("0:0")).toBeVisible();
+    expect(within(details).getByText("01 03 00 00 00 01 84 0A")).toBeVisible();
+    expect(within(details).getByText("01 03 02 00 00 B8 44")).toBeVisible();
+    expect(screen.getByRole("button", { name: "命令历史，0 条" })).toBeDisabled();
   });
 
   it("工作区切换期间关闭并禁用 Modbus RTU 构帧器", async () => {

@@ -58,6 +58,28 @@ export interface SerialTxPayload {
   generation: number;
 }
 
+export type SerialModbusTransactionStatus =
+  | "waiting"
+  | "completed"
+  | "exception"
+  | "timeout"
+  | "cancelled"
+  | "error";
+
+export interface SerialModbusTransactionPayload {
+  transactionId: number;
+  status: SerialModbusTransactionStatus;
+  request: string;
+  response?: string;
+  startedAt: number;
+  endedAt?: number;
+  durationMs: number;
+  generation: number;
+  errorCode?: string;
+  exceptionCode?: number;
+  message: string;
+}
+
 export interface SerialStatePayload {
   status: ConnectionStatus;
   portName: string;

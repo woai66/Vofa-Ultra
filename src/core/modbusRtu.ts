@@ -6,6 +6,10 @@ export const MAX_MODBUS_READ_REGISTERS = 125;
 export const MAX_MODBUS_WRITE_COILS = 1_968;
 export const MAX_MODBUS_WRITE_REGISTERS = 123;
 export const MAX_MODBUS_VALUE_TEXT_CHARACTERS = 8_192;
+export const MIN_MODBUS_TRANSACTION_TIMEOUT_MS = 100;
+export const MAX_MODBUS_TRANSACTION_TIMEOUT_MS = 60_000;
+export const DEFAULT_MODBUS_TRANSACTION_TIMEOUT_MS = 1_000;
+export const MAX_MODBUS_TRANSACTION_HISTORY = 32;
 const MAX_MODBUS_INTEGER_TEXT_CHARACTERS = 10;
 
 export type ModbusRtuOperation =
@@ -73,6 +77,75 @@ export type ModbusRtuRequest =
       values: readonly number[];
     };
 
+export type ModbusRtuTransactionResult =
+  | {
+      kind: "bits";
+      values: readonly boolean[];
+    }
+  | {
+      kind: "registers";
+      values: readonly number[];
+    }
+  | {
+      kind: "write-confirmation";
+      address: number;
+      quantity: number;
+    }
+  | {
+      kind: "broadcast";
+    }
+  | {
+      kind: "exception";
+      exceptionCode: number;
+      exceptionName: string;
+    };
+
+export type ModbusRtuTransactionTerminalStatus =
+  | "completed"
+  | "exception"
+  | "timeout"
+  | "cancelled"
+  | "error";
+
+export interface ModbusRtuTransactionSnapshot {
+  transactionId: number;
+  generation: number;
+  status: "idle" | "queued" | "waiting" | "cancelling";
+  request: ModbusRtuRequest | null;
+  requestFrame: Uint8Array;
+  timeoutMs: number;
+  queuedAt?: number;
+  startedAt?: number;
+  message: string;
+}
+
+export interface ModbusRtuTransactionRecord {
+  transactionId: number;
+  generation: number;
+  status: ModbusRtuTransactionTerminalStatus;
+  request: ModbusRtuRequest;
+  requestHex: string;
+  responseHex: string;
+  result: ModbusRtuTransactionResult | null;
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+  errorCode?: string;
+  message: string;
+}
+
+const MODBUS_EXCEPTION_NAMES: Readonly<Record<number, string>> = {
+  0x01: "非法功能",
+  0x02: "非法数据地址",
+  0x03: "非法数据值",
+  0x04: "从站设备故障",
+  0x05: "确认",
+  0x06: "从站设备忙",
+  0x08: "存储奇偶校验错误",
+  0x0a: "网关路径不可用",
+  0x0b: "网关目标设备无响应",
+};
+
 export function buildModbusRtuRequest(request: ModbusRtuRequest): Uint8Array {
   assertIntegerInRange(request.unitId, 0, MAX_MODBUS_RTU_UNIT_ID, "站号");
   assertIntegerInRange(request.address, 0, 0xffff, "地址");
@@ -130,6 +203,146 @@ export function buildModbusRtuRequest(request: ModbusRtuRequest): Uint8Array {
   const bytesWithoutCrc = Uint8Array.from(payload);
   const crc = crc16modbus(bytesWithoutCrc);
   return Uint8Array.from([...bytesWithoutCrc, crc & 0xff, (crc >>> 8) & 0xff]);
+}
+
+export function parseModbusRtuResponse(
+  request: ModbusRtuRequest,
+  response: Uint8Array,
+): ModbusRtuTransactionResult {
+  if (request.unitId === 0) {
+    if (isReadOperation(request.operation)) {
+      throw new Error("读取请求不能使用广播站号 0");
+    }
+    if (response.length !== 0) {
+      throw new Error("广播事务不应包含响应帧");
+    }
+    return { kind: "broadcast" };
+  }
+  if (response.length < 5 || response.length > 256) {
+    throw new Error("Modbus 响应帧长度无效");
+  }
+  assertFrameCrc(response);
+  if (response[0] !== request.unitId) {
+    throw new Error("Modbus 响应站号与请求不一致");
+  }
+
+  const functionCode = functionCodeForOperation(request.operation);
+  if (response[1] === (functionCode | 0x80)) {
+    if (response.length !== 5) {
+      throw new Error("Modbus 异常响应长度无效");
+    }
+    const exceptionCode = response[2] ?? 0;
+    return {
+      kind: "exception",
+      exceptionCode,
+      exceptionName: MODBUS_EXCEPTION_NAMES[exceptionCode] ?? "未知异常",
+    };
+  }
+  if (response[1] !== functionCode) {
+    throw new Error("Modbus 响应功能码与请求不一致");
+  }
+
+  switch (request.operation) {
+    case "read-coils":
+    case "read-discrete-inputs": {
+      const byteCount = Math.ceil(request.quantity / 8);
+      assertReadResponseLength(response, byteCount);
+      const values = Array.from({ length: request.quantity }, (_, index) => {
+        const packed = response[3 + Math.floor(index / 8)] ?? 0;
+        return (packed & (1 << (index % 8))) !== 0;
+      });
+      return { kind: "bits", values };
+    }
+    case "read-holding-registers":
+    case "read-input-registers": {
+      const byteCount = request.quantity * 2;
+      assertReadResponseLength(response, byteCount);
+      const values = Array.from({ length: request.quantity }, (_, index) => {
+        const offset = 3 + index * 2;
+        return ((response[offset] ?? 0) << 8) | (response[offset + 1] ?? 0);
+      });
+      return { kind: "registers", values };
+    }
+    case "write-single-coil":
+    case "write-single-register": {
+      const expected = buildModbusRtuRequest(request);
+      if (!equalBytes(response, expected)) {
+        throw new Error("Modbus 写响应未正确回显请求");
+      }
+      return { kind: "write-confirmation", address: request.address, quantity: 1 };
+    }
+    case "write-multiple-coils":
+    case "write-multiple-registers": {
+      if (response.length !== 8) {
+        throw new Error("Modbus 批量写响应长度无效");
+      }
+      const requestFrame = buildModbusRtuRequest(request);
+      if (!equalBytes(response.slice(0, 6), requestFrame.slice(0, 6))) {
+        throw new Error("Modbus 批量写响应地址或数量与请求不一致");
+      }
+      return {
+        kind: "write-confirmation",
+        address: request.address,
+        quantity: request.values.length,
+      };
+    }
+  }
+}
+
+export function simulateModbusRtuResponse(request: ModbusRtuRequest): Uint8Array | null {
+  const requestFrame = buildModbusRtuRequest(request);
+  if (request.unitId === 0) {
+    return null;
+  }
+  const functionCode = functionCodeForOperation(request.operation);
+  switch (request.operation) {
+    case "read-coils":
+    case "read-discrete-inputs": {
+      const values = Array.from(
+        { length: request.quantity },
+        (_, index) => (request.address + index) % 3 === 0,
+      );
+      const packed = packCoils(values);
+      return appendModbusCrc(Uint8Array.from([request.unitId, functionCode, packed.length, ...packed]));
+    }
+    case "read-holding-registers":
+    case "read-input-registers": {
+      const data = Array.from({ length: request.quantity }, (_, index) =>
+        encodeWord((request.address + index) & 0xffff),
+      ).flat();
+      return appendModbusCrc(
+        Uint8Array.from([request.unitId, functionCode, data.length, ...data]),
+      );
+    }
+    case "write-single-coil":
+    case "write-single-register":
+      return requestFrame;
+    case "write-multiple-coils":
+    case "write-multiple-registers":
+      return appendModbusCrc(requestFrame.slice(0, 6));
+  }
+}
+
+export function cloneModbusRtuRequest(request: ModbusRtuRequest): ModbusRtuRequest {
+  if (request.operation === "write-multiple-coils") {
+    return { ...request, values: [...request.values] };
+  }
+  if (request.operation === "write-multiple-registers") {
+    return { ...request, values: [...request.values] };
+  }
+  return { ...request };
+}
+
+export function createInitialModbusRtuTransactionSnapshot(): ModbusRtuTransactionSnapshot {
+  return {
+    transactionId: 0,
+    generation: 0,
+    status: "idle",
+    request: null,
+    requestFrame: new Uint8Array(),
+    timeoutMs: DEFAULT_MODBUS_TRANSACTION_TIMEOUT_MS,
+    message: "",
+  };
 }
 
 export function formatModbusRtuFrame(frame: Uint8Array): string {
@@ -200,6 +413,30 @@ function packCoils(values: readonly boolean[]): number[] {
     }
   });
   return packed;
+}
+
+function appendModbusCrc(payload: Uint8Array): Uint8Array {
+  const crc = crc16modbus(payload);
+  return Uint8Array.from([...payload, crc & 0xff, (crc >>> 8) & 0xff]);
+}
+
+function assertFrameCrc(frame: Uint8Array): void {
+  const payload = frame.slice(0, -2);
+  const expected = crc16modbus(payload);
+  const actual = (frame[frame.length - 2] ?? 0) | ((frame[frame.length - 1] ?? 0) << 8);
+  if (actual !== expected) {
+    throw new Error("Modbus 响应 CRC 校验失败");
+  }
+}
+
+function assertReadResponseLength(response: Uint8Array, expectedByteCount: number): void {
+  if (response[2] !== expectedByteCount || response.length !== expectedByteCount + 5) {
+    throw new Error("Modbus 读取响应字节数与请求不一致");
+  }
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function splitValueTokens(value: string, label: string): string[] {

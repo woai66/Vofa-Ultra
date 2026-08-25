@@ -45,7 +45,7 @@ import {
   terminalEntryPayload,
   type TerminalDirectionFilter,
 } from "../core/terminalSearch";
-import { formatModbusRtuFrame } from "../core/modbusRtu";
+import { formatModbusRtuFrame, type ModbusRtuRequest } from "../core/modbusRtu";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { DisplayMode, LineEnding } from "../types/serial";
 import type {
@@ -79,6 +79,8 @@ export function TerminalPanel() {
   const commandHistory = useWorkbenchStore((state) => state.commandHistory);
   const commandTask = useWorkbenchStore((state) => state.commandTask);
   const autoResponder = useWorkbenchStore((state) => state.autoResponder);
+  const modbusTransaction = useWorkbenchStore((state) => state.modbusTransaction);
+  const modbusTransactions = useWorkbenchStore((state) => state.modbusTransactions);
   const isSendingCommand = useWorkbenchStore((state) => state.isSendingCommand);
   const commandSendOrigin = useWorkbenchStore((state) => state.commandSendOrigin);
   const terminalPaused = useWorkbenchStore((state) => state.terminalPaused);
@@ -96,6 +98,9 @@ export function TerminalPanel() {
   const send = useWorkbenchStore((state) => state.send);
   const startPeriodicSend = useWorkbenchStore((state) => state.startPeriodicSend);
   const stopPeriodicSend = useWorkbenchStore((state) => state.stopPeriodicSend);
+  const startModbusTransaction = useWorkbenchStore((state) => state.startModbusTransaction);
+  const cancelModbusTransaction = useWorkbenchStore((state) => state.cancelModbusTransaction);
+  const clearModbusTransactions = useWorkbenchStore((state) => state.clearModbusTransactions);
   const viewportRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -131,8 +136,11 @@ export function TerminalPanel() {
   const visibleError = templatePreview.error || sendError;
   const taskActive = commandTask.status === "running" || commandTask.status === "stopping";
   const autoResponderActive = isAutoResponderActive(autoResponder);
+  const modbusTransactionActive = modbusTransaction.status !== "idle";
   const manualSendBlocked =
-    manualSendPending || (isSendingCommand && commandSendOrigin !== "auto-responder");
+    modbusTransactionActive ||
+    manualSendPending ||
+    (isSendingCommand && commandSendOrigin !== "auto-responder");
   const workflowVisible = workflowOpen || taskActive;
   const canStartPeriodic =
     connectionStatus === "connected" &&
@@ -142,6 +150,14 @@ export function TerminalPanel() {
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
     !autoResponderActive &&
+    !modbusTransactionActive &&
+    !taskActive;
+  const canExecuteModbus =
+    connectionStatus === "connected" &&
+    !isWorkspaceTransitioning &&
+    !isSendingCommand &&
+    !autoResponderActive &&
+    !modbusTransactionActive &&
     !taskActive;
   const visibleEntries = useMemo(
     () =>
@@ -257,6 +273,9 @@ export function TerminalPanel() {
     setModbusOpen(false);
     applyDraft({ value, mode: "hex", lineEnding: "none" });
   };
+
+  const executeModbusTransaction = (request: ModbusRtuRequest, timeoutMs: number) =>
+    startModbusTransaction(request, timeoutMs);
 
   const applyQuickCommand = (command: QuickCommand) => {
     if (isWorkspaceTransitioning) {
@@ -772,7 +791,13 @@ export function TerminalPanel() {
 
         {modbusOpen && (
           <ModbusRtuBuilder
+            canExecute={canExecuteModbus}
+            transaction={modbusTransaction}
+            transactions={modbusTransactions}
             onApply={applyModbusFrame}
+            onExecute={executeModbusTransaction}
+            onCancel={cancelModbusTransaction}
+            onClearHistory={clearModbusTransactions}
             onClose={() => {
               setModbusOpen(false);
               modbusTriggerRef.current?.focus();

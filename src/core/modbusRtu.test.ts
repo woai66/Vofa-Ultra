@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import crc16modbus from "crc/calculators/crc16modbus";
 import {
   buildModbusRtuRequest,
   formatModbusRtuFrame,
@@ -6,7 +7,9 @@ import {
   MAX_MODBUS_WRITE_REGISTERS,
   parseModbusCoilValues,
   parseModbusRegisterValues,
+  parseModbusRtuResponse,
   parseModbusUnsignedInteger,
+  simulateModbusRtuResponse,
 } from "./modbusRtu";
 
 describe("Modbus RTU 构帧", () => {
@@ -178,6 +181,113 @@ describe("Modbus RTU 构帧", () => {
     expect(registers).toHaveLength(255);
   });
 });
+
+describe("Modbus RTU 单事务响应", () => {
+  it("解析位、寄存器和写确认并保持请求数量", () => {
+    const bitRequest = {
+      operation: "read-coils" as const,
+      unitId: 1,
+      address: 5,
+      quantity: 10,
+    };
+    const registerRequest = {
+      operation: "read-holding-registers" as const,
+      unitId: 1,
+      address: 10,
+      quantity: 3,
+    };
+    const writeRequest = {
+      operation: "write-multiple-registers" as const,
+      unitId: 1,
+      address: 20,
+      values: [1, 2, 3],
+    };
+
+    expect(
+      parseModbusRtuResponse(bitRequest, simulateModbusRtuResponse(bitRequest)!),
+    ).toEqual({
+      kind: "bits",
+      values: [false, true, false, false, true, false, false, true, false, false],
+    });
+    expect(
+      parseModbusRtuResponse(
+        registerRequest,
+        simulateModbusRtuResponse(registerRequest)!,
+      ),
+    ).toEqual({ kind: "registers", values: [10, 11, 12] });
+    expect(
+      parseModbusRtuResponse(writeRequest, simulateModbusRtuResponse(writeRequest)!),
+    ).toEqual({ kind: "write-confirmation", address: 20, quantity: 3 });
+  });
+
+  it("解析标准异常响应并给未知异常保留稳定回退名称", () => {
+    const request = {
+      operation: "read-input-registers" as const,
+      unitId: 0x11,
+      address: 0,
+      quantity: 1,
+    };
+
+    expect(parseModbusRtuResponse(request, responseFrame([0x11, 0x84, 0x02]))).toEqual({
+      kind: "exception",
+      exceptionCode: 2,
+      exceptionName: "非法数据地址",
+    });
+    expect(parseModbusRtuResponse(request, responseFrame([0x11, 0x84, 0x7f]))).toEqual({
+      kind: "exception",
+      exceptionCode: 0x7f,
+      exceptionName: "未知异常",
+    });
+  });
+
+  it("拒绝 CRC、站号、字节数和写回显不匹配的响应", () => {
+    const request = {
+      operation: "read-holding-registers" as const,
+      unitId: 1,
+      address: 0,
+      quantity: 1,
+    };
+    const badCrc = responseFrame([1, 3, 2, 0, 1]);
+    badCrc[3] = (badCrc[3] ?? 0) ^ 1;
+
+    expect(() => parseModbusRtuResponse(request, badCrc)).toThrow("CRC");
+    expect(() =>
+      parseModbusRtuResponse(request, responseFrame([2, 3, 2, 0, 1])),
+    ).toThrow("站号");
+    expect(() =>
+      parseModbusRtuResponse(request, responseFrame([1, 3, 4, 0, 1, 0, 2])),
+    ).toThrow("字节数");
+
+    const writeRequest = {
+      operation: "write-single-register" as const,
+      unitId: 1,
+      address: 2,
+      value: 9,
+    };
+    expect(() =>
+      parseModbusRtuResponse(writeRequest, responseFrame([1, 6, 0, 2, 0, 8])),
+    ).toThrow("回显");
+  });
+
+  it("广播写入无响应即完成，并拒绝伪造响应", () => {
+    const request = {
+      operation: "write-single-coil" as const,
+      unitId: 0,
+      address: 1,
+      value: true,
+    };
+    expect(parseModbusRtuResponse(request, new Uint8Array())).toEqual({ kind: "broadcast" });
+    expect(() =>
+      parseModbusRtuResponse(request, simulateModbusRtuResponse({ ...request, unitId: 1 })!),
+    ).toThrow("不应包含响应帧");
+  });
+});
+
+function responseFrame(payload: readonly number[]): Uint8Array {
+  const bytes = Uint8Array.from(payload);
+  const crc = crc16modbus(bytes);
+  return Uint8Array.from([...bytes, crc & 0xff, (crc >>> 8) & 0xff]);
+}
 
 describe("Modbus RTU 输入解析", () => {
   it("接受十进制、十六进制以及逗号、分号或空白分隔", () => {
