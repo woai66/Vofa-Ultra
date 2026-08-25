@@ -112,6 +112,6 @@ pnpm supply-chain:generate artifacts/supply-chain/windows x86_64-pc-windows-msvc
 必须传同一 target，例如：
 
 ```bash
-pnpm tauri build --ci --no-sign --target x86_64-pc-windows-msvc --bundles msi,nsis
+pnpm tauri build --ci --no-sign --target x86_64-pc-windows-msvc --bundles "msi,nsis"
 pnpm package:collect windows x86_64-pc-windows-msvc
 ```

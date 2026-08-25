@@ -110,13 +110,13 @@ SemVer 预发布后缀的版本同时标记为 prerelease，自动化不会 Publ
 pnpm check:package
 # Windows
 pnpm supply-chain:check x86_64-pc-windows-msvc
-pnpm tauri build --ci --no-sign --target x86_64-pc-windows-msvc --bundles msi,nsis
+pnpm tauri build --ci --no-sign --target x86_64-pc-windows-msvc --bundles "msi,nsis"
 pnpm package:collect windows x86_64-pc-windows-msvc
 # macOS
 pnpm tauri build --ci --no-sign --target x86_64-apple-darwin --bundles dmg
 pnpm package:collect macos x86_64-apple-darwin
 # Linux
-pnpm tauri build --ci --no-sign --target x86_64-unknown-linux-gnu --bundles deb,appimage
+pnpm tauri build --ci --no-sign --target x86_64-unknown-linux-gnu --bundles "deb,appimage"
 pnpm package:collect linux x86_64-unknown-linux-gnu
 ```
 
