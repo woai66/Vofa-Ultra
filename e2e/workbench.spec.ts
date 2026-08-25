@@ -1021,6 +1021,7 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
     }
   });
 
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 1_280, height: 800 });
   await page.goto("/");
   await page.getByRole("button", { name: "启动模拟" }).click();
