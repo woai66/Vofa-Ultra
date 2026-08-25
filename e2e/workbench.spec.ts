@@ -67,6 +67,36 @@ async function replaceTerminalEntries(page: Page, entries: TerminalEntry[]): Pro
   }, entries);
 }
 
+async function readWaveformCanvasStats(page: Page): Promise<{
+  width: number;
+  height: number;
+  opaquePixels: number;
+  chromaticPixels: number;
+}> {
+  return page.locator(".waveform-chart canvas").first().evaluate((canvas) => {
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return { width: 0, height: 0, opaquePixels: 0, chromaticPixels: 0 };
+    }
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let opaquePixels = 0;
+    let chromaticPixels = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const red = pixels[index] ?? 0;
+      const green = pixels[index + 1] ?? 0;
+      const blue = pixels[index + 2] ?? 0;
+      const alpha = pixels[index + 3] ?? 0;
+      if (alpha > 0) {
+        opaquePixels += 1;
+      }
+      if (alpha > 0 && Math.max(red, green, blue) - Math.min(red, green, blue) > 35) {
+        chromaticPixels += 1;
+      }
+    }
+    return { width: canvas.width, height: canvas.height, opaquePixels, chromaticPixels };
+  });
+}
+
 test("标签组支持标准键盘导航", async ({ page }) => {
   await page.goto("/");
 
@@ -305,28 +335,43 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
     })
     .toBeGreaterThan(0);
 
-  const canvasStats = await page.locator(".waveform-chart canvas").first().evaluate((canvas) => {
-    const context = canvas.getContext("2d");
-    if (!context) {
-      return { width: 0, height: 0, opaquePixels: 0 };
-    }
-    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    let opaquePixels = 0;
-    for (let index = 3; index < pixels.length; index += 64) {
-      if ((pixels[index] ?? 0) > 0) {
-        opaquePixels += 1;
-      }
-    }
-    return { width: canvas.width, height: canvas.height, opaquePixels };
-  });
+  const canvasStats = await readWaveformCanvasStats(page);
   expect(canvasStats.width).toBeGreaterThan(400);
   expect(canvasStats.height).toBeGreaterThan(200);
   expect(canvasStats.opaquePixels).toBeGreaterThan(50);
+  expect(canvasStats.chromaticPixels).toBeGreaterThan(100);
 
   const terminalCount = async () => {
     const text = await page.locator(".terminal-toolbar .panel-subtitle").textContent();
     return Number(text?.match(/\d+/)?.[0] ?? 0);
   };
+  const terminalCountBeforeZoom = await terminalCount();
+  const zoomBounds = await page.locator(".waveform-chart .u-over").boundingBox();
+  expect(zoomBounds).not.toBeNull();
+  if (zoomBounds) {
+    await page.mouse.move(
+      zoomBounds.x + zoomBounds.width * 0.2,
+      zoomBounds.y + zoomBounds.height * 0.5,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      zoomBounds.x + zoomBounds.width * 0.75,
+      zoomBounds.y + zoomBounds.height * 0.5,
+      { steps: 6 },
+    );
+    await page.mouse.up();
+  }
+  const returnToLive = page.getByRole("button", { name: "回到实时波形" });
+  await expect(returnToLive).toBeVisible();
+  await expect(page.getByText("LIVE")).toBeVisible();
+  await expect.poll(terminalCount).toBeGreaterThan(terminalCountBeforeZoom);
+  await expect
+    .poll(async () => (await readWaveformCanvasStats(page)).chromaticPixels)
+    .toBeGreaterThan(100);
+  await expect(returnToLive).toBeVisible();
+  await returnToLive.click();
+  await expect(returnToLive).not.toBeVisible();
+
   const terminalCountBeforeMeasurement = await terminalCount();
   await page.getByRole("button", { name: "开启波形测量" }).click();
   await expect(page.getByText("HISTORY")).toBeVisible();
@@ -1068,6 +1113,32 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
     )
     .toBeLessThanOrEqual(0);
   await expect(page.getByRole("heading", { name: "实时波形" })).toBeVisible();
+  const mobilePlotBounds = await page.locator(".waveform-chart .u-over").boundingBox();
+  expect(mobilePlotBounds).not.toBeNull();
+  if (mobilePlotBounds) {
+    await page.mouse.move(
+      mobilePlotBounds.x + mobilePlotBounds.width * 0.2,
+      mobilePlotBounds.y + mobilePlotBounds.height * 0.5,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      mobilePlotBounds.x + mobilePlotBounds.width * 0.75,
+      mobilePlotBounds.y + mobilePlotBounds.height * 0.5,
+      { steps: 6 },
+    );
+    await page.mouse.up();
+  }
+  const mobileReturnToLive = page.getByRole("button", { name: "回到实时波形" });
+  await expect(mobileReturnToLive).toBeVisible();
+  await expect
+    .poll(async () => (await readWaveformCanvasStats(page)).chromaticPixels)
+    .toBeGreaterThan(100);
+  const mobileReturnBounds = await mobileReturnToLive.boundingBox();
+  expect(mobileReturnBounds?.width ?? 0).toBeGreaterThanOrEqual(44);
+  expect(mobileReturnBounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await mobileReturnToLive.click();
+  await expect(mobileReturnToLive).not.toBeVisible();
   const measurementButton = page.getByRole("button", { name: "开启波形测量" });
   await expect(measurementButton).toBeEnabled({ timeout: 5_000 });
   await measurementButton.click();

@@ -2667,6 +2667,11 @@ textarea:focus {
   color: var(--accent);
 }
 
+.waveform-follow-latest[data-visible="false"] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .attitude-panel .icon-button[data-active="true"] {
   border-color: var(--accent);
   background: var(--accent-soft);

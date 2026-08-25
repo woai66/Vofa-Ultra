@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { CirclePause, Play, Ruler, Trash2, Waves } from "lucide-react";
+import { CirclePause, LocateFixed, Play, Ruler, Trash2, Waves } from "lucide-react";
 import uPlot, { type AlignedData, type Options } from "uplot";
 import type { ThemeMode } from "../App";
 import {
@@ -35,6 +35,9 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     () => [...rawChannels, ...processedChannels, ...extensionChannels],
     [extensionChannels, processedChannels, rawChannels],
   );
+  const channelStructureSignature = channels
+    .map((channel) => `${channel.id}:${channel.color}:${channel.visible}`)
+    .join("|");
   const chartPaused = useWorkbenchStore((state) => state.chartPaused);
   const chartWindowSeconds = useWorkbenchStore((state) => state.chartWindowSeconds);
   const chartDataRevision = useWorkbenchStore((state) => state.chartDataRevision);
@@ -45,6 +48,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   );
   const clearChart = useWorkbenchStore((state) => state.clearChart);
   const [measurementEnabled, setMeasurementEnabled] = useState(false);
+  const [waveformFollowSuspended, setWaveformFollowSuspended] = useState(false);
   const [activeCursor, setActiveCursor] = useState<WaveformMeasurementCursor>("A");
   const [measurementChannelId, setMeasurementChannelId] = useState("");
   const [measurementAnchors, setMeasurementAnchors] =
@@ -81,6 +85,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
 
   const resetMeasurement = useCallback(
     (restorePause: boolean) => {
+      setWaveformFollowSuspended(false);
       setMeasurementEnabled(false);
       onMeasurementModeChange?.(false);
       setMeasurementAnchors(null);
@@ -102,6 +107,17 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       resetMeasurement(true);
     }
   }, [chartDataRevision, measurementEnabled, resetMeasurement]);
+
+  useEffect(() => {
+    setWaveformFollowSuspended(false);
+  }, [
+    channelStructureSignature,
+    chartDataRevision,
+    chartPaused,
+    chartWindowSeconds,
+    measurementEnabled,
+    theme,
+  ]);
 
   useEffect(() => {
     if (!measurementEnabled) {
@@ -133,6 +149,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   ]);
 
   const handleMeasurementToggle = () => {
+    setWaveformFollowSuspended(false);
     if (measurementEnabled) {
       resetMeasurement(true);
       return;
@@ -150,6 +167,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   };
 
   const handleChartPauseToggle = () => {
+    setWaveformFollowSuspended(false);
     if (measurementEnabled && chartPaused) {
       resetMeasurement(false);
       setChartPaused(false);
@@ -159,6 +177,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   };
 
   const handleWindowChange = (seconds: ChartWindowSeconds) => {
+    setWaveformFollowSuspended(false);
     setChartWindowSeconds(seconds);
     if (!measurementEnabled || !selectedChannel) {
       return;
@@ -239,6 +258,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   };
 
   const handleClearChart = () => {
+    setWaveformFollowSuspended(false);
     if (measurementEnabled) {
       resetMeasurement(true);
     }
@@ -250,6 +270,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       className="workspace-panel waveform-panel"
       aria-labelledby="waveform-title"
       data-measuring={measurementEnabled}
+      data-follow-suspended={waveformFollowSuspended}
     >
       <header className="panel-toolbar">
         <div className="panel-title-group">
@@ -277,6 +298,19 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
               </button>
             ))}
           </div>
+          <button
+            className="icon-button waveform-follow-latest"
+            type="button"
+            aria-label="回到实时波形"
+            aria-hidden={!waveformFollowSuspended}
+            title={waveformFollowSuspended ? "回到实时波形" : undefined}
+            data-active={waveformFollowSuspended}
+            data-visible={waveformFollowSuspended}
+            disabled={!waveformFollowSuspended}
+            onClick={() => setWaveformFollowSuspended(false)}
+          >
+            <LocateFixed size={16} />
+          </button>
           <button
             className="icon-button"
             type="button"
@@ -350,6 +384,9 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
             theme={theme}
             measurementEnabled={measurementEnabled}
             measurement={measurementResult}
+            followSuspended={waveformFollowSuspended}
+            canSuspendFollow={!chartPaused && !measurementEnabled}
+            onFollowSuspend={() => setWaveformFollowSuspended(true)}
             onMeasurementSelect={handleChartMeasurement}
           />
         )}
@@ -476,6 +513,9 @@ interface WaveformChartProps {
   theme: ThemeMode;
   measurementEnabled: boolean;
   measurement: WaveformMeasurementResult | null;
+  followSuspended: boolean;
+  canSuspendFollow: boolean;
+  onFollowSuspend(): void;
   onMeasurementSelect(timestampSeconds: number): void;
 }
 
@@ -493,6 +533,9 @@ function WaveformChart({
   theme,
   measurementEnabled,
   measurement,
+  followSuspended,
+  canSuspendFollow,
+  onFollowSuspend,
   onMeasurementSelect,
 }: WaveformChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -503,12 +546,17 @@ function WaveformChart({
     result: measurement,
     onSelect: onMeasurementSelect,
   });
+  const followInteractionRef = useRef({ canSuspendFollow, onFollowSuspend });
   const channelSignature = channels
     .map((channel) => `${channel.id}:${channel.color}:${channel.visible}`)
     .join("|");
   const data = useMemo(
-    () => createAlignedData(channels, windowSeconds),
-    [channels, windowSeconds],
+    () =>
+      createAlignedData(
+        channels,
+        followSuspended ? Number.POSITIVE_INFINITY : windowSeconds,
+      ),
+    [channels, followSuspended, windowSeconds],
   );
   const channelMetadataRef = useRef(channels);
   const initialDataRef = useRef(data);
@@ -519,6 +567,7 @@ function WaveformChart({
     result: measurement,
     onSelect: onMeasurementSelect,
   };
+  followInteractionRef.current = { canSuspendFollow, onFollowSuspend };
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -533,6 +582,32 @@ function WaveformChart({
         measurementRef.current.enabled,
         measurementRef.current.result,
       );
+    };
+    let selectionCanSuspendFollow = false;
+    let selectionExpiryTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+    const clearSelectionMarker = () => {
+      selectionCanSuspendFollow = false;
+      if (selectionExpiryTimer !== null) {
+        globalThis.clearTimeout(selectionExpiryTimer);
+        selectionExpiryTimer = null;
+      }
+    };
+    const handleSelection = (chart: uPlot) => {
+      clearSelectionMarker();
+      selectionCanSuspendFollow =
+        chart.select.width > 0 && followInteractionRef.current.canSuspendFollow;
+      if (selectionCanSuspendFollow) {
+        selectionExpiryTimer = globalThis.setTimeout(clearSelectionMarker, 0);
+      }
+      syncMeasurementOverlay(chart);
+    };
+    const handleScale = (chart: uPlot, scaleKey: string) => {
+      syncMeasurementOverlay(chart);
+      if (scaleKey !== "x" || !selectionCanSuspendFollow) {
+        return;
+      }
+      clearSelectionMarker();
+      followInteractionRef.current.onFollowSuspend();
     };
     const computed = getComputedStyle(container);
     const channelMetadata = channelMetadataRef.current;
@@ -584,7 +659,8 @@ function WaveformChart({
       hooks: {
         draw: [syncMeasurementOverlay],
         setData: [syncMeasurementOverlay],
-        setScale: [syncMeasurementOverlay],
+        setScale: [handleScale],
+        setSelect: [handleSelection],
         setSize: [syncMeasurementOverlay],
       },
     };
@@ -637,6 +713,7 @@ function WaveformChart({
     observer.observe(container);
 
     return () => {
+      clearSelectionMarker();
       observer.disconnect();
       chart.over.removeEventListener("pointerdown", handlePointerDown);
       chart.over.removeEventListener("pointerup", handlePointerUp);
@@ -648,8 +725,8 @@ function WaveformChart({
   }, [channelSignature, measurementEnabled, theme]);
 
   useLayoutEffect(() => {
-    chartRef.current?.setData(data);
-  }, [data]);
+    chartRef.current?.setData(data, !followSuspended);
+  }, [data, followSuspended]);
 
   useLayoutEffect(() => {
     const chart = chartRef.current;
