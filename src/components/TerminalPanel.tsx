@@ -59,6 +59,13 @@ import { QuickCommandPopover } from "./QuickCommandPopover";
 
 type RepeatMode = "count" | "continuous";
 
+const TERMINAL_LATEST_THRESHOLD_PX = 24;
+
+function isTerminalViewportAtLatest(viewport: HTMLElement): boolean {
+  const distanceFromLatest = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop;
+  return distanceFromLatest <= TERMINAL_LATEST_THRESHOLD_PX;
+}
+
 interface CommandDraft {
   value: string;
   mode: DisplayMode;
@@ -111,6 +118,7 @@ export function TerminalPanel() {
   const historyCursorRef = useRef<number | null>(null);
   const historyDraftRef = useRef<CommandDraft | null>(null);
   const pendingSelectionRef = useRef<number | null>(null);
+  const previousTerminalAutoScrollRef = useRef(terminalAutoScroll);
   const [message, setMessage] = useState("");
   const [sendError, setSendError] = useState("");
   const [manualSendPending, setManualSendPending] = useState(false);
@@ -124,6 +132,7 @@ export function TerminalPanel() {
   const [repeatCountText, setRepeatCountText] = useState("10");
   const [searchQuery, setSearchQuery] = useState("");
   const [directionFilter, setDirectionFilter] = useState<TerminalDirectionFilter>("all");
+  const [terminalFollowSuspended, setTerminalFollowSuspended] = useState(false);
   const hasPayload = message.length > 0 || lineEnding !== "none";
   const templatePreview = useMemo(
     () => previewCommandTemplate(message, sendMode, lineEnding),
@@ -182,13 +191,47 @@ export function TerminalPanel() {
     estimateSize: () => 24,
     overscan: 12,
     useFlushSync: false,
+    anchorTo: "end",
   });
 
   useEffect(() => {
-    if (terminalAutoScroll && !terminalPaused && visibleEntries.length > 0) {
+    if (
+      terminalAutoScroll &&
+      !terminalPaused &&
+      !terminalFollowSuspended &&
+      visibleEntries.length > 0
+    ) {
       rowVirtualizer.scrollToIndex(visibleEntries.length - 1, { align: "end" });
     }
-  }, [lastVisibleEntryId, rowVirtualizer, terminalAutoScroll, terminalPaused, visibleEntries.length]);
+  }, [
+    lastVisibleEntryId,
+    rowVirtualizer,
+    terminalAutoScroll,
+    terminalFollowSuspended,
+    terminalPaused,
+    visibleEntries.length,
+  ]);
+
+  useEffect(() => {
+    if (entries.length === 0) {
+      setTerminalFollowSuspended(false);
+    }
+  }, [entries.length]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!terminalAutoScroll && viewport && visibleEntries.length > 0) {
+      setTerminalFollowSuspended(!isTerminalViewportAtLatest(viewport));
+    }
+  }, [lastVisibleEntryId, terminalAutoScroll, visibleEntries.length]);
+
+  useEffect(() => {
+    const wasAutoScrollEnabled = previousTerminalAutoScrollRef.current;
+    previousTerminalAutoScrollRef.current = terminalAutoScroll;
+    if (terminalAutoScroll && !wasAutoScrollEnabled) {
+      setTerminalFollowSuspended(false);
+    }
+  }, [terminalAutoScroll]);
 
   useEffect(() => {
     if (["running", "stopping", "error"].includes(commandTask.status)) {
@@ -401,6 +444,22 @@ export function TerminalPanel() {
     }
   };
 
+  const handleTerminalScroll = () => {
+    const viewport = viewportRef.current;
+    if (!viewport) {
+      return;
+    }
+    setTerminalFollowSuspended(!isTerminalViewportAtLatest(viewport));
+  };
+
+  const resumeTerminalFollow = () => {
+    setTerminalFollowSuspended(false);
+    if (visibleEntries.length > 0) {
+      rowVirtualizer.scrollToIndex(visibleEntries.length - 1, { align: "end" });
+    }
+    viewportRef.current?.focus({ preventScroll: true });
+  };
+
   return (
     <section className="workspace-panel terminal-panel" aria-labelledby="terminal-title">
       <header className="panel-toolbar terminal-toolbar">
@@ -519,56 +578,72 @@ export function TerminalPanel() {
         </div>
       </div>
 
-      <div
-        ref={viewportRef}
-        id="terminal-record-list"
-        className="terminal-viewport"
-        role="log"
-        aria-live="off"
-      >
-        {entries.length === 0 ? (
-          <div className="terminal-empty">
-            <ArrowDownToLine size={24} />
-            <span>接收数据将在这里显示</span>
-          </div>
-        ) : visibleEntries.length === 0 ? (
-          <div className="terminal-empty">
-            <SearchX size={24} />
-            <span>没有匹配的终端记录</span>
-          </div>
-        ) : (
-          <div
-            className="terminal-virtualizer"
-            style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+      <div className="terminal-log-shell">
+        <div
+          ref={viewportRef}
+          id="terminal-record-list"
+          className="terminal-viewport"
+          role="log"
+          aria-label="终端记录"
+          aria-live="off"
+          tabIndex={0}
+          onScroll={handleTerminalScroll}
+        >
+          {entries.length === 0 ? (
+            <div className="terminal-empty">
+              <ArrowDownToLine size={24} />
+              <span>接收数据将在这里显示</span>
+            </div>
+          ) : visibleEntries.length === 0 ? (
+            <div className="terminal-empty">
+              <SearchX size={24} />
+              <span>没有匹配的终端记录</span>
+            </div>
+          ) : (
+            <div
+              className="terminal-virtualizer"
+              style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const entry = visibleEntries[virtualRow.index];
+                if (!entry) {
+                  return null;
+                }
+                return (
+                  <div
+                    key={entry.id}
+                    ref={rowVirtualizer.measureElement}
+                    className="terminal-line"
+                    data-direction={entry.direction}
+                    data-index={virtualRow.index}
+                    style={{ transform: `translateY(${virtualRow.start}px)` }}
+                  >
+                    <time>{formatTime(entry.timestamp)}</time>
+                    <span className="direction-label">{entry.direction.toUpperCase()}</span>
+                    <code>
+                      <HighlightedTerminalPayload
+                        value={terminalEntryPayload(entry, displayMode)}
+                        query={searchQuery}
+                      />
+                    </code>
+                    <small>{entry.byteCount} B</small>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        {terminalFollowSuspended && visibleEntries.length > 0 ? (
+          <button
+            className="icon-button terminal-jump-latest"
+            type="button"
+            aria-label="回到最新记录"
+            title="回到最新记录"
+            onClick={resumeTerminalFollow}
           >
-            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const entry = visibleEntries[virtualRow.index];
-              if (!entry) {
-                return null;
-              }
-              return (
-                <div
-                  key={entry.id}
-                  ref={rowVirtualizer.measureElement}
-                  className="terminal-line"
-                  data-direction={entry.direction}
-                  data-index={virtualRow.index}
-                  style={{ transform: `translateY(${virtualRow.start}px)` }}
-                >
-                  <time>{formatTime(entry.timestamp)}</time>
-                  <span className="direction-label">{entry.direction.toUpperCase()}</span>
-                  <code>
-                    <HighlightedTerminalPayload
-                      value={terminalEntryPayload(entry, displayMode)}
-                      query={searchQuery}
-                    />
-                  </code>
-                  <small>{entry.byteCount} B</small>
-                </div>
-              );
-            })}
-          </div>
-        )}
+            <ArrowDownToLine size={17} />
+          </button>
+        ) : null}
       </div>
 
       <div ref={composerRef} className="send-composer" data-workflow-open={workflowVisible}>

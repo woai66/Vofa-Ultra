@@ -117,6 +117,168 @@ test("标签组支持标准键盘导航", async ({ page }) => {
   await expect(exportPanel).toBeHidden();
 });
 
+test("终端上滚挂起跟随并可回到最新", async ({ page }) => {
+  await page.goto("/");
+  const entries = Array.from(
+    { length: 120 },
+    (_, index): TerminalEntry => ({
+      id: 10_000 + index,
+      direction: "rx",
+      timestamp: 1_700_000_000_000 + index,
+      text: `stream ${index}`,
+      hex: "73 74 72 65 61 6D",
+      byteCount: 10,
+    }),
+  );
+  await replaceTerminalEntries(page, entries);
+  const viewport = page.getByRole("log", { name: "终端记录" });
+  await expect
+    .poll(() =>
+      viewport.evaluate(
+        (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+      ),
+    )
+    .toBeLessThanOrEqual(24);
+
+  await viewport.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect(page.getByRole("button", { name: "回到最新记录" })).toBeVisible();
+  const suspendedScrollTop = await viewport.evaluate((element) => element.scrollTop);
+
+  await replaceTerminalEntries(page, [
+    ...entries,
+    {
+      id: 10_120,
+      direction: "rx",
+      timestamp: 1_700_000_000_120,
+      text: "stream 120",
+      hex: "73 74 72 65 61 6D",
+      byteCount: 10,
+    },
+  ]);
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("121 条记录");
+  expect(await viewport.evaluate((element) => element.scrollTop)).toBe(suspendedScrollTop);
+
+  await page.getByRole("button", { name: "回到最新记录" }).click();
+  await expect(page.getByRole("button", { name: "回到最新记录" })).toHaveCount(0);
+  await expect
+    .poll(() =>
+      viewport.evaluate(
+        (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+      ),
+    )
+    .toBeLessThanOrEqual(24);
+
+  await replaceTerminalEntries(page, [
+    ...entries,
+    {
+      id: 10_120,
+      direction: "rx",
+      timestamp: 1_700_000_000_120,
+      text: "stream 120",
+      hex: "73 74 72 65 61 6D",
+      byteCount: 10,
+    },
+    {
+      id: 10_121,
+      direction: "rx",
+      timestamp: 1_700_000_000_121,
+      text: "stream 121",
+      hex: "73 74 72 65 61 6D",
+      byteCount: 10,
+    },
+  ]);
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("122 条记录");
+  await expect
+    .poll(() =>
+      viewport.evaluate(
+        (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+      ),
+    )
+    .toBeLessThanOrEqual(24);
+
+  await viewport.evaluate((element) => {
+    element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - 120);
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect(page.getByRole("button", { name: "回到最新记录" })).toBeVisible();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const autoScroll = page.getByRole("checkbox", { name: "终端自动滚动" });
+  await autoScroll.uncheck();
+  await autoScroll.check();
+  await expect(page.getByRole("button", { name: "回到最新记录" })).toHaveCount(0);
+  await expect
+    .poll(() =>
+      viewport.evaluate(
+        (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+      ),
+    )
+    .toBeLessThanOrEqual(24);
+});
+
+test("终端满载头删时保持用户浏览锚点", async ({ page }) => {
+  await page.goto("/");
+  const entries = Array.from(
+    { length: 800 },
+    (_, index): TerminalEntry => ({
+      id: 30_000 + index,
+      direction: "rx",
+      timestamp: 1_700_000_100_000 + index,
+      text: `anchor ${index}`,
+      hex: "61 6E 63 68 6F 72",
+      byteCount: 10,
+    }),
+  );
+  await replaceTerminalEntries(page, entries);
+  const viewport = page.getByRole("log", { name: "终端记录" });
+  await viewport.evaluate((element) => {
+    element.scrollTop = 2_400;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect(page.getByRole("button", { name: "回到最新记录" })).toBeVisible();
+
+  const anchorBefore = await viewport.evaluate((element) => {
+    const viewportTop = element.getBoundingClientRect().top;
+    const row = [...element.querySelectorAll<HTMLElement>(".terminal-line")].find(
+      (candidate) => candidate.getBoundingClientRect().bottom > viewportTop,
+    );
+    return row
+      ? {
+          payload: row.querySelector("code")?.textContent ?? "",
+          offset: row.getBoundingClientRect().top - viewportTop,
+        }
+      : null;
+  });
+  expect(anchorBefore).not.toBeNull();
+
+  await replaceTerminalEntries(page, [
+    ...entries.slice(1),
+    {
+      id: 30_800,
+      direction: "rx",
+      timestamp: 1_700_000_100_800,
+      text: "anchor 800",
+      hex: "61 6E 63 68 6F 72",
+      byteCount: 10,
+    },
+  ]);
+  await expect
+    .poll(() =>
+      viewport.evaluate((element, expectedPayload) => {
+        const viewportTop = element.getBoundingClientRect().top;
+        const row = [...element.querySelectorAll<HTMLElement>(".terminal-line")].find(
+          (candidate) => candidate.querySelector("code")?.textContent === expectedPayload,
+        );
+        return row ? row.getBoundingClientRect().top - viewportTop : null;
+      }, anchorBefore?.payload ?? ""),
+    )
+    .toBeCloseTo(anchorBefore?.offset ?? 0, 1);
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("800 条记录");
+  await expect(page.getByRole("button", { name: "回到最新记录" })).toBeVisible();
+});
+
 test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));

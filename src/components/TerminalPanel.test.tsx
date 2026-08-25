@@ -82,6 +82,108 @@ describe("TerminalPanel", () => {
     expect(screen.getByText("没有匹配的终端记录")).toBeVisible();
   });
 
+  it("上滚时挂起自动跟随且回到最新后继续接收记录", async () => {
+    const initialEntries = Array.from(
+      { length: 20 },
+      (_, index): TerminalEntry => ({
+        id: 200 + index,
+        direction: "rx",
+        timestamp: 2_000 + index,
+        text: `sample ${index}`,
+        hex: "73 61 6D 70 6C 65",
+        byteCount: 8,
+      }),
+    );
+    useWorkbenchStore.setState({ terminalEntries: initialEntries });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const viewport = screen.getByRole("log", { name: "终端记录" });
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 120 },
+      scrollHeight: { configurable: true, value: 480 },
+      scrollTop: { configurable: true, value: 120, writable: true },
+    });
+
+    fireEvent.scroll(viewport);
+    expect(screen.getByRole("button", { name: "回到最新记录" })).toBeVisible();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      terminalAutoScroll: true,
+      terminalPaused: false,
+    });
+
+    useWorkbenchStore.setState({
+      terminalEntries: [
+        ...initialEntries,
+        {
+          id: 220,
+          direction: "rx",
+          timestamp: 2_020,
+          text: "latest sample",
+          hex: "6C 61 74 65 73 74",
+          byteCount: 13,
+        },
+      ],
+    });
+    await waitFor(() => {
+      expect(screen.getByText("21 条记录")).toBeVisible();
+    });
+    expect(viewport.scrollTop).toBe(120);
+    expect(screen.getByRole("button", { name: "回到最新记录" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "回到最新记录" }));
+    expect(screen.queryByRole("button", { name: "回到最新记录" })).not.toBeInTheDocument();
+    expect(viewport).toHaveFocus();
+    expect(useWorkbenchStore.getState().terminalEntries).toHaveLength(21);
+  });
+
+  it("手动滚回底部时恢复跟随且禁用自动滚动时只提供单次跳转", async () => {
+    useWorkbenchStore.setState({ terminalEntries: SEARCH_ENTRIES });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const viewport = screen.getByRole("log", { name: "终端记录" });
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 120 },
+      scrollHeight: { configurable: true, value: 480 },
+      scrollTop: { configurable: true, value: 120, writable: true },
+    });
+
+    fireEvent.scroll(viewport);
+    expect(screen.getByRole("button", { name: "回到最新记录" })).toBeVisible();
+    viewport.scrollTop = 360;
+    fireEvent.scroll(viewport);
+    expect(screen.queryByRole("button", { name: "回到最新记录" })).not.toBeInTheDocument();
+
+    useWorkbenchStore.setState({ terminalAutoScroll: false });
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 528 });
+    useWorkbenchStore.setState({
+      terminalEntries: [
+        ...SEARCH_ENTRIES,
+        {
+          id: 104,
+          direction: "rx",
+          timestamp: 1_003,
+          text: "latest",
+          hex: "6C 61 74 65 73 74",
+          byteCount: 6,
+        },
+      ],
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "回到最新记录" })).toBeVisible();
+    });
+    await user.click(screen.getByRole("button", { name: "回到最新记录" }));
+    expect(screen.queryByRole("button", { name: "回到最新记录" })).not.toBeInTheDocument();
+    expect(useWorkbenchStore.getState().terminalAutoScroll).toBe(false);
+
+    viewport.scrollTop = 120;
+    fireEvent.scroll(viewport);
+    expect(screen.getByRole("button", { name: "回到最新记录" })).toBeVisible();
+    useWorkbenchStore.setState({ terminalAutoScroll: true });
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "回到最新记录" })).not.toBeInTheDocument();
+    });
+  });
+
   it("组合字面量搜索与 RX/TX 方向过滤且不修改原记录", async () => {
     useWorkbenchStore.setState({ terminalEntries: SEARCH_ENTRIES });
     const user = userEvent.setup();

@@ -3313,9 +3313,17 @@ textarea:focus {
   grid-template-columns: repeat(3, minmax(36px, 1fr));
 }
 
-.terminal-viewport {
+.terminal-log-shell {
+  position: relative;
+  display: flex;
   min-width: 0;
   min-height: 76px;
+  flex: 1;
+}
+
+.terminal-viewport {
+  min-width: 0;
+  min-height: 0;
   flex: 1;
   overflow: auto;
   background: var(--surface-1);
@@ -3323,6 +3331,24 @@ textarea:focus {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 11px;
   user-select: text;
+}
+
+.terminal-viewport:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.terminal-jump-latest {
+  position: absolute;
+  z-index: 2;
+  right: 12px;
+  bottom: 12px;
+  width: 36px;
+  height: 36px;
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 20%);
+  color: var(--accent);
 }
 
 .terminal-line {
@@ -5082,7 +5108,7 @@ textarea:focus {
     grid-template-rows: minmax(150px, 1fr) minmax(145px, 1fr);
   }
 
-  .terminal-viewport {
+  .terminal-log-shell {
     min-height: 40px;
   }
 }
