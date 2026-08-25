@@ -261,6 +261,7 @@ export function TerminalPanel() {
   const lineEnding = useWorkbenchStore((state) => state.lineEnding);
   const terminalRxRecordMode = useWorkbenchStore((state) => state.terminalRxRecordMode);
   const terminalRxLineEnding = useWorkbenchStore((state) => state.terminalRxLineEnding);
+  const terminalRxTextEncoding = useWorkbenchStore((state) => state.terminalRxTextEncoding);
   const commandHistory = useWorkbenchStore((state) => state.commandHistory);
   const commandTask = useWorkbenchStore((state) => state.commandTask);
   const autoResponder = useWorkbenchStore((state) => state.autoResponder);
@@ -285,6 +286,9 @@ export function TerminalPanel() {
   );
   const setTerminalRxLineEnding = useWorkbenchStore(
     (state) => state.setTerminalRxLineEnding,
+  );
+  const setTerminalRxTextEncoding = useWorkbenchStore(
+    (state) => state.setTerminalRxTextEncoding,
   );
   const setTerminalPaused = useWorkbenchStore((state) => state.setTerminalPaused);
   const clearTerminal = useWorkbenchStore((state) => state.clearTerminal);
@@ -919,6 +923,24 @@ export function TerminalPanel() {
               <option value="lf">LF</option>
               <option value="crlf">CRLF</option>
               <option value="cr">CR</option>
+            </select>
+          </label>
+          <label className="terminal-rx-text-encoding">
+            <span className="sr-only">接收文本编码</span>
+            <select
+              id="terminal-rx-text-encoding"
+              name="terminal-rx-text-encoding"
+              aria-label="接收文本编码"
+              title="接收文本编码"
+              value={terminalRxTextEncoding}
+              disabled={isWorkspaceTransitioning}
+              onChange={(event) =>
+                setTerminalRxTextEncoding(event.target.value as typeof terminalRxTextEncoding)
+              }
+            >
+              <option value="utf-8">UTF-8</option>
+              <option value="gb18030">GB18030</option>
+              <option value="windows-1252">Windows-1252</option>
             </select>
           </label>
         </div>

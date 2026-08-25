@@ -532,6 +532,74 @@ describe("workbenchStore", () => {
     ]);
   });
 
+  it("GB18030 在读取块与文本行模式下跨任意分包恢复中文", () => {
+    const encoded = Uint8Array.from([0xc4, 0xe3, 0xba, 0xc3]);
+    useWorkbenchStore.getState().setTerminalRxTextEncoding("gb18030");
+
+    useWorkbenchStore.getState().ingestBytes(encoded.slice(0, 1), 100);
+    useWorkbenchStore.getState().ingestBytes(encoded.slice(1, 3), 200);
+    useWorkbenchStore.getState().ingestBytes(encoded.slice(3), 300);
+
+    expect(useWorkbenchStore.getState().terminalEntries.map((entry) => entry.text).join(""))
+      .toBe("你好");
+    expect(useWorkbenchStore.getState().terminalEntries.map((entry) => entry.hex)).toEqual([
+      "C4",
+      "E3 BA",
+      "C3",
+    ]);
+
+    useWorkbenchStore.getState().clearTerminal();
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    useWorkbenchStore.getState().setTerminalRxLineEnding("crlf");
+    useWorkbenchStore.getState().ingestBytes(encoded.slice(0, 2), 400);
+    useWorkbenchStore
+      .getState()
+      .ingestBytes(Uint8Array.from([...encoded.slice(2), 0x0d]), 500);
+    useWorkbenchStore.getState().ingestBytes(Uint8Array.from([0x0a]), 600);
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      {
+        timestamp: 400,
+        text: "你好\\r\\n",
+        hex: "C4 E3 BA C3 0D 0A",
+        byteCount: 6,
+      },
+    ]);
+  });
+
+  it("块模式切换编码前结算旧解码器内部残片", () => {
+    useWorkbenchStore.getState().ingestBytes(Uint8Array.from([0xe4]), 100);
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { direction: "rx", timestamp: 100, text: "", hex: "E4", byteCount: 1 },
+    ]);
+
+    useWorkbenchStore.getState().setTerminalRxTextEncoding("windows-1252");
+    useWorkbenchStore.getState().ingestBytes(Uint8Array.from([0x80]), 200);
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { direction: "rx", timestamp: 100, text: "�", hex: "E4", byteCount: 1 },
+      { direction: "rx", timestamp: 200, text: "€", hex: "80", byteCount: 1 },
+    ]);
+  });
+
+  it("切换编码先用旧编码结算残行且不改变 TX 的 UTF-8 语义", async () => {
+    useWorkbenchStore.setState({ connectionStatus: "connected" });
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    useWorkbenchStore.getState().setTerminalRxTextEncoding("gb18030");
+    useWorkbenchStore.getState().ingestBytes(Uint8Array.from([0xc4, 0xe3]), 100);
+
+    useWorkbenchStore.getState().setTerminalRxTextEncoding("windows-1252");
+    useWorkbenchStore.getState().ingestBytes(Uint8Array.from([0x80, 0x0a]), 200);
+    await useWorkbenchStore.getState().send("你", "text", "none");
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { direction: "rx", timestamp: 100, text: "你", rxBoundary: "unterminated" },
+      { direction: "rx", timestamp: 200, text: "€\\n", hex: "80 0A" },
+      { direction: "tx", text: "你", hex: "E4 BD A0" },
+    ]);
+  });
+
   it("未结束行超限时分段，暂停时保留剩余残片", () => {
     useWorkbenchStore.getState().setTerminalRxRecordMode("line");
     useWorkbenchStore.getState().ingestBytes(new Uint8Array(2_050).fill(0x41), 100);
@@ -546,6 +614,32 @@ describe("workbenchStore", () => {
       { byteCount: 2_048, rxBoundary: "overflow" },
       { timestamp: 100, text: "AA", byteCount: 2, rxBoundary: "unterminated" },
     ]);
+  });
+
+  it("行分段跨越多字节字符时保持连续解码状态", () => {
+    const bytes = new Uint8Array(2_049).fill(0x41);
+    bytes[bytes.length - 2] = 0xe4;
+    bytes[bytes.length - 1] = 0xb8;
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    useWorkbenchStore.getState().ingestBytes(bytes, 100);
+
+    expect(useWorkbenchStore.getState().terminalEntries).toHaveLength(1);
+    expect(useWorkbenchStore.getState().terminalEntries[0]).toMatchObject({
+      byteCount: 2_048,
+      rxBoundary: "overflow",
+    });
+    expect(useWorkbenchStore.getState().terminalEntries[0]?.text.endsWith("�")).toBe(false);
+
+    useWorkbenchStore.getState().ingestBytes(Uint8Array.from([0xad, 0x0a]), 200);
+
+    expect(useWorkbenchStore.getState().terminalEntries).toHaveLength(2);
+    expect(useWorkbenchStore.getState().terminalEntries[0]?.hex.endsWith("E4")).toBe(true);
+    expect(useWorkbenchStore.getState().terminalEntries[1]).toMatchObject({
+      timestamp: 100,
+      text: "中\\n",
+      hex: "B8 AD 0A",
+      byteCount: 3,
+    });
   });
 
   it("暂停期间不缓存 RX，恢复后从新的文本行开始", () => {
@@ -2703,7 +2797,7 @@ describe("workbenchStore", () => {
     const beforeActiveId = useWorkbenchStore.getState().activeWorkspaceId;
     const importedId = useWorkbenchStore.getState().importWorkspace({
       format: "vofa-ultra.workspace",
-      schemaVersion: 7,
+      schemaVersion: 8,
       name: "默认工作区",
       config: createDefaultWorkspaceConfig("serial"),
     });
@@ -2787,10 +2881,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 7 });
+    ).toMatchObject({ version: 8 });
   });
 
-  it("通过 rehydrate 把 v1 工作区写回 v7 且保留快照", async () => {
+  it("通过 rehydrate 把 v1 工作区写回 v8 且保留快照", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.processingGraph;
@@ -2799,6 +2893,7 @@ describe("workbenchStore", () => {
     delete legacyConfig.quickCommands;
     delete legacyConfig.terminalRxRecordMode;
     delete legacyConfig.terminalRxLineEnding;
+    delete legacyConfig.terminalRxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -2841,16 +2936,17 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 7 });
+    ).toMatchObject({ version: 8 });
   });
 
-  it("通过 rehydrate 把 v3 工作区补充默认配置并写回 v7", async () => {
+  it("通过 rehydrate 把 v3 工作区补充默认配置并写回 v8", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.autoResponderRules;
     delete legacyConfig.quickCommands;
     delete legacyConfig.terminalRxRecordMode;
     delete legacyConfig.terminalRxLineEnding;
+    delete legacyConfig.terminalRxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -2883,7 +2979,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 7 });
+    ).toMatchObject({ version: 8 });
   });
 
   it("通过 rehydrate 从 v4 补充空快捷命令并保留全部工作区", async () => {
@@ -2896,8 +2992,10 @@ describe("workbenchStore", () => {
     delete legacySecond.quickCommands;
     delete legacyFirst.terminalRxRecordMode;
     delete legacyFirst.terminalRxLineEnding;
+    delete legacyFirst.terminalRxTextEncoding;
     delete legacySecond.terminalRxRecordMode;
     delete legacySecond.terminalRxLineEnding;
+    delete legacySecond.terminalRxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -2940,10 +3038,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 7 });
+    ).toMatchObject({ version: 8 });
   });
 
-  it("通过 rehydrate 把 v5 的全部工作区无损迁移并写回 v7", async () => {
+  it("通过 rehydrate 把 v5 的全部工作区无损迁移并写回 v8", async () => {
     const firstConfig = createDefaultWorkspaceConfig("simulator");
     firstConfig.lineEnding = "crlf";
     firstConfig.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
@@ -2955,11 +3053,14 @@ describe("workbenchStore", () => {
     const second = createWorkspaceProfile("v5 工作区 B", secondConfig, "legacy-v5-b", 200);
     delete (first.config as Partial<typeof first.config>).terminalRxRecordMode;
     delete (first.config as Partial<typeof first.config>).terminalRxLineEnding;
+    delete (first.config as Partial<typeof first.config>).terminalRxTextEncoding;
     delete (second.config as Partial<typeof second.config>).terminalRxRecordMode;
     delete (second.config as Partial<typeof second.config>).terminalRxLineEnding;
+    delete (second.config as Partial<typeof second.config>).terminalRxTextEncoding;
     const legacySecondConfig = JSON.parse(JSON.stringify(secondConfig)) as Record<string, unknown>;
     delete legacySecondConfig.terminalRxRecordMode;
     delete legacySecondConfig.terminalRxLineEnding;
+    delete legacySecondConfig.terminalRxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -2991,7 +3092,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 7 });
+    ).toMatchObject({ version: 8 });
   });
 
   it("迁移 v6 本地状态并保留工作区内的 CR 发送行尾", async () => {
@@ -3003,9 +3104,11 @@ describe("workbenchStore", () => {
     const workspace = createWorkspaceProfile("CR 工作区", config, "cr-workspace", 100);
     delete (workspace.config as Partial<typeof workspace.config>).terminalRxRecordMode;
     delete (workspace.config as Partial<typeof workspace.config>).terminalRxLineEnding;
+    delete (workspace.config as Partial<typeof workspace.config>).terminalRxTextEncoding;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.terminalRxRecordMode;
     delete legacyConfig.terminalRxLineEnding;
+    delete legacyConfig.terminalRxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -3027,6 +3130,7 @@ describe("workbenchStore", () => {
       quickCommands: [{ lineEnding: "cr" }],
       terminalRxRecordMode: "chunk",
       terminalRxLineEnding: "lf",
+      terminalRxTextEncoding: "utf-8",
       workspaces: [
         {
           id: workspace.id,
@@ -3036,15 +3140,48 @@ describe("workbenchStore", () => {
             quickCommands: [{ lineEnding: "cr" }],
             terminalRxRecordMode: "chunk",
             terminalRxLineEnding: "lf",
+            terminalRxTextEncoding: "utf-8",
           },
         },
       ],
     });
   });
 
+  it("迁移 v7 本地状态并为活动配置与工作区补充 UTF-8", async () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    const workspace = createWorkspaceProfile("v7 工作区", config, "legacy-v7", 100);
+    delete (workspace.config as Partial<typeof workspace.config>).terminalRxTextEncoding;
+    const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+    delete legacyConfig.terminalRxTextEncoding;
+    localStorage.setItem(
+      "vofa-ultra-workbench",
+      JSON.stringify({
+        version: 7,
+        state: {
+          ...legacyConfig,
+          workspaces: [workspace],
+          activeWorkspaceId: workspace.id,
+        },
+      }),
+    );
+
+    await useWorkbenchStore.persist.rehydrate();
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      activeWorkspaceId: workspace.id,
+      terminalRxTextEncoding: "utf-8",
+      workspaces: [
+        { id: workspace.id, config: { terminalRxTextEncoding: "utf-8" } },
+      ],
+    });
+    expect(
+      JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
+    ).toMatchObject({ version: 8 });
+  });
+
   it("拒绝并保留更高版本的持久化数据", async () => {
     const futureValue = JSON.stringify({
-      version: 8,
+      version: 9,
       state: {
         futureWorkspaceFormat: true,
         workspaces: [{ id: "future-only" }],
@@ -3057,13 +3194,13 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState()).toMatchObject({
       workspaceStorageStatus: "newer-version",
-      incompatibleStorageVersion: 8,
+      incompatibleStorageVersion: 9,
     });
     expect(() => useWorkbenchStore.getState().saveActiveWorkspace("不会保存")).toThrow(
-      /版本 8.*不能保存/,
+      /版本 9.*不能保存/,
     );
     expect(() => useWorkbenchStore.getState().setQuickCommands([quickCommand()])).toThrow(
-      /版本 8.*不能保存/,
+      /版本 9.*不能保存/,
     );
     expect(localStorage.getItem("vofa-ultra-workbench")).toBe(futureValue);
     useWorkbenchStore.persist.clearStorage();
@@ -3977,6 +4114,44 @@ describe("workbenchStore", () => {
     ]);
   });
 
+  it("回放 RX 使用工作区选择的 GB18030 编码且不改变原始字节", () => {
+    const rawHeader: ReplayCaptureHeader = { ...TEST_REPLAY_HEADER, protocol: "raw" };
+    useWorkbenchStore.setState({
+      terminalRxRecordMode: "line",
+      terminalRxLineEnding: "lf",
+      terminalRxTextEncoding: "gb18030",
+      replayStatus: "playing",
+      replaySessionId: 7,
+      replayGeneration: 1,
+      replayRevision: 1,
+      replayHeader: rawHeader,
+      replayNextSequence: 1,
+    });
+
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 2_000,
+      dataBytes: 5,
+      records: [
+        { direction: "rx", timestampUs: 1_000, data: [0xc4] },
+        { direction: "rx", timestampUs: 2_000, data: [0xe3, 0xba, 0xc3, 0x0a] },
+      ],
+    });
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      {
+        direction: "rx",
+        timestamp: 1_001,
+        text: "你好\\n",
+        hex: "C4 E3 BA C3 0A",
+        byteCount: 5,
+      },
+    ]);
+  });
+
   it("切换 RX 记录方式不打断回放 TX 的跨 record UTF-8 解码", () => {
     const txBytes = new TextEncoder().encode("中");
     const rawHeader: ReplayCaptureHeader = { ...TEST_REPLAY_HEADER, protocol: "raw" };
@@ -4124,6 +4299,45 @@ describe("workbenchStore", () => {
         byteCount: 7,
         rxBoundary: "unterminated",
       },
+    ]);
+  });
+
+  it("回放自然结束时结算块模式 RX 解码器内部残片", () => {
+    const rawHeader: ReplayCaptureHeader = { ...TEST_REPLAY_HEADER, protocol: "raw" };
+    useWorkbenchStore.setState({
+      terminalRxRecordMode: "chunk",
+      replayStatus: "playing",
+      replaySessionId: 7,
+      replayGeneration: 1,
+      replayRevision: 1,
+      replayHeader: rawHeader,
+      replayNextSequence: 1,
+    });
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_000,
+      dataBytes: 1,
+      records: [{ direction: "rx", timestampUs: 1_000, data: [0xe4] }],
+    });
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { direction: "rx", text: "", hex: "E4", byteCount: 1 },
+    ]);
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("completed", {
+        header: rawHeader,
+        generation: 1,
+        revision: 2,
+        positionUs: 1_000,
+      }),
+    );
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { direction: "rx", text: "�", hex: "E4", byteCount: 1 },
     ]);
   });
 

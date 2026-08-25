@@ -12,6 +12,7 @@ import type {
   QuickCommand,
   TerminalRxLineEnding,
   TerminalRxRecordMode,
+  TerminalRxTextEncoding,
 } from "./workbench";
 
 export type ChartWindowSeconds = 5 | 15 | 30 | 60;
@@ -51,7 +52,11 @@ export interface WorkspaceConfigV7 extends WorkspaceConfigV6 {
   terminalRxLineEnding: TerminalRxLineEnding;
 }
 
-export type WorkspaceConfig = WorkspaceConfigV7;
+export interface WorkspaceConfigV8 extends WorkspaceConfigV7 {
+  terminalRxTextEncoding: TerminalRxTextEncoding;
+}
+
+export type WorkspaceConfig = WorkspaceConfigV8;
 
 export interface WorkspaceProfile {
   id: string;
@@ -108,4 +113,11 @@ export interface WorkspaceExportV7 {
   schemaVersion: 7;
   name: string;
   config: WorkspaceConfigV7;
+}
+
+export interface WorkspaceExportV8 {
+  format: "vofa-ultra.workspace";
+  schemaVersion: 8;
+  name: string;
+  config: WorkspaceConfigV8;
 }

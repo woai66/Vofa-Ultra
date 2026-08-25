@@ -74,6 +74,7 @@ describe("TerminalPanel", () => {
       lineEnding: "none",
       terminalRxRecordMode: "chunk",
       terminalRxLineEnding: "lf",
+      terminalRxTextEncoding: "utf-8",
       terminalPaused: false,
       terminalAutoScroll: true,
     });
@@ -96,11 +97,12 @@ describe("TerminalPanel", () => {
     expect(screen.getByText("没有匹配的终端记录")).toBeVisible();
   });
 
-  it("切换接收记录方式并独立选择 RX 行尾", async () => {
+  it("切换接收记录方式并独立选择 RX 行尾与文本编码", async () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
     const recordMode = screen.getByRole("group", { name: "接收记录方式" });
     const lineEnding = screen.getByRole("combobox", { name: "接收行尾" });
+    const textEncoding = screen.getByRole("combobox", { name: "接收文本编码" });
 
     expect(within(recordMode).getByRole("button", { name: "按读取块记录" })).toHaveAttribute(
       "aria-pressed",
@@ -109,14 +111,19 @@ describe("TerminalPanel", () => {
     expect(lineEnding).toBeDisabled();
     expect(lineEnding).toHaveAttribute("id", "terminal-rx-line-ending");
     expect(lineEnding).toHaveAttribute("name", "terminal-rx-line-ending");
+    expect(textEncoding).toHaveValue("utf-8");
+    expect(textEncoding).toHaveAttribute("id", "terminal-rx-text-encoding");
+    expect(textEncoding).toHaveAttribute("name", "terminal-rx-text-encoding");
 
     await user.click(within(recordMode).getByRole("button", { name: "按文本行记录" }));
     expect(lineEnding).toBeEnabled();
     await user.selectOptions(lineEnding, "cr");
+    await user.selectOptions(textEncoding, "gb18030");
 
     expect(useWorkbenchStore.getState()).toMatchObject({
       terminalRxRecordMode: "line",
       terminalRxLineEnding: "cr",
+      terminalRxTextEncoding: "gb18030",
     });
   });
 

@@ -16,9 +16,10 @@ import {
 import { createDefaultAutoResponderRule } from "./autoResponder";
 import { PROTOCOL_IDS } from "../types/serial";
 
-function removeV7TerminalRxFields(config: Record<string, unknown>): void {
+function removeCurrentTerminalRxFields(config: Record<string, unknown>): void {
   delete config.terminalRxRecordMode;
   delete config.terminalRxLineEnding;
+  delete config.terminalRxTextEncoding;
 }
 
 describe("工作区文件", () => {
@@ -63,7 +64,7 @@ describe("工作区文件", () => {
     });
   });
 
-  it("以严格的 v7 格式往返终端行聚合及完整工作区配置", () => {
+  it("以严格的 v8 格式往返终端行聚合、文本编码及完整工作区配置", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.serialConfig.portName = "COM7";
     config.protocol = "justfloat";
@@ -71,6 +72,7 @@ describe("工作区文件", () => {
     config.lineEnding = "cr";
     config.terminalRxRecordMode = "line";
     config.terminalRxLineEnding = "crlf";
+    config.terminalRxTextEncoding = "gb18030";
     config.channelVisibility = { "channel-2": false };
     config.processingGraph = {
       enabled: true,
@@ -105,7 +107,7 @@ describe("工作区文件", () => {
 
     expect(parsed).toEqual({
       format: "vofa-ultra.workspace",
-      schemaVersion: 7,
+      schemaVersion: 8,
       name: "台架 A",
       config,
     });
@@ -128,7 +130,7 @@ describe("工作区文件", () => {
     );
     const exported = JSON.parse(serializeWorkspace(profile)) as Record<string, unknown>;
     const config = exported.config as Record<string, unknown>;
-    removeV7TerminalRxFields(config);
+    removeCurrentTerminalRxFields(config);
     delete config.processingGraph;
     delete config.attitudeConfig;
     delete config.autoResponderRules;
@@ -137,7 +139,7 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(7);
+    expect(parsed.schemaVersion).toBe(8);
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.channels).toEqual({
       roll: "",
@@ -161,7 +163,7 @@ describe("工作区文件", () => {
     );
     const exported = JSON.parse(serializeWorkspace(profile)) as Record<string, unknown>;
     const config = exported.config as Record<string, unknown>;
-    removeV7TerminalRxFields(config);
+    removeCurrentTerminalRxFields(config);
     delete config.attitudeConfig;
     delete config.autoResponderRules;
     delete config.quickCommands;
@@ -169,7 +171,7 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(7);
+    expect(parsed.schemaVersion).toBe(8);
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
     expect(parsed.config.autoResponderRules).toEqual([]);
@@ -185,14 +187,14 @@ describe("工作区文件", () => {
     );
     const exported = JSON.parse(serializeWorkspace(profile)) as Record<string, unknown>;
     const config = exported.config as Record<string, unknown>;
-    removeV7TerminalRxFields(config);
+    removeCurrentTerminalRxFields(config);
     delete config.autoResponderRules;
     delete config.quickCommands;
     exported.schemaVersion = 3;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(7);
+    expect(parsed.schemaVersion).toBe(8);
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
     expect(parsed.config.autoResponderRules).toEqual([]);
     expect(parsed.config.quickCommands).toEqual([]);
@@ -205,18 +207,18 @@ describe("工作区文件", () => {
       serializeWorkspace(createWorkspaceProfile("v4 工作区", config, "legacy-v4", 100)),
     ) as Record<string, unknown>;
     const exportedConfig = exported.config as Record<string, unknown>;
-    removeV7TerminalRxFields(exportedConfig);
+    removeCurrentTerminalRxFields(exportedConfig);
     delete exportedConfig.quickCommands;
     exported.schemaVersion = 4;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(7);
+    expect(parsed.schemaVersion).toBe(8);
     expect(parsed.config.autoResponderRules).toEqual(config.autoResponderRules);
     expect(parsed.config.quickCommands).toEqual([]);
   });
 
-  it("导入严格 v5 后无损迁移为 v7", () => {
+  it("导入严格 v5 后无损迁移为 v8", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.lineEnding = "crlf";
     config.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
@@ -233,12 +235,12 @@ describe("工作区文件", () => {
     const exported = JSON.parse(
       serializeWorkspace(createWorkspaceProfile("v5 工作区", config, "legacy-v5", 100)),
     ) as Record<string, unknown>;
-    removeV7TerminalRxFields(exported.config as Record<string, unknown>);
+    removeCurrentTerminalRxFields(exported.config as Record<string, unknown>);
     exported.schemaVersion = 5;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(7);
+    expect(parsed.schemaVersion).toBe(8);
     expect(parsed.config).toEqual(config);
   });
 
@@ -247,16 +249,31 @@ describe("工作区文件", () => {
     const exported = JSON.parse(
       serializeWorkspace(createWorkspaceProfile("v6 工作区", config, "legacy-v6", 100)),
     ) as Record<string, unknown>;
-    removeV7TerminalRxFields(exported.config as Record<string, unknown>);
+    removeCurrentTerminalRxFields(exported.config as Record<string, unknown>);
     exported.schemaVersion = 6;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(7);
+    expect(parsed.schemaVersion).toBe(8);
     expect(parsed.config).toMatchObject({
       terminalRxRecordMode: "chunk",
       terminalRxLineEnding: "lf",
+      terminalRxTextEncoding: "utf-8",
     });
+  });
+
+  it("导入严格 v7 后补充默认 UTF-8 接收编码", () => {
+    const config = createDefaultWorkspaceConfig("serial");
+    const exported = JSON.parse(
+      serializeWorkspace(createWorkspaceProfile("v7 工作区", config, "legacy-v7", 100)),
+    ) as Record<string, unknown>;
+    delete (exported.config as Record<string, unknown>).terminalRxTextEncoding;
+    exported.schemaVersion = 7;
+
+    const parsed = parseWorkspaceExport(JSON.stringify(exported));
+
+    expect(parsed.schemaVersion).toBe(8);
+    expect(parsed.config.terminalRxTextEncoding).toBe("utf-8");
   });
 
   it.each([1, 2, 3, 4, 5] as const)("v%d 顶层行尾仍拒绝 CR", (schemaVersion) => {
@@ -271,7 +288,7 @@ describe("工作区文件", () => {
       ),
     ) as Record<string, unknown>;
     const config = exported.config as Record<string, unknown>;
-    removeV7TerminalRxFields(config);
+    removeCurrentTerminalRxFields(config);
     config.lineEnding = "cr";
     if (schemaVersion < 5) {
       delete config.quickCommands;
@@ -314,7 +331,7 @@ describe("工作区文件", () => {
     const exported = JSON.parse(
       serializeWorkspace(createWorkspaceProfile("历史工作区", config, "legacy", 100)),
     ) as Record<string, unknown>;
-    removeV7TerminalRxFields(exported.config as Record<string, unknown>);
+    removeCurrentTerminalRxFields(exported.config as Record<string, unknown>);
     if (schemaVersion === 4) {
       delete (exported.config as Record<string, unknown>).quickCommands;
     }
@@ -323,7 +340,7 @@ describe("工作区文件", () => {
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/行尾/);
   });
 
-  it("严格校验 v7 姿态字段、快捷命令、接收行配置及派生通道引用", () => {
+  it("严格校验 v8 姿态字段、快捷命令、接收配置及派生通道引用", () => {
     const profile = createWorkspaceProfile(
       "姿态工作区",
       createDefaultWorkspaceConfig("simulator"),
@@ -366,6 +383,14 @@ describe("工作区文件", () => {
       parseWorkspaceExport(
         JSON.stringify({
           ...exported,
+          config: { ...config, terminalRxTextEncoding: "big5" },
+        }),
+      ),
+    ).toThrow(/接收文本编码/);
+    expect(() =>
+      parseWorkspaceExport(
+        JSON.stringify({
+          ...exported,
           config: {
             ...config,
             attitudeConfig: {
@@ -400,7 +425,7 @@ describe("工作区文件", () => {
 
   it.each([
     ["错误格式", { format: "other", schemaVersion: 1 }],
-    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 8 }],
+    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 9 }],
   ])("拒绝%s", (_label, overrides) => {
     const profile = createWorkspaceProfile(
       "默认工作区",

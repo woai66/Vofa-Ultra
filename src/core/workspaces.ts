@@ -29,6 +29,7 @@ import {
 import {
   TERMINAL_RX_LINE_ENDINGS,
   TERMINAL_RX_RECORD_MODES,
+  TERMINAL_RX_TEXT_ENCODINGS,
 } from "../types/workbench";
 import type {
   ChartWindowSeconds,
@@ -40,7 +41,8 @@ import type {
   WorkspaceConfigV5,
   WorkspaceConfigV6,
   WorkspaceConfigV7,
-  WorkspaceExportV7,
+  WorkspaceConfigV8,
+  WorkspaceExportV8,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AttitudeConfig } from "../types/attitude";
@@ -48,7 +50,7 @@ import type { ProcessingGraphConfig } from "../types/processingGraph";
 import type { LineEnding } from "../types/serial";
 
 export const WORKSPACE_FILE_FORMAT = "vofa-ultra.workspace";
-export const WORKSPACE_SCHEMA_VERSION = 7;
+export const WORKSPACE_SCHEMA_VERSION = 8;
 export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   1,
   2,
@@ -56,6 +58,7 @@ export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   4,
   5,
   6,
+  7,
   WORKSPACE_SCHEMA_VERSION,
 ] as const;
 export const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
@@ -89,6 +92,10 @@ const WORKSPACE_CONFIG_V7_KEYS = [
   "terminalRxRecordMode",
   "terminalRxLineEnding",
 ] as const;
+const WORKSPACE_CONFIG_V8_KEYS = [
+  ...WORKSPACE_CONFIG_V7_KEYS,
+  "terminalRxTextEncoding",
+] as const;
 const SERIAL_CONFIG_KEYS = [
   "portName",
   "baudRate",
@@ -118,6 +125,7 @@ export function createDefaultWorkspaceConfig(source: WorkspaceConfig["source"]):
     lineEnding: "none",
     terminalRxRecordMode: "chunk",
     terminalRxLineEnding: "lf",
+    terminalRxTextEncoding: "utf-8",
     terminalAutoScroll: true,
     chartWindowSeconds: 15,
     channelVisibility: {},
@@ -142,6 +150,7 @@ export function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
     lineEnding: config.lineEnding,
     terminalRxRecordMode: config.terminalRxRecordMode,
     terminalRxLineEnding: config.terminalRxLineEnding,
+    terminalRxTextEncoding: config.terminalRxTextEncoding,
     terminalAutoScroll: config.terminalAutoScroll,
     chartWindowSeconds: config.chartWindowSeconds,
     channelVisibility: { ...config.channelVisibility },
@@ -179,6 +188,7 @@ export function areWorkspaceConfigsEqual(
     left.lineEnding === right.lineEnding &&
     left.terminalRxRecordMode === right.terminalRxRecordMode &&
     left.terminalRxLineEnding === right.terminalRxLineEnding &&
+    left.terminalRxTextEncoding === right.terminalRxTextEncoding &&
     left.terminalAutoScroll === right.terminalAutoScroll &&
     left.chartWindowSeconds === right.chartWindowSeconds &&
     JSON.stringify(leftVisibility) === JSON.stringify(rightVisibility) &&
@@ -263,7 +273,7 @@ export function assertWorkspaceNameAvailable(
 }
 
 export function serializeWorkspace(profile: WorkspaceProfile): string {
-  const exported: WorkspaceExportV7 = {
+  const exported: WorkspaceExportV8 = {
     format: WORKSPACE_FILE_FORMAT,
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     name: profile.name,
@@ -274,7 +284,7 @@ export function serializeWorkspace(profile: WorkspaceProfile): string {
   return serialized;
 }
 
-export function parseWorkspaceExport(text: string): WorkspaceExportV7 {
+export function parseWorkspaceExport(text: string): WorkspaceExportV8 {
   assertWorkspaceFileSize(text);
 
   let parsed: unknown;
@@ -315,9 +325,32 @@ export function parseWorkspaceConfig(value: unknown): WorkspaceConfig {
 function parseWorkspaceConfigWithLineEndings(
   value: unknown,
   allowedLineEndings: readonly LineEnding[],
+): WorkspaceConfigV8 {
+  const record = requireRecord(value, "工作区配置");
+  assertExactKeys(record, WORKSPACE_CONFIG_V8_KEYS, "工作区配置");
+  return {
+    ...parseWorkspaceConfigV7Record(record, allowedLineEndings),
+    terminalRxTextEncoding: requireEnum(
+      record.terminalRxTextEncoding,
+      TERMINAL_RX_TEXT_ENCODINGS,
+      "接收文本编码",
+    ),
+  };
+}
+
+function parseWorkspaceConfigV7(
+  value: unknown,
+  allowedLineEndings: readonly LineEnding[] = LINE_ENDINGS,
 ): WorkspaceConfigV7 {
   const record = requireRecord(value, "工作区配置");
   assertExactKeys(record, WORKSPACE_CONFIG_V7_KEYS, "工作区配置");
+  return parseWorkspaceConfigV7Record(record, allowedLineEndings);
+}
+
+function parseWorkspaceConfigV7Record(
+  record: Record<string, unknown>,
+  allowedLineEndings: readonly LineEnding[],
+): WorkspaceConfigV7 {
   const processingGraph = parseProcessingGraphConfig(record.processingGraph);
   const attitudeConfig = parseAttitudeConfig(record.attitudeConfig);
   assertAttitudeChannelsMatchGraph(attitudeConfig, processingGraph);
@@ -513,44 +546,70 @@ function migrateWorkspaceConfigV6(config: WorkspaceConfigV6): WorkspaceConfigV7 
   };
 }
 
+function migrateWorkspaceConfigV7(config: WorkspaceConfigV7): WorkspaceConfigV8 {
+  return {
+    ...config,
+    serialConfig: { ...config.serialConfig },
+    channelVisibility: { ...config.channelVisibility },
+    processingGraph: cloneProcessingGraph(config.processingGraph),
+    attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
+    autoResponderRules: cloneAutoResponderRules(config.autoResponderRules),
+    quickCommands: cloneQuickCommands(config.quickCommands),
+    terminalRxTextEncoding: "utf-8",
+  };
+}
+
 function parseVersionedWorkspaceConfig(version: unknown, value: unknown): WorkspaceConfig {
   if (version === 1) {
-    return migrateWorkspaceConfigV6(
-      migrateWorkspaceConfigV5(
-        migrateWorkspaceConfigV4(
-          migrateWorkspaceConfigV3(
-            migrateWorkspaceConfigV2(migrateWorkspaceConfigV1(parseWorkspaceConfigV1(value))),
+    return migrateWorkspaceConfigV7(
+      migrateWorkspaceConfigV6(
+        migrateWorkspaceConfigV5(
+          migrateWorkspaceConfigV4(
+            migrateWorkspaceConfigV3(
+              migrateWorkspaceConfigV2(migrateWorkspaceConfigV1(parseWorkspaceConfigV1(value))),
+            ),
           ),
         ),
       ),
     );
   }
   if (version === 2) {
-    return migrateWorkspaceConfigV6(
-      migrateWorkspaceConfigV5(
-        migrateWorkspaceConfigV4(
-          migrateWorkspaceConfigV3(migrateWorkspaceConfigV2(parseWorkspaceConfigV2(value))),
+    return migrateWorkspaceConfigV7(
+      migrateWorkspaceConfigV6(
+        migrateWorkspaceConfigV5(
+          migrateWorkspaceConfigV4(
+            migrateWorkspaceConfigV3(migrateWorkspaceConfigV2(parseWorkspaceConfigV2(value))),
+          ),
         ),
       ),
     );
   }
   if (version === 3) {
-    return migrateWorkspaceConfigV6(
-      migrateWorkspaceConfigV5(
-        migrateWorkspaceConfigV4(migrateWorkspaceConfigV3(parseWorkspaceConfigV3(value))),
+    return migrateWorkspaceConfigV7(
+      migrateWorkspaceConfigV6(
+        migrateWorkspaceConfigV5(
+          migrateWorkspaceConfigV4(migrateWorkspaceConfigV3(parseWorkspaceConfigV3(value))),
+        ),
       ),
     );
   }
   if (version === 4) {
-    return migrateWorkspaceConfigV6(
-      migrateWorkspaceConfigV5(migrateWorkspaceConfigV4(parseWorkspaceConfigV4(value))),
+    return migrateWorkspaceConfigV7(
+      migrateWorkspaceConfigV6(
+        migrateWorkspaceConfigV5(migrateWorkspaceConfigV4(parseWorkspaceConfigV4(value))),
+      ),
     );
   }
   if (version === 5) {
-    return migrateWorkspaceConfigV6(migrateWorkspaceConfigV5(parseWorkspaceConfigV5(value)));
+    return migrateWorkspaceConfigV7(
+      migrateWorkspaceConfigV6(migrateWorkspaceConfigV5(parseWorkspaceConfigV5(value))),
+    );
   }
   if (version === 6) {
-    return migrateWorkspaceConfigV6(parseWorkspaceConfigV6(value));
+    return migrateWorkspaceConfigV7(migrateWorkspaceConfigV6(parseWorkspaceConfigV6(value)));
+  }
+  if (version === 7) {
+    return migrateWorkspaceConfigV7(parseWorkspaceConfigV7(value));
   }
   if (version === WORKSPACE_SCHEMA_VERSION) {
     return parseWorkspaceConfig(value);
@@ -622,6 +681,9 @@ export function restoreWorkspaceConfig(
     terminalRxLineEnding: isEnum(record.terminalRxLineEnding, TERMINAL_RX_LINE_ENDINGS)
       ? record.terminalRxLineEnding
       : fallback.terminalRxLineEnding,
+    terminalRxTextEncoding: isEnum(record.terminalRxTextEncoding, TERMINAL_RX_TEXT_ENCODINGS)
+      ? record.terminalRxTextEncoding
+      : fallback.terminalRxTextEncoding,
     terminalAutoScroll:
       typeof record.terminalAutoScroll === "boolean"
         ? record.terminalAutoScroll
@@ -679,45 +741,57 @@ function parseWorkspaceProfile(
     throw new Error("工作区更新时间早于创建时间");
   }
   const configRecord = requireRecord(record.config, "工作区配置");
-  const config = Object.hasOwn(configRecord, "terminalRxRecordMode")
+  const config = Object.hasOwn(configRecord, "terminalRxTextEncoding")
     ? parseWorkspaceConfigWithLineEndings(configRecord, allowedLineEndings)
+    : Object.hasOwn(configRecord, "terminalRxRecordMode")
+      ? migrateWorkspaceConfigV7(parseWorkspaceConfigV7(configRecord, allowedLineEndings))
     : Object.hasOwn(configRecord, "quickCommands")
-      ? migrateWorkspaceConfigV6(parseWorkspaceConfigV6(configRecord, allowedLineEndings))
+      ? migrateWorkspaceConfigV7(
+          migrateWorkspaceConfigV6(parseWorkspaceConfigV6(configRecord, allowedLineEndings)),
+        )
     : Object.hasOwn(configRecord, "autoResponderRules")
-      ? migrateWorkspaceConfigV6(
-          migrateWorkspaceConfigV5(
-            migrateWorkspaceConfigV4(parseWorkspaceConfigV4(configRecord, allowedLineEndings)),
+      ? migrateWorkspaceConfigV7(
+          migrateWorkspaceConfigV6(
+            migrateWorkspaceConfigV5(
+              migrateWorkspaceConfigV4(parseWorkspaceConfigV4(configRecord, allowedLineEndings)),
+            ),
           ),
         )
       : Object.hasOwn(configRecord, "attitudeConfig")
-        ? migrateWorkspaceConfigV6(
-            migrateWorkspaceConfigV5(
-              migrateWorkspaceConfigV4(
-                migrateWorkspaceConfigV3(
-                  parseWorkspaceConfigV3(configRecord, allowedLineEndings),
+        ? migrateWorkspaceConfigV7(
+            migrateWorkspaceConfigV6(
+              migrateWorkspaceConfigV5(
+                migrateWorkspaceConfigV4(
+                  migrateWorkspaceConfigV3(
+                    parseWorkspaceConfigV3(configRecord, allowedLineEndings),
+                  ),
                 ),
               ),
             ),
           )
-    : Object.hasOwn(configRecord, "processingGraph")
-      ? migrateWorkspaceConfigV6(
-          migrateWorkspaceConfigV5(
-            migrateWorkspaceConfigV4(
-              migrateWorkspaceConfigV3(
-                migrateWorkspaceConfigV2(
-                  parseWorkspaceConfigV2(configRecord, allowedLineEndings),
+      : Object.hasOwn(configRecord, "processingGraph")
+      ? migrateWorkspaceConfigV7(
+          migrateWorkspaceConfigV6(
+            migrateWorkspaceConfigV5(
+              migrateWorkspaceConfigV4(
+                migrateWorkspaceConfigV3(
+                  migrateWorkspaceConfigV2(
+                    parseWorkspaceConfigV2(configRecord, allowedLineEndings),
+                  ),
                 ),
               ),
             ),
           ),
         )
-      : migrateWorkspaceConfigV6(
-          migrateWorkspaceConfigV5(
-            migrateWorkspaceConfigV4(
-              migrateWorkspaceConfigV3(
-                migrateWorkspaceConfigV2(
-                  migrateWorkspaceConfigV1(
-                    parseWorkspaceConfigV1(configRecord, allowedLineEndings),
+      : migrateWorkspaceConfigV7(
+          migrateWorkspaceConfigV6(
+            migrateWorkspaceConfigV5(
+              migrateWorkspaceConfigV4(
+                migrateWorkspaceConfigV3(
+                  migrateWorkspaceConfigV2(
+                    migrateWorkspaceConfigV1(
+                      parseWorkspaceConfigV1(configRecord, allowedLineEndings),
+                    ),
                   ),
                 ),
               ),
