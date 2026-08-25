@@ -82,9 +82,10 @@ MPL 组件均记录在 `reviewedComponents`；任何新增或升级组件都会�
 相同显式输入连续序列化应逐字节一致；工具测试覆盖图遍历、工具输出解析、环境 schema 和排序。实际环境记录会随
 runner 镜像、工具链和系统包版本变化，这种差异正是记录需要保留的事实。
 
-这不代表完整安装包已经可复现。Windows/macOS 的 `*-latest` runner、Linux apt 包、平台 WebView 和签名环境仍会
-漂移；Windows WebView2 Runtime 和未显式安装的系统库也不属于本清单。Artifact attestation 证明 GitHub workflow、
-源码 commit 与文件摘要之间的关系，不证明源码无恶意、构建机绝对可信或两个安装包字节相同。
+这不代表完整安装包已经可复现。workflow 固定了 `ubuntu-22.04`、`windows-2022` 和 `macos-15-intel` 的 OS
+release 标签，但 GitHub hosted runner 的镜像修订、Linux apt 包、平台 WebView 和签名环境仍会漂移；Windows
+WebView2 Runtime 和未显式安装的系统库也不属于本清单。Artifact attestation 证明 GitHub workflow、源码 commit
+与文件摘要之间的关系，不证明源码无恶意、构建机绝对可信或两个安装包字节相同。
 
 ## 本地命令
 

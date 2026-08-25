@@ -85,7 +85,8 @@ gh attestation verify <asset-file> --repo <owner>/Vofa-Ultra
 ```
 
 平台证明对应实际执行 Tauri 构建的 matrix job；聚合证明对应 `release-draft` 对文件的复验、改名和补充材料。
-证明只绑定 workflow/commit 与 SHA-256 摘要，不替代签名、公证、安装测试，也不表示 runner 镜像或系统包已固定。
+证明只绑定 workflow/commit 与 SHA-256 摘要，不替代签名、公证、安装测试。workflow 固定 runner 的 OS release
+标签，但不表示滚动的镜像修订或系统包版本已经固定。
 
 ## 人工放行
 

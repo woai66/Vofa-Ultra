@@ -15,7 +15,7 @@ concurrency:
 jobs:
   frontend:
     name: Frontend and browser
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
 
     steps:
@@ -97,8 +97,8 @@ jobs:
       matrix:
         os:
           - ubuntu-22.04
-          - windows-latest
-          - macos-latest
+          - windows-2022
+          - macos-15-intel
 
     steps:
       - name: Check out repository
@@ -207,11 +207,11 @@ jobs:
             platform: linux
             rust_target: x86_64-unknown-linux-gnu
             bundles: deb,appimage
-          - os: windows-latest
+          - os: windows-2022
             platform: windows
             rust_target: x86_64-pc-windows-msvc
             bundles: msi,nsis
-          - os: macos-latest
+          - os: macos-15-intel
             platform: macos
             rust_target: x86_64-apple-darwin
             bundles: dmg
