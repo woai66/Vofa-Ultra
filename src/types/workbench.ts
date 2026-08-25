@@ -64,6 +64,14 @@ export interface CommandHistoryEntry {
   repeatCount: number;
 }
 
+export interface QuickCommand {
+  id: string;
+  name: string;
+  template: string;
+  mode: DisplayMode;
+  lineEnding: LineEnding;
+}
+
 export type CommandTaskStatus =
   | "idle"
   | "running"

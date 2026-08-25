@@ -16,6 +16,11 @@ import {
   cloneAutoResponderRules,
   parseAutoResponderRules,
 } from "./autoResponder";
+import {
+  areQuickCommandsEqual,
+  cloneQuickCommands,
+  parseQuickCommands,
+} from "./quickCommands";
 import type {
   ChartWindowSeconds,
   WorkspaceConfig,
@@ -23,21 +28,23 @@ import type {
   WorkspaceConfigV2,
   WorkspaceConfigV3,
   WorkspaceConfigV4,
-  WorkspaceExportV4,
+  WorkspaceConfigV5,
+  WorkspaceExportV5,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AttitudeConfig } from "../types/attitude";
 import type { ProcessingGraphConfig } from "../types/processingGraph";
 
 export const WORKSPACE_FILE_FORMAT = "vofa-ultra.workspace";
-export const WORKSPACE_SCHEMA_VERSION = 4;
+export const WORKSPACE_SCHEMA_VERSION = 5;
 export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   1,
   2,
   3,
+  4,
   WORKSPACE_SCHEMA_VERSION,
 ] as const;
-export const MAX_WORKSPACE_FILE_BYTES = 512 * 1024;
+export const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_WORKSPACE_COUNT = 32;
 export const MAX_WORKSPACE_NAME_LENGTH = 64;
 export const DEFAULT_WORKSPACE_ID = "default";
@@ -61,6 +68,7 @@ const WORKSPACE_CONFIG_V2_KEYS = [
 ] as const;
 const WORKSPACE_CONFIG_V3_KEYS = [...WORKSPACE_CONFIG_V2_KEYS, "attitudeConfig"] as const;
 const WORKSPACE_CONFIG_V4_KEYS = [...WORKSPACE_CONFIG_V3_KEYS, "autoResponderRules"] as const;
+const WORKSPACE_CONFIG_V5_KEYS = [...WORKSPACE_CONFIG_V4_KEYS, "quickCommands"] as const;
 const SERIAL_CONFIG_KEYS = [
   "portName",
   "baudRate",
@@ -94,6 +102,7 @@ export function createDefaultWorkspaceConfig(source: WorkspaceConfig["source"]):
     processingGraph: createDefaultProcessingGraph(),
     attitudeConfig: createDefaultAttitudeConfig(),
     autoResponderRules: [],
+    quickCommands: [],
   };
 }
 
@@ -115,6 +124,7 @@ export function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
     processingGraph: cloneProcessingGraph(config.processingGraph),
     attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
     autoResponderRules: cloneAutoResponderRules(config.autoResponderRules),
+    quickCommands: cloneQuickCommands(config.quickCommands),
   };
 }
 
@@ -148,7 +158,8 @@ export function areWorkspaceConfigsEqual(
     JSON.stringify(leftVisibility) === JSON.stringify(rightVisibility) &&
     JSON.stringify(left.processingGraph) === JSON.stringify(right.processingGraph) &&
     areAttitudeConfigsEqual(left.attitudeConfig, right.attitudeConfig) &&
-    areAutoResponderRulesEqual(left.autoResponderRules, right.autoResponderRules)
+    areAutoResponderRulesEqual(left.autoResponderRules, right.autoResponderRules) &&
+    areQuickCommandsEqual(left.quickCommands, right.quickCommands)
   );
 }
 
@@ -226,7 +237,7 @@ export function assertWorkspaceNameAvailable(
 }
 
 export function serializeWorkspace(profile: WorkspaceProfile): string {
-  const exported: WorkspaceExportV4 = {
+  const exported: WorkspaceExportV5 = {
     format: WORKSPACE_FILE_FORMAT,
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     name: profile.name,
@@ -237,7 +248,7 @@ export function serializeWorkspace(profile: WorkspaceProfile): string {
   return serialized;
 }
 
-export function parseWorkspaceExport(text: string): WorkspaceExportV4 {
+export function parseWorkspaceExport(text: string): WorkspaceExportV5 {
   assertWorkspaceFileSize(text);
 
   let parsed: unknown;
@@ -273,11 +284,12 @@ function assertWorkspaceFileSize(text: string): void {
 
 export function parseWorkspaceConfig(value: unknown): WorkspaceConfig {
   const record = requireRecord(value, "工作区配置");
-  assertExactKeys(record, WORKSPACE_CONFIG_V4_KEYS, "工作区配置");
+  assertExactKeys(record, WORKSPACE_CONFIG_V5_KEYS, "工作区配置");
   const processingGraph = parseProcessingGraphConfig(record.processingGraph);
   const attitudeConfig = parseAttitudeConfig(record.attitudeConfig);
   assertAttitudeChannelsMatchGraph(attitudeConfig, processingGraph);
   const autoResponderRules = parseAutoResponderRules(record.autoResponderRules);
+  const quickCommands = parseQuickCommands(record.quickCommands);
   const config = parseWorkspaceConfigBase(record, processingGraph);
 
   return {
@@ -285,6 +297,21 @@ export function parseWorkspaceConfig(value: unknown): WorkspaceConfig {
     processingGraph,
     attitudeConfig,
     autoResponderRules,
+    quickCommands,
+  };
+}
+
+function parseWorkspaceConfigV4(value: unknown): WorkspaceConfigV4 {
+  const record = requireRecord(value, "工作区配置");
+  assertExactKeys(record, WORKSPACE_CONFIG_V4_KEYS, "工作区配置");
+  const processingGraph = parseProcessingGraphConfig(record.processingGraph);
+  const attitudeConfig = parseAttitudeConfig(record.attitudeConfig);
+  assertAttitudeChannelsMatchGraph(attitudeConfig, processingGraph);
+  return {
+    ...parseWorkspaceConfigBase(record, processingGraph),
+    processingGraph,
+    attitudeConfig,
+    autoResponderRules: parseAutoResponderRules(record.autoResponderRules),
   };
 }
 
@@ -367,17 +394,36 @@ function migrateWorkspaceConfigV3(config: WorkspaceConfigV3): WorkspaceConfigV4 
   };
 }
 
+function migrateWorkspaceConfigV4(config: WorkspaceConfigV4): WorkspaceConfigV5 {
+  return {
+    ...config,
+    serialConfig: { ...config.serialConfig },
+    channelVisibility: { ...config.channelVisibility },
+    processingGraph: cloneProcessingGraph(config.processingGraph),
+    attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
+    autoResponderRules: cloneAutoResponderRules(config.autoResponderRules),
+    quickCommands: [],
+  };
+}
+
 function parseVersionedWorkspaceConfig(version: unknown, value: unknown): WorkspaceConfig {
   if (version === 1) {
-    return migrateWorkspaceConfigV3(
-      migrateWorkspaceConfigV2(migrateWorkspaceConfigV1(parseWorkspaceConfigV1(value))),
+    return migrateWorkspaceConfigV4(
+      migrateWorkspaceConfigV3(
+        migrateWorkspaceConfigV2(migrateWorkspaceConfigV1(parseWorkspaceConfigV1(value))),
+      ),
     );
   }
   if (version === 2) {
-    return migrateWorkspaceConfigV3(migrateWorkspaceConfigV2(parseWorkspaceConfigV2(value)));
+    return migrateWorkspaceConfigV4(
+      migrateWorkspaceConfigV3(migrateWorkspaceConfigV2(parseWorkspaceConfigV2(value))),
+    );
   }
   if (version === 3) {
-    return migrateWorkspaceConfigV3(parseWorkspaceConfigV3(value));
+    return migrateWorkspaceConfigV4(migrateWorkspaceConfigV3(parseWorkspaceConfigV3(value)));
+  }
+  if (version === 4) {
+    return migrateWorkspaceConfigV4(parseWorkspaceConfigV4(value));
   }
   if (version === WORKSPACE_SCHEMA_VERSION) {
     return parseWorkspaceConfig(value);
@@ -405,6 +451,9 @@ export function restoreWorkspaceConfig(
   const autoResponderRules =
     tryParseAutoResponderRules(record.autoResponderRules) ??
     cloneAutoResponderRules(fallback.autoResponderRules);
+  const quickCommands =
+    tryParseQuickCommands(record.quickCommands) ??
+    cloneQuickCommands(fallback.quickCommands);
   return {
     source: isEnum(record.source, ["serial", "simulator"]) ? record.source : fallback.source,
     protocol: isEnum(record.protocol, PROTOCOL_IDS)
@@ -452,6 +501,7 @@ export function restoreWorkspaceConfig(
     processingGraph,
     attitudeConfig,
     autoResponderRules,
+    quickCommands,
   };
 }
 
@@ -489,14 +539,22 @@ function parseWorkspaceProfile(value: unknown): WorkspaceProfile {
     throw new Error("工作区更新时间早于创建时间");
   }
   const configRecord = requireRecord(record.config, "工作区配置");
-  const config = Object.hasOwn(configRecord, "autoResponderRules")
+  const config = Object.hasOwn(configRecord, "quickCommands")
     ? parseWorkspaceConfig(configRecord)
-    : Object.hasOwn(configRecord, "attitudeConfig")
-      ? migrateWorkspaceConfigV3(parseWorkspaceConfigV3(configRecord))
+    : Object.hasOwn(configRecord, "autoResponderRules")
+      ? migrateWorkspaceConfigV4(parseWorkspaceConfigV4(configRecord))
+      : Object.hasOwn(configRecord, "attitudeConfig")
+        ? migrateWorkspaceConfigV4(migrateWorkspaceConfigV3(parseWorkspaceConfigV3(configRecord)))
     : Object.hasOwn(configRecord, "processingGraph")
-      ? migrateWorkspaceConfigV3(migrateWorkspaceConfigV2(parseWorkspaceConfigV2(configRecord)))
-      : migrateWorkspaceConfigV3(
-          migrateWorkspaceConfigV2(migrateWorkspaceConfigV1(parseWorkspaceConfigV1(configRecord))),
+      ? migrateWorkspaceConfigV4(
+          migrateWorkspaceConfigV3(migrateWorkspaceConfigV2(parseWorkspaceConfigV2(configRecord))),
+        )
+      : migrateWorkspaceConfigV4(
+          migrateWorkspaceConfigV3(
+            migrateWorkspaceConfigV2(
+              migrateWorkspaceConfigV1(parseWorkspaceConfigV1(configRecord)),
+            ),
+          ),
         );
   return {
     id: validateWorkspaceId(requireString(record.id, "工作区 ID")),
@@ -590,6 +648,14 @@ function tryParseAttitudeConfig(
 function tryParseAutoResponderRules(value: unknown) {
   try {
     return parseAutoResponderRules(value);
+  } catch {
+    return null;
+  }
+}
+
+function tryParseQuickCommands(value: unknown) {
+  try {
+    return parseQuickCommands(value);
   } catch {
     return null;
   }

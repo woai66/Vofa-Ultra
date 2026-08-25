@@ -8,6 +8,7 @@ import type {
 import type { ProcessingGraphConfig } from "./processingGraph";
 import type { AttitudeConfig } from "./attitude";
 import type { AutoResponderRule } from "./automation";
+import type { QuickCommand } from "./workbench";
 
 export type ChartWindowSeconds = 5 | 15 | 30 | 60;
 
@@ -35,7 +36,11 @@ export interface WorkspaceConfigV4 extends WorkspaceConfigV3 {
   autoResponderRules: AutoResponderRule[];
 }
 
-export type WorkspaceConfig = WorkspaceConfigV4;
+export interface WorkspaceConfigV5 extends WorkspaceConfigV4 {
+  quickCommands: QuickCommand[];
+}
+
+export type WorkspaceConfig = WorkspaceConfigV5;
 
 export interface WorkspaceProfile {
   id: string;
@@ -71,4 +76,11 @@ export interface WorkspaceExportV4 {
   schemaVersion: 4;
   name: string;
   config: WorkspaceConfigV4;
+}
+
+export interface WorkspaceExportV5 {
+  format: "vofa-ultra.workspace";
+  schemaVersion: 5;
+  name: string;
+  config: WorkspaceConfigV5;
 }

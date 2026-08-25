@@ -3420,7 +3420,7 @@ textarea:focus {
   display: grid;
   min-width: 0;
   align-items: center;
-  grid-template-columns: auto minmax(120px, 1fr) 30px 30px 30px 30px 76px;
+  grid-template-columns: auto minmax(120px, 1fr) 30px 30px 30px 30px 30px 76px;
   gap: 7px;
 }
 
@@ -3649,6 +3649,7 @@ textarea:focus {
 
 .command-history-popover,
 .command-variable-popover,
+.quick-command-popover,
 .modbus-builder-popover {
   position: absolute;
   z-index: 50;
@@ -3667,6 +3668,11 @@ textarea:focus {
 
 .command-variable-popover {
   width: min(420px, calc(100% - 20px));
+}
+
+.quick-command-popover {
+  width: min(480px, calc(100% - 20px));
+  max-height: min(420px, calc(100vh - 120px));
 }
 
 .modbus-builder-popover {
@@ -3851,7 +3857,8 @@ textarea:focus {
 }
 
 .command-history-header,
-.command-variable-header {
+.command-variable-header,
+.quick-command-header {
   display: flex;
   min-height: 38px;
   align-items: center;
@@ -3861,7 +3868,8 @@ textarea:focus {
 }
 
 .command-history-header > div,
-.command-variable-header > div {
+.command-variable-header > div,
+.quick-command-header > div {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -3870,13 +3878,15 @@ textarea:focus {
 }
 
 .command-history-header strong,
-.command-variable-header strong {
+.command-variable-header strong,
+.quick-command-header strong {
   color: var(--text);
   font-size: 11px;
 }
 
 .command-history-header span,
-.command-variable-header span {
+.command-variable-header span,
+.quick-command-header span {
   color: var(--text-subtle);
   font-size: 9px;
 }
@@ -3970,6 +3980,119 @@ textarea:focus {
 .command-history-list span {
   color: var(--text-subtle);
   font-size: 9px;
+}
+
+.quick-command-save-row {
+  display: grid;
+  flex: 0 0 auto;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 7px;
+}
+
+.quick-command-save-row input,
+.quick-command-rename input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  font-size: 10px;
+}
+
+.quick-command-list {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.quick-command-empty {
+  display: flex;
+  min-height: 88px;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-subtle);
+  font-size: 10px;
+  gap: 8px;
+}
+
+.quick-command-row {
+  display: grid;
+  min-width: 0;
+  min-height: 62px;
+  border-bottom: 1px solid var(--chart-grid);
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.quick-command-load {
+  display: grid;
+  min-width: 0;
+  min-height: 61px;
+  align-content: center;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  gap: 2px;
+}
+
+.quick-command-load:hover {
+  background: var(--surface-hover);
+}
+
+.quick-command-load strong,
+.quick-command-load code,
+.quick-command-load span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-command-load strong {
+  font-size: 10px;
+}
+
+.quick-command-load code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+}
+
+.quick-command-load span {
+  color: var(--text-subtle);
+  font-size: 8px;
+}
+
+.quick-command-actions {
+  display: grid;
+  align-content: center;
+  padding: 0 6px;
+  grid-template-columns: repeat(4, 30px);
+  gap: 2px;
+}
+
+.quick-command-rename {
+  display: grid;
+  min-width: 0;
+  align-items: center;
+  padding: 8px;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
+  gap: 6px;
+}
+
+.quick-command-feedback {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.quick-command-feedback[role="alert"] {
+  color: var(--danger);
 }
 
 .send-error {
@@ -4121,9 +4244,9 @@ textarea:focus {
 
   .send-main-row {
     grid-template-areas:
-      "options options options options options options"
-      "payload modbus variable history workflow send";
-    grid-template-columns: minmax(0, 1fr) 30px 30px 30px 30px 68px;
+      "options options options options options options options"
+      "payload modbus variable quick history workflow send";
+    grid-template-columns: minmax(0, 1fr) 30px 30px 30px 30px 30px 68px;
   }
 
   .send-options {
@@ -4140,6 +4263,10 @@ textarea:focus {
 
   .command-variable-trigger {
     grid-area: variable;
+  }
+
+  .command-quick-trigger {
+    grid-area: quick;
   }
 
   .command-history-trigger {
@@ -4537,10 +4664,11 @@ textarea:focus {
 
   .send-main-row {
     grid-template-areas:
-      "options options options options options"
-      "payload payload payload payload payload"
-      "modbus variable history workflow send";
-    grid-template-columns: 44px 44px 44px 44px minmax(68px, 1fr);
+      "options options options options"
+      "payload payload payload payload"
+      "modbus variable quick history"
+      "workflow send send send";
+    grid-template-columns: 44px 44px 44px minmax(68px, 1fr);
   }
 
   .send-payload-field,
@@ -4569,8 +4697,43 @@ textarea:focus {
 
   .command-history-header,
   .command-variable-header,
+  .quick-command-header,
   .modbus-builder-header {
     min-height: 52px;
+  }
+
+  .quick-command-popover {
+    position: fixed;
+    top: 8px;
+    right: 8px;
+    bottom: 88px;
+    left: 8px;
+    width: auto;
+    max-height: none;
+  }
+
+  .quick-command-save-row {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+
+  .quick-command-save-row input,
+  .quick-command-rename input {
+    height: 44px;
+  }
+
+  .quick-command-popover .icon-button.compact {
+    width: 44px;
+    height: 44px;
+  }
+
+  .quick-command-actions {
+    padding: 0 4px;
+    grid-template-columns: repeat(4, 44px);
+    gap: 0;
+  }
+
+  .quick-command-rename {
+    grid-template-columns: minmax(0, 1fr) 44px 44px;
   }
 
   .modbus-builder-grid {

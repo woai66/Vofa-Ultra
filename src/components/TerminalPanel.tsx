@@ -10,6 +10,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowDownToLine,
   Blocks,
+  Bookmark,
   Braces,
   CirclePause,
   Download,
@@ -50,9 +51,11 @@ import type { DisplayMode, LineEnding } from "../types/serial";
 import type {
   CommandHistoryEntry,
   CommandTaskSnapshot,
+  QuickCommand,
   TerminalEntry,
 } from "../types/workbench";
 import { ModbusRtuBuilder } from "./ModbusRtuBuilder";
+import { QuickCommandPopover } from "./QuickCommandPopover";
 
 type RepeatMode = "count" | "continuous";
 
@@ -97,6 +100,7 @@ export function TerminalPanel() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const modbusTriggerRef = useRef<HTMLButtonElement>(null);
+  const quickCommandTriggerRef = useRef<HTMLButtonElement>(null);
   const variableTriggerRef = useRef<HTMLButtonElement>(null);
   const variableListRef = useRef<HTMLDivElement>(null);
   const historyCursorRef = useRef<number | null>(null);
@@ -107,6 +111,7 @@ export function TerminalPanel() {
   const [manualSendPending, setManualSendPending] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [modbusOpen, setModbusOpen] = useState(false);
+  const [quickCommandsOpen, setQuickCommandsOpen] = useState(false);
   const [variablesOpen, setVariablesOpen] = useState(false);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [intervalText, setIntervalText] = useState("1000");
@@ -176,19 +181,20 @@ export function TerminalPanel() {
   }, [commandTask.status]);
 
   useEffect(() => {
-    if (!historyOpen && !modbusOpen && !variablesOpen) {
+    if (!historyOpen && !modbusOpen && !quickCommandsOpen && !variablesOpen) {
       return undefined;
     }
     const closeOnOutsidePointer = (event: PointerEvent) => {
       if (!composerRef.current?.contains(event.target as Node)) {
         setHistoryOpen(false);
         setModbusOpen(false);
+        setQuickCommandsOpen(false);
         setVariablesOpen(false);
       }
     };
     document.addEventListener("pointerdown", closeOnOutsidePointer);
     return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, [historyOpen, modbusOpen, variablesOpen]);
+  }, [historyOpen, modbusOpen, quickCommandsOpen, variablesOpen]);
 
   useEffect(() => {
     const selection = pendingSelectionRef.current;
@@ -199,7 +205,7 @@ export function TerminalPanel() {
     pendingSelectionRef.current = null;
     textarea.focus();
     textarea.setSelectionRange(selection, selection);
-  }, [message, modbusOpen, variablesOpen]);
+  }, [message, modbusOpen, quickCommandsOpen, variablesOpen]);
 
   useEffect(() => {
     if (variablesOpen) {
@@ -210,6 +216,7 @@ export function TerminalPanel() {
   useEffect(() => {
     if (isWorkspaceTransitioning) {
       setModbusOpen(false);
+      setQuickCommandsOpen(false);
     }
   }, [isWorkspaceTransitioning]);
 
@@ -249,6 +256,22 @@ export function TerminalPanel() {
     setHistoryOpen(false);
     setModbusOpen(false);
     applyDraft({ value, mode: "hex", lineEnding: "none" });
+  };
+
+  const applyQuickCommand = (command: QuickCommand) => {
+    if (isWorkspaceTransitioning) {
+      return;
+    }
+    pendingSelectionRef.current = command.template.length;
+    resetHistoryNavigation();
+    setHistoryOpen(false);
+    setModbusOpen(false);
+    setQuickCommandsOpen(false);
+    applyDraft({
+      value: command.template,
+      mode: command.mode,
+      lineEnding: command.lineEnding,
+    });
   };
 
   const recallHistory = (index: number) => {
@@ -624,6 +647,7 @@ export function TerminalPanel() {
             disabled={isWorkspaceTransitioning}
             onClick={() => {
               setHistoryOpen(false);
+              setQuickCommandsOpen(false);
               setVariablesOpen(false);
               setModbusOpen((open) => !open);
             }}
@@ -643,10 +667,30 @@ export function TerminalPanel() {
             onClick={() => {
               setHistoryOpen(false);
               setModbusOpen(false);
+              setQuickCommandsOpen(false);
               setVariablesOpen((open) => !open);
             }}
           >
             <Braces size={16} />
+          </button>
+          <button
+            ref={quickCommandTriggerRef}
+            className="icon-button composer-icon-button command-quick-trigger"
+            type="button"
+            aria-label={quickCommandsOpen ? "关闭快捷命令" : "打开快捷命令"}
+            title="快捷命令"
+            aria-haspopup="dialog"
+            aria-expanded={quickCommandsOpen}
+            data-active={quickCommandsOpen}
+            disabled={isWorkspaceTransitioning}
+            onClick={() => {
+              setHistoryOpen(false);
+              setModbusOpen(false);
+              setVariablesOpen(false);
+              setQuickCommandsOpen((open) => !open);
+            }}
+          >
+            <Bookmark size={16} />
           </button>
           <button
             className="icon-button composer-icon-button command-history-trigger"
@@ -657,6 +701,7 @@ export function TerminalPanel() {
             disabled={commandHistory.length === 0}
             onClick={() => {
               setModbusOpen(false);
+              setQuickCommandsOpen(false);
               setVariablesOpen(false);
               setHistoryOpen((open) => !open);
             }}
@@ -677,6 +722,7 @@ export function TerminalPanel() {
             onClick={() => {
               setHistoryOpen(false);
               setModbusOpen(false);
+              setQuickCommandsOpen(false);
               setVariablesOpen(false);
               setWorkflowOpen((open) => !open);
             }}
@@ -730,6 +776,18 @@ export function TerminalPanel() {
             onClose={() => {
               setModbusOpen(false);
               modbusTriggerRef.current?.focus();
+            }}
+          />
+        )}
+
+        {quickCommandsOpen && (
+          <QuickCommandPopover
+            draft={{ template: message, mode: sendMode, lineEnding }}
+            canSaveDraft={hasPayload && !templatePreview.error}
+            onApply={applyQuickCommand}
+            onClose={() => {
+              setQuickCommandsOpen(false);
+              quickCommandTriggerRef.current?.focus();
             }}
           />
         )}

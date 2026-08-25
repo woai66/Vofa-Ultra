@@ -58,7 +58,7 @@ describe("工作区文件", () => {
     });
   });
 
-  it("以严格的 v4 格式往返处理图、姿态与自动应答配置", () => {
+  it("以严格的 v5 格式往返处理图、姿态、自动应答与快捷命令配置", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.serialConfig.portName = "COM7";
     config.protocol = "justfloat";
@@ -82,13 +82,22 @@ describe("工作区文件", () => {
     config.attitudeConfig.channels.pitch = "channel-1";
     config.attitudeConfig.channels.yaw = "derived:output";
     config.autoResponderRules = [createDefaultAutoResponderRule("ready", "设备就绪")];
+    config.quickCommands = [
+      {
+        id: "quick-status",
+        name: "查询状态",
+        template: "STATUS?",
+        mode: "text",
+        lineEnding: "crlf",
+      },
+    ];
     const profile = createWorkspaceProfile("台架 A", config, "bench-a", 100);
 
     const parsed = parseWorkspaceExport(serializeWorkspace(profile));
 
     expect(parsed).toEqual({
       format: "vofa-ultra.workspace",
-      schemaVersion: 4,
+      schemaVersion: 5,
       name: "台架 A",
       config,
     });
@@ -98,6 +107,8 @@ describe("工作区文件", () => {
     expect(parsed.config.attitudeConfig).not.toBe(config.attitudeConfig);
     expect(parsed.config.attitudeConfig.channels).not.toBe(config.attitudeConfig.channels);
     expect(parsed.config.autoResponderRules).not.toBe(config.autoResponderRules);
+    expect(parsed.config.quickCommands).not.toBe(config.quickCommands);
+    expect(parsed.config.quickCommands[0]).not.toBe(config.quickCommands[0]);
   });
 
   it("导入严格 v1 后规范化为禁用处理图和空姿态映射", () => {
@@ -112,11 +123,12 @@ describe("工作区文件", () => {
     delete config.processingGraph;
     delete config.attitudeConfig;
     delete config.autoResponderRules;
+    delete config.quickCommands;
     exported.schemaVersion = 1;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(4);
+    expect(parsed.schemaVersion).toBe(5);
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.channels).toEqual({
       roll: "",
@@ -128,6 +140,7 @@ describe("工作区文件", () => {
       z: "",
     });
     expect(parsed.config.autoResponderRules).toEqual([]);
+    expect(parsed.config.quickCommands).toEqual([]);
   });
 
   it("导入严格 v2 后保留处理图并补充默认姿态配置", () => {
@@ -141,14 +154,16 @@ describe("工作区文件", () => {
     const config = exported.config as Record<string, unknown>;
     delete config.attitudeConfig;
     delete config.autoResponderRules;
+    delete config.quickCommands;
     exported.schemaVersion = 2;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(4);
+    expect(parsed.schemaVersion).toBe(5);
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
     expect(parsed.config.autoResponderRules).toEqual([]);
+    expect(parsed.config.quickCommands).toEqual([]);
   });
 
   it("导入严格 v3 后保留姿态配置并补充空自动应答规则", () => {
@@ -161,16 +176,35 @@ describe("工作区文件", () => {
     const exported = JSON.parse(serializeWorkspace(profile)) as Record<string, unknown>;
     const config = exported.config as Record<string, unknown>;
     delete config.autoResponderRules;
+    delete config.quickCommands;
     exported.schemaVersion = 3;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(4);
+    expect(parsed.schemaVersion).toBe(5);
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
     expect(parsed.config.autoResponderRules).toEqual([]);
+    expect(parsed.config.quickCommands).toEqual([]);
   });
 
-  it("严格校验 v4 姿态字段及其派生通道引用", () => {
+  it("导入严格 v4 后保留自动应答并补充空快捷命令", () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.autoResponderRules = [createDefaultAutoResponderRule("ready", "设备就绪")];
+    const exported = JSON.parse(
+      serializeWorkspace(createWorkspaceProfile("v4 工作区", config, "legacy-v4", 100)),
+    ) as Record<string, unknown>;
+    const exportedConfig = exported.config as Record<string, unknown>;
+    delete exportedConfig.quickCommands;
+    exported.schemaVersion = 4;
+
+    const parsed = parseWorkspaceExport(JSON.stringify(exported));
+
+    expect(parsed.schemaVersion).toBe(5);
+    expect(parsed.config.autoResponderRules).toEqual(config.autoResponderRules);
+    expect(parsed.config.quickCommands).toEqual([]);
+  });
+
+  it("严格校验 v5 姿态字段、快捷命令及派生通道引用", () => {
     const profile = createWorkspaceProfile(
       "姿态工作区",
       createDefaultWorkspaceConfig("simulator"),
@@ -207,11 +241,31 @@ describe("工作区文件", () => {
         }),
       ),
     ).toThrow(/未知派生通道/);
+    expect(() =>
+      parseWorkspaceExport(
+        JSON.stringify({
+          ...exported,
+          config: {
+            ...config,
+            quickCommands: [
+              {
+                id: "quick-1",
+                name: "危险字段",
+                template: "PING",
+                mode: "text",
+                lineEnding: "none",
+                script: "send()",
+              },
+            ],
+          },
+        }),
+      ),
+    ).toThrow(/未知字段/);
   });
 
   it.each([
     ["错误格式", { format: "other", schemaVersion: 1 }],
-    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 5 }],
+    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 6 }],
   ])("拒绝%s", (_label, overrides) => {
     const profile = createWorkspaceProfile(
       "默认工作区",
@@ -316,7 +370,7 @@ describe("工作区文件", () => {
     ).toThrow(/未知字段/);
   });
 
-  it("最大合法自动应答配置仍可导出并重新导入", () => {
+  it("最大合法自动应答与最坏 JSON 转义快捷命令仍可导出并重新导入", () => {
     const config = createDefaultWorkspaceConfig("simulator");
     config.autoResponderRules = Array.from({ length: 16 }, (_, index) => ({
       ...createDefaultAutoResponderRule(`rule-${index + 1}`, `规则 ${index + 1}`),
@@ -324,16 +378,32 @@ describe("工作区文件", () => {
       trigger: "\0".repeat(256),
       response: "\0".repeat(4 * 1024),
     }));
+    config.quickCommands = [
+      {
+        id: "quick-1",
+        name: "控制字节一",
+        template: "\0".repeat(64 * 1024),
+        mode: "text",
+        lineEnding: "none",
+      },
+      {
+        id: "quick-2",
+        name: "控制字节二",
+        template: "\0".repeat(64 * 1024),
+        mode: "text",
+        lineEnding: "none",
+      },
+    ];
     const serialized = serializeWorkspace(
       createWorkspaceProfile("满容量规则", config, "full-rules", 100),
     );
 
     const serializedBytes = new TextEncoder().encode(serialized).byteLength;
-    expect(serializedBytes).toBeGreaterThan(128 * 1024);
+    expect(serializedBytes).toBeGreaterThan(512 * 1024);
     expect(serializedBytes).toBeLessThanOrEqual(MAX_WORKSPACE_FILE_BYTES);
-    expect(parseWorkspaceExport(serialized).config.autoResponderRules).toEqual(
-      config.autoResponderRules,
-    );
+    const parsed = parseWorkspaceExport(serialized);
+    expect(parsed.config.autoResponderRules).toEqual(config.autoResponderRules);
+    expect(parsed.config.quickCommands).toEqual(config.quickCommands);
   });
 });
 
@@ -387,6 +457,28 @@ describe("工作区本地恢复", () => {
     );
   });
 
+  it("损坏的本地快捷命令恢复为独立 fallback 副本", () => {
+    const fallback = createDefaultWorkspaceConfig("simulator");
+    fallback.quickCommands = [
+      {
+        id: "quick-safe",
+        name: "安全命令",
+        template: "PING",
+        mode: "text",
+        lineEnding: "lf",
+      },
+    ];
+
+    const restored = restoreWorkspaceConfig(
+      { quickCommands: [{ ...fallback.quickCommands[0], script: "send()" }] },
+      fallback,
+    );
+
+    expect(restored.quickCommands).toEqual(fallback.quickCommands);
+    expect(restored.quickCommands).not.toBe(fallback.quickCommands);
+    expect(restored.quickCommands[0]).not.toBe(fallback.quickCommands[0]);
+  });
+
   it("比较配置时忽略通道键顺序", () => {
     const left = createDefaultWorkspaceConfig("simulator");
     const right = createDefaultWorkspaceConfig("simulator");
@@ -398,6 +490,18 @@ describe("工作区本地恢复", () => {
     right.autoResponderRules = [createDefaultAutoResponderRule("rule-1")];
     expect(areWorkspaceConfigsEqual(left, right)).toBe(false);
     right.autoResponderRules = [];
+    right.quickCommands = [
+      {
+        id: "quick-1",
+        name: "查询",
+        template: "PING",
+        mode: "text",
+        lineEnding: "none",
+      },
+    ];
+    expect(areWorkspaceConfigsEqual(left, right)).toBe(false);
+    left.quickCommands = [...right.quickCommands];
+    expect(areWorkspaceConfigsEqual(left, right)).toBe(true);
     right.processingGraph.enabled = true;
     expect(areWorkspaceConfigsEqual(left, right)).toBe(false);
   });

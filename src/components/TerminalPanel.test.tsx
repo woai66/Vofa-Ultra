@@ -44,11 +44,14 @@ describe("TerminalPanel", () => {
       source: "simulator",
       connectionStatus: "connected",
       workspaceTransitionStatus: "idle",
+      workspaceStorageStatus: "writable",
+      incompatibleStorageVersion: null,
       runtimeTransitionStatus: "idle",
       replayStatus: "idle",
       replaySessionId: 0,
       terminalEntries: [],
       commandHistory: [],
+      quickCommands: [],
       commandTask: createInitialCommandTaskSnapshot(),
       isSendingCommand: false,
       displayMode: "text",
@@ -339,6 +342,134 @@ describe("TerminalPanel", () => {
       sendMode: "text",
       lineEnding: "none",
     });
+  });
+
+  it("保存并载入快捷命令时保留模板格式且不产生 TX", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const input = screen.getByRole("textbox", { name: "发送内容" });
+
+    fireEvent.change(input, { target: { value: "SET ${seq}" } });
+    await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "crlf");
+    await user.click(screen.getByRole("button", { name: "打开快捷命令" }));
+    const dialog = screen.getByRole("dialog", { name: "快捷命令" });
+    const nameInput = within(dialog).getByRole("textbox", { name: "快捷命令名称" });
+    expect(nameInput).toHaveFocus();
+    await user.type(nameInput, "启动采样");
+    await user.click(
+      within(dialog).getByRole("button", { name: "保存当前草稿为快捷命令" }),
+    );
+
+    expect(useWorkbenchStore.getState().quickCommands).toEqual([
+      expect.objectContaining({
+        name: "启动采样",
+        template: "SET ${seq}",
+        mode: "text",
+        lineEnding: "crlf",
+      }),
+    ]);
+    expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
+
+    await user.click(within(dialog).getByRole("button", { name: "关闭快捷命令" }));
+    await user.clear(input);
+    await user.click(
+      within(screen.getByRole("group", { name: "发送格式" })).getByRole("button", {
+        name: "HEX",
+      }),
+    );
+    await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "none");
+    await user.click(screen.getByRole("button", { name: "打开快捷命令" }));
+    await user.click(screen.getByRole("button", { name: "载入快捷命令 启动采样" }));
+
+    expect(input).toHaveValue("SET ${seq}");
+    expect(
+      within(screen.getByRole("group", { name: "发送格式" })).getByRole("button", {
+        name: "文本",
+      }),
+    ).toHaveAttribute("data-active", "true");
+    expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("crlf");
+    expect(input).toHaveFocus();
+    expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
+  });
+
+  it.each([
+    ["空草稿", "writable"],
+    ["较新版本只读状态", "newer-version"],
+  ] as const)("%s 下空列表聚焦关闭按钮并支持 Escape", async (_, storageStatus) => {
+    useWorkbenchStore.setState({
+      workspaceStorageStatus: storageStatus,
+      incompatibleStorageVersion: storageStatus === "newer-version" ? 6 : null,
+    });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const trigger = screen.getByRole("button", { name: "打开快捷命令" });
+
+    await user.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "快捷命令" });
+    expect(within(dialog).getByRole("button", { name: "关闭快捷命令" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("dialog", { name: "快捷命令" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("重命名、排序和删除快捷命令并用 Escape 恢复入口焦点", async () => {
+    useWorkbenchStore.setState({
+      quickCommands: [
+        { id: "quick-first", name: "第一条", template: "A", mode: "text", lineEnding: "none" },
+        { id: "quick-second", name: "第二条", template: "B", mode: "text", lineEnding: "lf" },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const trigger = screen.getByRole("button", { name: "打开快捷命令" });
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "重命名快捷命令 第二条" }));
+    const renameInput = screen.getByRole("textbox", { name: "重命名快捷命令 第二条" });
+    await user.clear(renameInput);
+    await user.type(renameInput, "状态查询");
+    await user.click(screen.getByRole("button", { name: "保存重命名 第二条" }));
+    expect(useWorkbenchStore.getState().quickCommands[1]?.name).toBe("状态查询");
+
+    await user.click(screen.getByRole("button", { name: "上移快捷命令 状态查询" }));
+    expect(useWorkbenchStore.getState().quickCommands.map((command) => command.id)).toEqual([
+      "quick-second",
+      "quick-first",
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "删除快捷命令 第一条" }));
+    expect(useWorkbenchStore.getState().quickCommands).toEqual([
+      expect.objectContaining({ id: "quick-second", name: "状态查询" }),
+    ]);
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "快捷命令" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("工作区切换期间关闭并禁用快捷命令且不产生混合草稿", async () => {
+    useWorkbenchStore.setState({
+      quickCommands: [
+        { id: "quick-hex", name: "HEX 查询", template: "01 03", mode: "hex", lineEnding: "none" },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const trigger = screen.getByRole("button", { name: "打开快捷命令" });
+
+    await user.click(trigger);
+    expect(screen.getByRole("dialog", { name: "快捷命令" })).toBeVisible();
+    useWorkbenchStore.setState({ workspaceTransitionStatus: "switching" });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "快捷命令" })).not.toBeInTheDocument();
+      expect(trigger).toBeDisabled();
+    });
+    expect(screen.getByRole("textbox", { name: "发送内容" })).toHaveValue("");
+    expect(useWorkbenchStore.getState()).toMatchObject({ sendMode: "text", lineEnding: "none" });
   });
 
   it("允许输入带常见分隔符的最大多线圈请求", async () => {

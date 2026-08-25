@@ -23,6 +23,10 @@ import {
   type CompiledCommandTemplate,
 } from "../core/commandTemplate";
 import {
+  cloneQuickCommands,
+  parseQuickCommands,
+} from "../core/quickCommands";
+import {
   appendCommandHistory,
   CommandScheduler,
   commandHistoryPayloadBytes,
@@ -167,6 +171,7 @@ import type {
   DataPoint,
   ParsedFrame,
   ProtocolHealthSnapshot,
+  QuickCommand,
   TerminalEntry,
   TransferStats,
 } from "../types/workbench";
@@ -177,7 +182,7 @@ import type {
 } from "../types/processingGraph";
 import type {
   ChartWindowSeconds,
-  WorkspaceExportV4,
+  WorkspaceExportV5,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AutoResponderRule, AutoResponderSnapshot } from "../types/automation";
@@ -194,8 +199,8 @@ const MAX_POINTS_PER_CHANNEL = 2_000;
 const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY = 2_048;
 export const WORKBENCH_STORAGE_KEY = "vofa-ultra-workbench";
-export const WORKBENCH_STORAGE_VERSION = 4;
-export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [0, 1, 2, 3] as const;
+export const WORKBENCH_STORAGE_VERSION = 5;
+export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [0, 1, 2, 3, 4] as const;
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
   phase: "off",
@@ -304,6 +309,7 @@ export interface WorkbenchStore {
   sendMode: DisplayMode;
   lineEnding: LineEnding;
   commandHistory: CommandHistoryEntry[];
+  quickCommands: QuickCommand[];
   commandTask: CommandTaskSnapshot;
   autoResponderRules: AutoResponderRule[];
   autoResponder: AutoResponderSnapshot;
@@ -405,6 +411,7 @@ export interface WorkbenchStore {
   startAutoResponder(): void;
   stopAutoResponder(): void;
   clearCommandHistory(): void;
+  setQuickCommands(commands: readonly QuickCommand[]): void;
   ingestBytes(bytes: Uint8Array, timestamp?: number): void;
   handleSerialData(payload: SerialDataPayload): void;
   handleSerialState(payload: SerialStatePayload): void;
@@ -461,7 +468,7 @@ export interface WorkbenchStore {
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
   deleteWorkspace(id: string): Promise<boolean>;
-  importWorkspace(workspace: WorkspaceExportV4): string;
+  importWorkspace(workspace: WorkspaceExportV5): string;
 }
 
 type PersistedWorkbenchState = Pick<
@@ -472,6 +479,7 @@ type PersistedWorkbenchState = Pick<
   | "displayMode"
   | "sendMode"
   | "lineEnding"
+  | "quickCommands"
   | "terminalAutoScroll"
   | "chartWindowSeconds"
   | "channelVisibility"
@@ -518,6 +526,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       sendMode: INITIAL_WORKSPACE_CONFIG.sendMode,
       lineEnding: INITIAL_WORKSPACE_CONFIG.lineEnding,
       commandHistory: [],
+      quickCommands: cloneQuickCommands(INITIAL_WORKSPACE_CONFIG.quickCommands),
       commandTask: createInitialCommandTaskSnapshot(),
       autoResponderRules: cloneAutoResponderRules(INITIAL_WORKSPACE_CONFIG.autoResponderRules),
       autoResponder: createInitialAutoResponderSnapshot(),
@@ -1261,6 +1270,16 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       clearCommandHistory: () => {
         set({ commandHistory: [] });
+      },
+
+      setQuickCommands: (commands) => {
+        const state = get();
+        if (state.workspaceTransitionStatus !== "idle") {
+          return;
+        }
+        assertWorkspaceStorageWritable(state);
+        const parsedCommands = parseQuickCommands(commands);
+        set({ quickCommands: parsedCommands });
       },
 
       ingestBytes: (bytes, timestamp = Date.now()) => {
@@ -2515,6 +2534,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         displayMode: state.displayMode,
         sendMode: state.sendMode,
         lineEnding: state.lineEnding,
+        quickCommands: state.quickCommands,
         terminalAutoScroll: state.terminalAutoScroll,
         chartWindowSeconds: state.chartWindowSeconds,
         channelVisibility: state.channelVisibility,
@@ -2539,7 +2559,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           isRecord(persistedState) ? persistedState.workspaces : undefined,
         );
         const workspaces =
-          (version === 1 || version === 2 || version === 3) &&
+          (version === 1 || version === 2 || version === 3 || version === 4) &&
             restoredWorkspaces.length > 0
             ? restoredWorkspaces
             : [
@@ -3441,6 +3461,7 @@ async function applyWorkspaceSnapshot(
     displayMode: config.displayMode,
     sendMode: config.sendMode,
     lineEnding: config.lineEnding,
+    quickCommands: config.quickCommands,
     terminalAutoScroll: config.terminalAutoScroll,
     chartWindowSeconds: config.chartWindowSeconds,
     channelVisibility: config.channelVisibility,

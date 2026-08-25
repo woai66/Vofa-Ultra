@@ -59,6 +59,7 @@ import type {
   ReplayStatus,
 } from "../types/replay";
 import type { SerialPortInfo, SerialStatePayload } from "../types/serial";
+import type { QuickCommand } from "../types/workbench";
 import {
   disposeWorkbenchRuntime,
   selectIsWorkspaceDirty,
@@ -188,6 +189,17 @@ const TEST_REPLAY_HEADER: ReplayCaptureHeader = {
   startedAtUnixMs: 1_000,
   timeUnit: "microseconds",
 };
+
+function quickCommand(overrides: Partial<QuickCommand> = {}): QuickCommand {
+  return {
+    id: "quick-1",
+    name: "查询状态",
+    template: "STATUS?",
+    mode: "text",
+    lineEnding: "crlf",
+    ...overrides,
+  };
+}
 
 function replayState(
   status: ReplayStatus,
@@ -1629,6 +1641,74 @@ describe("workbenchStore", () => {
     expect(() => useWorkbenchStore.getState().saveWorkspaceAs("原始数据")).toThrow(/已存在/);
   });
 
+  it("快捷命令的增改和排序参与 dirty 并随保存形成独立快照", () => {
+    const first = quickCommand();
+    const second = quickCommand({
+      id: "quick-2",
+      name: "复位设备",
+      template: "AA 55",
+      mode: "hex",
+      lineEnding: "none",
+    });
+
+    useWorkbenchStore.getState().setQuickCommands([first, second]);
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(true);
+    useWorkbenchStore.getState().saveActiveWorkspace("默认工作区");
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+    expect(useWorkbenchStore.getState().workspaces[0]?.config.quickCommands).toEqual([
+      first,
+      second,
+    ]);
+
+    useWorkbenchStore.getState().setQuickCommands([second, first]);
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(true);
+    const copiedId = useWorkbenchStore.getState().saveWorkspaceAs("快捷命令排序");
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+    expect(
+      useWorkbenchStore.getState().workspaces.find((workspace) => workspace.id === copiedId)
+        ?.config.quickCommands,
+    ).toEqual([second, first]);
+  });
+
+  it("快捷命令更新严格且原子，非法输入不会覆盖旧配置", () => {
+    const existing = [quickCommand()];
+    useWorkbenchStore.getState().setQuickCommands(existing);
+    const stored = useWorkbenchStore.getState().quickCommands;
+
+    expect(() =>
+      useWorkbenchStore.getState().setQuickCommands([
+        ...stored,
+        { ...quickCommand({ name: "重复 ID" }) },
+      ]),
+    ).toThrow(/ID 重复/);
+    expect(useWorkbenchStore.getState().quickCommands).toBe(stored);
+    expect(useWorkbenchStore.getState().quickCommands).toEqual(existing);
+  });
+
+  it("切换工作区时隔离并克隆快捷命令", async () => {
+    const current = quickCommand({ id: "quick-current", name: "当前命令" });
+    const targetCommand = quickCommand({
+      id: "quick-target",
+      name: "目标命令",
+      template: "TARGET",
+      lineEnding: "lf",
+    });
+    useWorkbenchStore.getState().setQuickCommands([current]);
+    useWorkbenchStore.getState().saveActiveWorkspace("默认工作区");
+    const targetConfig = createDefaultWorkspaceConfig("simulator");
+    targetConfig.quickCommands = [targetCommand];
+    const target = createWorkspaceProfile("目标工作区", targetConfig, "target-quick", 200);
+    useWorkbenchStore.setState((state) => ({ workspaces: [...state.workspaces, target] }));
+
+    expect(await useWorkbenchStore.getState().switchWorkspace(target.id)).toBe(true);
+
+    const applied = useWorkbenchStore.getState().quickCommands;
+    expect(applied).toEqual([targetCommand]);
+    expect(applied).not.toBe(target.config.quickCommands);
+    expect(applied[0]).not.toBe(target.config.quickCommands[0]);
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+  });
+
   it("切换工作区时清空运行数据且不自动连接", async () => {
     const targetConfig = createDefaultWorkspaceConfig("serial");
     targetConfig.serialConfig.portName = "COM11";
@@ -2005,7 +2085,7 @@ describe("workbenchStore", () => {
     const beforeActiveId = useWorkbenchStore.getState().activeWorkspaceId;
     const importedId = useWorkbenchStore.getState().importWorkspace({
       format: "vofa-ultra.workspace",
-      schemaVersion: 4,
+      schemaVersion: 5,
       name: "默认工作区",
       config: createDefaultWorkspaceConfig("serial"),
     });
@@ -2089,15 +2169,16 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 4 });
+    ).toMatchObject({ version: 5 });
   });
 
-  it("通过 rehydrate 把 v1 工作区写回 v4 且保留快照", async () => {
+  it("通过 rehydrate 把 v1 工作区写回 v5 且保留快照", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.processingGraph;
     delete legacyConfig.attitudeConfig;
     delete legacyConfig.autoResponderRules;
+    delete legacyConfig.quickCommands;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -2140,13 +2221,14 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 4 });
+    ).toMatchObject({ version: 5 });
   });
 
-  it("通过 rehydrate 把 v3 工作区补充为空规则并写回 v4", async () => {
+  it("通过 rehydrate 把 v3 工作区补充为空规则和快捷命令并写回 v5", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.autoResponderRules;
+    delete legacyConfig.quickCommands;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -2172,16 +2254,72 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState()).toMatchObject({
       activeWorkspaceId: "legacy-v3",
       autoResponderRules: [],
-      workspaces: [{ id: "legacy-v3", config: { autoResponderRules: [] } }],
+      quickCommands: [],
+      workspaces: [
+        { id: "legacy-v3", config: { autoResponderRules: [], quickCommands: [] } },
+      ],
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 4 });
+    ).toMatchObject({ version: 5 });
+  });
+
+  it("通过 rehydrate 从 v4 补充空快捷命令并保留全部工作区", async () => {
+    const firstConfig = createDefaultWorkspaceConfig("simulator");
+    firstConfig.autoResponderRules = [createDefaultAutoResponderRule("ready", "设备就绪")];
+    const secondConfig = createDefaultWorkspaceConfig("serial");
+    const legacyFirst = JSON.parse(JSON.stringify(firstConfig)) as Record<string, unknown>;
+    const legacySecond = JSON.parse(JSON.stringify(secondConfig)) as Record<string, unknown>;
+    delete legacyFirst.quickCommands;
+    delete legacySecond.quickCommands;
+    localStorage.setItem(
+      "vofa-ultra-workbench",
+      JSON.stringify({
+        version: 4,
+        state: {
+          ...legacySecond,
+          workspaces: [
+            {
+              id: "legacy-v4-a",
+              name: "v4 工作区 A",
+              createdAt: 100,
+              updatedAt: 100,
+              config: legacyFirst,
+            },
+            {
+              id: "legacy-v4-b",
+              name: "v4 工作区 B",
+              createdAt: 200,
+              updatedAt: 200,
+              config: legacySecond,
+            },
+          ],
+          activeWorkspaceId: "legacy-v4-b",
+        },
+      }),
+    );
+
+    await useWorkbenchStore.persist.rehydrate();
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      activeWorkspaceId: "legacy-v4-b",
+      quickCommands: [],
+      workspaces: [
+        {
+          id: "legacy-v4-a",
+          config: { autoResponderRules: firstConfig.autoResponderRules, quickCommands: [] },
+        },
+        { id: "legacy-v4-b", config: { quickCommands: [] } },
+      ],
+    });
+    expect(
+      JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
+    ).toMatchObject({ version: 5 });
   });
 
   it("拒绝并保留更高版本的持久化数据", async () => {
     const futureValue = JSON.stringify({
-      version: 5,
+      version: 6,
       state: {
         futureWorkspaceFormat: true,
         workspaces: [{ id: "future-only" }],
@@ -2194,10 +2332,13 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState()).toMatchObject({
       workspaceStorageStatus: "newer-version",
-      incompatibleStorageVersion: 5,
+      incompatibleStorageVersion: 6,
     });
     expect(() => useWorkbenchStore.getState().saveActiveWorkspace("不会保存")).toThrow(
-      /版本 5.*不能保存/,
+      /版本 6.*不能保存/,
+    );
+    expect(() => useWorkbenchStore.getState().setQuickCommands([quickCommand()])).toThrow(
+      /版本 6.*不能保存/,
     );
     expect(localStorage.getItem("vofa-ultra-workbench")).toBe(futureValue);
     useWorkbenchStore.persist.clearStorage();
@@ -2215,10 +2356,12 @@ describe("workbenchStore", () => {
     const firstSwitch = useWorkbenchStore.getState().switchWorkspace(target.id);
     expect(useWorkbenchStore.getState().workspaceTransitionStatus).toBe("switching");
     useWorkbenchStore.getState().updateSerialConfig("baudRate", 9_600);
+    useWorkbenchStore.getState().setQuickCommands([quickCommand()]);
     const secondSwitch = await useWorkbenchStore.getState().switchWorkspace("default");
 
     expect(secondSwitch).toBe(false);
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(115_200);
+    expect(useWorkbenchStore.getState().quickCommands).toEqual([]);
     expect(await firstSwitch).toBe(true);
     expect(useWorkbenchStore.getState()).toMatchObject({
       activeWorkspaceId: target.id,
