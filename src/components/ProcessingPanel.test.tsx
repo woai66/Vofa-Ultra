@@ -115,6 +115,74 @@ describe("ProcessingPanel", () => {
     expect(screen.getByRole("spinbutton", { name: "node-2 Alpha" })).toBeValid();
   });
 
+  it("原子配置字节与数值转换节点并跟踪全部依赖", async () => {
+    const user = userEvent.setup();
+    render(<ProcessingPanel />);
+
+    const kindSelect = screen.getByRole("combobox", { name: "新增节点类型" });
+    const addButton = screen.getByRole("button", { name: "添加处理节点" });
+    await user.click(addButton);
+    await user.click(addButton);
+    await user.selectOptions(kindSelect, "bytes_to_number");
+    await user.click(addButton);
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "node-3 字节 1" }),
+      "node-1",
+    );
+    expect(nodeById("node-3")).toMatchObject({
+      kind: "bytes_to_number",
+      inputs: ["node-1", "node-2"],
+      numericType: "u16",
+      endianness: "le",
+    });
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "node-3 数值类型" }),
+      "f64",
+    );
+    expect(nodeById("node-3")).toMatchObject({
+      numericType: "f64",
+      inputs: [
+        "node-1",
+        "node-2",
+        "node-2",
+        "node-2",
+        "node-2",
+        "node-2",
+        "node-2",
+        "node-2",
+      ],
+    });
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "node-3 数值类型" }),
+      "u8",
+    );
+    expect(nodeById("node-3")).toMatchObject({ numericType: "u8", inputs: ["node-1"] });
+
+    await user.selectOptions(kindSelect, "number_to_byte");
+    await user.click(addButton);
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "node-4 数值类型" }),
+      "f64",
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "node-4 输出字节" }),
+      "7",
+    );
+    expect(nodeById("node-4")).toMatchObject({ numericType: "f64", byteIndex: 7 });
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "node-4 数值类型" }),
+      "u16",
+    );
+    expect(nodeById("node-4")).toMatchObject({ numericType: "u16", byteIndex: 1 });
+
+    await user.click(screen.getByRole("button", { name: "删除节点 node-1" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("节点 node-1 正被 node-3 引用");
+  });
+
   it("重试熔断运行时并在工作区切换期间禁用编辑", async () => {
     const user = userEvent.setup();
     useWorkbenchStore.getState().setProcessingGraph(GRAPH_WITH_BRANCH);

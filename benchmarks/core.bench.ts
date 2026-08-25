@@ -74,10 +74,53 @@ const processingGraph = compileProcessingGraph({
     },
   ]).flat(),
 });
+const conversionGraph = compileProcessingGraph({
+  enabled: true,
+  nodes: Array.from({ length: 4 }, (_, index) => [
+    { id: `conversion_input_${index}`, kind: "input" as const, channelIndex: index },
+    {
+      id: `conversion_low_${index}`,
+      kind: "number_to_byte" as const,
+      input: `conversion_input_${index}`,
+      numericType: "u16" as const,
+      endianness: "le" as const,
+      byteIndex: 0,
+    },
+    {
+      id: `conversion_high_${index}`,
+      kind: "number_to_byte" as const,
+      input: `conversion_input_${index}`,
+      numericType: "u16" as const,
+      endianness: "le" as const,
+      byteIndex: 1,
+    },
+    {
+      id: `conversion_decode_${index}`,
+      kind: "bytes_to_number" as const,
+      inputs: [`conversion_low_${index}`, `conversion_high_${index}`],
+      numericType: "u16" as const,
+      endianness: "le" as const,
+    },
+    {
+      id: `conversion_output_${index}`,
+      kind: "output" as const,
+      input: `conversion_decode_${index}`,
+      name: `转换输出 ${index + 1}`,
+      color: `#${(0x336699 + index * 0x111111).toString(16).padStart(6, "0")}`,
+    },
+  ]).flat(),
+});
 const processingFrames: ParsedFrame[] = Array.from(
   { length: PROCESSING_FRAME_COUNT },
   (_, frameIndex) => ({
     values: protocolValues.map((value) => value + frameIndex / 1_000),
+    timestamp: frameIndex,
+  }),
+);
+const conversionFrames: ParsedFrame[] = Array.from(
+  { length: PROCESSING_FRAME_COUNT },
+  (_, frameIndex) => ({
+    values: [4_660, 22_136, 39_612, 57_072],
     timestamp: frameIndex,
   }),
 );
@@ -128,6 +171,21 @@ describe("协议与数据处理热路径", () => {
         runtime.getSnapshot().processedFrames,
         PROCESSING_FRAME_COUNT,
         "处理图完成帧数",
+      );
+    },
+    BENCHMARK_OPTIONS,
+  );
+
+  bench(
+    "20 节点转换图执行 4096 帧",
+    () => {
+      const runtime = new ProcessingGraphRuntime(conversionGraph);
+      const samples = runtime.process(conversionFrames);
+      requireEqual(samples.length, PROCESSING_FRAME_COUNT * 4, "转换图输出样本数");
+      requireEqual(
+        runtime.getSnapshot().processedFrames,
+        PROCESSING_FRAME_COUNT,
+        "转换图完成帧数",
       );
     },
     BENCHMARK_OPTIONS,

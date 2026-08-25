@@ -2,14 +2,14 @@
   "schemaVersion": 2,
   "workspace": {
     "fileFormat": "vofa-ultra.workspace",
-    "writeVersion": 8,
-    "readVersions": [1, 2, 3, 4, 5, 6, 7, 8],
+    "writeVersion": 9,
+    "readVersions": [1, 2, 3, 4, 5, 6, 7, 8, 9],
     "futureVersionBehavior": "reject"
   },
   "localStorage": {
     "key": "vofa-ultra-workbench",
-    "writeVersion": 8,
-    "migrateFromVersions": [0, 1, 2, 3, 4, 5, 6, 7],
+    "writeVersion": 9,
+    "migrateFromVersions": [0, 1, 2, 3, 4, 5, 6, 7, 8],
     "futureVersionBehavior": "preserve-read-only"
   },
   "capture": {

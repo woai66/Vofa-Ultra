@@ -857,7 +857,7 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   expect(layout.documentWidth).toBeLessThanOrEqual(320);
 });
 
-test("处理图生成独立派生通道并随 v8 工作区往返", async ({ page }, testInfo) => {
+test("处理图转换节点生成派生通道并随 v9 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -873,8 +873,12 @@ test("处理图生成独立派生通道并随 v8 工作区往返", async ({ page
   const kindSelect = page.getByRole("combobox", { name: "新增节点类型" });
   const addButton = page.getByRole("button", { name: "添加处理节点" });
   await addButton.click();
-  await kindSelect.selectOption("ema");
+  await kindSelect.selectOption("number_to_byte");
   await addButton.click();
+  await page.getByRole("combobox", { name: "node-2 数值类型" }).selectOption("f32");
+  await kindSelect.selectOption("bytes_to_number");
+  await addButton.click();
+  await page.getByRole("combobox", { name: "node-3 数值类型" }).selectOption("u8");
   await kindSelect.selectOption("output");
   await addButton.click();
   await page.getByRole("checkbox", { name: "启用处理图" }).check();
@@ -911,13 +915,14 @@ test("处理图生成独立派生通道并随 v8 工作区往返", async ({ page
     schemaVersion: number;
     config: { processingGraph: ProcessingGraphConfig };
   };
-  expect(exported.schemaVersion).toBe(8);
+  expect(exported.schemaVersion).toBe(9);
   expect(exported.config.processingGraph).toMatchObject({
     enabled: true,
     nodes: [
       { id: "node-1", kind: "input" },
-      { id: "node-2", kind: "ema" },
-      { id: "node-3", kind: "output", name: "OUT 1" },
+      { id: "node-2", kind: "number_to_byte", numericType: "f32" },
+      { id: "node-3", kind: "bytes_to_number", numericType: "u8" },
+      { id: "node-4", kind: "output", name: "OUT 1" },
     ],
   });
 
@@ -931,11 +936,11 @@ test("处理图生成独立派生通道并随 v8 工作区往返", async ({ page
   await expect(page.locator(".workspace-title span")).toContainText("处理图基准 (2)");
   await page.getByRole("button", { name: "处理", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "启用处理图" })).toBeChecked();
-  await expect(page.locator(".processing-node")).toHaveCount(3);
+  await expect(page.locator(".processing-node")).toHaveCount(4);
   expect(pageErrors).toEqual([]);
 });
 
-test("实时 RX 自动应答保持有界运行并随 v8 工作区往返", async ({ page }, testInfo) => {
+test("实时 RX 自动应答保持有界运行并随 v9 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -988,7 +993,7 @@ test("实时 RX 自动应答保持有界运行并随 v8 工作区往返", async 
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 8,
+    schemaVersion: 9,
     config: {
       autoResponderRules: [
         {
@@ -1876,7 +1881,7 @@ async function canvasScreenshotSignature(locator: Locator): Promise<{
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({
-    version: 9,
+    version: 10,
     state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
   });
   await page.addInitScript((value) => {
@@ -1885,7 +1890,7 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("button", { name: "工作区" }).click();
-  await expect(page.getByRole("alert")).toContainText("版本 9 的较新配置");
+  await expect(page.getByRole("alert")).toContainText("版本 10 的较新配置");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();

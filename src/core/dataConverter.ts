@@ -1,8 +1,9 @@
 import { formatHex, parseHex } from "./codec";
+import type { DataEndianness, DataNumericType } from "../types/dataConversion";
 
 export type DataConverterDirection = "bytes-to-numbers" | "numbers-to-bytes";
-export type DataConverterEndianness = "le" | "be";
-export type DataNumericType = "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "f32" | "f64";
+export type DataConverterEndianness = DataEndianness;
+export type { DataNumericType } from "../types/dataConversion";
 
 export const MAX_DATA_CONVERTER_INPUT_CHARACTERS = 256 * 1024;
 export const MAX_DATA_CONVERTER_OUTPUT_BYTES = 64 * 1024;
@@ -82,6 +83,69 @@ export function numericTypeByteWidth(numericType: DataNumericType): number {
     case "f64":
       return 8;
   }
+}
+
+export function decodeNumericValue(
+  bytes: readonly number[],
+  numericType: DataNumericType,
+  endianness: DataConverterEndianness,
+): number | undefined {
+  if (
+    bytes.length !== numericTypeByteWidth(numericType) ||
+    bytes.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 0xff)
+  ) {
+    return undefined;
+  }
+
+  const buffer = Uint8Array.from(bytes);
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  return decodeNumericValueFromView(view, numericType, endianness);
+}
+
+export function decodeNumericValueFromView(
+  view: DataView,
+  numericType: DataNumericType,
+  endianness: DataConverterEndianness,
+): number | undefined {
+  if (view.byteLength < numericTypeByteWidth(numericType)) {
+    return undefined;
+  }
+  const value = readNumber(view, 0, numericType, endianness === "le");
+  return Number.isFinite(value) ? value : undefined;
+}
+
+export function encodeNumericValue(
+  value: number,
+  numericType: DataNumericType,
+  endianness: DataConverterEndianness,
+): Uint8Array | undefined {
+  const bytes = new Uint8Array(numericTypeByteWidth(numericType));
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return encodeNumericValueToView(view, value, numericType, endianness) ? bytes : undefined;
+}
+
+export function encodeNumericValueToView(
+  view: DataView,
+  value: number,
+  numericType: DataNumericType,
+  endianness: DataConverterEndianness,
+): boolean {
+  if (!Number.isFinite(value)) {
+    return false;
+  }
+  const integerRange = INTEGER_RANGES[numericType];
+  if (
+    integerRange &&
+    (!Number.isInteger(value) || value < integerRange[0] || value > integerRange[1])
+  ) {
+    return false;
+  }
+
+  if (view.byteLength < numericTypeByteWidth(numericType)) {
+    return false;
+  }
+  writeNumber(view, 0, value, numericType, endianness === "le");
+  return Number.isFinite(readNumber(view, 0, numericType, endianness === "le"));
 }
 
 function convertBytesToNumbers(

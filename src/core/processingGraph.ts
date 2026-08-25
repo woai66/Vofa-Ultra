@@ -1,4 +1,5 @@
 import type {
+  LegacyProcessingGraphConfig,
   OutputProcessingNode,
   ProcessingGraphConfig,
   ProcessingGraphSnapshot,
@@ -6,14 +7,27 @@ import type {
   ProcessingOutputSample,
 } from "../types/processingGraph";
 import type { ParsedFrame } from "../types/workbench";
+import {
+  decodeNumericValueFromView,
+  encodeNumericValueToView,
+  numericTypeByteWidth,
+} from "./dataConverter";
+import {
+  DATA_ENDIANNESS_VALUES,
+  DATA_NUMERIC_TYPES,
+} from "../types/dataConversion";
 
 export type {
   AffineProcessingNode,
+  BytesToNumberProcessingNode,
   ClampProcessingNode,
   EmaProcessingNode,
   InputProcessingNode,
+  LegacyProcessingGraphConfig,
+  LegacyProcessingNode,
   MathProcessingNode,
   MovingAverageProcessingNode,
+  NumberToByteProcessingNode,
   OutputProcessingNode,
   ProcessingGraphConfig,
   ProcessingGraphRuntimeStatus,
@@ -42,9 +56,22 @@ const NODE_KEYS = {
   ema: ["id", "kind", "input", "alpha"],
   moving_average: ["id", "kind", "input", "windowSize"],
   math: ["id", "kind", "left", "right", "operation"],
+  bytes_to_number: ["id", "kind", "inputs", "numericType", "endianness"],
+  number_to_byte: ["id", "kind", "input", "numericType", "endianness", "byteIndex"],
   output: ["id", "kind", "input", "name", "color"],
 } as const;
 const NODE_KINDS = [
+  "input",
+  "affine",
+  "clamp",
+  "ema",
+  "moving_average",
+  "math",
+  "bytes_to_number",
+  "number_to_byte",
+  "output",
+] as const;
+const LEGACY_NODE_KINDS = [
   "input",
   "affine",
   "clamp",
@@ -109,10 +136,22 @@ export function cloneProcessingGraphConfig(
 
 export const cloneProcessingGraph = cloneProcessingGraphConfig;
 
+export function cloneLegacyProcessingGraphConfig(
+  config: LegacyProcessingGraphConfig,
+): LegacyProcessingGraphConfig {
+  return cloneProcessingGraphConfig(config) as LegacyProcessingGraphConfig;
+}
+
 export function parseProcessingGraphConfig(value: unknown): ProcessingGraphConfig {
   const config = normalizeProcessingGraphConfig(value, true);
   compileProcessingGraph(config);
   return cloneProcessingGraphConfig(config);
+}
+
+export function parseLegacyProcessingGraphConfig(value: unknown): LegacyProcessingGraphConfig {
+  const config = normalizeProcessingGraphConfig(value, true, LEGACY_NODE_KINDS);
+  compileProcessingGraph(config);
+  return cloneProcessingGraphConfig(config) as LegacyProcessingGraphConfig;
 }
 
 export function compileProcessingGraph(config: ProcessingGraphConfig): CompiledProcessingGraph {
@@ -167,6 +206,24 @@ export function compileProcessingGraph(config: ProcessingGraphConfig): CompiledP
         break;
       case "math":
         break;
+      case "bytes_to_number": {
+        const byteWidth = numericTypeByteWidth(node.numericType);
+        if (node.inputs.length !== byteWidth) {
+          throw new Error(
+            `字节转数值节点 ${node.id} 的输入数量必须为 ${byteWidth}`,
+          );
+        }
+        break;
+      }
+      case "number_to_byte": {
+        const byteWidth = numericTypeByteWidth(node.numericType);
+        if (!Number.isInteger(node.byteIndex) || node.byteIndex < 0 || node.byteIndex >= byteWidth) {
+          throw new Error(
+            `数值转字节节点 ${node.id} 的字节索引必须在 0 到 ${byteWidth - 1} 之间`,
+          );
+        }
+        break;
+      }
       case "output":
         outputCount += 1;
         validateOutputName(node.name, node.id);
@@ -210,7 +267,7 @@ export function compileProcessingGraph(config: ProcessingGraphConfig): CompiledP
   });
 
   const evaluationOrder = stableTopologicalSort(indegrees, dependents, normalized.nodes);
-  const frozenNodes = normalized.nodes.map((node) => Object.freeze(cloneProcessingNode(node)));
+  const frozenNodes = normalized.nodes.map((node) => freezeProcessingNode(node));
   const frozenConfig = Object.freeze({
     enabled: normalized.enabled,
     nodes: Object.freeze(frozenNodes),
@@ -252,6 +309,12 @@ export class ProcessingGraphRuntime {
   private readonly internal: InternalCompiledGraph;
   private readonly emaValues = new Map<number, number>();
   private readonly movingAverageStates = new Map<number, MovingAverageState>();
+  private readonly conversionBytes = new Uint8Array(8);
+  private readonly conversionView = new DataView(
+    this.conversionBytes.buffer,
+    this.conversionBytes.byteOffset,
+    this.conversionBytes.byteLength,
+  );
   private statusValue: ProcessingGraphSnapshot["status"];
   private processedFramesValue = 0;
   private droppedFramesValue = 0;
@@ -402,6 +465,37 @@ export class ProcessingGraphRuntime {
           values[dependencies[1] ?? -1],
           node.operation,
         );
+      case "bytes_to_number": {
+        for (let byteIndex = 0; byteIndex < dependencies.length; byteIndex += 1) {
+          const byte = values[dependencies[byteIndex] ?? -1];
+          if (byte === undefined || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
+            return undefined;
+          }
+          this.conversionBytes[byteIndex] = byte;
+        }
+        return decodeNumericValueFromView(
+          this.conversionView,
+          node.numericType,
+          node.endianness,
+        );
+      }
+      case "number_to_byte": {
+        const input = values[dependencies[0] ?? -1];
+        if (input === undefined) {
+          return undefined;
+        }
+        if (
+          !encodeNumericValueToView(
+            this.conversionView,
+            input,
+            node.numericType,
+            node.endianness,
+          )
+        ) {
+          return undefined;
+        }
+        return this.conversionBytes[node.byteIndex];
+      }
       case "output":
         return values[dependencies[0] ?? -1];
     }
@@ -487,7 +581,11 @@ export class ProcessingGraphRuntime {
   }
 }
 
-function normalizeProcessingGraphConfig(value: unknown, exactKeys: boolean): ProcessingGraphConfig {
+function normalizeProcessingGraphConfig(
+  value: unknown,
+  exactKeys: boolean,
+  allowedNodeKinds: readonly ProcessingNode["kind"][] = NODE_KINDS,
+): ProcessingGraphConfig {
   const graph = requireRecord(value, "处理图配置");
   if (exactKeys) {
     assertExactKeys(graph, GRAPH_KEYS, "处理图配置");
@@ -503,13 +601,20 @@ function normalizeProcessingGraphConfig(value: unknown, exactKeys: boolean): Pro
   }
   return {
     enabled: graph.enabled,
-    nodes: graph.nodes.map((node, index) => parseProcessingNode(node, index, exactKeys)),
+    nodes: graph.nodes.map((node, index) =>
+      parseProcessingNode(node, index, exactKeys, allowedNodeKinds),
+    ),
   };
 }
 
-function parseProcessingNode(value: unknown, index: number, exactKeys: boolean): ProcessingNode {
+function parseProcessingNode(
+  value: unknown,
+  index: number,
+  exactKeys: boolean,
+  allowedNodeKinds: readonly ProcessingNode["kind"][],
+): ProcessingNode {
   const record = requireRecord(value, `处理图节点 ${index}`);
-  const kind = requireEnum(record.kind, NODE_KINDS, `处理图节点 ${index} kind`);
+  const kind = requireEnum(record.kind, allowedNodeKinds, `处理图节点 ${index} kind`);
   if (exactKeys) {
     assertExactKeys(record, NODE_KEYS[kind], `处理图节点 ${index}`);
   }
@@ -556,6 +661,23 @@ function parseProcessingNode(value: unknown, index: number, exactKeys: boolean):
         right: requireString(record.right, `${id}.right`),
         operation: requireEnum(record.operation, MATH_OPERATIONS, `${id}.operation`),
       };
+    case "bytes_to_number":
+      return {
+        id,
+        kind,
+        inputs: requireStringArray(record.inputs, `${id}.inputs`, 8),
+        numericType: requireEnum(record.numericType, DATA_NUMERIC_TYPES, `${id}.numericType`),
+        endianness: requireEnum(record.endianness, DATA_ENDIANNESS_VALUES, `${id}.endianness`),
+      };
+    case "number_to_byte":
+      return {
+        id,
+        kind,
+        input: requireString(record.input, `${id}.input`),
+        numericType: requireEnum(record.numericType, DATA_NUMERIC_TYPES, `${id}.numericType`),
+        endianness: requireEnum(record.endianness, DATA_ENDIANNESS_VALUES, `${id}.endianness`),
+        byteIndex: requireNumber(record.byteIndex, `${id}.byteIndex`),
+      };
     case "output":
       return {
         id,
@@ -573,10 +695,13 @@ function processingNodeDependencies(node: ProcessingNode): readonly string[] {
       return [];
     case "math":
       return [node.left, node.right];
+    case "bytes_to_number":
+      return node.inputs;
     case "affine":
     case "clamp":
     case "ema":
     case "moving_average":
+    case "number_to_byte":
     case "output":
       return [node.input];
   }
@@ -671,7 +796,17 @@ function normalizeOutputName(value: string, nodeId: string): string {
 }
 
 function cloneProcessingNode(node: ReadonlyProcessingNode): ProcessingNode {
-  return { ...node } as ProcessingNode;
+  return node.kind === "bytes_to_number"
+    ? { ...node, inputs: [...node.inputs] }
+    : ({ ...node } as ProcessingNode);
+}
+
+function freezeProcessingNode(node: ReadonlyProcessingNode): ReadonlyProcessingNode {
+  const cloned = cloneProcessingNode(node);
+  if (cloned.kind === "bytes_to_number") {
+    Object.freeze(cloned.inputs);
+  }
+  return Object.freeze(cloned);
 }
 
 function addCounter(current: number, increment: number): number {
@@ -697,6 +832,13 @@ function requireNumber(value: unknown, field: string): number {
     throw new Error(`${field} 必须是数值`);
   }
   return value;
+}
+
+function requireStringArray(value: unknown, field: string, maximumLength: number): string[] {
+  if (!Array.isArray(value) || value.length > maximumLength) {
+    throw new Error(`${field} 必须是最多包含 ${maximumLength} 项的数组`);
+  }
+  return value.map((item, index) => requireString(item, `${field}[${index}]`));
 }
 
 function requireEnum<const T>(value: unknown, values: readonly T[], field: string): T {

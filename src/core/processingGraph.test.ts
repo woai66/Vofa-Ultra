@@ -5,6 +5,7 @@ import {
   compileProcessingGraph,
   createDefaultProcessingGraph,
   MAX_PROCESSING_EVALUATIONS_PER_BATCH,
+  parseLegacyProcessingGraphConfig,
   parseProcessingGraphConfig,
   ProcessingGraphRuntime,
   processingOutputChannelId,
@@ -119,6 +120,38 @@ describe("处理图配置", () => {
     expect(compiled.outputs[0]?.channelId).toBe("derived:result");
     expect(processingOutputChannelId("result")).toBe("derived:result");
     expect(() => processingOutputChannelId("bad id")).toThrow("输出节点 ID");
+  });
+
+  it("深克隆并冻结字节输入列表，同时让旧 parser 拒绝新节点", () => {
+    const sourceInputs = ["high", "low"];
+    const config: ProcessingGraphConfig = {
+      enabled: true,
+      nodes: [
+        { id: "high", kind: "input", channelIndex: 0 },
+        { id: "low", kind: "input", channelIndex: 1 },
+        {
+          id: "decoded",
+          kind: "bytes_to_number",
+          inputs: sourceInputs,
+          numericType: "u16",
+          endianness: "be",
+        },
+      ],
+    };
+    const cloned = cloneProcessingGraph(config);
+    const compiled = compileProcessingGraph(config);
+    const clonedInputs = cloned.nodes[2]?.kind === "bytes_to_number"
+      ? cloned.nodes[2].inputs
+      : [];
+    const compiledInputs = compiled.config.nodes[2]?.kind === "bytes_to_number"
+      ? compiled.config.nodes[2].inputs
+      : [];
+
+    sourceInputs[0] = "low";
+    expect(clonedInputs).toEqual(["high", "low"]);
+    expect(compiledInputs).toEqual(["high", "low"]);
+    expect(Object.isFrozen(compiledInputs)).toBe(true);
+    expect(() => parseLegacyProcessingGraphConfig(config)).toThrow("kind");
   });
 });
 
@@ -256,6 +289,38 @@ describe("处理图编译", () => {
         nodes: [{ id: "math", kind: "math", left: "a", right: "b", operation: "power" }],
       }),
     ).toThrow("operation");
+
+    expect(() =>
+      compileProcessingGraph({
+        enabled: true,
+        nodes: [
+          { id: "source", kind: "input", channelIndex: 0 },
+          {
+            id: "decoded",
+            kind: "bytes_to_number",
+            inputs: ["source"],
+            numericType: "u16",
+            endianness: "le",
+          },
+        ],
+      }),
+    ).toThrow("输入数量必须为 2");
+    expect(() =>
+      compileProcessingGraph({
+        enabled: true,
+        nodes: [
+          { id: "source", kind: "input", channelIndex: 0 },
+          {
+            id: "encoded",
+            kind: "number_to_byte",
+            input: "source",
+            numericType: "u16",
+            endianness: "le",
+            byteIndex: 2,
+          },
+        ],
+      }),
+    ).toThrow("字节索引必须在 0 到 1 之间");
   });
 
   it("执行节点数、输出数和移动窗口总容量上限", () => {
@@ -292,6 +357,86 @@ describe("处理图编译", () => {
 });
 
 describe("处理图运行时", () => {
+  it("在单帧内完成字节与数值双向转换", () => {
+    const runtime = new ProcessingGraphRuntime({
+      enabled: true,
+      nodes: [
+        { id: "low", kind: "input", channelIndex: 0 },
+        { id: "high", kind: "input", channelIndex: 1 },
+        { id: "number", kind: "input", channelIndex: 2 },
+        {
+          id: "decoded",
+          kind: "bytes_to_number",
+          inputs: ["low", "high"],
+          numericType: "u16",
+          endianness: "le",
+        },
+        {
+          id: "encoded-low",
+          kind: "number_to_byte",
+          input: "number",
+          numericType: "u16",
+          endianness: "le",
+          byteIndex: 0,
+        },
+        {
+          id: "encoded-high",
+          kind: "number_to_byte",
+          input: "number",
+          numericType: "u16",
+          endianness: "le",
+          byteIndex: 1,
+        },
+        { id: "out-number", kind: "output", input: "decoded", name: "数值", color: "#111111" },
+        { id: "out-low", kind: "output", input: "encoded-low", name: "低字节", color: "#222222" },
+        { id: "out-high", kind: "output", input: "encoded-high", name: "高字节", color: "#333333" },
+      ],
+    });
+
+    expect(outputValues(runtime, [0x34, 0x12, 0xabcd])).toEqual([0x1234, 0xcd, 0xab]);
+  });
+
+  it("不跨帧拼接字节，非法输入只让受影响输出形成 gap", () => {
+    const runtime = new ProcessingGraphRuntime({
+      enabled: true,
+      nodes: [
+        { id: "first", kind: "input", channelIndex: 0 },
+        { id: "second", kind: "input", channelIndex: 1 },
+        { id: "number", kind: "input", channelIndex: 2 },
+        { id: "stable", kind: "input", channelIndex: 3 },
+        {
+          id: "decoded",
+          kind: "bytes_to_number",
+          inputs: ["first", "second"],
+          numericType: "u16",
+          endianness: "be",
+        },
+        {
+          id: "encoded",
+          kind: "number_to_byte",
+          input: "number",
+          numericType: "u16",
+          endianness: "be",
+          byteIndex: 0,
+        },
+        { id: "out-decoded", kind: "output", input: "decoded", name: "解码", color: "#111111" },
+        { id: "out-encoded", kind: "output", input: "encoded", name: "编码", color: "#222222" },
+        { id: "out-stable", kind: "output", input: "stable", name: "稳定", color: "#333333" },
+      ],
+    });
+
+    const samples = runtime.process([
+      { values: [0x12, Number.NaN, 1.5, 7], timestamp: 1 },
+      { values: [256, 0x34, 65_536, 8], timestamp: 2 },
+    ]);
+
+    expect(samples.map((sample) => [sample.value, sample.frameIndex])).toEqual([
+      [7, 0],
+      [8, 1],
+    ]);
+    expect(runtime.getSnapshot()).toMatchObject({ status: "ready", processedFrames: 2 });
+  });
+
   it("执行 affine、clamp 与四种数学节点", () => {
     const runtime = new ProcessingGraphRuntime({
       enabled: true,

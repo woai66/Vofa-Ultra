@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   convertData,
+  decodeNumericValue,
+  encodeNumericValue,
   MAX_DATA_CONVERTER_INPUT_CHARACTERS,
   MAX_DATA_CONVERTER_OUTPUT_BYTES,
   numericTypeByteWidth,
@@ -56,6 +58,36 @@ describe("data converter", () => {
       });
     },
   );
+
+  it.each(CONVERSION_VECTORS)(
+    "converts single-value $endianness $numericType vectors without text parsing",
+    ({ numericType, endianness, numbers, hex }) => {
+      const values = numbers.split(", ").map(Number);
+      const bytes = hex.split(" ").map((byte) => Number.parseInt(byte, 16));
+      const byteWidth = numericTypeByteWidth(numericType);
+
+      values.forEach((value, index) => {
+        const expectedBytes = bytes.slice(index * byteWidth, (index + 1) * byteWidth);
+        expect(Array.from(encodeNumericValue(value, numericType, endianness) ?? []))
+          .toEqual(expectedBytes);
+        expect(decodeNumericValue(expectedBytes, numericType, endianness)).toBe(value);
+      });
+    },
+  );
+
+  it("returns gaps for invalid single-value conversion inputs", () => {
+    expect(decodeNumericValue([0x34], "u16", "le")).toBeUndefined();
+    expect(decodeNumericValue([0x34, -1], "u16", "le")).toBeUndefined();
+    expect(decodeNumericValue([0x34, 256], "u16", "le")).toBeUndefined();
+    expect(decodeNumericValue([0x34, 1.5], "u16", "le")).toBeUndefined();
+    expect(decodeNumericValue([0x00, 0x00, 0x80, 0x7f], "f32", "le"))
+      .toBeUndefined();
+    expect(encodeNumericValue(Number.NaN, "f64", "le")).toBeUndefined();
+    expect(encodeNumericValue(Number.POSITIVE_INFINITY, "f64", "be")).toBeUndefined();
+    expect(encodeNumericValue(1.5, "u16", "le")).toBeUndefined();
+    expect(encodeNumericValue(65_536, "u16", "le")).toBeUndefined();
+    expect(encodeNumericValue(3.5e38, "f32", "le")).toBeUndefined();
+  });
 
   it("fixes every numeric type byte width", () => {
     expect(

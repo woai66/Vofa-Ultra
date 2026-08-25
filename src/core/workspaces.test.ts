@@ -64,7 +64,7 @@ describe("工作区文件", () => {
     });
   });
 
-  it("以严格的 v8 格式往返终端行聚合、文本编码及完整工作区配置", () => {
+  it("以严格的 v9 格式往返转换节点、文本编码及完整工作区配置", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.serialConfig.portName = "COM7";
     config.protocol = "justfloat";
@@ -77,11 +77,27 @@ describe("工作区文件", () => {
     config.processingGraph = {
       enabled: true,
       nodes: [
-        { id: "source", kind: "input", channelIndex: 0 },
+        { id: "low", kind: "input", channelIndex: 0 },
+        { id: "high", kind: "input", channelIndex: 1 },
+        {
+          id: "decoded",
+          kind: "bytes_to_number",
+          inputs: ["low", "high"],
+          numericType: "u16",
+          endianness: "le",
+        },
+        {
+          id: "encoded",
+          kind: "number_to_byte",
+          input: "decoded",
+          numericType: "u16",
+          endianness: "be",
+          byteIndex: 0,
+        },
         {
           id: "output",
           kind: "output",
-          input: "source",
+          input: "encoded",
           name: "Filtered",
           color: "#46d89c",
         },
@@ -107,7 +123,7 @@ describe("工作区文件", () => {
 
     expect(parsed).toEqual({
       format: "vofa-ultra.workspace",
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: "台架 A",
       config,
     });
@@ -139,7 +155,7 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(8);
+    expect(parsed.schemaVersion).toBe(9);
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.channels).toEqual({
       roll: "",
@@ -171,7 +187,7 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(8);
+    expect(parsed.schemaVersion).toBe(9);
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
     expect(parsed.config.autoResponderRules).toEqual([]);
@@ -194,7 +210,7 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(8);
+    expect(parsed.schemaVersion).toBe(9);
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
     expect(parsed.config.autoResponderRules).toEqual([]);
     expect(parsed.config.quickCommands).toEqual([]);
@@ -213,12 +229,12 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(8);
+    expect(parsed.schemaVersion).toBe(9);
     expect(parsed.config.autoResponderRules).toEqual(config.autoResponderRules);
     expect(parsed.config.quickCommands).toEqual([]);
   });
 
-  it("导入严格 v5 后无损迁移为 v8", () => {
+  it("导入严格 v5 后无损迁移为 v9", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.lineEnding = "crlf";
     config.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
@@ -240,7 +256,7 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(8);
+    expect(parsed.schemaVersion).toBe(9);
     expect(parsed.config).toEqual(config);
   });
 
@@ -254,7 +270,7 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(8);
+    expect(parsed.schemaVersion).toBe(9);
     expect(parsed.config).toMatchObject({
       terminalRxRecordMode: "chunk",
       terminalRxLineEnding: "lf",
@@ -272,8 +288,52 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(8);
+    expect(parsed.schemaVersion).toBe(9);
     expect(parsed.config.terminalRxTextEncoding).toBe("utf-8");
+  });
+
+  it("导入合法 v8 处理图后无损迁移为 v9", () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.processingGraph = {
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        { id: "result", kind: "output", input: "source", name: "结果", color: "#123456" },
+      ],
+    };
+    const exported = JSON.parse(
+      serializeWorkspace(createWorkspaceProfile("v8 工作区", config, "legacy-v8", 100)),
+    ) as Record<string, unknown>;
+    exported.schemaVersion = 8;
+
+    const parsed = parseWorkspaceExport(JSON.stringify(exported));
+
+    expect(parsed.schemaVersion).toBe(9);
+    expect(parsed.config.processingGraph).toEqual(config.processingGraph);
+  });
+
+  it("拒绝伪装成 v8 的转换节点", () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.processingGraph = {
+      enabled: true,
+      nodes: [
+        { id: "first", kind: "input", channelIndex: 0 },
+        { id: "second", kind: "input", channelIndex: 1 },
+        {
+          id: "decoded",
+          kind: "bytes_to_number",
+          inputs: ["first", "second"],
+          numericType: "u16",
+          endianness: "le",
+        },
+      ],
+    };
+    const exported = JSON.parse(
+      serializeWorkspace(createWorkspaceProfile("伪 v8", config, "invalid-v8", 100)),
+    ) as Record<string, unknown>;
+    exported.schemaVersion = 8;
+
+    expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/kind/);
   });
 
   it.each([1, 2, 3, 4, 5] as const)("v%d 顶层行尾仍拒绝 CR", (schemaVersion) => {
@@ -340,7 +400,7 @@ describe("工作区文件", () => {
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/行尾/);
   });
 
-  it("严格校验 v8 姿态字段、快捷命令、接收配置及派生通道引用", () => {
+  it("严格校验 v9 姿态字段、快捷命令、接收配置及派生通道引用", () => {
     const profile = createWorkspaceProfile(
       "姿态工作区",
       createDefaultWorkspaceConfig("simulator"),
@@ -425,7 +485,7 @@ describe("工作区文件", () => {
 
   it.each([
     ["错误格式", { format: "other", schemaVersion: 1 }],
-    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 9 }],
+    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 10 }],
   ])("拒绝%s", (_label, overrides) => {
     const profile = createWorkspaceProfile(
       "默认工作区",

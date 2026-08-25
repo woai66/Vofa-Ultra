@@ -9,8 +9,8 @@
 
 | 数据面 | 当前写入 | 当前读取/迁移 | 遇到未来版本 |
 | --- | --- | --- | --- |
-| 工作区 JSON `vofa-ultra.workspace` | v8 | 严格读取 v1-v8，导入后归一为 v8 | 拒绝导入，不猜测字段含义 |
-| 本地工作台状态 `vofa-ultra-workbench` | v8 | 从 v0-v7 迁移；v8 直接恢复 | 保留原值并进入只读保护，禁止覆盖 |
+| 工作区 JSON `vofa-ultra.workspace` | v9 | 严格读取 v1-v9，导入后归一为 v9 | 拒绝导入，不猜测字段含义 |
+| 本地工作台状态 `vofa-ultra-workbench` | v9 | 从 v0-v8 迁移；v9 直接恢复 | 保留原值并进入只读保护，禁止覆盖 |
 | VUCAP 捕获文件 | v2 | 流式读取 v1/v2 | 明确拒绝，不按当前版本猜测 |
 | 协议 wire ID | `firewater`、`justfloat`、`raw` | 已发布 ID 永久保持原含义 | 旧客户端明确拒绝未知 ID |
 | `.vux` Wasm 扩展 | packer 写 schema/API v1 | 桌面端只读 v1；状态为 experimental | 明确拒绝未知 schema/API |
@@ -22,15 +22,19 @@
 本地状态是应用恢复数据，不是跨设备交换格式。需要备份、迁移或提交 Issue 时，应导出工作区 JSON；不要依赖
 浏览器或 WebView 的 `localStorage` 文件位置。
 
+工作区 v9 为处理图增加 `bytes_to_number` 与 `number_to_byte` 两类固定节点。v1-v8 仍按各自历史节点枚举严格
+读取；标记为 v8 却包含新节点的文件会被拒绝，不会借用 v9 语义猜测。合法旧图无损迁移，导入后统一写为 v9。
+高于 v9 的工作区仍拒绝导入，本地状态仍保留原值并进入只读保护。
+
 工作区 v8 增加 `terminalRxTextEncoding`，只允许 `utf-8`、`gb18030` 和 `windows-1252`。严格的 v1-v7 文件
-迁移时补为 `utf-8`；导入后统一写为 v8。高于 v8 的工作区仍拒绝导入，本地状态仍保留原值并进入只读保护。
+迁移时补为 `utf-8`；迁移到当前 v9 后仍保留该选择。
 
 工作区 v7 增加 `terminalRxRecordMode` 和 `terminalRxLineEnding`，分别保存终端 RX 按读取块/文本行记录的方式与
 文本行使用的 LF/CRLF/CR 分隔符。严格的 v1-v6 文件迁移时补为 `chunk` 和 `lf`，保持旧版本每个读取块一条
-记录的行为；迁移到 v8 后仍保留该选择。
+记录的行为；迁移到 v9 后仍保留该选择。
 
 工作区 v6 在顶层发送配置、自动应答和快捷命令的行尾枚举中新增 `cr`，表示只追加单字节 `0D`。严格的 v1-v5
-reader 仍只接受 `none`、`lf` 和 `crlf`，不会把新值倒灌到历史 schema；迁移到 v8 后继续保留 v6 的 CR-only
+reader 仍只接受 `none`、`lf` 和 `crlf`，不会把新值倒灌到历史 schema；迁移到 v9 后继续保留 v6 的 CR-only
 语义。
 
 工作区 v5 在 v4 基础上增加命名快捷命令。每条命令保存稳定 ID、名称、原始模板、TEXT/HEX 模式和行尾；数组

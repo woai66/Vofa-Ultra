@@ -23,6 +23,13 @@
       "workUnit": "evaluations"
     },
     {
+      "id": "协议与数据处理热路径 > 20 节点转换图执行 4096 帧",
+      "maxMedianMs": 12,
+      "minimumSamples": 15,
+      "workAmount": 81920,
+      "workUnit": "evaluations"
+    },
+    {
       "id": "工作台数据平面 > 已饱和实时链路摄入 16 KiB JustFloat",
       "maxMedianMs": 10,
       "minimumSamples": 15,

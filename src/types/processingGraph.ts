@@ -1,3 +1,5 @@
+import type { DataEndianness, DataNumericType } from "./dataConversion";
+
 export type ProcessingMathOperation = "add" | "subtract" | "multiply" | "divide";
 
 export interface InputProcessingNode {
@@ -44,6 +46,23 @@ export interface MathProcessingNode {
   operation: ProcessingMathOperation;
 }
 
+export interface BytesToNumberProcessingNode {
+  id: string;
+  kind: "bytes_to_number";
+  inputs: readonly string[];
+  numericType: DataNumericType;
+  endianness: DataEndianness;
+}
+
+export interface NumberToByteProcessingNode {
+  id: string;
+  kind: "number_to_byte";
+  input: string;
+  numericType: DataNumericType;
+  endianness: DataEndianness;
+  byteIndex: number;
+}
+
 export interface OutputProcessingNode {
   id: string;
   kind: "output";
@@ -59,11 +78,23 @@ export type ProcessingNode =
   | EmaProcessingNode
   | MovingAverageProcessingNode
   | MathProcessingNode
+  | BytesToNumberProcessingNode
+  | NumberToByteProcessingNode
   | OutputProcessingNode;
+
+export type LegacyProcessingNode = Exclude<
+  ProcessingNode,
+  BytesToNumberProcessingNode | NumberToByteProcessingNode
+>;
 
 export interface ProcessingGraphConfig {
   enabled: boolean;
   nodes: ProcessingNode[];
+}
+
+export interface LegacyProcessingGraphConfig {
+  enabled: boolean;
+  nodes: LegacyProcessingNode[];
 }
 
 export interface ProcessingOutputSample {

@@ -5,7 +5,10 @@ import type {
   ProtocolKind,
   SerialConfig,
 } from "./serial";
-import type { ProcessingGraphConfig } from "./processingGraph";
+import type {
+  LegacyProcessingGraphConfig,
+  ProcessingGraphConfig,
+} from "./processingGraph";
 import type { AttitudeConfig } from "./attitude";
 import type { AutoResponderRule } from "./automation";
 import type {
@@ -30,7 +33,7 @@ export interface WorkspaceConfigV1 {
 }
 
 export interface WorkspaceConfigV2 extends WorkspaceConfigV1 {
-  processingGraph: ProcessingGraphConfig;
+  processingGraph: LegacyProcessingGraphConfig;
 }
 
 export interface WorkspaceConfigV3 extends WorkspaceConfigV2 {
@@ -56,7 +59,11 @@ export interface WorkspaceConfigV8 extends WorkspaceConfigV7 {
   terminalRxTextEncoding: TerminalRxTextEncoding;
 }
 
-export type WorkspaceConfig = WorkspaceConfigV8;
+export type WorkspaceConfigV9 = Omit<WorkspaceConfigV8, "processingGraph"> & {
+  processingGraph: ProcessingGraphConfig;
+};
+
+export type WorkspaceConfig = WorkspaceConfigV9;
 
 export interface WorkspaceProfile {
   id: string;
@@ -120,4 +127,11 @@ export interface WorkspaceExportV8 {
   schemaVersion: 8;
   name: string;
   config: WorkspaceConfigV8;
+}
+
+export interface WorkspaceExportV9 {
+  format: "vofa-ultra.workspace";
+  schemaVersion: 9;
+  name: string;
+  config: WorkspaceConfigV9;
 }

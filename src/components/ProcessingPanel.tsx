@@ -6,6 +6,12 @@ import {
   type ProcessingGraphConfig,
   type ProcessingNode,
 } from "../core/processingGraph";
+import {
+  DATA_NUMERIC_TYPE_OPTIONS,
+  numericTypeByteWidth,
+  type DataConverterEndianness,
+  type DataNumericType,
+} from "../core/dataConverter";
 import { useWorkbenchStore } from "../store/workbenchStore";
 
 type NodeKind = ProcessingNode["kind"];
@@ -17,6 +23,8 @@ const NODE_KINDS: readonly { kind: NodeKind; label: string }[] = [
   { kind: "ema", label: "EMA" },
   { kind: "moving_average", label: "移动平均" },
   { kind: "math", label: "双路运算" },
+  { kind: "bytes_to_number", label: "字节转数值" },
+  { kind: "number_to_byte", label: "数值拆字节" },
   { kind: "output", label: "输出路由" },
 ];
 
@@ -98,6 +106,7 @@ export function ProcessingPanel() {
           <span>启用处理图</span>
           <input
             type="checkbox"
+            name="processing-enabled"
             checked={graph.enabled}
             disabled={isTransitioning}
             onChange={(event) => applyGraph({ ...graph, enabled: event.target.checked })}
@@ -161,6 +170,7 @@ export function ProcessingPanel() {
       <div className="processing-add-bar">
         <select
           aria-label="新增节点类型"
+          name="processing-node-kind"
           value={nodeKind}
           disabled={isTransitioning || graph.nodes.length >= MAX_PROCESSING_NODES}
           onChange={(event) => setNodeKind(event.target.value as NodeKind)}
@@ -223,6 +233,7 @@ function ProcessingNodeEditor({
             <span className="field-label">原始通道</span>
             <select
               aria-label={`${node.id} 原始通道`}
+              name={`processing-${node.id}-channel`}
               value={node.channelIndex}
               disabled={disabled}
               onChange={(event) =>
@@ -343,6 +354,7 @@ function ProcessingNodeEditor({
               <span className="field-label">运算</span>
               <select
                 aria-label={`${node.id} 运算`}
+                name={`processing-${node.id}-operation`}
                 value={node.operation}
                 disabled={disabled}
                 onChange={(event) =>
@@ -366,6 +378,101 @@ function ProcessingNodeEditor({
               disabled={disabled}
               onChange={(right) => onChange({ ...node, right })}
             />
+          </>
+        )}
+        {node.kind === "bytes_to_number" && (
+          <>
+            <NumericTypeField
+              nodeId={node.id}
+              value={node.numericType}
+              disabled={disabled}
+              onChange={(numericType) => {
+                const byteWidth = numericTypeByteWidth(numericType);
+                const fallback = node.inputs.at(-1) ?? "";
+                onChange({
+                  ...node,
+                  numericType,
+                  inputs: Array.from(
+                    { length: byteWidth },
+                    (_, index) => node.inputs[index] ?? fallback,
+                  ),
+                });
+              }}
+            />
+            <EndiannessField
+              nodeId={node.id}
+              value={node.endianness}
+              disabled={disabled}
+              onChange={(endianness) => onChange({ ...node, endianness })}
+            />
+            {node.inputs.map((input, index) => (
+              <SourceSelect
+                key={index}
+                label={`字节 ${index + 1}`}
+                node={node}
+                nodes={nodes}
+                value={input}
+                disabled={disabled}
+                onChange={(nextInput) =>
+                  onChange({
+                    ...node,
+                    inputs: node.inputs.map((value, inputIndex) =>
+                      inputIndex === index ? nextInput : value,
+                    ),
+                  })
+                }
+              />
+            ))}
+          </>
+        )}
+        {node.kind === "number_to_byte" && (
+          <>
+            <SourceSelect
+              node={node}
+              nodes={nodes}
+              value={node.input}
+              disabled={disabled}
+              onChange={(input) => onChange({ ...node, input })}
+            />
+            <NumericTypeField
+              nodeId={node.id}
+              value={node.numericType}
+              disabled={disabled}
+              onChange={(numericType) =>
+                onChange({
+                  ...node,
+                  numericType,
+                  byteIndex: Math.min(node.byteIndex, numericTypeByteWidth(numericType) - 1),
+                })
+              }
+            />
+            <EndiannessField
+              nodeId={node.id}
+              value={node.endianness}
+              disabled={disabled}
+              onChange={(endianness) => onChange({ ...node, endianness })}
+            />
+            <label>
+              <span className="field-label">输出字节</span>
+              <select
+                aria-label={`${node.id} 输出字节`}
+                name={`processing-${node.id}-byte-index`}
+                value={node.byteIndex}
+                disabled={disabled}
+                onChange={(event) =>
+                  onChange({ ...node, byteIndex: Number(event.target.value) })
+                }
+              >
+                {Array.from(
+                  { length: numericTypeByteWidth(node.numericType) },
+                  (_, index) => (
+                    <option key={index} value={index}>
+                      B{index} · 第 {index + 1} 字节
+                    </option>
+                  ),
+                )}
+              </select>
+            </label>
           </>
         )}
         {node.kind === "output" && (
@@ -402,6 +509,59 @@ function ProcessingNodeEditor({
   );
 }
 
+interface NumericTypeFieldProps {
+  nodeId: string;
+  value: DataNumericType;
+  disabled: boolean;
+  onChange(value: DataNumericType): void;
+}
+
+function NumericTypeField({ nodeId, value, disabled, onChange }: NumericTypeFieldProps) {
+  return (
+    <label>
+      <span className="field-label">数值类型</span>
+      <select
+        aria-label={`${nodeId} 数值类型`}
+        name={`processing-${nodeId}-numeric-type`}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value as DataNumericType)}
+      >
+        {DATA_NUMERIC_TYPE_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+interface EndiannessFieldProps {
+  nodeId: string;
+  value: DataConverterEndianness;
+  disabled: boolean;
+  onChange(value: DataConverterEndianness): void;
+}
+
+function EndiannessField({ nodeId, value, disabled, onChange }: EndiannessFieldProps) {
+  return (
+    <label>
+      <span className="field-label">字节序</span>
+      <select
+        aria-label={`${nodeId} 字节序`}
+        name={`processing-${nodeId}-endianness`}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value as DataConverterEndianness)}
+      >
+        <option value="le">Little Endian</option>
+        <option value="be">Big Endian</option>
+      </select>
+    </label>
+  );
+}
+
 interface SourceSelectProps {
   label?: string;
   node: ProcessingNode;
@@ -427,6 +587,7 @@ function SourceSelect({
       <span className="field-label">{label}</span>
       <select
         aria-label={`${node.id} ${label}`}
+        name={`processing-${node.id}-${label}`}
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
@@ -489,6 +650,7 @@ function NumberField({
       <input
         type="number"
         aria-label={`${nodeId} ${label}`}
+        name={`processing-${nodeId}-${label}`}
         value={draft}
         min={min}
         max={max}
@@ -579,6 +741,23 @@ function createProcessingNode(
       return { id, kind, input, windowSize: 8 };
     case "math":
       return { id, kind, left: input, right: input, operation: "add" };
+    case "bytes_to_number":
+      return {
+        id,
+        kind,
+        inputs: [input, input],
+        numericType: "u16",
+        endianness: "le",
+      };
+    case "number_to_byte":
+      return {
+        id,
+        kind,
+        input,
+        numericType: "u16",
+        endianness: "le",
+        byteIndex: 0,
+      };
     case "output": {
       const outputIndex = nodes.filter((node) => node.kind === "output").length;
       return {
@@ -621,6 +800,8 @@ function nodeDependencies(node: ProcessingNode): string[] {
       return [];
     case "math":
       return [node.left, node.right];
+    case "bytes_to_number":
+      return [...node.inputs];
     default:
       return [node.input];
   }

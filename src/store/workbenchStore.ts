@@ -222,7 +222,7 @@ import type {
 } from "../types/processingGraph";
 import type {
   ChartWindowSeconds,
-  WorkspaceExportV8,
+  WorkspaceExportV9,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AutoResponderRule, AutoResponderSnapshot } from "../types/automation";
@@ -240,8 +240,8 @@ const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY =
   MAX_TERMINAL_UNTERMINATED_LINE_BYTES + MAX_TERMINAL_LINE_ENDING_BYTES;
 export const WORKBENCH_STORAGE_KEY = "vofa-ultra-workbench";
-export const WORKBENCH_STORAGE_VERSION = 8;
-export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7] as const;
+export const WORKBENCH_STORAGE_VERSION = 9;
+export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8] as const;
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
   phase: "off",
@@ -534,7 +534,7 @@ export interface WorkbenchStore {
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
   deleteWorkspace(id: string): Promise<boolean>;
-  importWorkspace(workspace: WorkspaceExportV8): string;
+  importWorkspace(workspace: WorkspaceExportV9): string;
 }
 
 type PersistedWorkbenchState = Pick<
@@ -3138,10 +3138,12 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           persistedState,
           INITIAL_WORKSPACE_CONFIG,
           version >= 6 ? LINE_ENDINGS : LEGACY_LINE_ENDINGS,
+          "legacy",
         );
         const restoredWorkspaces = restoreWorkspaceProfiles(
           isRecord(persistedState) ? persistedState.workspaces : undefined,
           version >= 6 ? LINE_ENDINGS : LEGACY_LINE_ENDINGS,
+          "legacy",
         );
         const workspaces =
           version >= 1 && restoredWorkspaces.length > 0

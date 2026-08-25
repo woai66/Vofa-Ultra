@@ -2992,11 +2992,71 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().processedChannels[0]?.lastValue).toBe(0);
   });
 
+  it("实时与回放对同一帧执行一致的字节数值转换", () => {
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: true,
+      nodes: [
+        { id: "low", kind: "input", channelIndex: 0 },
+        { id: "high", kind: "input", channelIndex: 1 },
+        { id: "number", kind: "input", channelIndex: 2 },
+        {
+          id: "decoded",
+          kind: "bytes_to_number",
+          inputs: ["low", "high"],
+          numericType: "u16",
+          endianness: "le",
+        },
+        {
+          id: "encoded",
+          kind: "number_to_byte",
+          input: "number",
+          numericType: "u16",
+          endianness: "le",
+          byteIndex: 0,
+        },
+        { id: "out-decoded", kind: "output", input: "decoded", name: "解码", color: "#123456" },
+        { id: "out-encoded", kind: "output", input: "encoded", name: "编码", color: "#654321" },
+      ],
+    });
+    const frame = new TextEncoder().encode("52,18,43981\n");
+    useWorkbenchStore.getState().ingestBytes(frame, 1_000);
+    expect(useWorkbenchStore.getState().processedChannels.map((channel) => channel.lastValue))
+      .toEqual([0x1234, 0xcd]);
+
+    useWorkbenchStore.setState({
+      replayStatus: "playing",
+      replaySessionId: 8,
+      replayGeneration: 1,
+      replayHeader: TEST_REPLAY_HEADER,
+      replayNextSequence: 1,
+      channels: [],
+      processedChannels: [],
+    });
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 8,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_000,
+      dataBytes: frame.length,
+      records: [
+        {
+          direction: "rx",
+          timestampUs: 1_000,
+          data: Array.from(frame),
+        },
+      ],
+    });
+
+    expect(useWorkbenchStore.getState().processedChannels.map((channel) => channel.lastValue))
+      .toEqual([0x1234, 0xcd]);
+  });
+
   it("导入同名工作区时生成后缀且不自动应用", () => {
     const beforeActiveId = useWorkbenchStore.getState().activeWorkspaceId;
     const importedId = useWorkbenchStore.getState().importWorkspace({
       format: "vofa-ultra.workspace",
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: "默认工作区",
       config: createDefaultWorkspaceConfig("serial"),
     });
@@ -3080,10 +3140,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 8 });
+    ).toMatchObject({ version: 9 });
   });
 
-  it("通过 rehydrate 把 v1 工作区写回 v8 且保留快照", async () => {
+  it("通过 rehydrate 把 v1 工作区写回 v9 且保留快照", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.processingGraph;
@@ -3135,10 +3195,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 8 });
+    ).toMatchObject({ version: 9 });
   });
 
-  it("通过 rehydrate 把 v3 工作区补充默认配置并写回 v8", async () => {
+  it("通过 rehydrate 把 v3 工作区补充默认配置并写回 v9", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.autoResponderRules;
@@ -3178,7 +3238,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 8 });
+    ).toMatchObject({ version: 9 });
   });
 
   it("通过 rehydrate 从 v4 补充空快捷命令并保留全部工作区", async () => {
@@ -3237,10 +3297,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 8 });
+    ).toMatchObject({ version: 9 });
   });
 
-  it("通过 rehydrate 把 v5 的全部工作区无损迁移并写回 v8", async () => {
+  it("通过 rehydrate 把 v5 的全部工作区无损迁移并写回 v9", async () => {
     const firstConfig = createDefaultWorkspaceConfig("simulator");
     firstConfig.lineEnding = "crlf";
     firstConfig.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
@@ -3291,7 +3351,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 8 });
+    ).toMatchObject({ version: 9 });
   });
 
   it("迁移 v6 本地状态并保留工作区内的 CR 发送行尾", async () => {
@@ -3375,12 +3435,88 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 8 });
+    ).toMatchObject({ version: 9 });
+  });
+
+  it("迁移 v8 本地状态并保留活动处理图与工作区快照", async () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.processingGraph = {
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        { id: "result", kind: "output", input: "source", name: "结果", color: "#123456" },
+      ],
+    };
+    const workspace = createWorkspaceProfile("v8 工作区", config, "legacy-v8", 100);
+    localStorage.setItem(
+      "vofa-ultra-workbench",
+      JSON.stringify({
+        version: 8,
+        state: {
+          ...config,
+          workspaces: [workspace],
+          activeWorkspaceId: workspace.id,
+        },
+      }),
+    );
+
+    await useWorkbenchStore.persist.rehydrate();
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      activeWorkspaceId: workspace.id,
+      processingGraph: config.processingGraph,
+      workspaces: [{ id: workspace.id, config: { processingGraph: config.processingGraph } }],
+    });
+    expect(
+      JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
+    ).toMatchObject({ version: 9 });
+  });
+
+  it("直接恢复 v9 转换节点", async () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.processingGraph = {
+      enabled: true,
+      nodes: [
+        { id: "first", kind: "input", channelIndex: 0 },
+        { id: "second", kind: "input", channelIndex: 1 },
+        {
+          id: "decoded",
+          kind: "bytes_to_number",
+          inputs: ["first", "second"],
+          numericType: "u16",
+          endianness: "le",
+        },
+      ],
+    };
+    const workspace = createWorkspaceProfile("v9 工作区", config, "current-v9", 100);
+    localStorage.setItem(
+      "vofa-ultra-workbench",
+      JSON.stringify({
+        version: 9,
+        state: {
+          ...config,
+          workspaces: [workspace],
+          activeWorkspaceId: workspace.id,
+        },
+      }),
+    );
+
+    await useWorkbenchStore.persist.rehydrate();
+
+    const restored = useWorkbenchStore.getState();
+    expect(restored.processingGraph.nodes[2]).toMatchObject({
+      kind: "bytes_to_number",
+      inputs: ["first", "second"],
+    });
+    expect(restored.workspaces[0]?.config.processingGraph.nodes[2]).toMatchObject({
+      kind: "bytes_to_number",
+      inputs: ["first", "second"],
+    });
   });
 
   it("拒绝并保留更高版本的持久化数据", async () => {
     const futureValue = JSON.stringify({
-      version: 9,
+      version: 10,
       state: {
         futureWorkspaceFormat: true,
         workspaces: [{ id: "future-only" }],
@@ -3393,13 +3529,13 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState()).toMatchObject({
       workspaceStorageStatus: "newer-version",
-      incompatibleStorageVersion: 9,
+      incompatibleStorageVersion: 10,
     });
     expect(() => useWorkbenchStore.getState().saveActiveWorkspace("不会保存")).toThrow(
-      /版本 9.*不能保存/,
+      /版本 10.*不能保存/,
     );
     expect(() => useWorkbenchStore.getState().setQuickCommands([quickCommand()])).toThrow(
-      /版本 9.*不能保存/,
+      /版本 10.*不能保存/,
     );
     expect(localStorage.getItem("vofa-ultra-workbench")).toBe(futureValue);
     useWorkbenchStore.persist.clearStorage();

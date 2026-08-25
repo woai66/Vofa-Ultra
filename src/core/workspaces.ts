@@ -11,8 +11,10 @@ import {
   parseAttitudeConfig,
 } from "./attitude";
 import {
+  cloneLegacyProcessingGraphConfig,
   cloneProcessingGraph,
   createDefaultProcessingGraph,
+  parseLegacyProcessingGraphConfig,
   parseProcessingGraphConfig,
   processingOutputChannelId,
 } from "./processingGraph";
@@ -42,7 +44,8 @@ import type {
   WorkspaceConfigV6,
   WorkspaceConfigV7,
   WorkspaceConfigV8,
-  WorkspaceExportV8,
+  WorkspaceConfigV9,
+  WorkspaceExportV9,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AttitudeConfig } from "../types/attitude";
@@ -50,7 +53,7 @@ import type { ProcessingGraphConfig } from "../types/processingGraph";
 import type { LineEnding } from "../types/serial";
 
 export const WORKSPACE_FILE_FORMAT = "vofa-ultra.workspace";
-export const WORKSPACE_SCHEMA_VERSION = 8;
+export const WORKSPACE_SCHEMA_VERSION = 9;
 export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   1,
   2,
@@ -59,6 +62,7 @@ export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   5,
   6,
   7,
+  8,
   WORKSPACE_SCHEMA_VERSION,
 ] as const;
 export const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
@@ -96,6 +100,7 @@ const WORKSPACE_CONFIG_V8_KEYS = [
   ...WORKSPACE_CONFIG_V7_KEYS,
   "terminalRxTextEncoding",
 ] as const;
+const WORKSPACE_CONFIG_V9_KEYS = WORKSPACE_CONFIG_V8_KEYS;
 const SERIAL_CONFIG_KEYS = [
   "portName",
   "baudRate",
@@ -114,6 +119,7 @@ const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const CHART_WINDOWS: readonly ChartWindowSeconds[] = [5, 15, 30, 60];
 
 export type WorkspaceConfigSource = WorkspaceConfig;
+type ProcessingGraphSchemaMode = "current" | "legacy";
 
 export function createDefaultWorkspaceConfig(source: WorkspaceConfig["source"]): WorkspaceConfig {
   return {
@@ -129,7 +135,7 @@ export function createDefaultWorkspaceConfig(source: WorkspaceConfig["source"]):
     terminalAutoScroll: true,
     chartWindowSeconds: 15,
     channelVisibility: {},
-    processingGraph: createDefaultProcessingGraph(),
+    processingGraph: { enabled: false, nodes: [] },
     attitudeConfig: createDefaultAttitudeConfig(),
     autoResponderRules: [],
     quickCommands: [],
@@ -273,7 +279,7 @@ export function assertWorkspaceNameAvailable(
 }
 
 export function serializeWorkspace(profile: WorkspaceProfile): string {
-  const exported: WorkspaceExportV8 = {
+  const exported: WorkspaceExportV9 = {
     format: WORKSPACE_FILE_FORMAT,
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     name: profile.name,
@@ -284,7 +290,7 @@ export function serializeWorkspace(profile: WorkspaceProfile): string {
   return serialized;
 }
 
-export function parseWorkspaceExport(text: string): WorkspaceExportV8 {
+export function parseWorkspaceExport(text: string): WorkspaceExportV9 {
   assertWorkspaceFileSize(text);
 
   let parsed: unknown;
@@ -325,6 +331,39 @@ export function parseWorkspaceConfig(value: unknown): WorkspaceConfig {
 function parseWorkspaceConfigWithLineEndings(
   value: unknown,
   allowedLineEndings: readonly LineEnding[],
+): WorkspaceConfigV9 {
+  const record = requireRecord(value, "工作区配置");
+  assertExactKeys(record, WORKSPACE_CONFIG_V9_KEYS, "工作区配置");
+  const processingGraph = parseProcessingGraphConfig(record.processingGraph);
+  const attitudeConfig = parseAttitudeConfig(record.attitudeConfig);
+  assertAttitudeChannelsMatchGraph(attitudeConfig, processingGraph);
+  return {
+    ...parseWorkspaceConfigBase(record, processingGraph, allowedLineEndings),
+    processingGraph,
+    attitudeConfig,
+    autoResponderRules: parseAutoResponderRules(record.autoResponderRules, allowedLineEndings),
+    quickCommands: parseQuickCommands(record.quickCommands, allowedLineEndings),
+    terminalRxRecordMode: requireEnum(
+      record.terminalRxRecordMode,
+      TERMINAL_RX_RECORD_MODES,
+      "接收记录方式",
+    ),
+    terminalRxLineEnding: requireEnum(
+      record.terminalRxLineEnding,
+      TERMINAL_RX_LINE_ENDINGS,
+      "接收行尾",
+    ),
+    terminalRxTextEncoding: requireEnum(
+      record.terminalRxTextEncoding,
+      TERMINAL_RX_TEXT_ENCODINGS,
+      "接收文本编码",
+    ),
+  };
+}
+
+function parseWorkspaceConfigV8(
+  value: unknown,
+  allowedLineEndings: readonly LineEnding[] = LINE_ENDINGS,
 ): WorkspaceConfigV8 {
   const record = requireRecord(value, "工作区配置");
   assertExactKeys(record, WORKSPACE_CONFIG_V8_KEYS, "工作区配置");
@@ -351,7 +390,7 @@ function parseWorkspaceConfigV7Record(
   record: Record<string, unknown>,
   allowedLineEndings: readonly LineEnding[],
 ): WorkspaceConfigV7 {
-  const processingGraph = parseProcessingGraphConfig(record.processingGraph);
+  const processingGraph = parseLegacyProcessingGraphConfig(record.processingGraph);
   const attitudeConfig = parseAttitudeConfig(record.attitudeConfig);
   assertAttitudeChannelsMatchGraph(attitudeConfig, processingGraph);
   const autoResponderRules = parseAutoResponderRules(
@@ -390,7 +429,7 @@ function parseWorkspaceConfigV6(
 ): WorkspaceConfigV6 {
   const record = requireRecord(value, "工作区配置");
   assertExactKeys(record, WORKSPACE_CONFIG_V6_KEYS, "工作区配置");
-  const processingGraph = parseProcessingGraphConfig(record.processingGraph);
+  const processingGraph = parseLegacyProcessingGraphConfig(record.processingGraph);
   const attitudeConfig = parseAttitudeConfig(record.attitudeConfig);
   assertAttitudeChannelsMatchGraph(attitudeConfig, processingGraph);
   return {
@@ -408,7 +447,7 @@ function parseWorkspaceConfigV4(
 ): WorkspaceConfigV4 {
   const record = requireRecord(value, "工作区配置");
   assertExactKeys(record, WORKSPACE_CONFIG_V4_KEYS, "工作区配置");
-  const processingGraph = parseProcessingGraphConfig(record.processingGraph);
+  const processingGraph = parseLegacyProcessingGraphConfig(record.processingGraph);
   const attitudeConfig = parseAttitudeConfig(record.attitudeConfig);
   assertAttitudeChannelsMatchGraph(attitudeConfig, processingGraph);
   return {
@@ -425,7 +464,7 @@ function parseWorkspaceConfigV3(
 ): WorkspaceConfigV3 {
   const record = requireRecord(value, "工作区配置");
   assertExactKeys(record, WORKSPACE_CONFIG_V3_KEYS, "工作区配置");
-  const processingGraph = parseProcessingGraphConfig(record.processingGraph);
+  const processingGraph = parseLegacyProcessingGraphConfig(record.processingGraph);
   const attitudeConfig = parseAttitudeConfig(record.attitudeConfig);
   assertAttitudeChannelsMatchGraph(attitudeConfig, processingGraph);
   return {
@@ -441,7 +480,7 @@ function parseWorkspaceConfigV2(
 ): WorkspaceConfigV2 {
   const record = requireRecord(value, "工作区配置");
   assertExactKeys(record, WORKSPACE_CONFIG_V2_KEYS, "工作区配置");
-  const processingGraph = parseProcessingGraphConfig(record.processingGraph);
+  const processingGraph = parseLegacyProcessingGraphConfig(record.processingGraph);
   return {
     ...parseWorkspaceConfigBase(record, processingGraph, allowedLineEndings),
     processingGraph,
@@ -483,7 +522,7 @@ function migrateWorkspaceConfigV1(config: WorkspaceConfigV1): WorkspaceConfigV2 
     ...config,
     serialConfig: { ...config.serialConfig },
     channelVisibility: { ...config.channelVisibility },
-    processingGraph: createDefaultProcessingGraph(),
+    processingGraph: { enabled: false, nodes: [] },
   };
 }
 
@@ -492,7 +531,7 @@ function migrateWorkspaceConfigV2(config: WorkspaceConfigV2): WorkspaceConfigV3 
     ...config,
     serialConfig: { ...config.serialConfig },
     channelVisibility: { ...config.channelVisibility },
-    processingGraph: cloneProcessingGraph(config.processingGraph),
+    processingGraph: cloneLegacyProcessingGraphConfig(config.processingGraph),
     attitudeConfig: createDefaultAttitudeConfig(),
   };
 }
@@ -502,7 +541,7 @@ function migrateWorkspaceConfigV3(config: WorkspaceConfigV3): WorkspaceConfigV4 
     ...config,
     serialConfig: { ...config.serialConfig },
     channelVisibility: { ...config.channelVisibility },
-    processingGraph: cloneProcessingGraph(config.processingGraph),
+    processingGraph: cloneLegacyProcessingGraphConfig(config.processingGraph),
     attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
     autoResponderRules: [],
   };
@@ -513,7 +552,7 @@ function migrateWorkspaceConfigV4(config: WorkspaceConfigV4): WorkspaceConfigV5 
     ...config,
     serialConfig: { ...config.serialConfig },
     channelVisibility: { ...config.channelVisibility },
-    processingGraph: cloneProcessingGraph(config.processingGraph),
+    processingGraph: cloneLegacyProcessingGraphConfig(config.processingGraph),
     attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
     autoResponderRules: cloneAutoResponderRules(config.autoResponderRules),
     quickCommands: [],
@@ -525,7 +564,7 @@ function migrateWorkspaceConfigV5(config: WorkspaceConfigV5): WorkspaceConfigV6 
     ...config,
     serialConfig: { ...config.serialConfig },
     channelVisibility: { ...config.channelVisibility },
-    processingGraph: cloneProcessingGraph(config.processingGraph),
+    processingGraph: cloneLegacyProcessingGraphConfig(config.processingGraph),
     attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
     autoResponderRules: cloneAutoResponderRules(config.autoResponderRules),
     quickCommands: cloneQuickCommands(config.quickCommands),
@@ -537,7 +576,7 @@ function migrateWorkspaceConfigV6(config: WorkspaceConfigV6): WorkspaceConfigV7 
     ...config,
     serialConfig: { ...config.serialConfig },
     channelVisibility: { ...config.channelVisibility },
-    processingGraph: cloneProcessingGraph(config.processingGraph),
+    processingGraph: cloneLegacyProcessingGraphConfig(config.processingGraph),
     attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
     autoResponderRules: cloneAutoResponderRules(config.autoResponderRules),
     quickCommands: cloneQuickCommands(config.quickCommands),
@@ -551,7 +590,7 @@ function migrateWorkspaceConfigV7(config: WorkspaceConfigV7): WorkspaceConfigV8 
     ...config,
     serialConfig: { ...config.serialConfig },
     channelVisibility: { ...config.channelVisibility },
-    processingGraph: cloneProcessingGraph(config.processingGraph),
+    processingGraph: cloneLegacyProcessingGraphConfig(config.processingGraph),
     attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
     autoResponderRules: cloneAutoResponderRules(config.autoResponderRules),
     quickCommands: cloneQuickCommands(config.quickCommands),
@@ -559,14 +598,28 @@ function migrateWorkspaceConfigV7(config: WorkspaceConfigV7): WorkspaceConfigV8 
   };
 }
 
+function migrateWorkspaceConfigV8(config: WorkspaceConfigV8): WorkspaceConfigV9 {
+  return {
+    ...config,
+    serialConfig: { ...config.serialConfig },
+    channelVisibility: { ...config.channelVisibility },
+    processingGraph: cloneProcessingGraph(config.processingGraph),
+    attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
+    autoResponderRules: cloneAutoResponderRules(config.autoResponderRules),
+    quickCommands: cloneQuickCommands(config.quickCommands),
+  };
+}
+
 function parseVersionedWorkspaceConfig(version: unknown, value: unknown): WorkspaceConfig {
   if (version === 1) {
-    return migrateWorkspaceConfigV7(
-      migrateWorkspaceConfigV6(
-        migrateWorkspaceConfigV5(
-          migrateWorkspaceConfigV4(
-            migrateWorkspaceConfigV3(
-              migrateWorkspaceConfigV2(migrateWorkspaceConfigV1(parseWorkspaceConfigV1(value))),
+    return migrateWorkspaceConfigV8(
+      migrateWorkspaceConfigV7(
+        migrateWorkspaceConfigV6(
+          migrateWorkspaceConfigV5(
+            migrateWorkspaceConfigV4(
+              migrateWorkspaceConfigV3(
+                migrateWorkspaceConfigV2(migrateWorkspaceConfigV1(parseWorkspaceConfigV1(value))),
+              ),
             ),
           ),
         ),
@@ -574,42 +627,55 @@ function parseVersionedWorkspaceConfig(version: unknown, value: unknown): Worksp
     );
   }
   if (version === 2) {
-    return migrateWorkspaceConfigV7(
-      migrateWorkspaceConfigV6(
-        migrateWorkspaceConfigV5(
-          migrateWorkspaceConfigV4(
-            migrateWorkspaceConfigV3(migrateWorkspaceConfigV2(parseWorkspaceConfigV2(value))),
+    return migrateWorkspaceConfigV8(
+      migrateWorkspaceConfigV7(
+        migrateWorkspaceConfigV6(
+          migrateWorkspaceConfigV5(
+            migrateWorkspaceConfigV4(
+              migrateWorkspaceConfigV3(migrateWorkspaceConfigV2(parseWorkspaceConfigV2(value))),
+            ),
           ),
         ),
       ),
     );
   }
   if (version === 3) {
-    return migrateWorkspaceConfigV7(
-      migrateWorkspaceConfigV6(
-        migrateWorkspaceConfigV5(
-          migrateWorkspaceConfigV4(migrateWorkspaceConfigV3(parseWorkspaceConfigV3(value))),
+    return migrateWorkspaceConfigV8(
+      migrateWorkspaceConfigV7(
+        migrateWorkspaceConfigV6(
+          migrateWorkspaceConfigV5(
+            migrateWorkspaceConfigV4(migrateWorkspaceConfigV3(parseWorkspaceConfigV3(value))),
+          ),
         ),
       ),
     );
   }
   if (version === 4) {
-    return migrateWorkspaceConfigV7(
-      migrateWorkspaceConfigV6(
-        migrateWorkspaceConfigV5(migrateWorkspaceConfigV4(parseWorkspaceConfigV4(value))),
+    return migrateWorkspaceConfigV8(
+      migrateWorkspaceConfigV7(
+        migrateWorkspaceConfigV6(
+          migrateWorkspaceConfigV5(migrateWorkspaceConfigV4(parseWorkspaceConfigV4(value))),
+        ),
       ),
     );
   }
   if (version === 5) {
-    return migrateWorkspaceConfigV7(
-      migrateWorkspaceConfigV6(migrateWorkspaceConfigV5(parseWorkspaceConfigV5(value))),
+    return migrateWorkspaceConfigV8(
+      migrateWorkspaceConfigV7(
+        migrateWorkspaceConfigV6(migrateWorkspaceConfigV5(parseWorkspaceConfigV5(value))),
+      ),
     );
   }
   if (version === 6) {
-    return migrateWorkspaceConfigV7(migrateWorkspaceConfigV6(parseWorkspaceConfigV6(value)));
+    return migrateWorkspaceConfigV8(
+      migrateWorkspaceConfigV7(migrateWorkspaceConfigV6(parseWorkspaceConfigV6(value))),
+    );
   }
   if (version === 7) {
-    return migrateWorkspaceConfigV7(parseWorkspaceConfigV7(value));
+    return migrateWorkspaceConfigV8(migrateWorkspaceConfigV7(parseWorkspaceConfigV7(value)));
+  }
+  if (version === 8) {
+    return migrateWorkspaceConfigV8(parseWorkspaceConfigV8(value));
   }
   if (version === WORKSPACE_SCHEMA_VERSION) {
     return parseWorkspaceConfig(value);
@@ -627,10 +693,11 @@ export function restoreWorkspaceConfig(
   value: unknown,
   fallback: WorkspaceConfig,
   allowedLineEndings: readonly LineEnding[] = LINE_ENDINGS,
+  processingGraphSchema: ProcessingGraphSchemaMode = "current",
 ): WorkspaceConfig {
   const record = isRecord(value) ? value : {};
   const serialConfig = isRecord(record.serialConfig) ? record.serialConfig : {};
-  const processingGraph = tryParseProcessingGraph(record.processingGraph) ??
+  const processingGraph = tryParseProcessingGraph(record.processingGraph, processingGraphSchema) ??
     cloneProcessingGraph(fallback.processingGraph);
   const attitudeConfig =
     tryParseAttitudeConfig(record.attitudeConfig, processingGraph) ??
@@ -704,6 +771,7 @@ export function restoreWorkspaceConfig(
 export function restoreWorkspaceProfiles(
   value: unknown,
   allowedLineEndings: readonly LineEnding[] = LINE_ENDINGS,
+  processingGraphSchema: ProcessingGraphSchemaMode = "current",
 ): WorkspaceProfile[] {
   if (!Array.isArray(value)) {
     return [];
@@ -714,7 +782,11 @@ export function restoreWorkspaceProfiles(
   const usedNames = new Set<string>();
   for (const candidate of value.slice(0, MAX_WORKSPACE_COUNT)) {
     try {
-      const profile = parseWorkspaceProfile(candidate, allowedLineEndings);
+      const profile = parseWorkspaceProfile(
+        candidate,
+        allowedLineEndings,
+        processingGraphSchema,
+      );
       const normalizedName = profile.name.toLocaleLowerCase();
       if (usedIds.has(profile.id) || usedNames.has(normalizedName)) {
         continue;
@@ -732,6 +804,7 @@ export function restoreWorkspaceProfiles(
 function parseWorkspaceProfile(
   value: unknown,
   allowedLineEndings: readonly LineEnding[],
+  processingGraphSchema: ProcessingGraphSchemaMode,
 ): WorkspaceProfile {
   const record = requireRecord(value, "工作区快照");
   assertExactKeys(record, WORKSPACE_PROFILE_KEYS, "工作区快照");
@@ -741,63 +814,11 @@ function parseWorkspaceProfile(
     throw new Error("工作区更新时间早于创建时间");
   }
   const configRecord = requireRecord(record.config, "工作区配置");
-  const config = Object.hasOwn(configRecord, "terminalRxTextEncoding")
-    ? parseWorkspaceConfigWithLineEndings(configRecord, allowedLineEndings)
-    : Object.hasOwn(configRecord, "terminalRxRecordMode")
-      ? migrateWorkspaceConfigV7(parseWorkspaceConfigV7(configRecord, allowedLineEndings))
-    : Object.hasOwn(configRecord, "quickCommands")
-      ? migrateWorkspaceConfigV7(
-          migrateWorkspaceConfigV6(parseWorkspaceConfigV6(configRecord, allowedLineEndings)),
-        )
-    : Object.hasOwn(configRecord, "autoResponderRules")
-      ? migrateWorkspaceConfigV7(
-          migrateWorkspaceConfigV6(
-            migrateWorkspaceConfigV5(
-              migrateWorkspaceConfigV4(parseWorkspaceConfigV4(configRecord, allowedLineEndings)),
-            ),
-          ),
-        )
-      : Object.hasOwn(configRecord, "attitudeConfig")
-        ? migrateWorkspaceConfigV7(
-            migrateWorkspaceConfigV6(
-              migrateWorkspaceConfigV5(
-                migrateWorkspaceConfigV4(
-                  migrateWorkspaceConfigV3(
-                    parseWorkspaceConfigV3(configRecord, allowedLineEndings),
-                  ),
-                ),
-              ),
-            ),
-          )
-      : Object.hasOwn(configRecord, "processingGraph")
-      ? migrateWorkspaceConfigV7(
-          migrateWorkspaceConfigV6(
-            migrateWorkspaceConfigV5(
-              migrateWorkspaceConfigV4(
-                migrateWorkspaceConfigV3(
-                  migrateWorkspaceConfigV2(
-                    parseWorkspaceConfigV2(configRecord, allowedLineEndings),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        )
-      : migrateWorkspaceConfigV7(
-          migrateWorkspaceConfigV6(
-            migrateWorkspaceConfigV5(
-              migrateWorkspaceConfigV4(
-                migrateWorkspaceConfigV3(
-                  migrateWorkspaceConfigV2(
-                    migrateWorkspaceConfigV1(
-                      parseWorkspaceConfigV1(configRecord, allowedLineEndings),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
+  const config = parseWorkspaceProfileConfig(
+    configRecord,
+    allowedLineEndings,
+    processingGraphSchema,
+  );
   return {
     id: validateWorkspaceId(requireString(record.id, "工作区 ID")),
     name: validateWorkspaceName(requireString(record.name, "工作区名称")),
@@ -805,6 +826,88 @@ function parseWorkspaceProfile(
     updatedAt,
     config,
   };
+}
+
+function parseWorkspaceProfileConfig(
+  configRecord: Record<string, unknown>,
+  allowedLineEndings: readonly LineEnding[],
+  processingGraphSchema: ProcessingGraphSchemaMode,
+): WorkspaceConfig {
+  if (Object.hasOwn(configRecord, "terminalRxTextEncoding")) {
+    return processingGraphSchema === "legacy"
+      ? migrateWorkspaceConfigV8(parseWorkspaceConfigV8(configRecord, allowedLineEndings))
+      : parseWorkspaceConfigWithLineEndings(configRecord, allowedLineEndings);
+  }
+  if (Object.hasOwn(configRecord, "terminalRxRecordMode")) {
+    return migrateWorkspaceConfigV8(
+      migrateWorkspaceConfigV7(parseWorkspaceConfigV7(configRecord, allowedLineEndings)),
+    );
+  }
+  if (Object.hasOwn(configRecord, "quickCommands")) {
+    return migrateWorkspaceConfigV8(
+      migrateWorkspaceConfigV7(
+        migrateWorkspaceConfigV6(parseWorkspaceConfigV6(configRecord, allowedLineEndings)),
+      ),
+    );
+  }
+  if (Object.hasOwn(configRecord, "autoResponderRules")) {
+    return migrateWorkspaceConfigV8(
+      migrateWorkspaceConfigV7(
+        migrateWorkspaceConfigV6(
+          migrateWorkspaceConfigV5(
+            migrateWorkspaceConfigV4(parseWorkspaceConfigV4(configRecord, allowedLineEndings)),
+          ),
+        ),
+      ),
+    );
+  }
+  if (Object.hasOwn(configRecord, "attitudeConfig")) {
+    return migrateWorkspaceConfigV8(
+      migrateWorkspaceConfigV7(
+        migrateWorkspaceConfigV6(
+          migrateWorkspaceConfigV5(
+            migrateWorkspaceConfigV4(
+              migrateWorkspaceConfigV3(parseWorkspaceConfigV3(configRecord, allowedLineEndings)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  if (Object.hasOwn(configRecord, "processingGraph")) {
+    return migrateWorkspaceConfigV8(
+      migrateWorkspaceConfigV7(
+        migrateWorkspaceConfigV6(
+          migrateWorkspaceConfigV5(
+            migrateWorkspaceConfigV4(
+              migrateWorkspaceConfigV3(
+                migrateWorkspaceConfigV2(
+                  parseWorkspaceConfigV2(configRecord, allowedLineEndings),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  return migrateWorkspaceConfigV8(
+    migrateWorkspaceConfigV7(
+      migrateWorkspaceConfigV6(
+        migrateWorkspaceConfigV5(
+          migrateWorkspaceConfigV4(
+            migrateWorkspaceConfigV3(
+              migrateWorkspaceConfigV2(
+                migrateWorkspaceConfigV1(
+                  parseWorkspaceConfigV1(configRecord, allowedLineEndings),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 function parseSerialConfig(record: Record<string, unknown>) {
@@ -866,9 +969,14 @@ function tryParseChannelVisibility(
   return visibility;
 }
 
-function tryParseProcessingGraph(value: unknown) {
+function tryParseProcessingGraph(
+  value: unknown,
+  processingGraphSchema: ProcessingGraphSchemaMode = "current",
+) {
   try {
-    return parseProcessingGraphConfig(value);
+    return processingGraphSchema === "legacy"
+      ? parseLegacyProcessingGraphConfig(value)
+      : parseProcessingGraphConfig(value);
   } catch {
     return null;
   }
