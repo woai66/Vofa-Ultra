@@ -1493,22 +1493,25 @@ function validate_project_metadata(package_manifest, tauri_config, cargo_package
   return select_approved_license(package_manifest.license, policy);
 }
 
+export function cargo_metadata_arguments(target_triple) {
+  return [
+    "metadata",
+    "--locked",
+    "--filter-platform",
+    target_triple,
+    "--format-version",
+    "1",
+    "--manifest-path",
+    CARGO_MANIFEST_PATH,
+  ];
+}
+
 function dependency_inputs(target_triple) {
   const cargo_command = process.env.CARGO || "cargo";
   return {
     cargo_metadata: run_json_command(
       cargo_command,
-      [
-        "metadata",
-        "--frozen",
-        "--locked",
-        "--filter-platform",
-        target_triple,
-        "--format-version",
-        "1",
-        "--manifest-path",
-        CARGO_MANIFEST_PATH,
-      ],
+      cargo_metadata_arguments(target_triple),
       "Cargo dependency graph",
     ),
   };

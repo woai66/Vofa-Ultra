@@ -11,6 +11,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   build_cyclonedx_bom,
+  cargo_metadata_arguments,
   collect_cargo_runtime_graph,
   collect_npm_runtime_graph,
   normalize_license_expression,
@@ -92,6 +93,22 @@ test("normalizes reviewed legacy Cargo license aliases", () => {
   assert.equal(
     normalize_license_expression("MIT/Apache-2.0", POLICY),
     "MIT OR Apache-2.0",
+  );
+});
+
+test("allows locked Cargo metadata to download a clean dependency cache", () => {
+  assert.deepEqual(
+    cargo_metadata_arguments("x86_64-unknown-linux-gnu"),
+    [
+      "metadata",
+      "--locked",
+      "--filter-platform",
+      "x86_64-unknown-linux-gnu",
+      "--format-version",
+      "1",
+      "--manifest-path",
+      path.join(PROJECT_ROOT, "src-tauri", "Cargo.toml"),
+    ],
   );
 });
 

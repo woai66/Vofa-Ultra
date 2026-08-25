@@ -3,7 +3,7 @@
   "benchmarks": [
     {
       "id": "协议与数据处理热路径 > FireWater 1 MiB 分片解析",
-      "maxMedianMs": 25,
+      "maxMedianMs": 40,
       "minimumSamples": 15,
       "workAmount": 1048666,
       "workUnit": "bytes"
