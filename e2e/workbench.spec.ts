@@ -172,6 +172,46 @@ async function readWaveformCanvasStats(page: Page): Promise<{
   });
 }
 
+async function readWaveformColorBounds(
+  page: Page,
+  color: string,
+): Promise<{ pixelCount: number; minY: number; maxY: number; span: number }> {
+  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color);
+  if (!match) {
+    throw new Error(`无效的波形颜色: ${color}`);
+  }
+  const target = match.slice(1).map((component) => Number.parseInt(component, 16));
+  return page.locator(".waveform-chart canvas").first().evaluate((canvas, targetColor) => {
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return { pixelCount: 0, minY: -1, maxY: -1, span: 0 };
+    }
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let pixelCount = 0;
+    let minY = canvas.height;
+    let maxY = -1;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const distance =
+        Math.abs((pixels[index] ?? 0) - (targetColor[0] ?? 0)) +
+        Math.abs((pixels[index + 1] ?? 0) - (targetColor[1] ?? 0)) +
+        Math.abs((pixels[index + 2] ?? 0) - (targetColor[2] ?? 0));
+      if ((pixels[index + 3] ?? 0) < 80 || distance > 90) {
+        continue;
+      }
+      const y = Math.floor(index / 4 / canvas.width);
+      pixelCount += 1;
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    }
+    return {
+      pixelCount,
+      minY: pixelCount > 0 ? minY : -1,
+      maxY,
+      span: pixelCount > 0 ? maxY - minY : 0,
+    };
+  }, target);
+}
+
 test("标签组支持标准键盘导航", async ({ page }) => {
   await page.goto("/");
 
@@ -502,6 +542,84 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
 
   await page.screenshot({
     path: testInfo.outputPath("desktop-workbench.png"),
+    fullPage: true,
+  });
+});
+
+test("独立量程让混合数量级通道保持可读并正确映射测量游标", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.goto("/");
+
+  const start = 1_800_000_000;
+  const timestamps = Array.from({ length: 6 }, (_, index) => start + index);
+  const channel = (
+    id: string,
+    name: string,
+    color: string,
+    values: number[],
+  ) => ({
+    id,
+    name,
+    color,
+    visible: true,
+    points: timestamps.map((x, index) => ({ x, y: values[index] ?? 0 })),
+    lastValue: values.at(-1) ?? 0,
+  });
+  const speedColor = "#46d89c";
+  const currentColor = "#55bde8";
+  const temperatureColor = "#f4bd61";
+  await setWorkbenchState(page, {
+    channels: [
+      channel("speed", "转速", speedColor, [1_000, 2_000, 3_000, 4_000, 5_000, 6_000]),
+      channel("current", "电流", currentColor, [0.1, 0.12, 0.14, 0.16, 0.18, 0.2]),
+      channel("temperature", "温度", temperatureColor, [30, 30, 30, 30, 30, 30]),
+    ],
+    processedChannels: [],
+    extensionChannels: [],
+    chartPaused: true,
+    chartWindowSeconds: 5,
+  });
+  await expect(page.locator(".channel-readout")).toHaveCount(3);
+  await expect(page.locator(".waveform-chart canvas").first()).toBeVisible();
+
+  const sharedCurrent = await readWaveformColorBounds(page, currentColor);
+  expect(sharedCurrent.pixelCount).toBeGreaterThan(5);
+  expect(sharedCurrent.span).toBeLessThan(12);
+
+  await page.getByRole("button", { name: "独立" }).click();
+  await expect(page.locator(".waveform-panel")).toHaveAttribute(
+    "data-scale-mode",
+    "independent",
+  );
+  const focusChannel = page.getByRole("combobox", { name: "独立量程焦点通道" });
+  await expect(focusChannel).toHaveValue("speed");
+
+  await expect
+    .poll(async () => (await readWaveformColorBounds(page, currentColor)).span)
+    .toBeGreaterThan(80);
+  expect((await readWaveformColorBounds(page, speedColor)).span).toBeGreaterThan(80);
+  expect((await readWaveformColorBounds(page, temperatureColor)).pixelCount).toBeGreaterThan(20);
+
+  await focusChannel.selectOption("current");
+  await expect(focusChannel).toHaveValue("current");
+  await page.getByRole("button", { name: "开启波形测量" }).click();
+  await page.getByRole("combobox", { name: "测量通道" }).selectOption("current");
+  const plotHeight = await page.locator(".waveform-chart .u-over").evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  const measurementPointTops = await page
+    .locator(".waveform-measurement-point")
+    .evaluateAll((elements) => elements.map((element) => Number.parseFloat(element.style.top)));
+  expect(measurementPointTops).toHaveLength(2);
+  expect(
+    measurementPointTops.every(
+      (top) => Number.isFinite(top) && top >= 0 && top <= plotHeight,
+    ),
+  ).toBe(true);
+  expect(pageErrors).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-independent-scales.png"),
     fullPage: true,
   });
 });
@@ -1389,6 +1507,37 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
     )
     .toBeLessThanOrEqual(0);
   await expect(page.getByRole("heading", { name: "实时波形" })).toBeVisible();
+  await page.getByRole("button", { name: "独立" }).click();
+  const waveformScaleLayout = await page.locator(".waveform-scale-tools").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const controls = Array.from(element.querySelectorAll("button, select")).map((control) => {
+      const controlRect = control.getBoundingClientRect();
+      return { width: controlRect.width, height: controlRect.height };
+    });
+    return {
+      left: rect.left,
+      right: rect.right,
+      overflow: element.scrollWidth - element.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+      controls,
+    };
+  });
+  expect(waveformScaleLayout.left).toBeGreaterThanOrEqual(0);
+  expect(waveformScaleLayout.right).toBeLessThanOrEqual(waveformScaleLayout.viewportWidth);
+  expect(waveformScaleLayout.overflow).toBeLessThanOrEqual(1);
+  expect(waveformScaleLayout.documentWidth).toBeLessThanOrEqual(
+    waveformScaleLayout.viewportWidth,
+  );
+  expect(
+    waveformScaleLayout.controls.every(
+      (control) => control.width >= 44 && control.height >= 44,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-independent-scales.png"),
+    fullPage: true,
+  });
   const mobilePlotBounds = await page.locator(".waveform-chart .u-over").boundingBox();
   expect(mobilePlotBounds).not.toBeNull();
   if (mobilePlotBounds) {

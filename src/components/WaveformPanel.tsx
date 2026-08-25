@@ -41,6 +41,8 @@ interface WaveformPanelProps {
   onMeasurementModeChange?(enabled: boolean): void;
 }
 
+type WaveformScaleMode = "shared" | "independent";
+
 export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelProps) {
   const rawChannels = useWorkbenchStore((state) => state.channels);
   const processedChannels = useWorkbenchStore((state) => state.processedChannels);
@@ -77,6 +79,9 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   const [triggerEdge, setTriggerEdge] = useState<WaveformTriggerEdge>("rising");
   const [triggerThreshold, setTriggerThreshold] = useState("");
   const [waveformFollowSuspended, setWaveformFollowSuspended] = useState(false);
+  const [waveformScaleMode, setWaveformScaleMode] =
+    useState<WaveformScaleMode>("shared");
+  const [focusedScaleChannelId, setFocusedScaleChannelId] = useState("");
   const [activeCursor, setActiveCursor] = useState<WaveformMeasurementCursor>("A");
   const [measurementChannelId, setMeasurementChannelId] = useState("");
   const [measurementAnchors, setMeasurementAnchors] =
@@ -98,10 +103,19 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     triggerThreshold.trim().length > 0 &&
     Number.isFinite(parsedTriggerThreshold) &&
     (!chartPaused || waveformTrigger.phase === "frozen");
+  const visibleScaleChannels = useMemo(
+    () => channels.filter((channel) => channel.visible),
+    [channels],
+  );
+  const focusedScaleChannel =
+    visibleScaleChannels.find((channel) => channel.id === focusedScaleChannelId) ??
+    visibleScaleChannels[0];
+  const measurementChannels =
+    waveformScaleMode === "independent" ? visibleScaleChannels : channels;
   const selectedChannel =
-    channels.find((channel) => channel.id === measurementChannelId) ??
-    channels.find((channel) => channel.visible && channel.points.length > 0) ??
-    channels.find((channel) => channel.points.length > 0);
+    measurementChannels.find((channel) => channel.id === measurementChannelId) ??
+    measurementChannels.find((channel) => channel.visible && channel.points.length > 0) ??
+    measurementChannels.find((channel) => channel.points.length > 0);
   const visibleMeasurementPoints = useMemo(
     () => getVisibleMeasurementPoints(selectedChannel?.points ?? [], chartWindowSeconds),
     [chartWindowSeconds, selectedChannel?.points],
@@ -151,6 +165,13 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       }
     }
   }, [triggerChannelId, triggerChannels, waveformTrigger.phase]);
+
+  useEffect(() => {
+    const nextFocusedChannelId = focusedScaleChannel?.id ?? "";
+    if (focusedScaleChannelId !== nextFocusedChannelId) {
+      setFocusedScaleChannelId(nextFocusedChannelId);
+    }
+  }, [focusedScaleChannel?.id, focusedScaleChannelId]);
 
   const resetMeasurement = useCallback(
     (restorePause: boolean) => {
@@ -232,6 +253,9 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     setMeasurementChannelId(selectedChannel.id);
     setMeasurementAnchors(initialMeasurementAnchors);
     setActiveCursor("A");
+    if (waveformScaleMode === "independent") {
+      setFocusedScaleChannelId(selectedChannel.id);
+    }
     setMeasurementEnabled(true);
     onMeasurementModeChange?.(true);
   };
@@ -262,7 +286,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   };
 
   const handleMeasurementChannelChange = (channelId: string) => {
-    const channel = channels.find((candidate) => candidate.id === channelId);
+    const channel = measurementChannels.find((candidate) => candidate.id === channelId);
     if (!channel) {
       return;
     }
@@ -273,6 +297,26 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     setMeasurementChannelId(channel.id);
     setMeasurementAnchors(anchors);
     setActiveCursor("A");
+    if (waveformScaleMode === "independent") {
+      setWaveformFollowSuspended(false);
+      setFocusedScaleChannelId(channel.id);
+    }
+  };
+
+  const handleScaleModeChange = (mode: WaveformScaleMode) => {
+    if (waveformScaleMode === mode) {
+      return;
+    }
+    setWaveformFollowSuspended(false);
+    setWaveformScaleMode(mode);
+  };
+
+  const handleFocusedScaleChannelChange = (channelId: string) => {
+    if (!visibleScaleChannels.some((channel) => channel.id === channelId)) {
+      return;
+    }
+    setWaveformFollowSuspended(false);
+    setFocusedScaleChannelId(channelId);
   };
 
   const handleTriggerChannelChange = (channelId: string) => {
@@ -367,6 +411,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       data-trigger-controls={triggerControlsOpen}
       data-trigger-phase={waveformTrigger.phase}
       data-follow-suspended={waveformFollowSuspended}
+      data-scale-mode={waveformScaleMode}
     >
       <header className="panel-toolbar">
         <div className="panel-title-group">
@@ -456,8 +501,58 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
 
       {channels.length > 0 && (
         <div className="channel-strip" aria-label="通道实时值">
+          <div className="waveform-scale-tools">
+            <div className="waveform-scale-mode" role="group" aria-label="波形量程模式">
+              <button
+                type="button"
+                aria-pressed={waveformScaleMode === "shared"}
+                data-active={waveformScaleMode === "shared"}
+                onClick={() => handleScaleModeChange("shared")}
+              >
+                共享
+              </button>
+              <button
+                type="button"
+                aria-pressed={waveformScaleMode === "independent"}
+                data-active={waveformScaleMode === "independent"}
+                onClick={() => handleScaleModeChange("independent")}
+              >
+                独立
+              </button>
+            </div>
+            {waveformScaleMode === "independent" && (
+              <label className="waveform-focus-channel">
+                <span
+                  style={{ backgroundColor: focusedScaleChannel?.color }}
+                  aria-hidden="true"
+                />
+                <select
+                  aria-label="独立量程焦点通道"
+                  title="选择纵轴通道"
+                  value={focusedScaleChannel?.id ?? ""}
+                  disabled={visibleScaleChannels.length === 0}
+                  onChange={(event) => handleFocusedScaleChannelChange(event.target.value)}
+                >
+                  {visibleScaleChannels.length === 0 && <option value="">无可见通道</option>}
+                  {visibleScaleChannels.map((channel) => (
+                    <option key={channel.id} value={channel.id}>
+                      {channel.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
           {channels.slice(0, 8).map((channel) => (
-            <div key={channel.id} className="channel-readout" data-visible={channel.visible}>
+            <div
+              key={channel.id}
+              className="channel-readout"
+              data-visible={channel.visible}
+              data-focused={
+                waveformScaleMode === "independent" &&
+                channel.id === focusedScaleChannel?.id
+              }
+            >
               <span style={{ backgroundColor: channel.color }} />
               <small>{channel.name}</small>
               <strong>{formatValue(channel.lastValue)}</strong>
@@ -544,7 +639,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
 
       {measurementEnabled && selectedChannel && measurementResult && (
         <MeasurementStrip
-          channels={channels}
+          channels={measurementChannels}
           selectedChannel={selectedChannel}
           activeCursor={activeCursor}
           measurement={measurementResult}
@@ -567,6 +662,11 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
             channels={channels}
             windowSeconds={chartWindowSeconds}
             theme={theme}
+            scaleMode={waveformScaleMode}
+            focusedChannelId={
+              waveformScaleMode === "independent" ? focusedScaleChannel?.id ?? null : null
+            }
+            measurementChannelId={selectedChannel?.id ?? null}
             measurementEnabled={measurementEnabled}
             measurement={measurementResult}
             followSuspended={waveformFollowSuspended}
@@ -700,6 +800,9 @@ interface WaveformChartProps {
   channels: ChannelSeries[];
   windowSeconds: number;
   theme: ThemeMode;
+  scaleMode: WaveformScaleMode;
+  focusedChannelId: string | null;
+  measurementChannelId: string | null;
   measurementEnabled: boolean;
   measurement: WaveformMeasurementResult | null;
   followSuspended: boolean;
@@ -722,6 +825,9 @@ function WaveformChart({
   channels,
   windowSeconds,
   theme,
+  scaleMode,
+  focusedChannelId,
+  measurementChannelId,
   measurementEnabled,
   measurement,
   followSuspended,
@@ -733,10 +839,12 @@ function WaveformChart({
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<uPlot | null>(null);
   const overlayRef = useRef<WaveformOverlayElements | null>(null);
+  const measurementScaleKey = waveformScaleKey(scaleMode, measurementChannelId);
   const measurementRef = useRef({
     enabled: measurementEnabled,
     result: measurement,
     onSelect: onMeasurementSelect,
+    scaleKey: measurementScaleKey,
   });
   const followInteractionRef = useRef({ canSuspendFollow, onFollowSuspend });
   const triggerTimestampRef = useRef(triggerTimestampSeconds);
@@ -759,6 +867,7 @@ function WaveformChart({
     enabled: measurementEnabled,
     result: measurement,
     onSelect: onMeasurementSelect,
+    scaleKey: measurementScaleKey,
   };
   followInteractionRef.current = { canSuspendFollow, onFollowSuspend };
   triggerTimestampRef.current = triggerTimestampSeconds;
@@ -775,6 +884,7 @@ function WaveformChart({
         overlayRef.current,
         measurementRef.current.enabled,
         measurementRef.current.result,
+        measurementRef.current.scaleKey,
         triggerTimestampRef.current,
       );
     };
@@ -806,6 +916,15 @@ function WaveformChart({
     };
     const computed = getComputedStyle(container);
     const channelMetadata = channelMetadataRef.current;
+    const focusedChannel = channelMetadata.find(
+      (channel) => channel.visible && channel.id === focusedChannelId,
+    );
+    const focusedScaleKey =
+      scaleMode === "shared"
+        ? "y"
+        : focusedChannel
+          ? waveformScaleKey(scaleMode, focusedChannel.id)
+          : null;
     const options: Options = {
       width: Math.max(container.clientWidth, 200),
       height: Math.max(container.clientHeight, 180),
@@ -820,31 +939,58 @@ function WaveformChart({
         points: { size: 5, width: 1 },
       },
       legend: { show: false },
-      scales: {
-        x: { time: true },
-        y: { auto: true },
-      },
+      scales:
+        scaleMode === "shared"
+          ? {
+              x: { time: true },
+              y: { auto: true },
+            }
+          : {
+              x: { time: true },
+              ...Object.fromEntries(
+                channelMetadata.map((channel) => [
+                  waveformScaleKey(scaleMode, channel.id),
+                  { auto: true },
+                ]),
+              ),
+            },
       axes: [
         {
+          scale: "x",
           stroke: computed.getPropertyValue("--text-muted").trim(),
           grid: { stroke: computed.getPropertyValue("--chart-grid").trim(), width: 1 },
           ticks: { stroke: computed.getPropertyValue("--chart-grid-strong").trim(), width: 1 },
           font: "11px ui-monospace, SFMono-Regular, Consolas, monospace",
           size: 32,
         },
-        {
-          stroke: computed.getPropertyValue("--text-muted").trim(),
-          grid: { stroke: computed.getPropertyValue("--chart-grid").trim(), width: 1 },
-          ticks: { stroke: computed.getPropertyValue("--chart-grid-strong").trim(), width: 1 },
-          font: "11px ui-monospace, SFMono-Regular, Consolas, monospace",
-          size: 50,
-        },
+        ...(focusedScaleKey
+          ? [
+              {
+                scale: focusedScaleKey,
+                stroke:
+                  scaleMode === "independent" && focusedChannel
+                    ? focusedChannel.color
+                    : computed.getPropertyValue("--text-muted").trim(),
+                grid: {
+                  stroke: computed.getPropertyValue("--chart-grid").trim(),
+                  width: 1,
+                },
+                ticks: {
+                  stroke: computed.getPropertyValue("--chart-grid-strong").trim(),
+                  width: 1,
+                },
+                font: "11px ui-monospace, SFMono-Regular, Consolas, monospace",
+                size: 50,
+              },
+            ]
+          : []),
       ],
       series: [
         {},
         ...channelMetadata.map((channel) => ({
           label: channel.name,
           stroke: channel.color,
+          scale: waveformScaleKey(scaleMode, channel.id),
           width: 1.8,
           show: channel.visible,
           spanGaps: true,
@@ -917,7 +1063,7 @@ function WaveformChart({
       chartRef.current = null;
       overlayRef.current = null;
     };
-  }, [channelSignature, measurementEnabled, theme]);
+  }, [channelSignature, focusedChannelId, measurementEnabled, scaleMode, theme]);
 
   useLayoutEffect(() => {
     chartRef.current?.setData(data, !followSuspended);
@@ -931,10 +1077,11 @@ function WaveformChart({
         overlayRef.current,
         measurementEnabled,
         measurement,
+        measurementScaleKey,
         triggerTimestampSeconds,
       );
     }
-  }, [measurement, measurementEnabled, triggerTimestampSeconds]);
+  }, [measurement, measurementEnabled, measurementScaleKey, triggerTimestampSeconds]);
 
   return (
     <div
@@ -980,6 +1127,7 @@ function updateWaveformOverlay(
   elements: WaveformOverlayElements | null,
   enabled: boolean,
   measurement: WaveformMeasurementResult | null,
+  measurementScaleKey: string,
   triggerTimestampSeconds: number | null,
 ): void {
   if (!elements) {
@@ -1003,8 +1151,8 @@ function updateWaveformOverlay(
 
   const leftA = chart.valToPos(measurement.pointA.timestampSeconds, "x");
   const leftB = chart.valToPos(measurement.pointB.timestampSeconds, "x");
-  const topA = chart.valToPos(measurement.pointA.value, "y");
-  const topB = chart.valToPos(measurement.pointB.value, "y");
+  const topA = chart.valToPos(measurement.pointA.value, measurementScaleKey);
+  const topB = chart.valToPos(measurement.pointB.value, measurementScaleKey);
   if (![leftA, leftB, topA, topB].every(Number.isFinite)) {
     elements.range.hidden = true;
     elements.cursorA.hidden = true;
@@ -1043,6 +1191,13 @@ function triggerActionLabel(phase: WaveformTriggerPhase): string {
 
 function formatTriggerThreshold(value: number): string {
   return Number.isFinite(value) ? String(value) : "";
+}
+
+function waveformScaleKey(
+  mode: WaveformScaleMode,
+  channelId: string | null,
+): string {
+  return mode === "independent" && channelId ? `channel:${channelId}` : "y";
 }
 
 function createAlignedData(channels: ChannelSeries[], windowSeconds: number): AlignedData {
