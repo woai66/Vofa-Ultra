@@ -6,7 +6,17 @@ import {
   useRef,
   useState,
 } from "react";
-import { CirclePause, LocateFixed, Play, Ruler, Trash2, Waves } from "lucide-react";
+import {
+  CirclePause,
+  Crosshair,
+  LocateFixed,
+  Play,
+  Ruler,
+  Trash2,
+  TrendingDown,
+  TrendingUp,
+  Waves,
+} from "lucide-react";
 import uPlot, { type AlignedData, type Options } from "uplot";
 import type { ThemeMode } from "../App";
 import {
@@ -18,6 +28,10 @@ import {
   type WaveformMeasurementCursor,
   type WaveformMeasurementResult,
 } from "../core/waveformMeasurement";
+import type {
+  WaveformTriggerEdge,
+  WaveformTriggerPhase,
+} from "../core/waveformTrigger";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { ChannelSeries } from "../types/workbench";
 import type { ChartWindowSeconds } from "../types/workspace";
@@ -35,19 +49,33 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     () => [...rawChannels, ...processedChannels, ...extensionChannels],
     [extensionChannels, processedChannels, rawChannels],
   );
+  const triggerChannels = useMemo(
+    () => [...rawChannels, ...processedChannels],
+    [processedChannels, rawChannels],
+  );
   const channelStructureSignature = channels
     .map((channel) => `${channel.id}:${channel.color}:${channel.visible}`)
     .join("|");
   const chartPaused = useWorkbenchStore((state) => state.chartPaused);
   const chartWindowSeconds = useWorkbenchStore((state) => state.chartWindowSeconds);
   const chartDataRevision = useWorkbenchStore((state) => state.chartDataRevision);
+  const waveformTrigger = useWorkbenchStore((state) => state.waveformTrigger);
   const setChartPaused = useWorkbenchStore((state) => state.setChartPaused);
   const setChartWindowSeconds = useWorkbenchStore((state) => state.setChartWindowSeconds);
+  const armWaveformTrigger = useWorkbenchStore((state) => state.armWaveformTrigger);
+  const disarmWaveformTrigger = useWorkbenchStore((state) => state.disarmWaveformTrigger);
+  const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
+  const replayStatus = useWorkbenchStore((state) => state.replayStatus);
+  const runtimeTransitionStatus = useWorkbenchStore((state) => state.runtimeTransitionStatus);
   const isWorkspaceTransitioning = useWorkbenchStore(
     (state) => state.workspaceTransitionStatus !== "idle",
   );
   const clearChart = useWorkbenchStore((state) => state.clearChart);
   const [measurementEnabled, setMeasurementEnabled] = useState(false);
+  const [triggerControlsOpen, setTriggerControlsOpen] = useState(false);
+  const [triggerChannelId, setTriggerChannelId] = useState("");
+  const [triggerEdge, setTriggerEdge] = useState<WaveformTriggerEdge>("rising");
+  const [triggerThreshold, setTriggerThreshold] = useState("");
   const [waveformFollowSuspended, setWaveformFollowSuspended] = useState(false);
   const [activeCursor, setActiveCursor] = useState<WaveformMeasurementCursor>("A");
   const [measurementChannelId, setMeasurementChannelId] = useState("");
@@ -55,6 +83,21 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     useState<WaveformMeasurementAnchors | null>(null);
   const pausedBeforeMeasurementRef = useRef(false);
   const previousChartDataRevisionRef = useRef(chartDataRevision);
+  const triggerConfig = waveformTrigger.config;
+  const triggerRunning =
+    waveformTrigger.phase === "armed" || waveformTrigger.phase === "triggered";
+  const selectedTriggerChannel =
+    triggerChannels.find((channel) => channel.id === triggerChannelId) ?? triggerChannels[0];
+  const parsedTriggerThreshold = Number(triggerThreshold.trim());
+  const canArmTrigger =
+    connectionStatus === "connected" &&
+    replayStatus === "idle" &&
+    runtimeTransitionStatus === "idle" &&
+    !isWorkspaceTransitioning &&
+    selectedTriggerChannel !== undefined &&
+    triggerThreshold.trim().length > 0 &&
+    Number.isFinite(parsedTriggerThreshold) &&
+    (!chartPaused || waveformTrigger.phase === "frozen");
   const selectedChannel =
     channels.find((channel) => channel.id === measurementChannelId) ??
     channels.find((channel) => channel.visible && channel.points.length > 0) ??
@@ -82,6 +125,32 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
         : null,
     [chartWindowSeconds, measurementAnchors, selectedChannel],
   );
+
+  useEffect(() => {
+    if (triggerConfig) {
+      setTriggerChannelId(triggerConfig.channelId);
+      setTriggerEdge(triggerConfig.edge);
+      setTriggerThreshold(formatTriggerThreshold(triggerConfig.threshold));
+      setTriggerControlsOpen(true);
+    }
+  }, [triggerConfig]);
+
+  useEffect(() => {
+    if (waveformTrigger.phase !== "idle") {
+      return;
+    }
+    if (triggerChannels.length === 0) {
+      setTriggerChannelId("");
+      return;
+    }
+    if (!triggerChannels.some((channel) => channel.id === triggerChannelId)) {
+      const channel = triggerChannels[0];
+      if (channel) {
+        setTriggerChannelId(channel.id);
+        setTriggerThreshold(formatTriggerThreshold(channel.lastValue));
+      }
+    }
+  }, [triggerChannelId, triggerChannels, waveformTrigger.phase]);
 
   const resetMeasurement = useCallback(
     (restorePause: boolean) => {
@@ -158,6 +227,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       return;
     }
     pausedBeforeMeasurementRef.current = chartPaused;
+    setTriggerControlsOpen(false);
     setChartPaused(true);
     setMeasurementChannelId(selectedChannel.id);
     setMeasurementAnchors(initialMeasurementAnchors);
@@ -203,6 +273,30 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     setMeasurementChannelId(channel.id);
     setMeasurementAnchors(anchors);
     setActiveCursor("A");
+  };
+
+  const handleTriggerChannelChange = (channelId: string) => {
+    const channel = triggerChannels.find((candidate) => candidate.id === channelId);
+    if (!channel) {
+      return;
+    }
+    setTriggerChannelId(channel.id);
+    setTriggerThreshold(formatTriggerThreshold(channel.lastValue));
+  };
+
+  const handleTriggerAction = () => {
+    if (triggerRunning) {
+      disarmWaveformTrigger();
+      return;
+    }
+    if (!selectedTriggerChannel || !canArmTrigger) {
+      return;
+    }
+    armWaveformTrigger({
+      channelId: selectedTriggerChannel.id,
+      edge: triggerEdge,
+      threshold: parsedTriggerThreshold,
+    });
   };
 
   const setCursorToPoint = useCallback(
@@ -270,6 +364,8 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       className="workspace-panel waveform-panel"
       aria-labelledby="waveform-title"
       data-measuring={measurementEnabled}
+      data-trigger-controls={triggerControlsOpen}
+      data-trigger-phase={waveformTrigger.phase}
       data-follow-suspended={waveformFollowSuspended}
     >
       <header className="panel-toolbar">
@@ -314,11 +410,24 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
           <button
             className="icon-button"
             type="button"
+            aria-label={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
+            title={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
+            aria-expanded={triggerControlsOpen}
+            aria-controls="waveform-trigger-controls"
+            data-active={triggerControlsOpen || waveformTrigger.phase !== "idle"}
+            disabled={measurementEnabled}
+            onClick={() => setTriggerControlsOpen((open) => !open)}
+          >
+            <Crosshair size={16} />
+          </button>
+          <button
+            className="icon-button"
+            type="button"
             aria-label={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
             title={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
             aria-pressed={measurementEnabled}
             data-active={measurementEnabled}
-            disabled={!initialMeasurementAnchors}
+            disabled={!initialMeasurementAnchors || triggerRunning}
             onClick={handleMeasurementToggle}
           >
             <Ruler size={16} />
@@ -357,6 +466,82 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
         </div>
       )}
 
+      {triggerControlsOpen && (
+        <div
+          id="waveform-trigger-controls"
+          className="waveform-trigger-strip"
+          data-phase={waveformTrigger.phase}
+        >
+          <div className="trigger-channel-control">
+            <span
+              className="trigger-channel-swatch"
+              style={{ backgroundColor: selectedTriggerChannel?.color }}
+              aria-hidden="true"
+            />
+            <select
+              aria-label="触发通道"
+              value={selectedTriggerChannel?.id ?? ""}
+              disabled={triggerRunning || triggerChannels.length === 0}
+              onChange={(event) => handleTriggerChannelChange(event.target.value)}
+            >
+              {triggerChannels.length === 0 && <option value="">无通道</option>}
+              {triggerChannels.map((channel) => (
+                <option key={channel.id} value={channel.id}>
+                  {channel.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="trigger-edge-control" role="group" aria-label="触发边沿">
+            <button
+              type="button"
+              aria-label="上升沿"
+              title="上升沿"
+              aria-pressed={triggerEdge === "rising"}
+              data-active={triggerEdge === "rising"}
+              disabled={triggerRunning}
+              onClick={() => setTriggerEdge("rising")}
+            >
+              <TrendingUp size={15} />
+            </button>
+            <button
+              type="button"
+              aria-label="下降沿"
+              title="下降沿"
+              aria-pressed={triggerEdge === "falling"}
+              data-active={triggerEdge === "falling"}
+              disabled={triggerRunning}
+              onClick={() => setTriggerEdge("falling")}
+            >
+              <TrendingDown size={15} />
+            </button>
+          </div>
+          <label className="trigger-threshold-control">
+            <span>阈值</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              aria-label="触发阈值"
+              value={triggerThreshold}
+              disabled={triggerRunning}
+              onChange={(event) => setTriggerThreshold(event.target.value)}
+            />
+          </label>
+          <span className="trigger-phase" aria-live="polite" data-phase={waveformTrigger.phase}>
+            {triggerPhaseLabel(waveformTrigger.phase)}
+          </span>
+          <button
+            className="trigger-action-button"
+            type="button"
+            disabled={!triggerRunning && !canArmTrigger}
+            onClick={handleTriggerAction}
+          >
+            <Crosshair size={14} />
+            {triggerActionLabel(waveformTrigger.phase)}
+          </button>
+        </div>
+      )}
+
       {measurementEnabled && selectedChannel && measurementResult && (
         <MeasurementStrip
           channels={channels}
@@ -386,7 +571,11 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
             measurement={measurementResult}
             followSuspended={waveformFollowSuspended}
             canSuspendFollow={!chartPaused && !measurementEnabled}
-            onFollowSuspend={() => setWaveformFollowSuspended(true)}
+            triggerTimestampSeconds={waveformTrigger.triggerTimestampSeconds}
+            onFollowSuspend={() => {
+              disarmWaveformTrigger();
+              setWaveformFollowSuspended(true);
+            }}
             onMeasurementSelect={handleChartMeasurement}
           />
         )}
@@ -515,16 +704,18 @@ interface WaveformChartProps {
   measurement: WaveformMeasurementResult | null;
   followSuspended: boolean;
   canSuspendFollow: boolean;
+  triggerTimestampSeconds: number | null;
   onFollowSuspend(): void;
   onMeasurementSelect(timestampSeconds: number): void;
 }
 
-interface MeasurementOverlayElements {
+interface WaveformOverlayElements {
   range: HTMLDivElement;
   cursorA: HTMLDivElement;
   cursorB: HTMLDivElement;
   pointA: HTMLSpanElement;
   pointB: HTMLSpanElement;
+  triggerLine: HTMLDivElement;
 }
 
 function WaveformChart({
@@ -535,18 +726,20 @@ function WaveformChart({
   measurement,
   followSuspended,
   canSuspendFollow,
+  triggerTimestampSeconds,
   onFollowSuspend,
   onMeasurementSelect,
 }: WaveformChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<uPlot | null>(null);
-  const overlayRef = useRef<MeasurementOverlayElements | null>(null);
+  const overlayRef = useRef<WaveformOverlayElements | null>(null);
   const measurementRef = useRef({
     enabled: measurementEnabled,
     result: measurement,
     onSelect: onMeasurementSelect,
   });
   const followInteractionRef = useRef({ canSuspendFollow, onFollowSuspend });
+  const triggerTimestampRef = useRef(triggerTimestampSeconds);
   const channelSignature = channels
     .map((channel) => `${channel.id}:${channel.color}:${channel.visible}`)
     .join("|");
@@ -568,6 +761,7 @@ function WaveformChart({
     onSelect: onMeasurementSelect,
   };
   followInteractionRef.current = { canSuspendFollow, onFollowSuspend };
+  triggerTimestampRef.current = triggerTimestampSeconds;
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -575,12 +769,13 @@ function WaveformChart({
       return undefined;
     }
 
-    const syncMeasurementOverlay = (chart: uPlot) => {
-      updateMeasurementOverlay(
+    const syncWaveformOverlay = (chart: uPlot) => {
+      updateWaveformOverlay(
         chart,
         overlayRef.current,
         measurementRef.current.enabled,
         measurementRef.current.result,
+        triggerTimestampRef.current,
       );
     };
     let selectionCanSuspendFollow = false;
@@ -599,10 +794,10 @@ function WaveformChart({
       if (selectionCanSuspendFollow) {
         selectionExpiryTimer = globalThis.setTimeout(clearSelectionMarker, 0);
       }
-      syncMeasurementOverlay(chart);
+      syncWaveformOverlay(chart);
     };
     const handleScale = (chart: uPlot, scaleKey: string) => {
-      syncMeasurementOverlay(chart);
+      syncWaveformOverlay(chart);
       if (scaleKey !== "x" || !selectionCanSuspendFollow) {
         return;
       }
@@ -657,18 +852,18 @@ function WaveformChart({
         })),
       ],
       hooks: {
-        draw: [syncMeasurementOverlay],
-        setData: [syncMeasurementOverlay],
+        draw: [syncWaveformOverlay],
+        setData: [syncWaveformOverlay],
         setScale: [handleScale],
         setSelect: [handleSelection],
-        setSize: [syncMeasurementOverlay],
+        setSize: [syncWaveformOverlay],
       },
     };
 
     const chart = new uPlot(options, initialDataRef.current, container);
     chartRef.current = chart;
-    overlayRef.current = createMeasurementOverlay(chart.over);
-    syncMeasurementOverlay(chart);
+    overlayRef.current = createWaveformOverlay(chart.over);
+    syncWaveformOverlay(chart);
     let pointerStart: { id: number; x: number; y: number } | null = null;
     const handlePointerDown = (event: PointerEvent) => {
       if (!measurementRef.current.enabled || event.button !== 0) {
@@ -731,14 +926,15 @@ function WaveformChart({
   useLayoutEffect(() => {
     const chart = chartRef.current;
     if (chart) {
-      updateMeasurementOverlay(
+      updateWaveformOverlay(
         chart,
         overlayRef.current,
         measurementEnabled,
         measurement,
+        triggerTimestampSeconds,
       );
     }
-  }, [measurement, measurementEnabled]);
+  }, [measurement, measurementEnabled, triggerTimestampSeconds]);
 
   return (
     <div
@@ -750,15 +946,20 @@ function WaveformChart({
   );
 }
 
-function createMeasurementOverlay(over: HTMLDivElement): MeasurementOverlayElements {
+function createWaveformOverlay(over: HTMLDivElement): WaveformOverlayElements {
   const range = document.createElement("div");
   range.className = "waveform-measurement-range";
   const cursorA = createMeasurementCursor("A");
   const cursorB = createMeasurementCursor("B");
   const pointA = cursorA.querySelector(".waveform-measurement-point") as HTMLSpanElement;
   const pointB = cursorB.querySelector(".waveform-measurement-point") as HTMLSpanElement;
-  over.append(range, cursorA, cursorB);
-  return { range, cursorA, cursorB, pointA, pointB };
+  const triggerLine = document.createElement("div");
+  triggerLine.className = "waveform-trigger-line";
+  const triggerLabel = document.createElement("span");
+  triggerLabel.textContent = "T";
+  triggerLine.append(triggerLabel);
+  over.append(range, cursorA, cursorB, triggerLine);
+  return { range, cursorA, cursorB, pointA, pointB, triggerLine };
 }
 
 function createMeasurementCursor(cursor: WaveformMeasurementCursor): HTMLDivElement {
@@ -774,14 +975,23 @@ function createMeasurementCursor(cursor: WaveformMeasurementCursor): HTMLDivElem
   return element;
 }
 
-function updateMeasurementOverlay(
+function updateWaveformOverlay(
   chart: uPlot,
-  elements: MeasurementOverlayElements | null,
+  elements: WaveformOverlayElements | null,
   enabled: boolean,
   measurement: WaveformMeasurementResult | null,
+  triggerTimestampSeconds: number | null,
 ): void {
   if (!elements) {
     return;
+  }
+  const triggerLeft =
+    triggerTimestampSeconds === null
+      ? Number.NaN
+      : chart.valToPos(triggerTimestampSeconds, "x");
+  elements.triggerLine.hidden = !Number.isFinite(triggerLeft);
+  if (Number.isFinite(triggerLeft)) {
+    elements.triggerLine.style.left = `${triggerLeft}px`;
   }
   const visible = enabled && measurement !== null;
   elements.range.hidden = !visible;
@@ -808,6 +1018,31 @@ function updateMeasurementOverlay(
   elements.pointB.style.top = `${topB}px`;
   elements.range.style.left = `${Math.min(leftA, leftB)}px`;
   elements.range.style.width = `${Math.abs(leftB - leftA)}px`;
+}
+
+function triggerPhaseLabel(phase: WaveformTriggerPhase): string {
+  switch (phase) {
+    case "idle":
+      return "待机";
+    case "armed":
+      return "已布防";
+    case "triggered":
+      return "已触发";
+    case "frozen":
+      return "已冻结";
+  }
+}
+
+function triggerActionLabel(phase: WaveformTriggerPhase): string {
+  return phase === "armed" || phase === "triggered"
+    ? "解除"
+    : phase === "frozen"
+      ? "重新布防"
+      : "布防";
+}
+
+function formatTriggerThreshold(value: number): string {
+  return Number.isFinite(value) ? String(value) : "";
 }
 
 function createAlignedData(channels: ChannelSeries[], windowSeconds: number): AlignedData {

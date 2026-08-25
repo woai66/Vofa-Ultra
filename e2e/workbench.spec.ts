@@ -52,6 +52,73 @@ async function ingestProtocolBytes(
   );
 }
 
+async function setWorkbenchState(page: Page, state: Record<string, unknown>): Promise<void> {
+  await page.evaluate(async (nextState) => {
+    type WorkbenchStoreHandle = {
+      setState(state: Record<string, unknown>): void;
+    };
+    const runtime = globalThis as typeof globalThis & {
+      __vofaUltraE2eStore?: WorkbenchStoreHandle;
+    };
+    if (!runtime.__vofaUltraE2eStore) {
+      const moduleUrl = performance
+        .getEntriesByType("resource")
+        .map((entry) => entry.name)
+        .find((name) => name.includes("/src/store/workbenchStore.ts"));
+      if (!moduleUrl) {
+        throw new Error("找不到页面当前使用的工作台 Store 模块");
+      }
+      const module = await import(/* @vite-ignore */ moduleUrl);
+      runtime.__vofaUltraE2eStore = module.useWorkbenchStore as WorkbenchStoreHandle;
+    }
+    runtime.__vofaUltraE2eStore.setState(nextState);
+  }, state);
+}
+
+async function readWaveformTriggerSnapshot(page: Page): Promise<{
+  phase: string;
+  threshold: number | null;
+  previousValue: number | null;
+  chartPaused: boolean;
+  pointCount: number;
+  pointValues: number[];
+  terminalEntryCount: number;
+  rxFrames: number;
+}> {
+  return page.evaluate(() => {
+    type WorkbenchStoreHandle = {
+      getState(): {
+        waveformTrigger: {
+          phase: string;
+          config: { threshold: number } | null;
+          previousValue: number | null;
+        };
+        chartPaused: boolean;
+        channels: Array<{ points: Array<{ y: number }> }>;
+        terminalEntries: unknown[];
+        stats: { rxFrames: number };
+      };
+    };
+    const runtime = globalThis as typeof globalThis & {
+      __vofaUltraE2eStore?: WorkbenchStoreHandle;
+    };
+    const state = runtime.__vofaUltraE2eStore?.getState();
+    if (!state) {
+      throw new Error("工作台 Store 尚未初始化");
+    }
+    return {
+      phase: state.waveformTrigger.phase,
+      threshold: state.waveformTrigger.config?.threshold ?? null,
+      previousValue: state.waveformTrigger.previousValue,
+      chartPaused: state.chartPaused,
+      pointCount: state.channels[0]?.points.length ?? 0,
+      pointValues: state.channels[0]?.points.map((point) => point.y) ?? [],
+      terminalEntryCount: state.terminalEntries.length,
+      rxFrames: state.stats.rxFrames,
+    };
+  });
+}
+
 async function replaceTerminalEntries(page: Page, entries: TerminalEntry[]): Promise<void> {
   await page.evaluate(async (terminalEntries) => {
     type WorkbenchStoreHandle = {
@@ -437,6 +504,102 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
     path: testInfo.outputPath("desktop-workbench.png"),
     fullPage: true,
   });
+});
+
+test("单次触发在后半窗结束时冻结且后台接收继续", async ({ page }) => {
+  await page.goto("/");
+  await setWorkbenchState(page, {
+    isNativeRuntime: true,
+    source: "serial",
+    connectionStatus: "connected",
+  });
+  await ingestProtocolText(page, "1,2,3\n", 1_000);
+  await expect(page.locator(".channel-readout")).toHaveCount(3);
+
+  await page.getByRole("button", { name: "5s", exact: true }).click();
+  await page.getByRole("button", { name: "打开触发设置" }).click();
+  await page.getByRole("spinbutton", { name: "触发阈值" }).fill("5");
+  await page.getByRole("button", { name: "布防" }).click();
+  await expect(page.locator(".waveform-panel")).toHaveAttribute("data-trigger-phase", "armed");
+  expect(await readWaveformTriggerSnapshot(page)).toMatchObject({
+    phase: "armed",
+    threshold: 5,
+    previousValue: null,
+    pointValues: [1],
+  });
+
+  await ingestProtocolText(page, "2,2,3\n", 1_500);
+  await expect(page.locator(".waveform-panel")).toHaveAttribute("data-trigger-phase", "armed");
+  await ingestProtocolText(page, "10,2,3\n", 2_000);
+  await expect(page.locator(".waveform-panel")).toHaveAttribute(
+    "data-trigger-phase",
+    "triggered",
+  );
+  await expect(page.locator(".waveform-trigger-line")).toBeVisible();
+
+  await ingestProtocolText(page, "20,2,3\n", 4_500);
+  await expect(page.locator(".waveform-panel")).toHaveAttribute("data-trigger-phase", "frozen");
+  await expect(page.getByText("HISTORY")).toBeVisible();
+  const frozen = await readWaveformTriggerSnapshot(page);
+  expect(frozen).toMatchObject({
+    phase: "frozen",
+    chartPaused: true,
+    pointCount: 4,
+    rxFrames: 4,
+  });
+
+  await ingestProtocolText(page, "30,2,3\n", 5_000);
+  const afterFrozen = await readWaveformTriggerSnapshot(page);
+  expect(afterFrozen.pointCount).toBe(frozen.pointCount);
+  expect(afterFrozen.terminalEntryCount).toBeGreaterThan(frozen.terminalEntryCount);
+  expect(afterFrozen.rxFrames).toBeGreaterThan(frozen.rxFrames);
+
+  await page.getByRole("button", { name: "重新布防" }).click();
+  await expect(page.locator(".waveform-panel")).toHaveAttribute("data-trigger-phase", "armed");
+  await expect(page.getByText("LIVE")).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  const triggerLayout = await page.locator(".waveform-trigger-strip").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const targets = [...element.querySelectorAll<HTMLElement>("button, select, input")].map(
+      (target) => {
+        const targetRect = target.getBoundingClientRect();
+        return { width: targetRect.width, height: targetRect.height };
+      },
+    );
+    return {
+      left: rect.left,
+      right: rect.right,
+      overflow: element.scrollWidth - element.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      targets,
+    };
+  });
+  expect(triggerLayout.left).toBeGreaterThanOrEqual(0);
+  expect(triggerLayout.right).toBeLessThanOrEqual(390);
+  expect(triggerLayout.overflow).toBeLessThanOrEqual(1);
+  expect(triggerLayout.documentWidth).toBeLessThanOrEqual(390);
+  expect(triggerLayout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(
+    true,
+  );
+
+  for (const viewport of [
+    { width: 390, height: 620 },
+    { width: 320, height: 568 },
+  ]) {
+    await page.setViewportSize(viewport);
+    const canvasBounds = await page.locator(".waveform-canvas-wrap").boundingBox();
+    expect(canvasBounds).not.toBeNull();
+    expect(canvasBounds?.height ?? 0).toBeGreaterThanOrEqual(180);
+    expect(canvasBounds?.y ?? -1).toBeGreaterThanOrEqual(0);
+    expect((canvasBounds?.y ?? 0) + (canvasBounds?.height ?? 0)).toBeLessThanOrEqual(
+      viewport.height,
+    );
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      viewport.width,
+    );
+  }
 });
 
 test("终端按当前显示内容执行字面量搜索和方向过滤", async ({ page }, testInfo) => {

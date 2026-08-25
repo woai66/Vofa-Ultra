@@ -12,6 +12,7 @@ import {
   simulateModbusRtuResponse,
 } from "../core/modbusRtu";
 import { createEmptyProtocolHealth } from "../core/protocols";
+import { createArmedWaveformTriggerState } from "../core/waveformTrigger";
 import { createDefaultWorkspaceConfig, createWorkspaceProfile } from "../core/workspaces";
 import {
   enqueueCaptureMarker,
@@ -2503,6 +2504,204 @@ describe("workbenchStore", () => {
       [1, 3, 5],
       [2, 4, 6],
     ]);
+  });
+
+  it("单次触发完整写入冻结批次且冻结后后台数据链路继续", () => {
+    useWorkbenchStore.setState({
+      connectionStatus: "connected",
+      captureStatus: "recording",
+      captureSessionId: 4,
+      numericLogStatus: "recording",
+      numericLogSessionId: 17,
+    });
+    const encoder = new TextEncoder();
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("1\n"), 1_000);
+    useWorkbenchStore.getState().setChartWindowSeconds(5);
+
+    expect(
+      useWorkbenchStore.getState().armWaveformTrigger({
+        channelId: "channel-0",
+        edge: "rising",
+        threshold: 5,
+      }),
+    ).toBe(true);
+    expect(useWorkbenchStore.getState().waveformTrigger.previousValue).toBeNull();
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("2\n10\n"), 2_000);
+    expect(useWorkbenchStore.getState().waveformTrigger).toMatchObject({
+      phase: "triggered",
+      triggerTimestampSeconds: 2,
+      freezeTimestampSeconds: 4.5,
+    });
+
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("20\n21\n"), 4_500);
+    const frozenState = useWorkbenchStore.getState();
+    const frozenPoints = frozenState.channels[0]?.points;
+    expect(frozenState).toMatchObject({
+      chartPaused: true,
+      waveformTrigger: { phase: "frozen", triggerTimestampSeconds: 2 },
+    });
+    expect(frozenPoints?.map((point) => point.y)).toEqual([1, 2, 10, 20, 21]);
+
+    const terminalEntryCount = frozenState.terminalEntries.length;
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("30\n"), 5_000);
+    const afterFrozen = useWorkbenchStore.getState();
+    expect(afterFrozen.channels[0]?.points).toBe(frozenPoints);
+    expect(afterFrozen.terminalEntries.length).toBeGreaterThan(terminalEntryCount);
+    expect(afterFrozen.stats.rxFrames).toBe(6);
+    expect(enqueueSimulatorCaptureMock).toHaveBeenCalledTimes(4);
+    expect(enqueueNumericLogSamplesMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("重新布防后首个新样本只建立基线", () => {
+    const encoder = new TextEncoder();
+    const frozenTrigger = createArmedWaveformTriggerState(
+      { channelId: "channel-0", edge: "rising", threshold: 5 },
+      5,
+    );
+    useWorkbenchStore.setState({
+      connectionStatus: "connected",
+      chartPaused: true,
+      channels: [
+        {
+          id: "channel-0",
+          name: "CH 1",
+          color: "#46d89c",
+          visible: true,
+          points: [{ x: 1, y: 2 }],
+          lastValue: 2,
+        },
+      ],
+      waveformTrigger: {
+        ...frozenTrigger,
+        phase: "frozen",
+        triggerTimestampSeconds: 1,
+        freezeTimestampSeconds: 3.5,
+        previousTimestampSeconds: 1,
+        previousValue: 2,
+      },
+    });
+
+    expect(
+      useWorkbenchStore.getState().armWaveformTrigger({
+        channelId: "channel-0",
+        edge: "rising",
+        threshold: 5,
+      }),
+    ).toBe(true);
+    expect(useWorkbenchStore.getState().waveformTrigger.previousValue).toBeNull();
+
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("10\n"), 4_000);
+    expect(useWorkbenchStore.getState().waveformTrigger).toMatchObject({
+      phase: "armed",
+      previousValue: 10,
+    });
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("2\n10\n"), 5_000);
+    expect(useWorkbenchStore.getState().waveformTrigger).toMatchObject({
+      phase: "triggered",
+      triggerTimestampSeconds: 5,
+    });
+  });
+
+  it("派生通道可跨批次触发并在窗口后半段结束时冻结", () => {
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        { id: "scaled", kind: "affine", input: "source", gain: 2, offset: 1 },
+        {
+          id: "result",
+          kind: "output",
+          input: "scaled",
+          name: "Scaled",
+          color: "#55bde8",
+        },
+      ],
+    });
+    useWorkbenchStore.setState({ connectionStatus: "connected" });
+    const encoder = new TextEncoder();
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("1\n"), 1_000);
+    useWorkbenchStore.getState().setChartWindowSeconds(5);
+
+    expect(
+      useWorkbenchStore.getState().armWaveformTrigger({
+        channelId: "derived:result",
+        edge: "rising",
+        threshold: 5,
+      }),
+    ).toBe(true);
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("1\n"), 1_500);
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("3\n"), 2_000);
+    expect(useWorkbenchStore.getState().waveformTrigger).toMatchObject({
+      phase: "triggered",
+      triggerTimestampSeconds: 2,
+    });
+
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("4\n"), 4_500);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      chartPaused: true,
+      waveformTrigger: { phase: "frozen" },
+      processedChannels: [expect.objectContaining({ id: "derived:result", lastValue: 9 })],
+    });
+  });
+
+  it("触发在视图、处理、运行环境和串口代次边界解除", () => {
+    const encoder = new TextEncoder();
+    const arm = () =>
+      useWorkbenchStore.getState().armWaveformTrigger({
+        channelId: "channel-0",
+        edge: "rising",
+        threshold: 5,
+      });
+    useWorkbenchStore.setState({ connectionStatus: "connected" });
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("1\n"), 1_000);
+
+    expect(arm()).toBe(true);
+    const initialWindow = useWorkbenchStore.getState().chartWindowSeconds;
+    useWorkbenchStore.getState().setChartWindowSeconds(initialWindow);
+    expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("armed");
+    useWorkbenchStore.getState().setChartWindowSeconds(initialWindow === 15 ? 30 : 15);
+    expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("idle");
+
+    expect(arm()).toBe(true);
+    useWorkbenchStore.getState().setChartPaused(true);
+    expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("idle");
+    useWorkbenchStore.getState().setChartPaused(false);
+    expect(arm()).toBe(true);
+    useWorkbenchStore.getState().clearChart();
+    expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("idle");
+
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("1\n"), 2_000);
+    expect(arm()).toBe(true);
+    useWorkbenchStore.getState().setProcessingGraph({ enabled: false, nodes: [] });
+    expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("idle");
+
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("1\n"), 3_000);
+    expect(arm()).toBe(true);
+    useWorkbenchStore.getState().setRuntimeAvailability(true);
+    expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("idle");
+    expect(arm()).toBe(true);
+    useWorkbenchStore.getState().setRuntimeAvailability(true);
+    expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("armed");
+
+    useWorkbenchStore.setState({
+      source: "serial",
+      serialGeneration: 1,
+      serialStateRevision: 1,
+    });
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connected",
+      portName: "COM3",
+      generation: 1,
+      revision: 2,
+    });
+    expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("armed");
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connected",
+      portName: "COM3",
+      generation: 2,
+      revision: 3,
+    });
+    expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("idle");
   });
 
   it("保持基础通道直通并把处理图结果写入独立派生通道", () => {

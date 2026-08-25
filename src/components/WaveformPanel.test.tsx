@@ -1,6 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createArmedWaveformTriggerState,
+  createIdleWaveformTriggerState,
+} from "../core/waveformTrigger";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { ChannelSeries } from "../types/workbench";
 import { WaveformPanel } from "./WaveformPanel";
@@ -125,9 +129,14 @@ describe("WaveformPanel 波形测量", () => {
     useWorkbenchStore.setState({
       channels: TEST_CHANNELS,
       processedChannels: [],
+      extensionChannels: [],
       chartPaused: false,
       chartWindowSeconds: 5,
       chartDataRevision: 0,
+      waveformTrigger: createIdleWaveformTriggerState(),
+      connectionStatus: "connected",
+      replayStatus: "idle",
+      runtimeTransitionStatus: "idle",
       workspaceTransitionStatus: "idle",
     });
   });
@@ -141,6 +150,88 @@ describe("WaveformPanel 波形测量", () => {
     render(<WaveformPanel theme="dark" />);
 
     expect(screen.getByRole("button", { name: "开启波形测量" })).toBeDisabled();
+  });
+
+  it("触发只列出基础和派生通道并可布防解除", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState({
+      processedChannels: [
+        {
+          ...TEST_CHANNELS[0]!,
+          id: "derived:filtered",
+          name: "滤波值",
+        },
+      ],
+      extensionChannels: [
+        {
+          ...TEST_CHANNELS[1]!,
+          id: "extension:power",
+          name: "扩展功率",
+        },
+      ],
+    });
+    render(<WaveformPanel theme="dark" />);
+
+    await user.click(screen.getByRole("button", { name: "打开触发设置" }));
+    const channelSelect = screen.getByRole("combobox", { name: "触发通道" });
+    expect(within(channelSelect).getByRole("option", { name: "电压" })).toBeInTheDocument();
+    expect(within(channelSelect).getByRole("option", { name: "滤波值" })).toBeInTheDocument();
+    expect(within(channelSelect).queryByRole("option", { name: "扩展功率" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "下降沿" }));
+    const threshold = screen.getByRole("spinbutton", { name: "触发阈值" });
+    await user.clear(threshold);
+    await user.type(threshold, "25");
+    await user.click(screen.getByRole("button", { name: "布防" }));
+
+    expect(useWorkbenchStore.getState().waveformTrigger).toMatchObject({
+      phase: "armed",
+      config: { channelId: "channel-0", edge: "falling", threshold: 25 },
+    });
+    expect(screen.getByRole("button", { name: "开启波形测量" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "关闭触发设置" }));
+    act(() => {
+      useWorkbenchStore.setState((state) => ({
+        waveformTrigger: {
+          ...state.waveformTrigger,
+          phase: "triggered",
+          triggerTimestampSeconds: 6,
+          freezeTimestampSeconds: 8.5,
+          previousValue: 40,
+        },
+      }));
+    });
+    expect(screen.queryByRole("combobox", { name: "触发通道" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "打开触发设置" }));
+    await user.click(screen.getByRole("button", { name: "解除" }));
+    expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("idle");
+  });
+
+  it("冻结捕获显示触发线并可重新布防恢复实时采集", async () => {
+    const user = userEvent.setup();
+    const armed = createArmedWaveformTriggerState(
+      { channelId: "channel-0", edge: "rising", threshold: 25 },
+      5,
+    );
+    useWorkbenchStore.setState({
+      chartPaused: true,
+      waveformTrigger: {
+        ...armed,
+        phase: "frozen",
+        triggerTimestampSeconds: 3,
+        freezeTimestampSeconds: 5.5,
+      },
+    });
+    const { container } = render(<WaveformPanel theme="dark" />);
+
+    expect(container.querySelector(".waveform-trigger-line")).not.toHaveAttribute("hidden");
+    await user.click(await screen.findByRole("button", { name: "重新布防" }));
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      chartPaused: false,
+      waveformTrigger: { phase: "armed" },
+    });
+    expect(screen.getByText("LIVE")).toBeVisible();
   });
 
   it("开启时冻结视图并允许 range 控件切换采样点和通道", async () => {

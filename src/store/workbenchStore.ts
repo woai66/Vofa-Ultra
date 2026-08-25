@@ -70,6 +70,16 @@ import {
   type AssembledTerminalLine,
 } from "../core/terminalLineAssembler";
 import {
+  advanceWaveformTrigger,
+  createArmedWaveformTriggerState,
+  createIdleWaveformTriggerState,
+  isWaveformTriggerConfigValid,
+  type WaveformTriggerAdvanceResult,
+  type WaveformTriggerConfig,
+  type WaveformTriggerObservation,
+  type WaveformTriggerState,
+} from "../core/waveformTrigger";
+import {
   isRecoveryActivePhase,
   SERIAL_RECOVERY_DELAYS_MS,
   SerialReconnectCoordinator,
@@ -363,6 +373,7 @@ export interface WorkbenchStore {
   chartPaused: boolean;
   chartWindowSeconds: ChartWindowSeconds;
   chartDataRevision: number;
+  waveformTrigger: WaveformTriggerState;
   stats: TransferStats;
   protocolHealth: ProtocolHealthSnapshot;
   replayProtocolHealth: ProtocolHealthSnapshot;
@@ -476,6 +487,8 @@ export interface WorkbenchStore {
   setTerminalAutoScroll(enabled: boolean): void;
   setChartPaused(paused: boolean): void;
   setChartWindowSeconds(seconds: ChartWindowSeconds): void;
+  armWaveformTrigger(config: WaveformTriggerConfig): boolean;
+  disarmWaveformTrigger(): void;
   setProcessingGraph(config: ProcessingGraphConfig): void;
   retryProcessingGraph(): void;
   setAttitudeConfig(config: AttitudeConfig): void;
@@ -599,6 +612,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       chartPaused: false,
       chartWindowSeconds: INITIAL_WORKSPACE_CONFIG.chartWindowSeconds,
       chartDataRevision: 0,
+      waveformTrigger: createIdleWaveformTriggerState(),
       stats: emptyStats(),
       protocolHealth: protocolParser.getHealthSnapshot(),
       replayProtocolHealth: replayProtocolParser.getHealthSnapshot(),
@@ -931,6 +945,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       setRuntimeAvailability: (nativeRuntime) => {
         const state = get();
+        const availabilityChanged = nativeRuntime !== state.isNativeRuntime;
         const switchedToBrowserSimulator = !nativeRuntime && state.source !== "simulator";
         const terminalEntries = switchedToBrowserSimulator
           ? settleTerminalPresentation(state, terminalLineAssembler)
@@ -957,6 +972,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           protocolHealth: switchedToBrowserSimulator
             ? protocolParser.getHealthSnapshot()
             : latest.protocolHealth,
+          waveformTrigger: availabilityChanged
+            ? createIdleWaveformTriggerState()
+            : latest.waveformTrigger,
           terminalEntries,
           statusMessage: nativeRuntime
             ? latest.statusMessage
@@ -1003,6 +1021,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             processedChannels: [],
             attitudeSample: null,
             chartDataRevision: state.chartDataRevision + 1,
+            waveformTrigger: createIdleWaveformTriggerState(),
             processingStatus: liveProcessingRuntime.getSnapshot(),
             protocolHealth: protocolParser.getHealthSnapshot(),
             terminalEntries,
@@ -1043,6 +1062,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           processedChannels: [],
           attitudeSample: null,
           chartDataRevision: state.chartDataRevision + 1,
+          waveformTrigger: createIdleWaveformTriggerState(),
           processingStatus: liveProcessingRuntime.getSnapshot(),
           protocolHealth: protocolParser.getHealthSnapshot(),
           terminalEntries,
@@ -1105,6 +1125,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             isRefreshingPorts: false,
             connectionStatus: "error",
             statusMessage: getErrorMessage(error),
+            waveformTrigger: createIdleWaveformTriggerState(),
           });
         }
       },
@@ -1156,12 +1177,17 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               statusMessage: "模拟数据正在运行",
               stats: { ...emptyStats(), startedAt: Date.now() },
               protocolHealth: protocolParser.getHealthSnapshot(),
+              waveformTrigger: createIdleWaveformTriggerState(),
               terminalEntries,
             });
             return;
           }
           if (!state.serialConfig.portName) {
-            set({ connectionStatus: "error", statusMessage: "请先选择串口设备" });
+            set({
+              connectionStatus: "error",
+              statusMessage: "请先选择串口设备",
+              waveformTrigger: createIdleWaveformTriggerState(),
+            });
             return;
           }
 
@@ -1178,6 +1204,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             connectionStatus: "connecting",
             statusMessage: `正在打开 ${state.serialConfig.portName}`,
             protocolHealth: protocolParser.getHealthSnapshot(),
+            waveformTrigger: createIdleWaveformTriggerState(),
             terminalEntries,
           });
           try {
@@ -1192,7 +1219,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               operation === serialConnectOperation &&
               get().connectionStatus === "connecting"
             ) {
-              set({ connectionStatus: "error", statusMessage: getErrorMessage(error) });
+              set({
+                connectionStatus: "error",
+                statusMessage: getErrorMessage(error),
+                waveformTrigger: createIdleWaveformTriggerState(),
+              });
             }
           }
         } finally {
@@ -1577,6 +1608,22 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const frames = protocolParser.push(bytes, timestamp);
         const protocolHealth = protocolParser.getHealthSnapshot();
         const processedSamples = liveProcessingRuntime.process(frames);
+        const processingStatus = liveProcessingRuntime.getSnapshot();
+        const derivedTriggerSuspended =
+          (state.waveformTrigger.phase === "armed" ||
+            state.waveformTrigger.phase === "triggered") &&
+          state.waveformTrigger.config?.channelId.startsWith("derived:") === true &&
+          processingStatus.status === "suspended";
+        const waveformTriggerAdvance = derivedTriggerSuspended
+          ? {
+              state: createIdleWaveformTriggerState(),
+              shouldFreeze: false,
+            }
+          : advanceLiveWaveformTrigger(
+              state.waveformTrigger,
+              frames,
+              processedSamples,
+            );
         const attitudeSample = extractRuntimeAttitudeSample(
           state.attitudeConfig,
           frames,
@@ -1614,8 +1661,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         set({
           channels: nextChannels,
           processedChannels: nextProcessedChannels,
-          processingStatus: liveProcessingRuntime.getSnapshot(),
+          processingStatus,
           attitudeSample: attitudeSample ?? state.attitudeSample,
+          chartPaused: state.chartPaused || waveformTriggerAdvance.shouldFreeze,
+          waveformTrigger: waveformTriggerAdvance.state,
           terminalEntries: terminalEntries.length > 0
             ? appendManyBounded(
                 state.terminalEntries,
@@ -1705,6 +1754,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             serialGeneration: payload.generation,
             serialStateRevision: payload.revision,
             statusMessage: payload.message ?? "串口发生未知错误",
+            waveformTrigger: createIdleWaveformTriggerState(),
             terminalEntries: terminalEntries ?? state.terminalEntries,
           });
           const recoveryOwnsCaptureBoundary = getSerialRecoveryCoordinator().observeState(
@@ -1722,6 +1772,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           serialStateRevision: payload.revision,
           statusMessage:
             payload.message ?? serialStatusMessage(payload.status, payload.portName),
+          waveformTrigger:
+            payload.status === state.connectionStatus &&
+            payload.generation === state.serialGeneration
+              ? state.waveformTrigger
+              : createIdleWaveformTriggerState(),
           terminalEntries: terminalEntries ?? state.terminalEntries,
         });
         getSerialRecoveryCoordinator().observeState(payload, previousStatus);
@@ -1919,10 +1974,52 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           set({ terminalAutoScroll });
         }
       },
-      setChartPaused: (chartPaused) => set({ chartPaused }),
+      setChartPaused: (chartPaused) =>
+        set({
+          chartPaused,
+          waveformTrigger: createIdleWaveformTriggerState(),
+        }),
       setChartWindowSeconds: (chartWindowSeconds) => {
-        if (get().workspaceTransitionStatus === "idle") {
-          set({ chartWindowSeconds });
+        const state = get();
+        if (
+          state.workspaceTransitionStatus === "idle" &&
+          chartWindowSeconds !== state.chartWindowSeconds
+        ) {
+          set({ chartWindowSeconds, waveformTrigger: createIdleWaveformTriggerState() });
+        }
+      },
+      armWaveformTrigger: (config) => {
+        const state = get();
+        const channel = [...state.channels, ...state.processedChannels].find(
+          (channel) => channel.id === config.channelId,
+        );
+        const rearmingFrozenCapture = state.waveformTrigger.phase === "frozen";
+        if (
+          state.workspaceTransitionStatus !== "idle" ||
+          state.runtimeTransitionStatus !== "idle" ||
+          state.connectionStatus !== "connected" ||
+          hasReplaySession(state) ||
+          !channel ||
+          !isWaveformTriggerConfigValid(config) ||
+          (state.chartPaused && !rearmingFrozenCapture) ||
+          state.waveformTrigger.phase === "armed" ||
+          state.waveformTrigger.phase === "triggered"
+        ) {
+          return false;
+        }
+        const armedState = createArmedWaveformTriggerState(
+          config,
+          state.chartWindowSeconds,
+        );
+        set({
+          chartPaused: false,
+          waveformTrigger: armedState,
+        });
+        return true;
+      },
+      disarmWaveformTrigger: () => {
+        if (get().waveformTrigger.phase !== "idle") {
+          set({ waveformTrigger: createIdleWaveformTriggerState() });
         }
       },
       setProcessingGraph: (processingGraph) => {
@@ -1937,6 +2034,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           attitudeConfig: pruneAttitudeConfigForGraph(state.attitudeConfig, configuredGraph),
           attitudeSample: null,
           chartDataRevision: state.chartDataRevision + 1,
+          waveformTrigger: createIdleWaveformTriggerState(),
           channelVisibility: pruneDerivedChannelVisibility(
             state.channelVisibility,
             configuredGraph,
@@ -1955,6 +2053,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           processedChannels: [],
           attitudeSample: null,
           chartDataRevision: state.chartDataRevision + 1,
+          waveformTrigger: createIdleWaveformTriggerState(),
           processingStatus: activeProcessingRuntime(state).getSnapshot(),
         }));
       },
@@ -2011,6 +2110,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           processedChannels: [],
           extensionChannels: [],
           chartDataRevision: state.chartDataRevision + 1,
+          waveformTrigger: createIdleWaveformTriggerState(),
         }));
       },
       resetStats: () => set({ stats: emptyStats() }),
@@ -2798,6 +2898,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             replaySessionChanged || timelineChanged || payload.status === "idle"
               ? null
               : latest.attitudeSample,
+          waveformTrigger:
+            replaySessionChanged || timelineChanged || payload.status !== "idle"
+              ? createIdleWaveformTriggerState()
+              : latest.waveformTrigger,
           replayMessage: payload.message ?? "",
           statusMessage: replayStatusMessage(payload),
           terminalEntries: terminalEntries ?? latest.terminalEntries,
@@ -3079,6 +3183,7 @@ export function disposeWorkbenchRuntime(): void {
   resetLiveStreamBoundary(state.protocol);
   useWorkbenchStore.setState({
     attitudeSample: null,
+    waveformTrigger: createIdleWaveformTriggerState(),
     processingStatus: liveProcessingRuntime.getSnapshot(),
     protocolHealth: protocolParser.getHealthSnapshot(),
   });
@@ -3173,6 +3278,7 @@ function getSerialRecoveryCoordinator(): SerialReconnectCoordinator {
       useWorkbenchStore.setState({
         processingStatus: liveProcessingRuntime.getSnapshot(),
         attitudeSample: null,
+        waveformTrigger: createIdleWaveformTriggerState(),
         stats: { ...emptyStats(), startedAt: Date.now() },
         protocolHealth: protocolParser.getHealthSnapshot(),
       });
@@ -3916,7 +4022,12 @@ async function prepareAndOpenReplay(
   revokeExtensionForBoundary(get, set, "已进入回放，实时扩展会话已撤销");
 
   if (!hasReplaySession(get())) {
-    set({ replayStatus: "loading" });
+    set({
+      replayStatus: "loading",
+      waveformTrigger: createIdleWaveformTriggerState(),
+    });
+  } else {
+    set({ waveformTrigger: createIdleWaveformTriggerState() });
   }
   set({ statusMessage: "正在检查捕获文件" });
   const payload = await openReplayClient(path);
@@ -4053,6 +4164,7 @@ function applyCancelledSerialState(payload: SerialStatePayload): void {
         state.runtimeTransitionStatus === "connecting"
           ? "idle"
           : state.runtimeTransitionStatus,
+      waveformTrigger: createIdleWaveformTriggerState(),
     });
     return;
   }
@@ -4072,6 +4184,7 @@ async function disconnectCurrentSource(
     set({
       connectionStatus: "disconnected",
       statusMessage: "模拟数据已停止",
+      waveformTrigger: createIdleWaveformTriggerState(),
       terminalEntries,
     });
     return true;
@@ -4082,7 +4195,11 @@ async function disconnectCurrentSource(
     get().handleSerialState(payload);
     return payload.status === "disconnected";
   } catch (error) {
-    set({ connectionStatus: "error", statusMessage: getErrorMessage(error) });
+    set({
+      connectionStatus: "error",
+      statusMessage: getErrorMessage(error),
+      waveformTrigger: createIdleWaveformTriggerState(),
+    });
     return false;
   }
 }
@@ -4156,6 +4273,7 @@ async function applyWorkspaceSnapshot(
     terminalEntries: [],
     terminalPaused: false,
     chartPaused: false,
+    waveformTrigger: createIdleWaveformTriggerState(),
     stats: emptyStats(),
     protocolHealth: protocolParser.getHealthSnapshot(),
     connectionStatus: "disconnected",
@@ -4236,6 +4354,7 @@ function resetLiveView(protocol: ProtocolKind, set: WorkbenchSet): void {
     terminalEntries: [],
     terminalPaused: false,
     chartPaused: false,
+    waveformTrigger: createIdleWaveformTriggerState(),
     stats: emptyStats(),
     protocolHealth: protocolParser.getHealthSnapshot(),
   }));
@@ -4273,6 +4392,7 @@ function resetReplayView(protocol: ProtocolKind, set: WorkbenchSet): void {
     terminalEntries: [],
     terminalPaused: false,
     chartPaused: false,
+    waveformTrigger: createIdleWaveformTriggerState(),
     stats: emptyStats(),
     replayProtocolHealth: replayProtocolParser.getHealthSnapshot(),
   }));
@@ -4485,6 +4605,65 @@ function appendExtensionFrames(
     }
   }
   return nextChannels;
+}
+
+function advanceLiveWaveformTrigger(
+  state: WaveformTriggerState,
+  frames: readonly ParsedFrame[],
+  processedSamples: readonly ProcessingOutputSample[],
+): WaveformTriggerAdvanceResult {
+  if ((state.phase !== "armed" && state.phase !== "triggered") || !state.config) {
+    return { state, shouldFreeze: false };
+  }
+  const observations = createWaveformTriggerObservations(
+    state.config.channelId,
+    frames,
+    processedSamples,
+  );
+  return advanceWaveformTrigger(state, observations, latestFrameTimestampSeconds(frames));
+}
+
+function createWaveformTriggerObservations(
+  channelId: string,
+  frames: readonly ParsedFrame[],
+  processedSamples: readonly ProcessingOutputSample[],
+): WaveformTriggerObservation[] {
+  const baseChannelMatch = /^channel-(\d+)$/.exec(channelId);
+  if (baseChannelMatch) {
+    const channelIndex = Number(baseChannelMatch[1]);
+    return frames.map((frame) => {
+      const value = frame.values[channelIndex];
+      return {
+        timestampSeconds: frame.timestamp / 1_000,
+        value: value !== undefined && Number.isFinite(value) ? value : null,
+      };
+    });
+  }
+
+  const sampleByFrameIndex = new Map<number, ProcessingOutputSample>();
+  for (const sample of processedSamples) {
+    if (sample.channelId === channelId) {
+      sampleByFrameIndex.set(sample.frameIndex, sample);
+    }
+  }
+  return frames.map((frame, frameIndex) => {
+    const sample = sampleByFrameIndex.get(frameIndex);
+    return {
+      timestampSeconds: (sample?.timestamp ?? frame.timestamp) / 1_000,
+      value: sample && Number.isFinite(sample.value) ? sample.value : null,
+    };
+  });
+}
+
+function latestFrameTimestampSeconds(frames: readonly ParsedFrame[]): number | null {
+  let latestTimestamp: number | null = null;
+  for (const frame of frames) {
+    const timestampSeconds = frame.timestamp / 1_000;
+    if (Number.isFinite(timestampSeconds)) {
+      latestTimestamp = Math.max(latestTimestamp ?? timestampSeconds, timestampSeconds);
+    }
+  }
+  return latestTimestamp;
 }
 
 function extractRuntimeAttitudeSample(
@@ -4899,6 +5078,7 @@ function restorePersistedWorkbenchState(
     processingGraph,
     processingStatus: liveProcessingRuntime.getSnapshot(),
     processedChannels: [],
+    waveformTrigger: createIdleWaveformTriggerState(),
     workspaces: restoredWorkspaces,
     activeWorkspaceId,
     workspaceStorageStatus: "writable",
