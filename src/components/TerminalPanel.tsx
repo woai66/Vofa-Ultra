@@ -27,6 +27,7 @@ import {
   Square,
   TerminalSquare,
   Timer,
+  TriangleAlert,
   Trash2,
   X,
 } from "lucide-react";
@@ -258,6 +259,8 @@ export function TerminalPanel() {
   const displayMode = useWorkbenchStore((state) => state.displayMode);
   const sendMode = useWorkbenchStore((state) => state.sendMode);
   const lineEnding = useWorkbenchStore((state) => state.lineEnding);
+  const terminalRxRecordMode = useWorkbenchStore((state) => state.terminalRxRecordMode);
+  const terminalRxLineEnding = useWorkbenchStore((state) => state.terminalRxLineEnding);
   const commandHistory = useWorkbenchStore((state) => state.commandHistory);
   const commandTask = useWorkbenchStore((state) => state.commandTask);
   const autoResponder = useWorkbenchStore((state) => state.autoResponder);
@@ -277,6 +280,12 @@ export function TerminalPanel() {
   const setDisplayMode = useWorkbenchStore((state) => state.setDisplayMode);
   const setSendMode = useWorkbenchStore((state) => state.setSendMode);
   const setLineEnding = useWorkbenchStore((state) => state.setLineEnding);
+  const setTerminalRxRecordMode = useWorkbenchStore(
+    (state) => state.setTerminalRxRecordMode,
+  );
+  const setTerminalRxLineEnding = useWorkbenchStore(
+    (state) => state.setTerminalRxLineEnding,
+  );
   const setTerminalPaused = useWorkbenchStore((state) => state.setTerminalPaused);
   const clearTerminal = useWorkbenchStore((state) => state.clearTerminal);
   const clearCommandHistory = useWorkbenchStore((state) => state.clearCommandHistory);
@@ -865,6 +874,54 @@ export function TerminalPanel() {
       </header>
 
       <div className="terminal-filter-bar" role="search" aria-label="终端记录筛选">
+        <div className="terminal-rx-record-controls">
+          <div
+            className="segmented-control compact-segments terminal-rx-record-mode"
+            role="group"
+            aria-label="接收记录方式"
+          >
+            <button
+              type="button"
+              data-active={terminalRxRecordMode === "chunk"}
+              aria-pressed={terminalRxRecordMode === "chunk"}
+              aria-label="按读取块记录"
+              title="按读取块记录"
+              disabled={isWorkspaceTransitioning}
+              onClick={() => setTerminalRxRecordMode("chunk")}
+            >
+              块
+            </button>
+            <button
+              type="button"
+              data-active={terminalRxRecordMode === "line"}
+              aria-pressed={terminalRxRecordMode === "line"}
+              aria-label="按文本行记录"
+              title="按文本行记录"
+              disabled={isWorkspaceTransitioning}
+              onClick={() => setTerminalRxRecordMode("line")}
+            >
+              行
+            </button>
+          </div>
+          <label className="terminal-rx-line-ending">
+            <span className="sr-only">接收行尾</span>
+            <select
+              id="terminal-rx-line-ending"
+              name="terminal-rx-line-ending"
+              aria-label="接收行尾"
+              title={terminalRxRecordMode === "line" ? "接收行尾" : "按文本行记录时使用"}
+              value={terminalRxLineEnding}
+              disabled={terminalRxRecordMode !== "line" || isWorkspaceTransitioning}
+              onChange={(event) =>
+                setTerminalRxLineEnding(event.target.value as typeof terminalRxLineEnding)
+              }
+            >
+              <option value="lf">LF</option>
+              <option value="crlf">CRLF</option>
+              <option value="cr">CR</option>
+            </select>
+          </label>
+        </div>
         <div className="terminal-search-field">
           <Search size={15} aria-hidden="true" />
           <input
@@ -969,7 +1026,21 @@ export function TerminalPanel() {
                         query={searchQuery}
                       />
                     </code>
-                    <small>{entry.byteCount} B</small>
+                    <small>
+                      {entry.byteCount} B
+                      {entry.rxBoundary ? (
+                        <span
+                          className="terminal-rx-boundary"
+                          title={terminalRxBoundaryLabel(entry.rxBoundary)}
+                        >
+                          <TriangleAlert
+                            size={12}
+                            role="img"
+                            aria-label={terminalRxBoundaryLabel(entry.rxBoundary)}
+                          />
+                        </span>
+                      ) : null}
+                    </small>
                   </div>
                 );
               })}
@@ -2159,6 +2230,12 @@ function formatTime(timestamp: number): string {
     fractionalSecondDigits: 3,
     hour12: false,
   }).format(timestamp);
+}
+
+function terminalRxBoundaryLabel(boundary: NonNullable<TerminalEntry["rxBoundary"]>): string {
+  return boundary === "overflow"
+    ? "未遇接收行尾，已按 2048 字节分段"
+    : "记录已在边界处结束，未包含配置的接收行尾";
 }
 
 function exportTerminalEntries(entries: TerminalEntry[], displayMode: DisplayMode): void {

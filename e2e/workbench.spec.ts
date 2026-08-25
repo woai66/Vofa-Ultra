@@ -14,6 +14,14 @@ async function expectValidTabPanelReferences(page: Page, tablistName: string): P
 }
 
 async function ingestProtocolText(page: Page, text: string, timestamp: number): Promise<void> {
+  await ingestProtocolBytes(page, Array.from(new TextEncoder().encode(text)), timestamp);
+}
+
+async function ingestProtocolBytes(
+  page: Page,
+  bytes: number[],
+  timestamp: number,
+): Promise<void> {
   await page.evaluate(
     async ({ payload, receivedAt }) => {
       type WorkbenchStoreHandle = {
@@ -36,11 +44,11 @@ async function ingestProtocolText(page: Page, text: string, timestamp: number): 
         runtime.__vofaUltraE2eStore = module.useWorkbenchStore as WorkbenchStoreHandle;
       }
       runtime.__vofaUltraE2eStore.getState().ingestBytes(
-        new TextEncoder().encode(payload),
+        Uint8Array.from(payload),
         receivedAt,
       );
     },
-    { payload: text, receivedAt: timestamp },
+    { payload: bytes, receivedAt: timestamp },
   );
 }
 
@@ -552,6 +560,68 @@ test("终端按当前显示内容执行字面量搜索和方向过滤", async ({
   });
 });
 
+test("终端 RX 块与 CRLF 行记录保持原始字节并适配窄屏", async ({ page }, testInfo) => {
+  await page.goto("/");
+  const recordMode = page.getByRole("group", { name: "接收记录方式" });
+  const lineEnding = page.getByRole("combobox", { name: "接收行尾" });
+  const displayMode = page.getByRole("group", { name: "接收显示格式" });
+
+  await expect(recordMode.getByRole("button", { name: "按读取块记录" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(lineEnding).toBeDisabled();
+  await ingestProtocolBytes(page, [0x41], 1_000);
+  await ingestProtocolBytes(page, [0x42], 1_100);
+  await expect(page.locator(".terminal-line")).toHaveCount(2);
+  await expect(page.locator(".terminal-line code")).toHaveText(["A", "B"]);
+
+  await page.getByRole("button", { name: "清空终端", exact: true }).click();
+  await recordMode.getByRole("button", { name: "按文本行记录" }).click();
+  await lineEnding.selectOption("crlf");
+  const payload = Array.from(new TextEncoder().encode("温度\r\nnext\r\n"));
+  await ingestProtocolBytes(page, payload.slice(0, 2), 2_000);
+  await ingestProtocolBytes(page, payload.slice(2, 7), 2_100);
+  await expect(page.locator(".terminal-line")).toHaveCount(0);
+  await ingestProtocolBytes(page, payload.slice(7), 2_200);
+
+  const lines = page.locator(".terminal-line");
+  await expect(lines).toHaveCount(2);
+  await expect(lines.nth(0).locator("code")).toHaveText("温度\\r\\n");
+  await expect(lines.nth(1).locator("code")).toHaveText("next\\r\\n");
+  await expect(lines.nth(0).locator("small")).toContainText("8 B");
+  await expect(lines.nth(1).locator("small")).toContainText("6 B");
+
+  await displayMode.getByRole("button", { name: "HEX" }).click();
+  await expect(lines.nth(0).locator("code")).toHaveText("E6 B8 A9 E5 BA A6 0D 0A");
+  await expect(lines.nth(1).locator("code")).toHaveText("6E 65 78 74 0D 0A");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileLayout = await page.locator(".terminal-filter-bar").evaluate((bar) => {
+    const modeButtons = [...bar.querySelectorAll<HTMLElement>(".terminal-rx-record-mode button")];
+    const lineEndingSelect = bar.querySelector<HTMLElement>(".terminal-rx-line-ending select");
+    const rect = bar.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      overflow: bar.scrollWidth - bar.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      modeButtonHeights: modeButtons.map((button) => button.getBoundingClientRect().height),
+      lineEndingHeight: lineEndingSelect?.getBoundingClientRect().height ?? 0,
+    };
+  });
+  expect(mobileLayout.left).toBeGreaterThanOrEqual(0);
+  expect(mobileLayout.right).toBeLessThanOrEqual(390);
+  expect(mobileLayout.overflow).toBeLessThanOrEqual(1);
+  expect(mobileLayout.documentWidth).toBeLessThanOrEqual(390);
+  expect(mobileLayout.modeButtonHeights.every((height) => height >= 44)).toBe(true);
+  expect(mobileLayout.lineEndingHeight).toBeGreaterThanOrEqual(44);
+  await page.screenshot({
+    path: testInfo.outputPath("terminal-rx-line-mobile.png"),
+    fullPage: true,
+  });
+});
+
 test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ page }) => {
   await page.goto("/");
   await ingestProtocolText(page, "broken\n", 1_000);
@@ -587,7 +657,7 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   expect(layout.documentWidth).toBeLessThanOrEqual(320);
 });
 
-test("处理图生成独立派生通道并随 v6 工作区往返", async ({ page }, testInfo) => {
+test("处理图生成独立派生通道并随 v7 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -641,7 +711,7 @@ test("处理图生成独立派生通道并随 v6 工作区往返", async ({ page
     schemaVersion: number;
     config: { processingGraph: ProcessingGraphConfig };
   };
-  expect(exported.schemaVersion).toBe(6);
+  expect(exported.schemaVersion).toBe(7);
   expect(exported.config.processingGraph).toMatchObject({
     enabled: true,
     nodes: [
@@ -665,7 +735,7 @@ test("处理图生成独立派生通道并随 v6 工作区往返", async ({ page
   expect(pageErrors).toEqual([]);
 });
 
-test("实时 RX 自动应答保持有界运行并随 v6 工作区往返", async ({ page }, testInfo) => {
+test("实时 RX 自动应答保持有界运行并随 v7 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -718,7 +788,7 @@ test("实时 RX 自动应答保持有界运行并随 v6 工作区往返", async 
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 6,
+    schemaVersion: 7,
     config: {
       autoResponderRules: [
         {
@@ -895,7 +965,7 @@ test("Modbus RTU 构帧和单事务主站经统一链路工作且窄屏可操作
   await expect(page.getByRole("textbox", { name: "发送内容" })).toHaveValue(
     "01 03 00 00 00 01 84 0A",
   );
-  await expect(page.getByRole("combobox", { name: "行尾" })).toHaveValue("none");
+  await expect(page.getByRole("combobox", { name: "行尾", exact: true })).toHaveValue("none");
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await page
@@ -967,7 +1037,7 @@ test("快捷命令持久载入且只经显式发送产生 TX", async ({ page }, 
   await page.getByRole("button", { name: "启动模拟" }).click();
   const input = page.getByRole("textbox", { name: "发送内容" });
   await input.fill("PING-${seq}");
-  await page.getByRole("combobox", { name: "行尾" }).selectOption("cr");
+  await page.getByRole("combobox", { name: "行尾", exact: true }).selectOption("cr");
   await page.getByRole("button", { name: "打开快捷命令" }).click();
   const dialog = page.getByRole("dialog", { name: "快捷命令" });
   await dialog.getByRole("textbox", { name: "快捷命令名称" }).fill("状态查询");
@@ -981,14 +1051,14 @@ test("快捷命令持久载入且只经显式发送产生 TX", async ({ page }, 
     .getByRole("group", { name: "发送格式" })
     .getByRole("button", { name: "HEX" })
     .click();
-  await page.getByRole("combobox", { name: "行尾" }).selectOption("none");
+  await page.getByRole("combobox", { name: "行尾", exact: true }).selectOption("none");
   await page.getByRole("button", { name: "打开快捷命令" }).click();
   await page.getByRole("button", { name: "载入快捷命令 状态查询" }).click();
   await expect(input).toHaveValue("PING-${seq}");
   await expect(
     page.getByRole("group", { name: "发送格式" }).getByRole("button", { name: "文本" }),
   ).toHaveAttribute("data-active", "true");
-  await expect(page.getByRole("combobox", { name: "行尾" })).toHaveValue("cr");
+  await expect(page.getByRole("combobox", { name: "行尾", exact: true })).toHaveValue("cr");
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
 
   await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -1162,7 +1232,7 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   expect(measurementTargets.every((rect) => rect.width >= 44 && rect.height >= 44)).toBe(true);
   await page.getByRole("button", { name: "关闭波形测量" }).click();
   const sendFormat = page.getByRole("group", { name: "发送格式" });
-  const lineEnding = page.getByRole("combobox", { name: "行尾" });
+  const lineEnding = page.getByRole("combobox", { name: "行尾", exact: true });
   await expect(sendFormat).toBeVisible();
   await expect(lineEnding).toBeVisible();
   await page.getByRole("button", { name: "HEX", exact: true }).last().click();
@@ -1606,7 +1676,7 @@ async function canvasScreenshotSignature(locator: Locator): Promise<{
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({
-    version: 7,
+    version: 8,
     state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
   });
   await page.addInitScript((value) => {
@@ -1615,7 +1685,7 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("button", { name: "工作区" }).click();
-  await expect(page.getByRole("alert")).toContainText("版本 7 的较新配置");
+  await expect(page.getByRole("alert")).toContainText("版本 8 的较新配置");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();

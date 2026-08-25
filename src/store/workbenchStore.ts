@@ -64,6 +64,12 @@ import {
 } from "../core/processingGraph";
 import { RingBuffer } from "../core/ringBuffer";
 import {
+  MAX_TERMINAL_LINE_ENDING_BYTES,
+  MAX_TERMINAL_UNTERMINATED_LINE_BYTES,
+  TerminalLineAssembler,
+  type AssembledTerminalLine,
+} from "../core/terminalLineAssembler";
+import {
   isRecoveryActivePhase,
   SERIAL_RECOVERY_DELAYS_MS,
   SerialReconnectCoordinator,
@@ -179,7 +185,7 @@ import type {
   SerialStatePayload,
   SerialTxPayload,
 } from "../types/serial";
-import { LEGACY_LINE_ENDINGS } from "../types/serial";
+import { LEGACY_LINE_ENDINGS, LINE_ENDINGS } from "../types/serial";
 import type {
   AttitudeChannelValue,
   AttitudeConfig,
@@ -194,6 +200,8 @@ import type {
   ProtocolHealthSnapshot,
   QuickCommand,
   TerminalEntry,
+  TerminalRxLineEnding,
+  TerminalRxRecordMode,
   TransferStats,
 } from "../types/workbench";
 import type {
@@ -203,7 +211,7 @@ import type {
 } from "../types/processingGraph";
 import type {
   ChartWindowSeconds,
-  WorkspaceExportV6,
+  WorkspaceExportV7,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AutoResponderRule, AutoResponderSnapshot } from "../types/automation";
@@ -218,10 +226,11 @@ import {
 
 const MAX_POINTS_PER_CHANNEL = 2_000;
 const MAX_TERMINAL_ENTRIES = 800;
-const MAX_TERMINAL_BYTES_PER_ENTRY = 2_048;
+const MAX_TERMINAL_BYTES_PER_ENTRY =
+  MAX_TERMINAL_UNTERMINATED_LINE_BYTES + MAX_TERMINAL_LINE_ENDING_BYTES;
 export const WORKBENCH_STORAGE_KEY = "vofa-ultra-workbench";
-export const WORKBENCH_STORAGE_VERSION = 6;
-export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [0, 1, 2, 3, 4, 5] as const;
+export const WORKBENCH_STORAGE_VERSION = 7;
+export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [0, 1, 2, 3, 4, 5, 6] as const;
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
   phase: "off",
@@ -254,6 +263,7 @@ const CHANNEL_COLORS = [
 let parserProtocol: ProtocolKind = "firewater";
 let protocolParser: ProtocolParser = createProtocolParser(parserProtocol);
 let terminalDecoder = new TextDecoder();
+const terminalLineAssembler = new TerminalLineAssembler();
 let terminalEntryId = 0;
 const channelBuffers = new Map<string, RingBuffer<DataPoint>>();
 const processingChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
@@ -265,6 +275,7 @@ let replayParserProtocol: ProtocolKind = "raw";
 let replayProtocolParser: ProtocolParser = createProtocolParser(replayParserProtocol);
 let replayRxDecoder = new TextDecoder();
 let replayTxDecoder = new TextDecoder();
+const replayRxLineAssembler = new TerminalLineAssembler();
 const replayChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
 const replayProcessingChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
 let replayProcessingRuntime = new ProcessingGraphRuntime(
@@ -331,6 +342,8 @@ export interface WorkbenchStore {
   displayMode: DisplayMode;
   sendMode: DisplayMode;
   lineEnding: LineEnding;
+  terminalRxRecordMode: TerminalRxRecordMode;
+  terminalRxLineEnding: TerminalRxLineEnding;
   commandHistory: CommandHistoryEntry[];
   quickCommands: QuickCommand[];
   commandTask: CommandTaskSnapshot;
@@ -452,6 +465,8 @@ export interface WorkbenchStore {
   setDisplayMode(mode: DisplayMode): void;
   setSendMode(mode: DisplayMode): void;
   setLineEnding(lineEnding: LineEnding): void;
+  setTerminalRxRecordMode(mode: TerminalRxRecordMode): void;
+  setTerminalRxLineEnding(lineEnding: TerminalRxLineEnding): void;
   setTerminalPaused(paused: boolean): void;
   setTerminalAutoScroll(enabled: boolean): void;
   setChartPaused(paused: boolean): void;
@@ -501,7 +516,7 @@ export interface WorkbenchStore {
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
   deleteWorkspace(id: string): Promise<boolean>;
-  importWorkspace(workspace: WorkspaceExportV6): string;
+  importWorkspace(workspace: WorkspaceExportV7): string;
 }
 
 type PersistedWorkbenchState = Pick<
@@ -512,6 +527,8 @@ type PersistedWorkbenchState = Pick<
   | "displayMode"
   | "sendMode"
   | "lineEnding"
+  | "terminalRxRecordMode"
+  | "terminalRxLineEnding"
   | "quickCommands"
   | "terminalAutoScroll"
   | "chartWindowSeconds"
@@ -558,6 +575,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       displayMode: INITIAL_WORKSPACE_CONFIG.displayMode,
       sendMode: INITIAL_WORKSPACE_CONFIG.sendMode,
       lineEnding: INITIAL_WORKSPACE_CONFIG.lineEnding,
+      terminalRxRecordMode: INITIAL_WORKSPACE_CONFIG.terminalRxRecordMode,
+      terminalRxLineEnding: INITIAL_WORKSPACE_CONFIG.terminalRxLineEnding,
       commandHistory: [],
       quickCommands: cloneQuickCommands(INITIAL_WORKSPACE_CONFIG.quickCommands),
       commandTask: createInitialCommandTaskSnapshot(),
@@ -906,6 +925,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       setRuntimeAvailability: (nativeRuntime) => {
         const state = get();
         const switchedToBrowserSimulator = !nativeRuntime && state.source !== "simulator";
+        const terminalEntry = switchedToBrowserSimulator
+          ? flushTerminalFragment(state, terminalLineAssembler)
+          : null;
         if (!nativeRuntime && state.isNativeRuntime) {
           stopCurrentCommandWorkflows("source-change");
           revokeExtensionForBoundary(get, set, "运行环境已切换，扩展会话已撤销");
@@ -928,6 +950,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           protocolHealth: switchedToBrowserSimulator
             ? protocolParser.getHealthSnapshot()
             : latest.protocolHealth,
+          terminalEntries: terminalEntry
+            ? appendBounded(latest.terminalEntries, terminalEntry, MAX_TERMINAL_ENTRIES)
+            : latest.terminalEntries,
           statusMessage: nativeRuntime
             ? latest.statusMessage
             : "浏览器预览模式，仅使用模拟数据",
@@ -964,6 +989,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             }
           }
           revokeExtensionForBoundary(get, set, "数据源已切换，扩展会话已撤销");
+          const latest = get();
+          const terminalEntry = flushTerminalFragment(latest, terminalLineAssembler);
           resetProtocolState(get().protocol);
           set((state) => ({
             source,
@@ -973,6 +1000,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             chartDataRevision: state.chartDataRevision + 1,
             processingStatus: liveProcessingRuntime.getSnapshot(),
             protocolHealth: protocolParser.getHealthSnapshot(),
+            terminalEntries: terminalEntry
+              ? appendBounded(state.terminalEntries, terminalEntry, MAX_TERMINAL_ENTRIES)
+              : state.terminalEntries,
             connectionStatus: "disconnected",
             statusMessage: source === "serial" ? "选择设备后连接" : "模拟数据源已就绪",
           }));
@@ -994,10 +1024,12 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         ) {
           return;
         }
-        if (protocol !== get().protocol) {
+        const currentState = get();
+        if (protocol !== currentState.protocol) {
           getAutoResponderRuntime().stop("protocol-change");
           revokeExtensionForBoundary(get, set, "基础协议已切换，扩展会话已撤销");
         }
+        const terminalEntry = flushTerminalFragment(currentState, terminalLineAssembler);
         resetProtocolState(protocol);
         set((state) => ({
           protocol,
@@ -1007,6 +1039,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           chartDataRevision: state.chartDataRevision + 1,
           processingStatus: liveProcessingRuntime.getSnapshot(),
           protocolHealth: protocolParser.getHealthSnapshot(),
+          terminalEntries: terminalEntry
+            ? appendBounded(state.terminalEntries, terminalEntry, MAX_TERMINAL_ENTRIES)
+            : state.terminalEntries,
           statusMessage: protocolDisplayName(protocol) + " 已启用",
         }));
       },
@@ -1108,6 +1143,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           if (state.workspaceTransitionStatus !== "idle") {
             return;
           }
+          const terminalEntry = flushTerminalFragment(state, terminalLineAssembler);
           if (state.source === "simulator") {
             revokeExtensionForBoundary(get, set, "连接边界已变化，扩展会话已撤销");
             resetProtocolState(state.protocol);
@@ -1116,6 +1152,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               statusMessage: "模拟数据正在运行",
               stats: { ...emptyStats(), startedAt: Date.now() },
               protocolHealth: protocolParser.getHealthSnapshot(),
+              terminalEntries: terminalEntry
+                ? appendBounded(state.terminalEntries, terminalEntry, MAX_TERMINAL_ENTRIES)
+                : state.terminalEntries,
             });
             return;
           }
@@ -1137,6 +1176,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             connectionStatus: "connecting",
             statusMessage: `正在打开 ${state.serialConfig.portName}`,
             protocolHealth: protocolParser.getHealthSnapshot(),
+            terminalEntries: terminalEntry
+              ? appendBounded(state.terminalEntries, terminalEntry, MAX_TERMINAL_ENTRIES)
+              : state.terminalEntries,
           });
           try {
             const payload = await connectSerial(state.serialConfig);
@@ -1558,17 +1600,28 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               state.channelVisibility,
               processingChannelBuffers,
             );
-        const terminalEntry = state.terminalPaused
-          ? null
-          : createTerminalEntry("rx", bytes, timestamp, terminalDecoder.decode(bytes, { stream: true }));
+        const terminalEntries = state.terminalPaused
+          ? []
+          : createRxTerminalEntries(
+              bytes,
+              timestamp,
+              state.terminalRxRecordMode,
+              state.terminalRxLineEnding,
+              terminalLineAssembler,
+              terminalDecoder,
+            );
 
         set({
           channels: nextChannels,
           processedChannels: nextProcessedChannels,
           processingStatus: liveProcessingRuntime.getSnapshot(),
           attitudeSample: attitudeSample ?? state.attitudeSample,
-          terminalEntries: terminalEntry
-            ? appendBounded(state.terminalEntries, terminalEntry, MAX_TERMINAL_ENTRIES)
+          terminalEntries: terminalEntries.length > 0
+            ? appendManyBounded(
+                state.terminalEntries,
+                terminalEntries,
+                MAX_TERMINAL_ENTRIES,
+              )
             : state.terminalEntries,
           stats: {
             ...state.stats,
@@ -1604,6 +1657,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       handleSerialState: (payload) => {
         let state = get();
+        let terminalEntry: TerminalEntry | null = null;
         if (
           hasReplaySession(state) ||
           state.source !== "serial" ||
@@ -1641,6 +1695,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           }
           stopCurrentCommandWorkflows("connection-lost");
           revokeExtensionForBoundary(get, set, "实时连接已结束，扩展会话已撤销");
+          terminalEntry = flushTerminalFragment(state, terminalLineAssembler);
+          resetLiveTerminalPresentationState();
         }
         const previousStatus = state.connectionStatus;
         if (payload.status === "error") {
@@ -1649,6 +1705,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             serialGeneration: payload.generation,
             serialStateRevision: payload.revision,
             statusMessage: payload.message ?? "串口发生未知错误",
+            terminalEntries: terminalEntry
+              ? appendBounded(state.terminalEntries, terminalEntry, MAX_TERMINAL_ENTRIES)
+              : state.terminalEntries,
           });
           const recoveryOwnsCaptureBoundary = getSerialRecoveryCoordinator().observeState(
             payload,
@@ -1665,6 +1724,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           serialStateRevision: payload.revision,
           statusMessage:
             payload.message ?? serialStatusMessage(payload.status, payload.portName),
+          terminalEntries: terminalEntry
+            ? appendBounded(state.terminalEntries, terminalEntry, MAX_TERMINAL_ENTRIES)
+            : state.terminalEntries,
         });
         getSerialRecoveryCoordinator().observeState(payload, previousStatus);
         if (payload.status === "disconnected" && hasRecordingToStop(state)) {
@@ -1797,7 +1859,54 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           set({ lineEnding });
         }
       },
-      setTerminalPaused: (terminalPaused) => set({ terminalPaused }),
+      setTerminalRxRecordMode: (terminalRxRecordMode) => {
+        const state = get();
+        if (
+          state.workspaceTransitionStatus !== "idle" ||
+          terminalRxRecordMode === state.terminalRxRecordMode
+        ) {
+          return;
+        }
+        const flushedEntry = flushActiveTerminalFragment(state);
+        resetRxTerminalPresentationState();
+        set({
+          terminalRxRecordMode,
+          terminalEntries: flushedEntry
+            ? appendBounded(state.terminalEntries, flushedEntry, MAX_TERMINAL_ENTRIES)
+            : state.terminalEntries,
+        });
+      },
+      setTerminalRxLineEnding: (terminalRxLineEnding) => {
+        const state = get();
+        if (
+          state.workspaceTransitionStatus !== "idle" ||
+          terminalRxLineEnding === state.terminalRxLineEnding
+        ) {
+          return;
+        }
+        const flushedEntry = flushActiveTerminalFragment(state);
+        resetRxTerminalPresentationState();
+        set({
+          terminalRxLineEnding,
+          terminalEntries: flushedEntry
+            ? appendBounded(state.terminalEntries, flushedEntry, MAX_TERMINAL_ENTRIES)
+            : state.terminalEntries,
+        });
+      },
+      setTerminalPaused: (terminalPaused) => {
+        const state = get();
+        if (terminalPaused === state.terminalPaused) {
+          return;
+        }
+        const flushedEntry = terminalPaused ? flushActiveTerminalFragment(state) : null;
+        resetTerminalPresentationState();
+        set({
+          terminalPaused,
+          terminalEntries: flushedEntry
+            ? appendBounded(state.terminalEntries, flushedEntry, MAX_TERMINAL_ENTRIES)
+            : state.terminalEntries,
+        });
+      },
       setTerminalAutoScroll: (terminalAutoScroll) => {
         if (get().workspaceTransitionStatus === "idle") {
           set({ terminalAutoScroll });
@@ -1879,7 +1988,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           };
         });
       },
-      clearTerminal: () => set({ terminalEntries: [] }),
+      clearTerminal: () => {
+        resetTerminalPresentationState();
+        set({ terminalEntries: [] });
+      },
       clearChart: () => {
         channelBuffers.clear();
         replayChannelBuffers.clear();
@@ -2635,10 +2747,20 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const replaySessionChanged = payload.sessionId !== state.replaySessionId;
         const resetReplayTimeline =
           (timelineChanged || replaySessionChanged) && payload.header !== undefined;
+        const replayEnded = ["completed", "ready", "idle", "error"].includes(
+          payload.status,
+        );
+        const terminalEntry =
+          replayEnded && !resetReplayTimeline
+            ? flushTerminalFragment(state, replayRxLineAssembler)
+            : null;
         if (resetReplayTimeline && payload.header) {
           resetReplayView(payload.header.protocol, set);
         } else if (replaySessionChanged || payload.status === "idle") {
           replayProtocolParser.reset();
+          resetReplayTerminalPresentationState();
+        } else if (replayEnded) {
+          resetReplayTerminalPresentationState();
         }
         set((latest) => ({
           replayStatus: payload.status,
@@ -2671,6 +2793,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               : latest.attitudeSample,
           replayMessage: payload.message ?? "",
           statusMessage: replayStatusMessage(payload),
+          terminalEntries: terminalEntry
+            ? appendBounded(latest.terminalEntries, terminalEntry, MAX_TERMINAL_ENTRIES)
+            : latest.terminalEntries,
           chartDataRevision:
             (replaySessionChanged || timelineChanged) && !resetReplayTimeline
               ? latest.chartDataRevision + 1
@@ -2877,6 +3002,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         displayMode: state.displayMode,
         sendMode: state.sendMode,
         lineEnding: state.lineEnding,
+        terminalRxRecordMode: state.terminalRxRecordMode,
+        terminalRxLineEnding: state.terminalRxLineEnding,
         quickCommands: state.quickCommands,
         terminalAutoScroll: state.terminalAutoScroll,
         chartWindowSeconds: state.chartWindowSeconds,
@@ -2900,11 +3027,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const config = restoreWorkspaceConfig(
           persistedState,
           INITIAL_WORKSPACE_CONFIG,
-          LEGACY_LINE_ENDINGS,
+          version >= 6 ? LINE_ENDINGS : LEGACY_LINE_ENDINGS,
         );
         const restoredWorkspaces = restoreWorkspaceProfiles(
           isRecord(persistedState) ? persistedState.workspaces : undefined,
-          LEGACY_LINE_ENDINGS,
+          version >= 6 ? LINE_ENDINGS : LEGACY_LINE_ENDINGS,
         );
         const workspaces =
           version >= 1 && restoredWorkspaces.length > 0
@@ -3933,7 +4060,16 @@ async function disconnectCurrentSource(
   await cancelActiveSerialFileSend(get);
   await cancelActiveModbusTransaction(get);
   if (get().source === "simulator") {
-    set({ connectionStatus: "disconnected", statusMessage: "模拟数据已停止" });
+    const state = get();
+    const terminalEntry = flushTerminalFragment(state, terminalLineAssembler);
+    resetLiveTerminalPresentationState();
+    set({
+      connectionStatus: "disconnected",
+      statusMessage: "模拟数据已停止",
+      terminalEntries: terminalEntry
+        ? appendBounded(state.terminalEntries, terminalEntry, MAX_TERMINAL_ENTRIES)
+        : state.terminalEntries,
+    });
     return true;
   }
 
@@ -3998,6 +4134,8 @@ async function applyWorkspaceSnapshot(
     displayMode: config.displayMode,
     sendMode: config.sendMode,
     lineEnding: config.lineEnding,
+    terminalRxRecordMode: config.terminalRxRecordMode,
+    terminalRxLineEnding: config.terminalRxLineEnding,
     quickCommands: config.quickCommands,
     terminalAutoScroll: config.terminalAutoScroll,
     chartWindowSeconds: config.chartWindowSeconds,
@@ -4063,7 +4201,7 @@ function ensureParser(protocol: ProtocolKind): void {
 function resetProtocolState(protocol: ProtocolKind): void {
   parserProtocol = protocol;
   protocolParser = createProtocolParser(protocol);
-  terminalDecoder = new TextDecoder();
+  resetLiveTerminalPresentationState();
   channelBuffers.clear();
   processingChannelBuffers.clear();
   liveProcessingRuntime.reset();
@@ -4072,7 +4210,7 @@ function resetProtocolState(protocol: ProtocolKind): void {
 function resetLiveStreamBoundary(protocol: ProtocolKind): void {
   parserProtocol = protocol;
   protocolParser = createProtocolParser(protocol);
-  terminalDecoder = new TextDecoder();
+  resetLiveTerminalPresentationState();
   liveProcessingRuntime.reset();
 }
 
@@ -4102,8 +4240,7 @@ function ensureReplayParser(protocol: ProtocolKind): void {
 function resetReplayProtocolState(protocol: ProtocolKind): void {
   replayParserProtocol = protocol;
   replayProtocolParser = createProtocolParser(protocol);
-  replayRxDecoder = new TextDecoder();
-  replayTxDecoder = new TextDecoder();
+  resetReplayTerminalPresentationState();
   replayChannelBuffers.clear();
   replayProcessingChannelBuffers.clear();
   replayProcessingRuntime.reset();
@@ -4154,11 +4291,13 @@ function ingestReplayBatch(
       rxFrames += frames.length;
       if (!state.terminalPaused) {
         terminalEntries.push(
-          createTerminalEntry(
-            "rx",
+          ...createRxTerminalEntries(
             bytes,
             timestamp,
-            replayRxDecoder.decode(bytes, { stream: true }),
+            state.terminalRxRecordMode,
+            state.terminalRxLineEnding,
+            replayRxLineAssembler,
+            replayRxDecoder,
           ),
         );
       }
@@ -4477,6 +4616,7 @@ function createTerminalEntry(
   bytes: Uint8Array,
   timestamp: number,
   text: string,
+  rxBoundary?: TerminalEntry["rxBoundary"],
 ): TerminalEntry {
   const visibleBytes = bytes.slice(0, MAX_TERMINAL_BYTES_PER_ENTRY);
   const truncatedSuffix = bytes.length > visibleBytes.length ? " …" : "";
@@ -4488,7 +4628,84 @@ function createTerminalEntry(
     text: sanitizeText(text.slice(0, MAX_TERMINAL_BYTES_PER_ENTRY)) + truncatedSuffix,
     hex: formatHex(visibleBytes) + truncatedSuffix,
     byteCount: bytes.length,
+    ...(rxBoundary ? { rxBoundary } : {}),
   };
+}
+
+function createRxTerminalEntries(
+  bytes: Uint8Array,
+  timestamp: number,
+  recordMode: TerminalRxRecordMode,
+  lineEnding: TerminalRxLineEnding,
+  assembler: TerminalLineAssembler,
+  decoder: TextDecoder,
+): TerminalEntry[] {
+  if (recordMode === "chunk") {
+    return [
+      createTerminalEntry(
+        "rx",
+        bytes,
+        timestamp,
+        decoder.decode(bytes, { stream: true }),
+      ),
+    ];
+  }
+  return assembler
+    .push(bytes, timestamp, lineEnding)
+    .map((line) => createTerminalEntryFromAssembledLine(line));
+}
+
+function createTerminalEntryFromAssembledLine(line: AssembledTerminalLine): TerminalEntry {
+  return createTerminalEntry(
+    "rx",
+    line.bytes,
+    line.timestamp,
+    new TextDecoder().decode(line.bytes),
+    line.boundary === "line" ? undefined : line.boundary,
+  );
+}
+
+function flushActiveTerminalFragment(state: WorkbenchStore): TerminalEntry | null {
+  return flushTerminalFragment(
+    state,
+    hasReplaySession(state) ? replayRxLineAssembler : terminalLineAssembler,
+  );
+}
+
+function flushTerminalFragment(
+  state: WorkbenchStore,
+  assembler: TerminalLineAssembler,
+): TerminalEntry | null {
+  if (state.terminalPaused || state.terminalRxRecordMode !== "line") {
+    return null;
+  }
+  const line = assembler.flush();
+  return line ? createTerminalEntryFromAssembledLine(line) : null;
+}
+
+function resetLiveTerminalPresentationState(): void {
+  terminalDecoder = new TextDecoder();
+  terminalLineAssembler.reset();
+}
+
+function resetReplayTerminalPresentationState(): void {
+  resetReplayRxTerminalPresentationState();
+  replayTxDecoder = new TextDecoder();
+}
+
+function resetReplayRxTerminalPresentationState(): void {
+  replayRxDecoder = new TextDecoder();
+  replayRxLineAssembler.reset();
+}
+
+function resetRxTerminalPresentationState(): void {
+  resetLiveTerminalPresentationState();
+  resetReplayRxTerminalPresentationState();
+}
+
+function resetTerminalPresentationState(): void {
+  resetLiveTerminalPresentationState();
+  resetReplayTerminalPresentationState();
 }
 
 function sanitizeText(value: string): string {

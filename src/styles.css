@@ -3243,11 +3243,34 @@ textarea:focus {
   min-height: 38px;
   flex: 0 0 38px;
   align-items: center;
-  grid-template-columns: minmax(140px, 1fr) auto;
+  grid-template-columns: auto minmax(140px, 1fr) auto;
   padding: 5px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-0);
   gap: 8px;
+}
+
+.terminal-rx-record-controls {
+  display: grid;
+  min-width: 0;
+  align-items: center;
+  grid-template-columns: auto 58px;
+  gap: 4px;
+}
+
+.terminal-rx-record-mode {
+  grid-template-columns: repeat(2, minmax(32px, 1fr));
+}
+
+.terminal-rx-line-ending select {
+  height: 28px;
+  padding: 0 5px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+}
+
+.terminal-rx-line-ending select:disabled {
+  opacity: 0.5;
 }
 
 .terminal-search-field {
@@ -3417,7 +3440,18 @@ textarea:focus {
 }
 
 .terminal-line small {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
   text-align: right;
+  gap: 3px;
+}
+
+.terminal-rx-boundary {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--amber);
 }
 
 .terminal-empty {
@@ -5073,7 +5107,7 @@ textarea:focus {
   }
 
   .terminal-line {
-    grid-template-columns: 86px 28px minmax(0, 1fr) 48px;
+    grid-template-columns: 86px 28px minmax(0, 1fr) 62px;
   }
 }
 
@@ -5534,14 +5568,32 @@ textarea:focus {
   }
 
   .terminal-filter-bar {
-    min-height: 54px;
-    flex-basis: 54px;
+    min-height: 104px;
+    flex-basis: 104px;
     grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 44px 46px;
     padding: 4px 7px;
     gap: 6px;
   }
 
+  .terminal-rx-record-controls {
+    grid-column: 1;
+    grid-row: 1;
+    grid-template-columns: auto 56px;
+  }
+
+  .terminal-rx-line-ending select {
+    height: 44px;
+  }
+
+  .terminal-direction-filter {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
   .terminal-search-field {
+    grid-column: 1 / 3;
+    grid-row: 2;
     height: 46px;
     grid-template-columns: 22px minmax(0, 1fr) 44px;
   }

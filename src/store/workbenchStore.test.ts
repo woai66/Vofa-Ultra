@@ -478,6 +478,7 @@ describe("workbenchStore", () => {
     });
     useWorkbenchStore.getState().setProtocol(config.protocol);
     useWorkbenchStore.getState().setProcessingGraph(config.processingGraph);
+    useWorkbenchStore.getState().clearTerminal();
     useWorkbenchStore.getState().clearChart();
   });
 
@@ -487,6 +488,109 @@ describe("workbenchStore", () => {
 
   it("诊断报告使用构建注入的应用版本", () => {
     expect(useWorkbenchStore.getState().getSerialDiagnostics().appVersion).toBe(APP_VERSION);
+  });
+
+  it("读取块模式保持每次 ingest 一条终端记录", () => {
+    const encoder = new TextEncoder();
+
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("first"), 100);
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("second"), 200);
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { direction: "rx", timestamp: 100, text: "first", byteCount: 5 },
+      { direction: "rx", timestamp: 200, text: "second", byteCount: 6 },
+    ]);
+  });
+
+  it("文本行模式跨任意读取块恢复 UTF-8、空行和原始 CRLF", () => {
+    const encoder = new TextEncoder();
+    const first = encoder.encode("温度=23.5\r");
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    useWorkbenchStore.getState().setTerminalRxLineEnding("crlf");
+
+    useWorkbenchStore.getState().ingestBytes(first.slice(0, 2), 100);
+    useWorkbenchStore.getState().ingestBytes(first.slice(2), 200);
+    expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("\n\r\nnext\r\n"), 300);
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      {
+        direction: "rx",
+        timestamp: 100,
+        text: "温度=23.5\\r\\n",
+        hex: "E6 B8 A9 E5 BA A6 3D 32 33 2E 35 0D 0A",
+        byteCount: 13,
+      },
+      { direction: "rx", timestamp: 300, text: "\\r\\n", hex: "0D 0A", byteCount: 2 },
+      {
+        direction: "rx",
+        timestamp: 300,
+        text: "next\\r\\n",
+        hex: "6E 65 78 74 0D 0A",
+        byteCount: 6,
+      },
+    ]);
+  });
+
+  it("未结束行超限时分段，暂停时保留剩余残片", () => {
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    useWorkbenchStore.getState().ingestBytes(new Uint8Array(2_050).fill(0x41), 100);
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { timestamp: 100, byteCount: 2_048, rxBoundary: "overflow" },
+    ]);
+
+    useWorkbenchStore.getState().setTerminalPaused(true);
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { byteCount: 2_048, rxBoundary: "overflow" },
+      { timestamp: 100, text: "AA", byteCount: 2, rxBoundary: "unterminated" },
+    ]);
+  });
+
+  it("暂停期间不缓存 RX，恢复后从新的文本行开始", () => {
+    const encoder = new TextEncoder();
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("before"), 100);
+
+    useWorkbenchStore.getState().setTerminalPaused(true);
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("ignored\n"), 200);
+    useWorkbenchStore.getState().setTerminalPaused(false);
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("after\n"), 300);
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { text: "before", rxBoundary: "unterminated" },
+      { text: "after\\n", timestamp: 300 },
+    ]);
+  });
+
+  it("清空终端丢弃行残片，后续记录不混入清空前字节", () => {
+    const encoder = new TextEncoder();
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("discarded"), 100);
+
+    useWorkbenchStore.getState().clearTerminal();
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("kept\n"), 200);
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { timestamp: 200, text: "kept\\n", hex: "6B 65 70 74 0A", byteCount: 5 },
+    ]);
+  });
+
+  it("模拟数据源断连时保留未结束行并重置下一会话", async () => {
+    const encoder = new TextEncoder();
+    useWorkbenchStore.setState({ source: "simulator", connectionStatus: "connected" });
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("session-one"), 100);
+
+    await expect(useWorkbenchStore.getState().disconnect()).resolves.toBe(true);
+    useWorkbenchStore.setState({ connectionStatus: "connected" });
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("session-two\n"), 200);
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { text: "session-one", rxBoundary: "unterminated" },
+      { text: "session-two\\n", timestamp: 200 },
+    ]);
   });
 
   it("仅在成功发送后记录会话历史并合并连续重复项", async () => {
@@ -2599,7 +2703,7 @@ describe("workbenchStore", () => {
     const beforeActiveId = useWorkbenchStore.getState().activeWorkspaceId;
     const importedId = useWorkbenchStore.getState().importWorkspace({
       format: "vofa-ultra.workspace",
-      schemaVersion: 6,
+      schemaVersion: 7,
       name: "默认工作区",
       config: createDefaultWorkspaceConfig("serial"),
     });
@@ -2683,16 +2787,18 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 6 });
+    ).toMatchObject({ version: 7 });
   });
 
-  it("通过 rehydrate 把 v1 工作区写回 v6 且保留快照", async () => {
+  it("通过 rehydrate 把 v1 工作区写回 v7 且保留快照", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.processingGraph;
     delete legacyConfig.attitudeConfig;
     delete legacyConfig.autoResponderRules;
     delete legacyConfig.quickCommands;
+    delete legacyConfig.terminalRxRecordMode;
+    delete legacyConfig.terminalRxLineEnding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -2735,14 +2841,16 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 6 });
+    ).toMatchObject({ version: 7 });
   });
 
-  it("通过 rehydrate 把 v3 工作区补充为空规则和快捷命令并写回 v6", async () => {
+  it("通过 rehydrate 把 v3 工作区补充默认配置并写回 v7", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.autoResponderRules;
     delete legacyConfig.quickCommands;
+    delete legacyConfig.terminalRxRecordMode;
+    delete legacyConfig.terminalRxLineEnding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -2775,7 +2883,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 6 });
+    ).toMatchObject({ version: 7 });
   });
 
   it("通过 rehydrate 从 v4 补充空快捷命令并保留全部工作区", async () => {
@@ -2786,6 +2894,10 @@ describe("workbenchStore", () => {
     const legacySecond = JSON.parse(JSON.stringify(secondConfig)) as Record<string, unknown>;
     delete legacyFirst.quickCommands;
     delete legacySecond.quickCommands;
+    delete legacyFirst.terminalRxRecordMode;
+    delete legacyFirst.terminalRxLineEnding;
+    delete legacySecond.terminalRxRecordMode;
+    delete legacySecond.terminalRxLineEnding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -2828,10 +2940,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 6 });
+    ).toMatchObject({ version: 7 });
   });
 
-  it("通过 rehydrate 把 v5 的全部工作区无损迁移并写回 v6", async () => {
+  it("通过 rehydrate 把 v5 的全部工作区无损迁移并写回 v7", async () => {
     const firstConfig = createDefaultWorkspaceConfig("simulator");
     firstConfig.lineEnding = "crlf";
     firstConfig.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
@@ -2841,12 +2953,19 @@ describe("workbenchStore", () => {
     secondConfig.lineEnding = "lf";
     const first = createWorkspaceProfile("v5 工作区 A", firstConfig, "legacy-v5-a", 100);
     const second = createWorkspaceProfile("v5 工作区 B", secondConfig, "legacy-v5-b", 200);
+    delete (first.config as Partial<typeof first.config>).terminalRxRecordMode;
+    delete (first.config as Partial<typeof first.config>).terminalRxLineEnding;
+    delete (second.config as Partial<typeof second.config>).terminalRxRecordMode;
+    delete (second.config as Partial<typeof second.config>).terminalRxLineEnding;
+    const legacySecondConfig = JSON.parse(JSON.stringify(secondConfig)) as Record<string, unknown>;
+    delete legacySecondConfig.terminalRxRecordMode;
+    delete legacySecondConfig.terminalRxLineEnding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
         version: 5,
         state: {
-          ...secondConfig,
+          ...legacySecondConfig,
           workspaces: [first, second],
           activeWorkspaceId: second.id,
         },
@@ -2872,22 +2991,27 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 6 });
+    ).toMatchObject({ version: 7 });
   });
 
-  it("保留 v6 本地状态及工作区内的 CR 行尾", async () => {
+  it("迁移 v6 本地状态并保留工作区内的 CR 发送行尾", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     config.lineEnding = "cr";
     config.autoResponderRules = [createDefaultAutoResponderRule("cr-rule")];
     config.autoResponderRules[0]!.lineEnding = "cr";
     config.quickCommands = [quickCommand({ lineEnding: "cr" })];
     const workspace = createWorkspaceProfile("CR 工作区", config, "cr-workspace", 100);
+    delete (workspace.config as Partial<typeof workspace.config>).terminalRxRecordMode;
+    delete (workspace.config as Partial<typeof workspace.config>).terminalRxLineEnding;
+    const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+    delete legacyConfig.terminalRxRecordMode;
+    delete legacyConfig.terminalRxLineEnding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
         version: 6,
         state: {
-          ...config,
+          ...legacyConfig,
           workspaces: [workspace],
           activeWorkspaceId: workspace.id,
         },
@@ -2901,6 +3025,8 @@ describe("workbenchStore", () => {
       lineEnding: "cr",
       autoResponderRules: [{ lineEnding: "cr" }],
       quickCommands: [{ lineEnding: "cr" }],
+      terminalRxRecordMode: "chunk",
+      terminalRxLineEnding: "lf",
       workspaces: [
         {
           id: workspace.id,
@@ -2908,6 +3034,8 @@ describe("workbenchStore", () => {
             lineEnding: "cr",
             autoResponderRules: [{ lineEnding: "cr" }],
             quickCommands: [{ lineEnding: "cr" }],
+            terminalRxRecordMode: "chunk",
+            terminalRxLineEnding: "lf",
           },
         },
       ],
@@ -2916,7 +3044,7 @@ describe("workbenchStore", () => {
 
   it("拒绝并保留更高版本的持久化数据", async () => {
     const futureValue = JSON.stringify({
-      version: 7,
+      version: 8,
       state: {
         futureWorkspaceFormat: true,
         workspaces: [{ id: "future-only" }],
@@ -2929,13 +3057,13 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState()).toMatchObject({
       workspaceStorageStatus: "newer-version",
-      incompatibleStorageVersion: 7,
+      incompatibleStorageVersion: 8,
     });
     expect(() => useWorkbenchStore.getState().saveActiveWorkspace("不会保存")).toThrow(
-      /版本 7.*不能保存/,
+      /版本 8.*不能保存/,
     );
     expect(() => useWorkbenchStore.getState().setQuickCommands([quickCommand()])).toThrow(
-      /版本 7.*不能保存/,
+      /版本 8.*不能保存/,
     );
     expect(localStorage.getItem("vofa-ultra-workbench")).toBe(futureValue);
     useWorkbenchStore.persist.clearStorage();
@@ -3787,6 +3915,216 @@ describe("workbenchStore", () => {
       [7, 1, 2],
     ]);
     expect(enqueueSimulatorCaptureMock).not.toHaveBeenCalled();
+  });
+
+  it("回放 RX 行模式跨 record 和 batch 聚合并保留原始字节", () => {
+    const encoder = new TextEncoder();
+    const rawHeader: ReplayCaptureHeader = { ...TEST_REPLAY_HEADER, protocol: "raw" };
+    const firstLine = encoder.encode("温度\r\n");
+    useWorkbenchStore.setState({
+      terminalRxRecordMode: "line",
+      terminalRxLineEnding: "crlf",
+      replayStatus: "playing",
+      replaySessionId: 7,
+      replayGeneration: 1,
+      replayRevision: 1,
+      replayHeader: rawHeader,
+      replayNextSequence: 1,
+    });
+
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_100,
+      dataBytes: firstLine.length - 1,
+      records: [
+        { direction: "rx", timestampUs: 1_000, data: Array.from(firstLine.slice(0, 2)) },
+        { direction: "rx", timestampUs: 1_100, data: Array.from(firstLine.slice(2, -1)) },
+      ],
+    });
+    expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
+
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 2,
+      startUs: 2_000,
+      endUs: 2_100,
+      dataBytes: 7,
+      records: [
+        { direction: "rx", timestampUs: 2_000, data: [0x0a, ...encoder.encode("next\r")] },
+        { direction: "rx", timestampUs: 2_100, data: [0x0a] },
+      ],
+    });
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      {
+        direction: "rx",
+        timestamp: 1_001,
+        text: "温度\\r\\n",
+        hex: "E6 B8 A9 E5 BA A6 0D 0A",
+        byteCount: 8,
+      },
+      {
+        direction: "rx",
+        timestamp: 1_002,
+        text: "next\\r\\n",
+        hex: "6E 65 78 74 0D 0A",
+        byteCount: 6,
+      },
+    ]);
+  });
+
+  it("切换 RX 记录方式不打断回放 TX 的跨 record UTF-8 解码", () => {
+    const txBytes = new TextEncoder().encode("中");
+    const rawHeader: ReplayCaptureHeader = { ...TEST_REPLAY_HEADER, protocol: "raw" };
+    useWorkbenchStore.setState({
+      terminalRxRecordMode: "chunk",
+      replayStatus: "playing",
+      replaySessionId: 7,
+      replayGeneration: 1,
+      replayRevision: 1,
+      replayHeader: rawHeader,
+      replayNextSequence: 1,
+    });
+
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_000,
+      dataBytes: 1,
+      records: [{ direction: "tx", timestampUs: 1_000, data: [txBytes[0]!] }],
+    });
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 2,
+      startUs: 2_000,
+      endUs: 2_000,
+      dataBytes: 2,
+      records: [
+        { direction: "tx", timestampUs: 2_000, data: Array.from(txBytes.slice(1)) },
+      ],
+    });
+
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.filter((entry) => entry.direction === "tx")
+        .map((entry) => entry.text)
+        .join(""),
+    ).toBe("中");
+  });
+
+  it("回放 seek 时间线修订丢弃旧 RX 行残片", () => {
+    const encoder = new TextEncoder();
+    const rawHeader: ReplayCaptureHeader = { ...TEST_REPLAY_HEADER, protocol: "raw" };
+    useWorkbenchStore.setState({
+      terminalRxRecordMode: "line",
+      terminalRxLineEnding: "lf",
+      replayStatus: "playing",
+      replaySessionId: 7,
+      replayGeneration: 3,
+      replayTimelineRevision: 0,
+      replayRevision: 4,
+      replayHeader: rawHeader,
+      replayNextSequence: 1,
+    });
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 3,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_000,
+      dataBytes: 9,
+      records: [
+        { direction: "rx", timestampUs: 1_000, data: Array.from(encoder.encode("discarded")) },
+      ],
+    });
+    expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("paused", {
+        header: rawHeader,
+        generation: 4,
+        timelineRevision: 1,
+        revision: 5,
+        positionUs: 20_000,
+      }),
+    );
+    useWorkbenchStore.setState({ replayStatus: "playing" });
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 4,
+      sequence: 1,
+      startUs: 20_000,
+      endUs: 20_000,
+      dataBytes: 5,
+      records: [
+        { direction: "rx", timestampUs: 20_000, data: Array.from(encoder.encode("kept\n")) },
+      ],
+    });
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { text: "kept\\n", hex: "6B 65 70 74 0A", byteCount: 5 },
+    ]);
+  });
+
+  it("回放结束将 RX 行残片标记为未结束且只追加一次", () => {
+    const encoder = new TextEncoder();
+    const rawHeader: ReplayCaptureHeader = { ...TEST_REPLAY_HEADER, protocol: "raw" };
+    useWorkbenchStore.setState({
+      terminalRxRecordMode: "line",
+      terminalRxLineEnding: "lf",
+      replayStatus: "playing",
+      replaySessionId: 7,
+      replayGeneration: 1,
+      replayRevision: 1,
+      replayHeader: rawHeader,
+      replayNextSequence: 1,
+    });
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_000,
+      dataBytes: 7,
+      records: [
+        { direction: "rx", timestampUs: 1_000, data: Array.from(encoder.encode("partial")) },
+      ],
+    });
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("completed", {
+        header: rawHeader,
+        generation: 1,
+        revision: 2,
+        positionUs: 1_000,
+      }),
+    );
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("ready", {
+        header: rawHeader,
+        generation: 2,
+        revision: 3,
+        positionUs: 0,
+      }),
+    );
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      {
+        text: "partial",
+        hex: "70 61 72 74 69 61 6C",
+        byteCount: 7,
+        rxBoundary: "unterminated",
+      },
+    ]);
   });
 
   it("回放批次生成姿态，时间线修订后立即清空旧样本", () => {

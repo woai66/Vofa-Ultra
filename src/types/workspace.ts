@@ -8,7 +8,11 @@ import type {
 import type { ProcessingGraphConfig } from "./processingGraph";
 import type { AttitudeConfig } from "./attitude";
 import type { AutoResponderRule } from "./automation";
-import type { QuickCommand } from "./workbench";
+import type {
+  QuickCommand,
+  TerminalRxLineEnding,
+  TerminalRxRecordMode,
+} from "./workbench";
 
 export type ChartWindowSeconds = 5 | 15 | 30 | 60;
 
@@ -42,7 +46,12 @@ export interface WorkspaceConfigV5 extends WorkspaceConfigV4 {
 
 export type WorkspaceConfigV6 = WorkspaceConfigV5;
 
-export type WorkspaceConfig = WorkspaceConfigV6;
+export interface WorkspaceConfigV7 extends WorkspaceConfigV6 {
+  terminalRxRecordMode: TerminalRxRecordMode;
+  terminalRxLineEnding: TerminalRxLineEnding;
+}
+
+export type WorkspaceConfig = WorkspaceConfigV7;
 
 export interface WorkspaceProfile {
   id: string;
@@ -92,4 +101,11 @@ export interface WorkspaceExportV6 {
   schemaVersion: 6;
   name: string;
   config: WorkspaceConfigV6;
+}
+
+export interface WorkspaceExportV7 {
+  format: "vofa-ultra.workspace";
+  schemaVersion: 7;
+  name: string;
+  config: WorkspaceConfigV7;
 }

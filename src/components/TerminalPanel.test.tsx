@@ -41,6 +41,7 @@ const SEARCH_ENTRIES: TerminalEntry[] = [
 describe("TerminalPanel", () => {
   beforeEach(() => {
     useWorkbenchStore.getState().stopPeriodicSend();
+    useWorkbenchStore.getState().clearTerminal();
     useWorkbenchStore.setState({
       source: "simulator",
       isNativeRuntime: false,
@@ -71,6 +72,8 @@ describe("TerminalPanel", () => {
       displayMode: "text",
       sendMode: "text",
       lineEnding: "none",
+      terminalRxRecordMode: "chunk",
+      terminalRxLineEnding: "lf",
       terminalPaused: false,
       terminalAutoScroll: true,
     });
@@ -91,6 +94,66 @@ describe("TerminalPanel", () => {
     await user.type(screen.getByRole("searchbox", { name: "搜索终端记录" }), "not-found");
     expect(screen.queryByText("接收数据将在这里显示")).not.toBeInTheDocument();
     expect(screen.getByText("没有匹配的终端记录")).toBeVisible();
+  });
+
+  it("切换接收记录方式并独立选择 RX 行尾", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const recordMode = screen.getByRole("group", { name: "接收记录方式" });
+    const lineEnding = screen.getByRole("combobox", { name: "接收行尾" });
+
+    expect(within(recordMode).getByRole("button", { name: "按读取块记录" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(lineEnding).toBeDisabled();
+    expect(lineEnding).toHaveAttribute("id", "terminal-rx-line-ending");
+    expect(lineEnding).toHaveAttribute("name", "terminal-rx-line-ending");
+
+    await user.click(within(recordMode).getByRole("button", { name: "按文本行记录" }));
+    expect(lineEnding).toBeEnabled();
+    await user.selectOptions(lineEnding, "cr");
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      terminalRxRecordMode: "line",
+      terminalRxLineEnding: "cr",
+    });
+  });
+
+  it("显示未结束 RX 行的边界警示且不改变原始载荷", async () => {
+    const viewportHeight = vi
+      .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+      .mockReturnValue(240);
+    useWorkbenchStore.setState({
+      terminalEntries: [
+        {
+          id: 150,
+          direction: "rx",
+          timestamp: 100,
+          text: "partial",
+          hex: "70 61 72 74 69 61 6C",
+          byteCount: 7,
+          rxBoundary: "unterminated",
+        },
+      ],
+    });
+    render(<TerminalPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText("partial")).toBeVisible();
+      const warning = screen.getByRole("img", {
+        name: "记录已在边界处结束，未包含配置的接收行尾",
+      });
+      expect(warning).toBeVisible();
+      expect(warning.parentElement).toHaveAttribute(
+        "title",
+        "记录已在边界处结束，未包含配置的接收行尾",
+      );
+    });
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { text: "partial", hex: "70 61 72 74 69 61 6C", byteCount: 7 },
+    ]);
+    viewportHeight.mockRestore();
   });
 
   it("上滚时挂起自动跟随且回到最新后继续接收记录", async () => {

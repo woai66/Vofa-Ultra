@@ -1,5 +1,10 @@
 import type { DisplayMode, LineEnding } from "./serial";
 
+export const TERMINAL_RX_RECORD_MODES = ["chunk", "line"] as const;
+export type TerminalRxRecordMode = (typeof TERMINAL_RX_RECORD_MODES)[number];
+export const TERMINAL_RX_LINE_ENDINGS = ["lf", "crlf", "cr"] as const;
+export type TerminalRxLineEnding = (typeof TERMINAL_RX_LINE_ENDINGS)[number];
+
 export interface ParsedFrame {
   values: number[];
   labels?: string[];
@@ -44,6 +49,7 @@ export interface TerminalEntry {
   text: string;
   hex: string;
   byteCount: number;
+  rxBoundary?: "overflow" | "unterminated";
 }
 
 export interface TransferStats {
