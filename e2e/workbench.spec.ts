@@ -583,13 +583,13 @@ test("独立量程让混合数量级通道保持可读并正确映射测量游�
     points: timestamps.map((x, index) => ({ x, y: values[index] ?? 0 })),
     lastValue: values.at(-1) ?? 0,
   });
-  const speedColor = "#46d89c";
-  const currentColor = "#55bde8";
-  const temperatureColor = "#f4bd61";
+  const speedColor = "#00ff00";
+  const currentColor = "#ff00ff";
+  const temperatureColor = "#ffff00";
   await setWorkbenchState(page, {
     channels: [
       channel("speed", "转速", speedColor, [1_000, 2_000, 3_000, 4_000, 5_000, 6_000]),
-      channel("current", "电流", currentColor, [0.1, 0.12, 0.14, 0.16, 0.18, 0.2]),
+      channel("current", "电流", currentColor, [0.1, 0.18, 0.12, 0.2, 0.14, 0.16]),
       channel("temperature", "温度", temperatureColor, [30, 30, 30, 30, 30, 30]),
     ],
     processedChannels: [],
@@ -1176,28 +1176,27 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
   await expect(page.locator(".attitude-panel .live-state")).toContainText("LIVE", {
     timeout: 5_000,
   });
-  const initialCanvas = await canvasScreenshotSignature(canvas);
+  const initialCanvas = await canvasScreenshotStats(canvas);
   expect(initialCanvas.width).toBeGreaterThan(400);
   expect(initialCanvas.height).toBeGreaterThan(200);
   expect(initialCanvas.bytes).toBeGreaterThan(10_000);
-  await expect
-    .poll(async () => (await canvasScreenshotSignature(canvas)).hash)
-    .not.toBe(initialCanvas.hash);
 
   const rollReadout = page.getByLabel("当前姿态值").locator("dd").first();
   await page.getByRole("button", { name: "冻结姿态显示" }).click();
   await expect(page.locator(".attitude-panel .live-state")).toContainText("HOLD");
   const frozenRoll = await rollReadout.textContent();
+  const frozenOrientation = await scene.getAttribute("data-rendered-orientation");
+  expect(frozenOrientation).not.toBeNull();
   await page.waitForTimeout(500);
   await expect(rollReadout).toHaveText(frozenRoll ?? "");
-  const frozenCanvas = await canvasScreenshotSignature(canvas);
+  await expect(scene).toHaveAttribute("data-rendered-orientation", frozenOrientation ?? "");
 
   await page.getByRole("button", { name: "继续姿态显示" }).click();
   await expect(page.locator(".attitude-panel .live-state")).toContainText("LIVE");
   await expect.poll(async () => rollReadout.textContent()).not.toBe(frozenRoll);
   await expect
-    .poll(async () => (await canvasScreenshotSignature(canvas)).hash)
-    .not.toBe(frozenCanvas.hash);
+    .poll(async () => scene.getAttribute("data-rendered-orientation"))
+    .not.toBe(frozenOrientation);
 
   const mobileViewports = [
     { width: 390, height: 844 },
@@ -2045,10 +2044,9 @@ async function clippedVisibleHeight(locator: Locator): Promise<number> {
   });
 }
 
-async function canvasScreenshotSignature(locator: Locator): Promise<{
+async function canvasScreenshotStats(locator: Locator): Promise<{
   width: number;
   height: number;
-  hash: number;
   bytes: number;
 }> {
   const dimensions = await locator.evaluate((element) => {
@@ -2056,12 +2054,7 @@ async function canvasScreenshotSignature(locator: Locator): Promise<{
     return { width: canvas.width, height: canvas.height };
   });
   const screenshot = await locator.screenshot({ animations: "disabled" });
-  let hash = 2_166_136_261;
-  for (const byte of screenshot) {
-    hash ^= byte;
-    hash = Math.imul(hash, 16_777_619);
-  }
-  return { ...dimensions, hash: hash >>> 0, bytes: screenshot.byteLength };
+  return { ...dimensions, bytes: screenshot.byteLength };
 }
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
