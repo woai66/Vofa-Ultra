@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import type {
   SerialConfig,
   SerialDataPayload,
+  SerialFileSendPayload,
   SerialModbusTransactionPayload,
   SerialPortInfo,
   SerialStatePayload,
@@ -13,6 +15,7 @@ export interface SerialEventHandlers {
   onData(payload: SerialDataPayload): void;
   onState(payload: SerialStatePayload): void;
   onTx(payload: SerialTxPayload): void;
+  onFileSend(payload: SerialFileSendPayload): void;
   onModbusTransaction(payload: SerialModbusTransactionPayload): void;
 }
 
@@ -50,6 +53,31 @@ export async function sendSerial(data: Uint8Array): Promise<void> {
   await invoke("send_serial", { data: Array.from(data) });
 }
 
+export async function selectSerialFilePath(): Promise<string | null> {
+  requireTauriRuntime();
+  const selection = await open({
+    title: "选择要发送的原始文件",
+    directory: false,
+    multiple: false,
+  });
+  return typeof selection === "string" ? selection : null;
+}
+
+export async function getSerialFileSendState(): Promise<SerialFileSendPayload> {
+  requireTauriRuntime();
+  return invoke<SerialFileSendPayload>("get_serial_file_send_state");
+}
+
+export async function startSerialFileSend(path: string): Promise<SerialFileSendPayload> {
+  requireTauriRuntime();
+  return invoke<SerialFileSendPayload>("start_serial_file_send", { path });
+}
+
+export async function cancelSerialFileSend(jobId: number): Promise<boolean> {
+  requireTauriRuntime();
+  return invoke<boolean>("cancel_serial_file_send", { jobId });
+}
+
 export async function startSerialModbusTransaction(
   transactionId: number,
   request: Uint8Array,
@@ -79,6 +107,9 @@ export async function subscribeToSerialEvents(
     listen<SerialDataPayload>("serial://data", ({ payload }) => handlers.onData(payload)),
     listen<SerialStatePayload>("serial://state", ({ payload }) => handlers.onState(payload)),
     listen<SerialTxPayload>("serial://tx", ({ payload }) => handlers.onTx(payload)),
+    listen<SerialFileSendPayload>("serial://file-send", ({ payload }) =>
+      handlers.onFileSend(payload),
+    ),
     listen<SerialModbusTransactionPayload>("serial://modbus-transaction", ({ payload }) =>
       handlers.onModbusTransaction(payload),
     ),

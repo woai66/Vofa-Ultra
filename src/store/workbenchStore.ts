@@ -105,6 +105,7 @@ import {
   stopNumericLog as stopNumericLogClient,
 } from "../services/numericLogClient";
 import {
+  cancelSerialFileSend as cancelSerialFileSendClient,
   cancelSerialModbusTransaction,
   cancelSerialConnect,
   connectSerial,
@@ -112,6 +113,7 @@ import {
   isTauriRuntime,
   listSerialPorts,
   sendSerial,
+  startSerialFileSend as startSerialFileSendClient,
   startSerialModbusTransaction,
 } from "../services/serialClient";
 import {
@@ -170,6 +172,7 @@ import type {
   SerialConfig,
   SerialDataPayload,
   SerialDiagnosticsReport,
+  SerialFileSendPayload,
   SerialModbusTransactionPayload,
   SerialPortInfo,
   SerialRecoverySnapshot,
@@ -335,6 +338,7 @@ export interface WorkbenchStore {
   autoResponder: AutoResponderSnapshot;
   modbusTransaction: ModbusRtuTransactionSnapshot;
   modbusTransactions: ModbusRtuTransactionRecord[];
+  serialFileSend: SerialFileSendPayload;
   isSendingCommand: boolean;
   commandSendOrigin: CommandSendOrigin | null;
   terminalPaused: boolean;
@@ -421,6 +425,8 @@ export interface WorkbenchStore {
   clearSerialDiagnostics(): void;
   getSerialDiagnostics(): SerialDiagnosticsReport;
   send(value: string, mode: DisplayMode, lineEnding: LineEnding): Promise<void>;
+  startFileSend(path: string): Promise<boolean>;
+  cancelFileSend(): Promise<boolean>;
   startPeriodicSend(
     value: string,
     mode: DisplayMode,
@@ -441,6 +447,7 @@ export interface WorkbenchStore {
   handleSerialData(payload: SerialDataPayload): void;
   handleSerialState(payload: SerialStatePayload): void;
   handleSerialTx(payload: SerialTxPayload): void;
+  handleSerialFileSend(payload: SerialFileSendPayload): void;
   handleModbusTransaction(payload: SerialModbusTransactionPayload): void;
   setDisplayMode(mode: DisplayMode): void;
   setSendMode(mode: DisplayMode): void;
@@ -558,6 +565,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       autoResponder: createInitialAutoResponderSnapshot(),
       modbusTransaction: createInitialModbusRtuTransactionSnapshot(),
       modbusTransactions: [],
+      serialFileSend: createIdleSerialFileSendPayload(),
       isSendingCommand: false,
       commandSendOrigin: null,
       terminalPaused: false,
@@ -977,6 +985,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (
           get().workspaceTransitionStatus !== "idle" ||
           get().runtimeTransitionStatus !== "idle" ||
+          isSerialFileSendActive(get().serialFileSend.status) ||
           isModbusTransactionActive(get().modbusTransaction) ||
           isRecoveryActivePhase(get().serialRecovery.phase) ||
           isCaptureActive(get().captureStatus) ||
@@ -1006,6 +1015,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (
           get().workspaceTransitionStatus !== "idle" ||
           get().runtimeTransitionStatus !== "idle" ||
+          isSerialFileSendActive(get().serialFileSend.status) ||
           isModbusTransactionActive(get().modbusTransaction) ||
           isRecoveryActivePhase(get().serialRecovery.phase) ||
           isCaptureActive(get().captureStatus) ||
@@ -1067,6 +1077,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!beginRuntimeTransition(get, set, "connecting")) {
           return;
         }
+        await cancelActiveSerialFileSend(get);
         await cancelActiveModbusTransaction(get);
         stopCurrentCommandWorkflows("connection-change");
         const operation = ++serialConnectOperation;
@@ -1254,6 +1265,57 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return;
         }
         await executePreparedCommand(command, "manual", get, set);
+      },
+
+      startFileSend: async (path) => {
+        const state = get();
+        assertSerialFileSendCanStart(state, path);
+        const payload = await startSerialFileSendClient(path);
+        get().handleSerialFileSend(payload);
+        return isSerialFileSendActive(payload.status) || payload.status === "completed";
+      },
+
+      cancelFileSend: async () => {
+        const active = get().serialFileSend;
+        if (!isSerialFileSendActive(active.status) || active.jobId <= 0) {
+          return false;
+        }
+        if (active.status === "cancelling") {
+          return true;
+        }
+        set({
+          serialFileSend: {
+            ...active,
+            status: "cancelling",
+            message: "正在取消文件发送",
+          },
+        });
+        try {
+          const accepted = await cancelSerialFileSendClient(active.jobId);
+          if (!accepted) {
+            set((latest) =>
+              latest.serialFileSend.jobId === active.jobId &&
+              latest.serialFileSend.revision === active.revision
+                ? { serialFileSend: active }
+                : {},
+            );
+          }
+          return accepted;
+        } catch (error) {
+          set((latest) =>
+            latest.serialFileSend.jobId === active.jobId &&
+            latest.serialFileSend.revision === active.revision
+              ? {
+                  serialFileSend: {
+                    ...latest.serialFileSend,
+                    status: active.status,
+                    message: `取消失败：${getErrorMessage(error)}`,
+                  },
+                }
+              : {},
+          );
+          return false;
+        }
       },
 
       startPeriodicSend: (value, mode, lineEnding, intervalMs, repeatCount) => {
@@ -1641,6 +1703,23 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             : state.terminalEntries,
           stats: { ...state.stats, txBytes: state.stats.txBytes + payload.byteCount },
         });
+      },
+
+      handleSerialFileSend: (payload) => {
+        const state = get();
+        if (
+          payload.revision <= state.serialFileSend.revision ||
+          (isSerialFileSendActive(payload.status) &&
+            (state.source !== "serial" ||
+              hasReplaySession(state) ||
+              payload.generation !== state.serialGeneration))
+        ) {
+          return;
+        }
+        if (isSerialFileSendActive(payload.status)) {
+          stopCurrentCommandWorkflows("source-change");
+        }
+        set({ serialFileSend: payload });
       },
 
       handleModbusTransaction: (payload) => {
@@ -2855,6 +2934,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
 export function disposeWorkbenchRuntime(): void {
   stopCurrentCommandWorkflows("runtime-dispose");
+  void useWorkbenchStore.getState().cancelFileSend();
   cancelModbusTransactionForRuntimeDispose();
   const state = useWorkbenchStore.getState();
   revokeExtensionForBoundary(
@@ -3247,6 +3327,32 @@ function isModbusTransactionActive(transaction: ModbusRtuTransactionSnapshot): b
   return transaction.status !== "idle";
 }
 
+function isSerialFileSendActive(status: SerialFileSendPayload["status"]): boolean {
+  return status === "queued" || status === "sending" || status === "cancelling";
+}
+
+function createIdleSerialFileSendPayload(
+  revision = 0,
+  generation = 0,
+): SerialFileSendPayload {
+  return {
+    jobId: 0,
+    revision,
+    generation,
+    status: "idle",
+    fileName: "",
+    totalBytes: 0,
+    transmittedBytes: 0,
+    message: "",
+  };
+}
+
+async function cancelActiveSerialFileSend(get: WorkbenchGet): Promise<void> {
+  if (isSerialFileSendActive(get().serialFileSend.status)) {
+    await get().cancelFileSend();
+  }
+}
+
 function nextModbusTransactionId(): number {
   modbusTransactionSequence += 1;
   if (!Number.isSafeInteger(modbusTransactionSequence) || modbusTransactionSequence <= 0) {
@@ -3284,6 +3390,28 @@ function assertModbusTransactionCanStart(state: WorkbenchStore, timeoutMs: numbe
   }
   if (commandSendArbiter.isBusy() || state.isSendingCommand) {
     throw new Error("请等待当前发送完成后再执行 Modbus RTU 事务");
+  }
+  if (getCommandScheduler().isActive()) {
+    throw new Error("周期发送运行中，请先停止任务");
+  }
+  if (getAutoResponderRuntime().isActive()) {
+    throw new Error("自动应答运行中，请先停止自动应答");
+  }
+}
+
+function assertSerialFileSendCanStart(state: WorkbenchStore, path: string): void {
+  if (path.trim().length === 0) {
+    throw new Error("请先选择要发送的文件");
+  }
+  if (!state.isNativeRuntime || state.source !== "serial") {
+    throw new Error("原始文件发送仅支持桌面串口数据源");
+  }
+  assertCommandCanSend(state);
+  if (isSerialFileSendActive(state.serialFileSend.status)) {
+    throw new Error("已有文件发送任务正在运行");
+  }
+  if (commandSendArbiter.isBusy() || state.isSendingCommand) {
+    throw new Error("请等待当前发送完成后再发送文件");
   }
   if (getCommandScheduler().isActive()) {
     throw new Error("周期发送运行中，请先停止任务");
@@ -3366,6 +3494,9 @@ function assertCommandCanSend(state: WorkbenchStore): void {
   }
   if (isModbusTransactionActive(state.modbusTransaction)) {
     throw new Error("Modbus RTU 事务进行中，暂不能发送其他数据");
+  }
+  if (isSerialFileSendActive(state.serialFileSend.status)) {
+    throw new Error("文件发送进行中，暂不能发送其他数据");
   }
 }
 
@@ -3799,6 +3930,7 @@ async function disconnectCurrentSource(
   get: WorkbenchGet,
   set: WorkbenchSet,
 ): Promise<boolean> {
+  await cancelActiveSerialFileSend(get);
   await cancelActiveModbusTransaction(get);
   if (get().source === "simulator") {
     set({ connectionStatus: "disconnected", statusMessage: "模拟数据已停止" });

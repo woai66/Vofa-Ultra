@@ -46,12 +46,14 @@ import {
   stopReplay,
 } from "../services/replayClient";
 import {
+  cancelSerialFileSend,
   cancelSerialModbusTransaction,
   cancelSerialConnect,
   connectSerial,
   disconnectSerial,
   listSerialPorts,
   sendSerial,
+  startSerialFileSend,
   startSerialModbusTransaction,
 } from "../services/serialClient";
 import type { CaptureStatePayload } from "../types/capture";
@@ -65,7 +67,11 @@ import type {
   ReplayStatePayload,
   ReplayStatus,
 } from "../types/replay";
-import type { SerialPortInfo, SerialStatePayload } from "../types/serial";
+import type {
+  SerialFileSendPayload,
+  SerialPortInfo,
+  SerialStatePayload,
+} from "../types/serial";
 import type { QuickCommand } from "../types/workbench";
 import {
   disposeWorkbenchRuntime,
@@ -80,12 +86,14 @@ vi.mock("../services/serialClient", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/serialClient")>();
   return {
     ...actual,
+    cancelSerialFileSend: vi.fn(),
     cancelSerialConnect: vi.fn(),
     cancelSerialModbusTransaction: vi.fn(),
     connectSerial: vi.fn(),
     disconnectSerial: vi.fn(),
     listSerialPorts: vi.fn(),
     sendSerial: vi.fn(),
+    startSerialFileSend: vi.fn(),
     startSerialModbusTransaction: vi.fn(),
   };
 });
@@ -127,12 +135,14 @@ vi.mock("../services/replayClient", () => ({
   stopReplay: vi.fn(),
 }));
 
+const cancelSerialFileSendMock = vi.mocked(cancelSerialFileSend);
 const cancelSerialConnectMock = vi.mocked(cancelSerialConnect);
 const cancelSerialModbusTransactionMock = vi.mocked(cancelSerialModbusTransaction);
 const connectSerialMock = vi.mocked(connectSerial);
 const disconnectSerialMock = vi.mocked(disconnectSerial);
 const listSerialPortsMock = vi.mocked(listSerialPorts);
 const sendSerialMock = vi.mocked(sendSerial);
+const startSerialFileSendMock = vi.mocked(startSerialFileSend);
 const startSerialModbusTransactionMock = vi.mocked(startSerialModbusTransaction);
 const enqueueSimulatorCaptureMock = vi.mocked(enqueueSimulatorCapture);
 const enqueueCaptureMarkerMock = vi.mocked(enqueueCaptureMarker);
@@ -216,6 +226,23 @@ function testBase64(bytes: Uint8Array): string {
   return btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
 }
 
+function serialFileSendState(
+  status: SerialFileSendPayload["status"],
+  overrides: Partial<SerialFileSendPayload> = {},
+): SerialFileSendPayload {
+  return {
+    jobId: status === "idle" ? 0 : 21,
+    revision: status === "idle" ? 0 : 1,
+    generation: 7,
+    status,
+    fileName: status === "idle" ? "" : "firmware.bin",
+    totalBytes: status === "idle" ? 0 : 4_096,
+    transmittedBytes: 0,
+    message: "",
+    ...overrides,
+  };
+}
+
 function replayState(
   status: ReplayStatus,
   overrides: Partial<ReplayStatePayload> = {},
@@ -294,9 +321,11 @@ describe("workbenchStore", () => {
   beforeEach(async () => {
     useWorkbenchStore.getState().stopPeriodicSend();
     useWorkbenchStore.getState().stopAutoResponder();
+    await useWorkbenchStore.getState().cancelFileSend();
     await useWorkbenchStore.getState().cancelModbusTransaction();
     await useWorkbenchStore.getState().setSerialRecoveryEnabled(false);
     useWorkbenchStore.getState().clearSerialDiagnostics();
+    cancelSerialFileSendMock.mockReset().mockResolvedValue(true);
     cancelSerialConnectMock.mockReset().mockResolvedValue({
       status: "disconnected",
       portName: "",
@@ -313,6 +342,7 @@ describe("workbenchStore", () => {
     });
     listSerialPortsMock.mockReset();
     sendSerialMock.mockReset().mockResolvedValue(undefined);
+    startSerialFileSendMock.mockReset();
     startSerialModbusTransactionMock.mockReset().mockResolvedValue(undefined);
     enqueueSimulatorCaptureMock.mockReset().mockReturnValue(true);
     enqueueCaptureMarkerMock.mockReset().mockReturnValue(true);
@@ -372,6 +402,7 @@ describe("workbenchStore", () => {
       autoResponder: createInitialAutoResponderSnapshot(),
       modbusTransaction: createInitialModbusRtuTransactionSnapshot(),
       modbusTransactions: [],
+      serialFileSend: serialFileSendState("idle"),
       isSendingCommand: false,
       commandSendOrigin: null,
       terminalPaused: false,
@@ -525,6 +556,130 @@ describe("workbenchStore", () => {
       encodedBytes: 4,
       variableCount: 1,
     });
+  });
+
+  it("原始文件发送只保留 basename，并与其他 TX 工作流严格互斥", async () => {
+    const queued = serialFileSendState("queued", { message: "等待发送" });
+    startSerialFileSendMock.mockResolvedValue(queued);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+    });
+
+    await expect(
+      useWorkbenchStore.getState().startFileSend("C:\\firmware\\firmware.bin"),
+    ).resolves.toBe(true);
+    expect(startSerialFileSendMock).toHaveBeenCalledWith("C:\\firmware\\firmware.bin");
+    expect(useWorkbenchStore.getState().serialFileSend).toEqual(queued);
+    expect(JSON.stringify(useWorkbenchStore.getState().serialFileSend)).not.toContain("firmware\\");
+
+    useWorkbenchStore.getState().handleSerialFileSend(
+      serialFileSendState("sending", {
+        revision: 2,
+        generation: 6,
+        transmittedBytes: 1_024,
+      }),
+    );
+    expect(useWorkbenchStore.getState().serialFileSend.status).toBe("queued");
+
+    useWorkbenchStore.getState().handleSerialFileSend(
+      serialFileSendState("sending", { revision: 2, transmittedBytes: 1_024 }),
+    );
+    await expect(useWorkbenchStore.getState().send("PING", "text", "none")).rejects.toThrow(
+      "文件发送进行中",
+    );
+    expect(() =>
+      useWorkbenchStore.getState().startPeriodicSend("PING", "text", "none", 20, 1),
+    ).toThrow("文件发送进行中");
+    expect(() => useWorkbenchStore.getState().startAutoResponder()).toThrow("文件发送进行中");
+    await expect(
+      useWorkbenchStore.getState().startModbusTransaction(
+        {
+          operation: "read-holding-registers",
+          unitId: 1,
+          address: 0,
+          quantity: 1,
+        },
+        500,
+      ),
+    ).rejects.toThrow("文件发送进行中");
+
+    await expect(useWorkbenchStore.getState().cancelFileSend()).resolves.toBe(true);
+    expect(cancelSerialFileSendMock).toHaveBeenCalledWith(21);
+    expect(useWorkbenchStore.getState().serialFileSend.status).toBe("cancelling");
+    useWorkbenchStore.getState().handleSerialFileSend(
+      serialFileSendState("cancelled", {
+        revision: 3,
+        transmittedBytes: 1_536,
+        message: "文件发送已取消",
+      }),
+    );
+    expect(useWorkbenchStore.getState().serialFileSend).toMatchObject({
+      status: "cancelled",
+      transmittedBytes: 1_536,
+    });
+  });
+
+  it("取消 IPC 失败不会覆盖已经到达的文件发送终态", async () => {
+    const backendCancellation = deferred<boolean>();
+    cancelSerialFileSendMock.mockReturnValueOnce(backendCancellation.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialFileSend: serialFileSendState("sending", {
+        revision: 2,
+        transmittedBytes: 1_024,
+      }),
+    });
+
+    const cancellation = useWorkbenchStore.getState().cancelFileSend();
+    expect(useWorkbenchStore.getState().serialFileSend.status).toBe("cancelling");
+
+    useWorkbenchStore.getState().handleSerialFileSend(
+      serialFileSendState("cancelled", {
+        revision: 3,
+        transmittedBytes: 1_536,
+        errorCode: "cancelled",
+        message: "文件发送已取消",
+      }),
+    );
+    backendCancellation.reject(new Error("IPC 已断开"));
+
+    await expect(cancellation).resolves.toBe(false);
+    expect(useWorkbenchStore.getState().serialFileSend).toMatchObject({
+      revision: 3,
+      status: "cancelled",
+      transmittedBytes: 1_536,
+      message: "文件发送已取消",
+    });
+  });
+
+  it("断开串口前请求取消活动文件发送", async () => {
+    disconnectSerialMock.mockResolvedValue({
+      status: "disconnected",
+      portName: "COM3",
+      generation: 7,
+      revision: 1,
+    });
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialFileSend: serialFileSendState("sending", { revision: 2 }),
+    });
+
+    await expect(useWorkbenchStore.getState().disconnect()).resolves.toBe(true);
+
+    expect(cancelSerialFileSendMock).toHaveBeenCalledWith(21);
+    expect(disconnectSerialMock).toHaveBeenCalledOnce();
+    expect(cancelSerialFileSendMock.mock.invocationCallOrder[0]).toBeLessThan(
+      disconnectSerialMock.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("模拟器完成单次 Modbus 读事务并保留结构化结果但不写命令历史", async () => {

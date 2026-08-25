@@ -1,4 +1,6 @@
+use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -22,9 +24,19 @@ const WRITE_QUEUE_CAPACITY: usize = 256;
 const MAX_WRITE_SIZE: usize = 64 * 1024;
 const WRITE_CHUNK_SIZE: usize = 4 * 1024;
 const WRITE_BUDGET_PER_TICK: usize = 32 * 1024;
+const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+// 零容量握手确保 reader 只预取下一块，通道本身不会再缓存第三个 64 KiB 块。
+const FILE_READ_CHANNEL_CAPACITY: usize = 0;
 const MODBUS_REQUEST_QUEUED: u8 = 0;
 const MODBUS_REQUEST_TRANSMITTING: u8 = 1;
 const MODBUS_REQUEST_TRANSMITTED: u8 = 2;
+const FILE_SEND_QUEUED: u8 = 0;
+const FILE_SEND_TRANSMITTING: u8 = 1;
+const FILE_SEND_CANCEL_REQUESTED: u8 = 2;
+const FILE_SEND_DRAINING: u8 = 3;
+const FILE_SEND_CANCELLED_MESSAGE: &str = "文件发送已取消；驱动已缓冲的字节仍可能发出";
+const FILE_SEND_CONNECTION_ENDED_MESSAGE: &str =
+    "串口连接已结束，文件发送已取消；驱动已缓冲的字节仍可能发出";
 
 pub struct SerialState {
     transition: Arc<Mutex<()>>,
@@ -51,6 +63,10 @@ struct SharedSerialState {
     error_code: Option<SerialErrorCode>,
     worker: Option<SerialWorker>,
     active_modbus: Option<ActiveModbusControl>,
+    file_send_sequence: u64,
+    file_send_revision: u64,
+    file_send_snapshot: SerialFileSendSnapshot,
+    active_file_send: Option<ActiveFileSendControl>,
 }
 
 impl Default for SharedSerialState {
@@ -66,6 +82,10 @@ impl Default for SharedSerialState {
             error_code: None,
             worker: None,
             active_modbus: None,
+            file_send_sequence: 0,
+            file_send_revision: 0,
+            file_send_snapshot: SerialFileSendSnapshot::default(),
+            active_file_send: None,
         }
     }
 }
@@ -117,6 +137,229 @@ impl SharedSerialState {
             error_code: self.error_code.map(|code| code.as_str().to_owned()),
             generation: self.generation,
             revision: self.revision,
+        }
+    }
+
+    fn file_send_payload(&self) -> SerialFileSendPayload {
+        SerialFileSendPayload {
+            job_id: self.file_send_snapshot.job_id,
+            revision: self.file_send_revision,
+            generation: self.file_send_snapshot.generation,
+            status: self.file_send_snapshot.status.as_str().to_owned(),
+            file_name: self.file_send_snapshot.file_name.clone(),
+            total_bytes: self.file_send_snapshot.total_bytes,
+            transmitted_bytes: self.file_send_snapshot.transmitted_bytes,
+            queued_at: self.file_send_snapshot.queued_at,
+            started_at: self.file_send_snapshot.started_at,
+            ended_at: self.file_send_snapshot.ended_at,
+            error_code: self.file_send_snapshot.error_code.clone(),
+            message: self.file_send_snapshot.message.clone(),
+        }
+    }
+
+    fn touch_file_send(&mut self) -> SerialFileSendPayload {
+        self.file_send_revision = self.file_send_revision.saturating_add(1);
+        self.file_send_payload()
+    }
+
+    fn ensure_file_send_admission(&self) -> Result<(), String> {
+        if self.status != SerialStatus::Connected {
+            return Err("串口尚未连接".to_owned());
+        }
+        if self.active_modbus.is_some() {
+            return Err("Modbus RTU 事务进行中，暂不能发送文件".to_owned());
+        }
+        if self.active_file_send.is_some() {
+            return Err("已有文件发送任务正在运行".to_owned());
+        }
+        Ok(())
+    }
+
+    fn queue_file_send(
+        &mut self,
+        generation: u64,
+        file_name: String,
+        total_bytes: u64,
+        phase: Arc<AtomicU8>,
+    ) -> Result<SerialFileSendPayload, String> {
+        self.file_send_sequence = self
+            .file_send_sequence
+            .checked_add(1)
+            .ok_or_else(|| "文件发送任务序号已耗尽，请重启应用".to_owned())?;
+        let job_id = self.file_send_sequence;
+        let queued_at = unix_millis();
+        self.file_send_snapshot = SerialFileSendSnapshot {
+            job_id,
+            generation,
+            status: SerialFileSendStatus::Queued,
+            file_name,
+            total_bytes,
+            transmitted_bytes: 0,
+            queued_at: Some(queued_at),
+            started_at: None,
+            ended_at: None,
+            error_code: None,
+            message: "文件已进入串口发送队列".to_owned(),
+        };
+        self.active_file_send = Some(ActiveFileSendControl {
+            job_id,
+            generation,
+            phase,
+        });
+        Ok(self.touch_file_send())
+    }
+
+    fn mark_file_send_sending(
+        &mut self,
+        job_id: u64,
+        generation: u64,
+    ) -> Option<SerialFileSendPayload> {
+        if !self.file_send_is_current(job_id, generation)
+            || self.file_send_snapshot.status != SerialFileSendStatus::Queued
+        {
+            return None;
+        }
+        self.file_send_snapshot.status = SerialFileSendStatus::Sending;
+        self.file_send_snapshot.started_at = Some(unix_millis());
+        self.file_send_snapshot.message = "正在发送文件".to_owned();
+        Some(self.touch_file_send())
+    }
+
+    fn update_file_send_progress(
+        &mut self,
+        job_id: u64,
+        generation: u64,
+        transmitted_bytes: u64,
+    ) -> Option<SerialFileSendPayload> {
+        if !self.file_send_is_current(job_id, generation) {
+            return None;
+        }
+        let transmitted_bytes = transmitted_bytes.min(self.file_send_snapshot.total_bytes);
+        if transmitted_bytes <= self.file_send_snapshot.transmitted_bytes {
+            return None;
+        }
+        self.file_send_snapshot.transmitted_bytes = transmitted_bytes;
+        Some(self.touch_file_send())
+    }
+
+    fn request_file_send_cancel(&mut self, job_id: u64) -> (bool, Option<SerialFileSendPayload>) {
+        let Some(active) = self.active_file_send.as_ref() else {
+            return (false, None);
+        };
+        if active.job_id != job_id || active.generation != self.generation {
+            return (false, None);
+        }
+
+        loop {
+            let phase = active.phase.load(Ordering::Acquire);
+            match phase {
+                FILE_SEND_QUEUED | FILE_SEND_TRANSMITTING => {
+                    if active
+                        .phase
+                        .compare_exchange(
+                            phase,
+                            FILE_SEND_CANCEL_REQUESTED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    self.file_send_snapshot.status = SerialFileSendStatus::Cancelling;
+                    self.file_send_snapshot.message = "正在取消文件发送".to_owned();
+                    return (true, Some(self.touch_file_send()));
+                }
+                FILE_SEND_CANCEL_REQUESTED => return (true, None),
+                FILE_SEND_DRAINING => return (false, None),
+                _ => return (false, None),
+            }
+        }
+    }
+
+    fn finish_file_send(
+        &mut self,
+        job_id: u64,
+        generation: u64,
+        status: SerialFileSendStatus,
+        error_code: Option<&str>,
+        message: String,
+    ) -> Option<SerialFileSendPayload> {
+        if !self.file_send_is_current(job_id, generation) {
+            return None;
+        }
+        self.active_file_send = None;
+        self.file_send_snapshot.status = status;
+        self.file_send_snapshot.ended_at = Some(unix_millis());
+        self.file_send_snapshot.error_code = error_code.map(str::to_owned);
+        self.file_send_snapshot.message = message;
+        Some(self.touch_file_send())
+    }
+
+    fn file_send_is_current(&self, job_id: u64, generation: u64) -> bool {
+        self.generation == generation
+            && self
+                .active_file_send
+                .as_ref()
+                .is_some_and(|active| active.job_id == job_id && active.generation == generation)
+            && self.file_send_snapshot.job_id == job_id
+            && self.file_send_snapshot.generation == generation
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SerialFileSendStatus {
+    Idle,
+    Queued,
+    Sending,
+    Cancelling,
+    Completed,
+    Cancelled,
+    Error,
+}
+
+impl SerialFileSendStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Queued => "queued",
+            Self::Sending => "sending",
+            Self::Cancelling => "cancelling",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Error => "error",
+        }
+    }
+}
+
+struct SerialFileSendSnapshot {
+    job_id: u64,
+    generation: u64,
+    status: SerialFileSendStatus,
+    file_name: String,
+    total_bytes: u64,
+    transmitted_bytes: u64,
+    queued_at: Option<u64>,
+    started_at: Option<u64>,
+    ended_at: Option<u64>,
+    error_code: Option<String>,
+    message: String,
+}
+
+impl Default for SerialFileSendSnapshot {
+    fn default() -> Self {
+        Self {
+            job_id: 0,
+            generation: 0,
+            status: SerialFileSendStatus::Idle,
+            file_name: String::new(),
+            total_bytes: 0,
+            transmitted_bytes: 0,
+            queued_at: None,
+            started_at: None,
+            ended_at: None,
+            error_code: None,
+            message: "暂无文件发送任务".to_owned(),
         }
     }
 }
@@ -196,6 +439,12 @@ struct ActiveModbusControl {
     request_phase: Arc<AtomicU8>,
 }
 
+struct ActiveFileSendControl {
+    job_id: u64,
+    generation: u64,
+    phase: Arc<AtomicU8>,
+}
+
 impl SerialWorker {
     fn stop(mut self) -> Result<(), SerialFailure> {
         self.cancel.store(true, Ordering::Release);
@@ -216,6 +465,7 @@ impl SerialWorker {
 enum WorkerCommand {
     Write(Vec<u8>),
     StartModbus(ModbusCommand),
+    StartFileSend(FileSendCommand),
 }
 
 struct ModbusCommand {
@@ -231,9 +481,33 @@ struct ModbusCancelRequest {
     finish_before_transmit: bool,
 }
 
+struct FileSendCommand {
+    job_id: u64,
+    generation: u64,
+    file: File,
+    total_bytes: u64,
+    phase: Arc<AtomicU8>,
+}
+
+enum FileReadMessage {
+    Chunk(Vec<u8>),
+    Eof,
+    Error { code: &'static str, message: String },
+}
+
+struct FileSendRuntime {
+    job_id: u64,
+    generation: u64,
+    total_bytes: u64,
+    transmitted_bytes: u64,
+    phase: Arc<AtomicU8>,
+    chunk_rx: mpsc::Receiver<FileReadMessage>,
+}
+
 enum PendingWriteOrigin {
     Normal,
     Modbus(ModbusCommand),
+    FileSend { job_id: u64 },
 }
 
 struct PendingWrite {
@@ -347,6 +621,27 @@ pub struct SerialStatePayload {
     revision: u64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialFileSendPayload {
+    job_id: u64,
+    revision: u64,
+    generation: u64,
+    status: String,
+    file_name: String,
+    total_bytes: u64,
+    transmitted_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queued_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    started_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ended_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_code: Option<String>,
+    message: String,
+}
+
 #[tauri::command]
 pub fn list_serial_ports() -> Result<Vec<SerialPortInfoDto>, String> {
     let ports = serialport::available_ports().map_err(|error| error.to_string())?;
@@ -391,6 +686,128 @@ pub fn get_serial_state(state: State<'_, SerialState>) -> Result<SerialStatePayl
         .lock()
         .map_err(|_| "串口状态锁已损坏".to_owned())
         .map(|shared| shared.snapshot())
+}
+
+#[tauri::command]
+pub fn get_serial_file_send_state(
+    state: State<'_, SerialState>,
+) -> Result<SerialFileSendPayload, String> {
+    state
+        .shared
+        .lock()
+        .map_err(|_| "串口状态锁已损坏".to_owned())
+        .map(|shared| shared.file_send_payload())
+}
+
+#[tauri::command]
+pub fn start_serial_file_send(
+    app: AppHandle,
+    state: State<'_, SerialState>,
+    path: String,
+) -> Result<SerialFileSendPayload, String> {
+    if path.is_empty() {
+        return Err("待发送文件路径不能为空".to_owned());
+    }
+    let file_name = Path::new(&path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "无法识别待发送文件名".to_owned())?;
+    let expected_generation = {
+        let shared = state
+            .shared
+            .lock()
+            .map_err(|_| "串口状态锁已损坏".to_owned())?;
+        shared.ensure_file_send_admission()?;
+        shared.generation
+    };
+
+    let file = File::open(&path).map_err(|error| format!("无法打开待发送文件: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("无法读取待发送文件信息: {error}"))?;
+    if !metadata.is_file() {
+        return Err("待发送路径不是普通文件".to_owned());
+    }
+    let total_bytes = metadata.len();
+    validate_file_send_size(total_bytes)?;
+    let phase = Arc::new(AtomicU8::new(FILE_SEND_QUEUED));
+    let (command_tx, payload) = {
+        let mut shared = state
+            .shared
+            .lock()
+            .map_err(|_| "串口状态锁已损坏".to_owned())?;
+        if shared.generation != expected_generation {
+            return Err("串口连接已发生变化，请重新选择文件".to_owned());
+        }
+        shared.ensure_file_send_admission()?;
+        let command_tx = shared
+            .worker
+            .as_ref()
+            .filter(|worker| worker.generation == expected_generation)
+            .and_then(|worker| worker.command_tx.as_ref())
+            .cloned()
+            .ok_or_else(|| "串口工作线程未运行".to_owned())?;
+        let payload = shared.queue_file_send(
+            expected_generation,
+            file_name,
+            total_bytes,
+            Arc::clone(&phase),
+        )?;
+        (command_tx, payload)
+    };
+
+    emit_file_send_state(&app, payload.clone());
+    let job_id = payload.job_id;
+    let command = WorkerCommand::StartFileSend(FileSendCommand {
+        job_id,
+        generation: expected_generation,
+        file,
+        total_bytes,
+        phase,
+    });
+    if let Err(error) = command_tx.try_send(command) {
+        let (error_code, message) = match error {
+            mpsc::TrySendError::Full(_) => (
+                "queue-full",
+                "串口发送队列已满，无法启动文件发送".to_owned(),
+            ),
+            mpsc::TrySendError::Disconnected(_) => {
+                ("worker-stopped", "串口工作线程已停止".to_owned())
+            }
+        };
+        publish_file_send_terminal(
+            &app,
+            &state.shared,
+            job_id,
+            expected_generation,
+            SerialFileSendStatus::Error,
+            Some(error_code),
+            message.clone(),
+        );
+        return Err(message);
+    }
+
+    Ok(payload)
+}
+
+#[tauri::command]
+pub fn cancel_serial_file_send(
+    app: AppHandle,
+    state: State<'_, SerialState>,
+    job_id: u64,
+) -> Result<bool, String> {
+    let (accepted, payload) = {
+        let mut shared = state
+            .shared
+            .lock()
+            .map_err(|_| "串口状态锁已损坏".to_owned())?;
+        shared.request_file_send_cancel(job_id)
+    };
+    if let Some(payload) = payload {
+        emit_file_send_state(&app, payload);
+    }
+    Ok(accepted)
 }
 
 #[tauri::command]
@@ -466,17 +883,6 @@ fn connect_serial_blocking(
         )
     })?;
     let generation = begin_connection(&app, &shared_state, request, &port_name)?;
-    stop_current_worker(&app, &shared_state).map_err(|message| {
-        fail_connection(
-            &app,
-            &shared_state,
-            request,
-            generation,
-            &port_name,
-            SerialErrorCode::WorkerPanic,
-            message,
-        )
-    })?;
     ensure_connection_attempt_current(&shared_state, request, generation)?;
     config.validate(true).map_err(|message| {
         fail_connection(
@@ -781,6 +1187,9 @@ pub fn send_serial(state: State<'_, SerialState>, data: Vec<u8>) -> Result<(), S
     if shared.active_modbus.is_some() {
         return Err("Modbus RTU 事务进行中，暂不能发送其他数据".to_owned());
     }
+    if shared.active_file_send.is_some() {
+        return Err("文件发送进行中，暂不能发送其他数据".to_owned());
+    }
 
     let worker = shared
         .worker
@@ -807,7 +1216,6 @@ pub fn start_modbus_transaction(
     request: Vec<u8>,
     timeout_ms: u64,
 ) -> Result<(), String> {
-    const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
     if transaction_id == 0 || transaction_id > MAX_JAVASCRIPT_SAFE_INTEGER {
         return Err("Modbus RTU 事务编号无效".to_owned());
     }
@@ -827,6 +1235,9 @@ pub fn start_modbus_transaction(
         }
         if shared.active_modbus.is_some() {
             return Err("已有 Modbus RTU 事务正在运行".to_owned());
+        }
+        if shared.active_file_send.is_some() {
+            return Err("文件发送进行中，暂不能启动 Modbus RTU 事务".to_owned());
         }
         let generation = shared.generation;
         let command_tx = shared
@@ -923,6 +1334,7 @@ fn stop_current_worker(
     app: &AppHandle,
     shared_state: &Arc<Mutex<SharedSerialState>>,
 ) -> Result<(), String> {
+    let active_file_send = request_current_file_send_cancel(app, shared_state)?;
     let worker = shared_state
         .lock()
         .map_err(|_| "串口状态锁已损坏".to_owned())?
@@ -930,11 +1342,33 @@ fn stop_current_worker(
         .take();
 
     let Some(worker) = worker else {
+        if let Some((job_id, generation)) = active_file_send {
+            publish_file_send_terminal(
+                app,
+                shared_state,
+                job_id,
+                generation,
+                SerialFileSendStatus::Cancelled,
+                Some("cancelled"),
+                FILE_SEND_CONNECTION_ENDED_MESSAGE.to_owned(),
+            );
+        }
         return Ok(());
     };
     let generation = worker.generation;
 
     if let Err(failure) = worker.stop() {
+        if let Some((job_id, generation)) = active_file_send {
+            publish_file_send_terminal(
+                app,
+                shared_state,
+                job_id,
+                generation,
+                SerialFileSendStatus::Error,
+                Some("connection-lost"),
+                failure.message.clone(),
+            );
+        }
         let payload = {
             let mut shared = shared_state
                 .lock()
@@ -952,6 +1386,18 @@ fn stop_current_worker(
         };
         emit_state(app, payload);
         return Err(failure.message);
+    }
+
+    if let Some((job_id, generation)) = active_file_send {
+        publish_file_send_terminal(
+            app,
+            shared_state,
+            job_id,
+            generation,
+            SerialFileSendStatus::Cancelled,
+            Some("cancelled"),
+            FILE_SEND_CONNECTION_ENDED_MESSAGE.to_owned(),
+        );
     }
 
     Ok(())
@@ -1020,6 +1466,14 @@ fn begin_connection(
             None,
             "串口连接正在切换，Modbus RTU 事务已取消",
         );
+    }
+    if let Err(message) = stop_current_worker(app, shared_state) {
+        if let Ok(mut shared) = shared_state.lock() {
+            if shared.pending_connection_request == Some(request) {
+                shared.pending_connection_request = None;
+            }
+        }
+        return Err(message);
     }
     let (generation, payload) = begin_connection_state(shared_state, request, port_name)?;
     emit_state(app, payload);
@@ -1158,6 +1612,283 @@ fn connection_cancelled_message() -> String {
     "串口连接已取消".to_owned()
 }
 
+fn validate_file_send_size(total_bytes: u64) -> Result<(), String> {
+    if total_bytes > MAX_JAVASCRIPT_SAFE_INTEGER {
+        return Err("文件过大，无法提供精确的发送进度".to_owned());
+    }
+    Ok(())
+}
+
+fn stream_file_chunks<R: Read>(
+    mut reader: R,
+    total_bytes: u64,
+    phase: Arc<AtomicU8>,
+    chunk_tx: mpsc::SyncSender<FileReadMessage>,
+) {
+    let mut remaining = total_bytes;
+    while remaining > 0 {
+        if phase.load(Ordering::Acquire) == FILE_SEND_CANCEL_REQUESTED {
+            return;
+        }
+        let chunk_length = remaining.min(MAX_WRITE_SIZE as u64) as usize;
+        let mut chunk = vec![0_u8; chunk_length];
+        let mut offset = 0;
+        while offset < chunk_length {
+            if phase.load(Ordering::Acquire) == FILE_SEND_CANCEL_REQUESTED {
+                return;
+            }
+            match reader.read(&mut chunk[offset..]) {
+                Ok(0) => {
+                    let _ = chunk_tx.send(FileReadMessage::Error {
+                        code: "source-truncated",
+                        message: "源文件在发送过程中被截短".to_owned(),
+                    });
+                    return;
+                }
+                Ok(byte_count) => offset += byte_count,
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(error) => {
+                    let _ = chunk_tx.send(FileReadMessage::Error {
+                        code: "source-read-failed",
+                        message: format!("读取待发送文件失败: {error}"),
+                    });
+                    return;
+                }
+            }
+        }
+        remaining -= chunk_length as u64;
+        if chunk_tx.send(FileReadMessage::Chunk(chunk)).is_err() {
+            return;
+        }
+    }
+
+    if phase.load(Ordering::Acquire) != FILE_SEND_CANCEL_REQUESTED {
+        let _ = chunk_tx.send(FileReadMessage::Eof);
+    }
+}
+
+fn create_file_send_runtime(command: FileSendCommand) -> Result<FileSendRuntime, String> {
+    let FileSendCommand {
+        job_id,
+        generation,
+        file,
+        total_bytes,
+        phase,
+    } = command;
+    let (chunk_tx, chunk_rx) = mpsc::sync_channel(FILE_READ_CHANNEL_CAPACITY);
+    let reader_phase = Arc::clone(&phase);
+    thread::Builder::new()
+        .name(format!("vofa-file-reader-{job_id}"))
+        .spawn(move || stream_file_chunks(file, total_bytes, reader_phase, chunk_tx))
+        .map_err(|error| format!("创建文件读取线程失败: {error}"))?;
+
+    Ok(FileSendRuntime {
+        job_id,
+        generation,
+        total_bytes,
+        transmitted_bytes: 0,
+        phase,
+        chunk_rx,
+    })
+}
+
+fn publish_file_send_sending(
+    app: &AppHandle,
+    shared_state: &Arc<Mutex<SharedSerialState>>,
+    job_id: u64,
+    generation: u64,
+) -> bool {
+    let payload = shared_state
+        .lock()
+        .ok()
+        .and_then(|mut shared| shared.mark_file_send_sending(job_id, generation));
+    if let Some(payload) = payload {
+        emit_file_send_state(app, payload);
+        true
+    } else {
+        false
+    }
+}
+
+fn publish_file_send_progress(
+    app: &AppHandle,
+    shared_state: &Arc<Mutex<SharedSerialState>>,
+    job_id: u64,
+    generation: u64,
+    transmitted_bytes: u64,
+) {
+    let payload = shared_state.lock().ok().and_then(|mut shared| {
+        shared.update_file_send_progress(job_id, generation, transmitted_bytes)
+    });
+    if let Some(payload) = payload {
+        emit_file_send_state(app, payload);
+    }
+}
+
+fn publish_file_send_terminal(
+    app: &AppHandle,
+    shared_state: &Arc<Mutex<SharedSerialState>>,
+    job_id: u64,
+    generation: u64,
+    status: SerialFileSendStatus,
+    error_code: Option<&str>,
+    message: String,
+) {
+    let payload = shared_state.lock().ok().and_then(|mut shared| {
+        shared.finish_file_send(job_id, generation, status, error_code, message)
+    });
+    if let Some(payload) = payload {
+        emit_file_send_state(app, payload);
+    }
+}
+
+fn request_current_file_send_cancel(
+    app: &AppHandle,
+    shared_state: &Arc<Mutex<SharedSerialState>>,
+) -> Result<Option<(u64, u64)>, String> {
+    let (active, payload) = {
+        let mut shared = shared_state
+            .lock()
+            .map_err(|_| "串口状态锁已损坏".to_owned())?;
+        let active = shared
+            .active_file_send
+            .as_ref()
+            .filter(|active| active.generation == shared.generation)
+            .map(|active| (active.job_id, active.generation));
+        let payload = active.and_then(|(job_id, _)| shared.request_file_send_cancel(job_id).1);
+        (active, payload)
+    };
+    if let Some(payload) = payload {
+        emit_file_send_state(app, payload);
+    }
+    Ok(active)
+}
+
+fn take_file_send_prefix(pending_write: &mut Option<PendingWrite>, job_id: u64) -> Option<Vec<u8>> {
+    let matches_job = pending_write.as_ref().is_some_and(|pending| {
+        matches!(pending.origin, PendingWriteOrigin::FileSend { job_id: pending_job_id }
+            if pending_job_id == job_id)
+    });
+    if !matches_job {
+        return None;
+    }
+    let mut pending = pending_write.take().expect("待发送文件块应当存在");
+    pending.data.truncate(pending.offset);
+    Some(pending.data)
+}
+
+fn emit_serial_tx(app: &AppHandle, generation: u64, data: &[u8]) {
+    if data.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        "serial://tx",
+        SerialTxPayload {
+            data: BASE64_STANDARD.encode(data),
+            byte_count: data.len(),
+            transmitted_at: unix_millis(),
+            generation,
+        },
+    );
+}
+
+fn settle_file_send_bytes(
+    app: &AppHandle,
+    shared_state: &Arc<Mutex<SharedSerialState>>,
+    runtime: &mut FileSendRuntime,
+    data: &[u8],
+    allow_drain: bool,
+) -> bool {
+    let byte_count = u64::try_from(data.len()).unwrap_or(u64::MAX);
+    let transmitted_bytes = runtime
+        .transmitted_bytes
+        .saturating_add(byte_count)
+        .min(runtime.total_bytes);
+    let ready_to_drain = allow_drain
+        && transmitted_bytes == runtime.total_bytes
+        && runtime
+            .phase
+            .compare_exchange(
+                FILE_SEND_TRANSMITTING,
+                FILE_SEND_DRAINING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok();
+    runtime.transmitted_bytes = transmitted_bytes;
+    emit_serial_tx(app, runtime.generation, data);
+    publish_file_send_progress(
+        app,
+        shared_state,
+        runtime.job_id,
+        runtime.generation,
+        transmitted_bytes,
+    );
+    ready_to_drain
+}
+
+fn settle_cancelled_file_send(
+    app: &AppHandle,
+    shared_state: &Arc<Mutex<SharedSerialState>>,
+    pending_write: &mut Option<PendingWrite>,
+    file_runtime: &mut Option<FileSendRuntime>,
+) -> bool {
+    let cancellation = file_runtime
+        .as_ref()
+        .is_some_and(|runtime| runtime.phase.load(Ordering::Acquire) == FILE_SEND_CANCEL_REQUESTED);
+    if !cancellation {
+        return false;
+    }
+
+    let mut runtime = file_runtime.take().expect("文件发送运行时应当存在");
+    if let Some(prefix) = take_file_send_prefix(pending_write, runtime.job_id) {
+        settle_file_send_bytes(app, shared_state, &mut runtime, &prefix, false);
+    }
+    publish_file_send_terminal(
+        app,
+        shared_state,
+        runtime.job_id,
+        runtime.generation,
+        SerialFileSendStatus::Cancelled,
+        Some("cancelled"),
+        FILE_SEND_CANCELLED_MESSAGE.to_owned(),
+    );
+    true
+}
+
+fn file_reader_disconnect_was_cancelled(runtime: &FileSendRuntime) -> bool {
+    runtime.phase.load(Ordering::Acquire) == FILE_SEND_CANCEL_REQUESTED
+}
+
+fn finish_active_file_send_after_serial_failure(
+    app: &AppHandle,
+    shared_state: &Arc<Mutex<SharedSerialState>>,
+    pending_write: &mut Option<PendingWrite>,
+    file_runtime: &mut Option<FileSendRuntime>,
+    failure: &SerialFailure,
+) {
+    let Some(mut runtime) = file_runtime.take() else {
+        return;
+    };
+    if let Some(prefix) = take_file_send_prefix(pending_write, runtime.job_id) {
+        settle_file_send_bytes(app, shared_state, &mut runtime, &prefix, false);
+    }
+    let error_code = if failure.code == SerialErrorCode::WriteFailed {
+        "write-failed"
+    } else {
+        "connection-lost"
+    };
+    publish_file_send_terminal(
+        app,
+        shared_state,
+        runtime.job_id,
+        runtime.generation,
+        SerialFileSendStatus::Error,
+        Some(error_code),
+        failure.message.clone(),
+    );
+}
+
 fn should_cancel_modbus_before_first_write(pending: &PendingWrite) -> bool {
     let PendingWriteOrigin::Modbus(command) = &pending.origin else {
         return false;
@@ -1184,6 +1915,18 @@ fn flush_and_mark_bus_activity<W: Write + ?Sized>(
     Ok(())
 }
 
+fn flush_file_send_output<W: Write + ?Sized>(
+    output: &mut W,
+    last_bus_activity: &mut Instant,
+) -> Result<(), SerialFailure> {
+    flush_and_mark_bus_activity(output, last_bus_activity).map_err(|error| {
+        SerialFailure::new(
+            SerialErrorCode::WriteFailed,
+            format!("串口发送失败: 无法刷新文件发送数据: {error}"),
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_serial_worker(
     app: AppHandle,
@@ -1204,11 +1947,15 @@ fn run_serial_worker(
     let mut read_buffer = [0_u8; READ_BUFFER_SIZE];
     let mut pending_write: Option<PendingWrite> = None;
     let mut modbus_runtime: Option<ModbusRuntime> = None;
+    let mut file_runtime: Option<FileSendRuntime> = None;
     let mut terminal_error: Option<SerialFailure> = None;
     let mut last_bus_activity = Instant::now();
     let mut output_needs_drain = false;
 
     'worker: while !cancel.load(Ordering::Acquire) {
+        if settle_cancelled_file_send(&app, &shared_state, &mut pending_write, &mut file_runtime) {
+            continue;
+        }
         if let Some(runtime) = modbus_runtime.take() {
             match runtime {
                 ModbusRuntime::WaitingSilence {
@@ -1319,54 +2066,237 @@ fn run_serial_worker(
 
         let mut write_budget = WRITE_BUDGET_PER_TICK;
         while write_budget > 0 && modbus_runtime.is_none() && !cancel.load(Ordering::Acquire) {
+            if settle_cancelled_file_send(
+                &app,
+                &shared_state,
+                &mut pending_write,
+                &mut file_runtime,
+            ) {
+                continue 'worker;
+            }
             if pending_write.is_none() {
-                match command_rx.try_recv() {
-                    Ok(WorkerCommand::Write(data)) => {
-                        pending_write = Some(PendingWrite {
-                            data,
-                            offset: 0,
-                            origin: PendingWriteOrigin::Normal,
-                        });
-                    }
-                    Ok(WorkerCommand::StartModbus(command)) => {
-                        if command.cancel.load(Ordering::Acquire) {
-                            finish_modbus_transaction(
+                if file_runtime.is_some() {
+                    let file_message = file_runtime
+                        .as_ref()
+                        .expect("文件发送运行时应当存在")
+                        .chunk_rx
+                        .try_recv();
+                    match file_message {
+                        Ok(FileReadMessage::Chunk(data)) => {
+                            let job_id = file_runtime
+                                .as_ref()
+                                .expect("文件发送运行时应当存在")
+                                .job_id;
+                            pending_write = Some(PendingWrite {
+                                data,
+                                offset: 0,
+                                origin: PendingWriteOrigin::FileSend { job_id },
+                            });
+                        }
+                        Ok(FileReadMessage::Eof) => {
+                            let runtime = file_runtime.as_ref().expect("文件发送运行时应当存在");
+                            if runtime.transmitted_bytes != runtime.total_bytes {
+                                let runtime = file_runtime.take().expect("文件发送运行时应当存在");
+                                publish_file_send_terminal(
+                                    &app,
+                                    &shared_state,
+                                    runtime.job_id,
+                                    runtime.generation,
+                                    SerialFileSendStatus::Error,
+                                    Some("source-truncated"),
+                                    "源文件在发送过程中被截短".to_owned(),
+                                );
+                                continue 'worker;
+                            }
+                            if runtime
+                                .phase
+                                .compare_exchange(
+                                    FILE_SEND_TRANSMITTING,
+                                    FILE_SEND_DRAINING,
+                                    Ordering::AcqRel,
+                                    Ordering::Acquire,
+                                )
+                                .is_err()
+                            {
+                                continue 'worker;
+                            }
+                            if let Err(failure) =
+                                flush_file_send_output(&mut *port, &mut last_bus_activity)
+                            {
+                                let runtime = file_runtime.take().expect("文件发送运行时应当存在");
+                                publish_file_send_terminal(
+                                    &app,
+                                    &shared_state,
+                                    runtime.job_id,
+                                    runtime.generation,
+                                    SerialFileSendStatus::Error,
+                                    Some("write-failed"),
+                                    failure.message.clone(),
+                                );
+                                terminal_error = Some(failure);
+                                break 'worker;
+                            }
+                            output_needs_drain = false;
+                            let runtime = file_runtime.take().expect("文件发送运行时应当存在");
+                            publish_file_send_terminal(
                                 &app,
                                 &shared_state,
-                                generation,
-                                command.transaction_id,
-                                "cancelled",
+                                runtime.job_id,
+                                runtime.generation,
+                                SerialFileSendStatus::Completed,
                                 None,
-                                None,
-                                Duration::ZERO,
-                                Some("cancelled"),
-                                None,
-                                "Modbus RTU 事务已取消，请求尚未发送",
+                                "文件发送已完成".to_owned(),
                             );
-                        } else {
-                            if output_needs_drain {
-                                if let Err(error) =
-                                    flush_and_mark_bus_activity(&mut *port, &mut last_bus_activity)
-                                {
-                                    terminal_error = Some(SerialFailure::new(
+                            continue 'worker;
+                        }
+                        Ok(FileReadMessage::Error { code, message }) => {
+                            let runtime = file_runtime.take().expect("文件发送运行时应当存在");
+                            publish_file_send_terminal(
+                                &app,
+                                &shared_state,
+                                runtime.job_id,
+                                runtime.generation,
+                                SerialFileSendStatus::Error,
+                                Some(code),
+                                message,
+                            );
+                            continue 'worker;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            if file_runtime
+                                .as_ref()
+                                .is_some_and(file_reader_disconnect_was_cancelled)
+                            {
+                                continue 'worker;
+                            }
+                            let runtime = file_runtime.take().expect("文件发送运行时应当存在");
+                            publish_file_send_terminal(
+                                &app,
+                                &shared_state,
+                                runtime.job_id,
+                                runtime.generation,
+                                SerialFileSendStatus::Error,
+                                Some("source-read-failed"),
+                                "文件读取线程意外退出".to_owned(),
+                            );
+                            continue 'worker;
+                        }
+                    }
+                } else {
+                    match command_rx.try_recv() {
+                        Ok(WorkerCommand::Write(data)) => {
+                            pending_write = Some(PendingWrite {
+                                data,
+                                offset: 0,
+                                origin: PendingWriteOrigin::Normal,
+                            });
+                        }
+                        Ok(WorkerCommand::StartModbus(command)) => {
+                            if command.cancel.load(Ordering::Acquire) {
+                                finish_modbus_transaction(
+                                    &app,
+                                    &shared_state,
+                                    generation,
+                                    command.transaction_id,
+                                    "cancelled",
+                                    None,
+                                    None,
+                                    Duration::ZERO,
+                                    Some("cancelled"),
+                                    None,
+                                    "Modbus RTU 事务已取消，请求尚未发送",
+                                );
+                            } else {
+                                if output_needs_drain {
+                                    if let Err(error) = flush_and_mark_bus_activity(
+                                        &mut *port,
+                                        &mut last_bus_activity,
+                                    ) {
+                                        terminal_error = Some(SerialFailure::new(
                                         SerialErrorCode::WriteFailed,
                                         format!(
                                             "串口发送失败: 无法排空 Modbus RTU 事务前的发送数据: {error}"
                                         ),
                                     ));
-                                    break 'worker;
+                                        break 'worker;
+                                    }
+                                    output_needs_drain = false;
                                 }
-                                output_needs_drain = false;
+                                modbus_runtime = Some(ModbusRuntime::WaitingSilence {
+                                    command,
+                                    waiting_since: Instant::now(),
+                                });
                             }
-                            modbus_runtime = Some(ModbusRuntime::WaitingSilence {
-                                command,
-                                waiting_since: Instant::now(),
-                            });
+                            break;
                         }
-                        break;
+                        Ok(WorkerCommand::StartFileSend(command)) => {
+                            let job_id = command.job_id;
+                            let command_generation = command.generation;
+                            if command_generation != generation {
+                                publish_file_send_terminal(
+                                    &app,
+                                    &shared_state,
+                                    job_id,
+                                    command_generation,
+                                    SerialFileSendStatus::Error,
+                                    Some("connection-changed"),
+                                    "串口连接已发生变化，文件发送未启动".to_owned(),
+                                );
+                                break;
+                            }
+                            if command
+                                .phase
+                                .compare_exchange(
+                                    FILE_SEND_QUEUED,
+                                    FILE_SEND_TRANSMITTING,
+                                    Ordering::AcqRel,
+                                    Ordering::Acquire,
+                                )
+                                .is_err()
+                            {
+                                publish_file_send_terminal(
+                                    &app,
+                                    &shared_state,
+                                    job_id,
+                                    generation,
+                                    SerialFileSendStatus::Cancelled,
+                                    Some("cancelled"),
+                                    "文件发送已取消，请求尚未开始".to_owned(),
+                                );
+                                break;
+                            }
+                            match create_file_send_runtime(command) {
+                                Ok(runtime) => {
+                                    if !publish_file_send_sending(
+                                        &app,
+                                        &shared_state,
+                                        job_id,
+                                        generation,
+                                    ) {
+                                        runtime
+                                            .phase
+                                            .store(FILE_SEND_CANCEL_REQUESTED, Ordering::Release);
+                                    }
+                                    file_runtime = Some(runtime);
+                                }
+                                Err(message) => {
+                                    publish_file_send_terminal(
+                                        &app,
+                                        &shared_state,
+                                        job_id,
+                                        generation,
+                                        SerialFileSendStatus::Error,
+                                        Some("reader-start-failed"),
+                                        message,
+                                    );
+                                }
+                            }
+                            break;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => break 'worker,
                     }
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => break 'worker,
                 }
             }
 
@@ -1423,80 +2353,127 @@ fn run_serial_worker(
 
                     if pending.offset == pending.data.len() {
                         let completed = pending_write.take().expect("待发送数据应当存在");
-                        if matches!(&completed.origin, PendingWriteOrigin::Modbus(_)) {
-                            if let Err(error) =
-                                flush_and_mark_bus_activity(&mut *port, &mut last_bus_activity)
-                            {
-                                terminal_error = Some(SerialFailure::new(
-                                    SerialErrorCode::WriteFailed,
-                                    format!("串口发送失败: 无法刷新 Modbus RTU 请求: {error}"),
-                                ));
-                                break 'worker;
+                        match completed.origin {
+                            PendingWriteOrigin::Normal => {
+                                emit_serial_tx(&app, generation, &completed.data);
                             }
-                            output_needs_drain = false;
-                            if let PendingWriteOrigin::Modbus(command) = &completed.origin {
+                            PendingWriteOrigin::FileSend { job_id } => {
+                                let Some(runtime) = file_runtime.as_mut().filter(|runtime| {
+                                    runtime.job_id == job_id && runtime.generation == generation
+                                }) else {
+                                    continue 'worker;
+                                };
+                                let ready_to_drain = settle_file_send_bytes(
+                                    &app,
+                                    &shared_state,
+                                    runtime,
+                                    &completed.data,
+                                    true,
+                                );
+                                if ready_to_drain {
+                                    if let Err(failure) =
+                                        flush_file_send_output(&mut *port, &mut last_bus_activity)
+                                    {
+                                        let runtime =
+                                            file_runtime.take().expect("文件发送运行时应当存在");
+                                        publish_file_send_terminal(
+                                            &app,
+                                            &shared_state,
+                                            runtime.job_id,
+                                            runtime.generation,
+                                            SerialFileSendStatus::Error,
+                                            Some("write-failed"),
+                                            failure.message.clone(),
+                                        );
+                                        terminal_error = Some(failure);
+                                        break 'worker;
+                                    }
+                                    output_needs_drain = false;
+                                    let runtime =
+                                        file_runtime.take().expect("文件发送运行时应当存在");
+                                    publish_file_send_terminal(
+                                        &app,
+                                        &shared_state,
+                                        runtime.job_id,
+                                        runtime.generation,
+                                        SerialFileSendStatus::Completed,
+                                        None,
+                                        "文件发送已完成".to_owned(),
+                                    );
+                                    continue 'worker;
+                                }
+                            }
+                            PendingWriteOrigin::Modbus(command) => {
+                                if let Err(error) =
+                                    flush_and_mark_bus_activity(&mut *port, &mut last_bus_activity)
+                                {
+                                    terminal_error = Some(SerialFailure::new(
+                                        SerialErrorCode::WriteFailed,
+                                        format!("串口发送失败: 无法刷新 Modbus RTU 请求: {error}"),
+                                    ));
+                                    break 'worker;
+                                }
+                                output_needs_drain = false;
                                 command
                                     .request_phase
                                     .store(MODBUS_REQUEST_TRANSMITTED, Ordering::Release);
-                            }
-                        }
-                        let transmitted_at = unix_millis();
-                        let _ = app.emit(
-                            "serial://tx",
-                            SerialTxPayload {
-                                data: BASE64_STANDARD.encode(&completed.data),
-                                byte_count: completed.data.len(),
-                                transmitted_at,
-                                generation,
-                            },
-                        );
-                        if let PendingWriteOrigin::Modbus(command) = completed.origin {
-                            if command.spec.is_broadcast() {
-                                finish_modbus_transaction(
-                                    &app,
-                                    &shared_state,
-                                    generation,
-                                    command.transaction_id,
-                                    "completed",
-                                    None,
-                                    Some(transmitted_at),
-                                    Duration::ZERO,
-                                    None,
-                                    None,
-                                    "Modbus RTU 广播写入已完成，不等待响应",
+                                let transmitted_at = unix_millis();
+                                let _ = app.emit(
+                                    "serial://tx",
+                                    SerialTxPayload {
+                                        data: BASE64_STANDARD.encode(&completed.data),
+                                        byte_count: completed.data.len(),
+                                        transmitted_at,
+                                        generation,
+                                    },
                                 );
-                            } else if command.cancel.load(Ordering::Acquire) {
-                                finish_modbus_transaction(
-                                    &app,
-                                    &shared_state,
-                                    generation,
-                                    command.transaction_id,
-                                    "cancelled",
-                                    None,
-                                    Some(transmitted_at),
-                                    Duration::ZERO,
-                                    Some("cancelled-after-transmit"),
-                                    None,
-                                    "事务已取消，但请求已经发出，写操作可能已被设备执行",
-                                );
-                            } else {
-                                let started = Instant::now();
-                                emit_modbus_waiting(
-                                    &app,
-                                    &shared_state,
-                                    generation,
-                                    command.transaction_id,
-                                    transmitted_at,
-                                );
-                                modbus_runtime = Some(ModbusRuntime::AwaitingResponse {
-                                    transaction_id: command.transaction_id,
-                                    collector: ModbusResponseCollector::new(command.spec),
-                                    cancel: command.cancel,
-                                    started_at: transmitted_at,
-                                    started,
-                                    deadline: started + command.timeout,
-                                });
-                                break;
+                                if command.spec.is_broadcast() {
+                                    finish_modbus_transaction(
+                                        &app,
+                                        &shared_state,
+                                        generation,
+                                        command.transaction_id,
+                                        "completed",
+                                        None,
+                                        Some(transmitted_at),
+                                        Duration::ZERO,
+                                        None,
+                                        None,
+                                        "Modbus RTU 广播写入已完成，不等待响应",
+                                    );
+                                } else if command.cancel.load(Ordering::Acquire) {
+                                    finish_modbus_transaction(
+                                        &app,
+                                        &shared_state,
+                                        generation,
+                                        command.transaction_id,
+                                        "cancelled",
+                                        None,
+                                        Some(transmitted_at),
+                                        Duration::ZERO,
+                                        Some("cancelled-after-transmit"),
+                                        None,
+                                        "事务已取消，但请求已经发出，写操作可能已被设备执行",
+                                    );
+                                } else {
+                                    let started = Instant::now();
+                                    emit_modbus_waiting(
+                                        &app,
+                                        &shared_state,
+                                        generation,
+                                        command.transaction_id,
+                                        transmitted_at,
+                                    );
+                                    modbus_runtime = Some(ModbusRuntime::AwaitingResponse {
+                                        transaction_id: command.transaction_id,
+                                        collector: ModbusResponseCollector::new(command.spec),
+                                        cancel: command.cancel,
+                                        started_at: transmitted_at,
+                                        started,
+                                        deadline: started + command.timeout,
+                                    });
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1612,6 +2589,27 @@ fn run_serial_worker(
                 break;
             }
         }
+    }
+
+    if let Some(failure) = terminal_error.as_ref() {
+        finish_active_file_send_after_serial_failure(
+            &app,
+            &shared_state,
+            &mut pending_write,
+            &mut file_runtime,
+            failure,
+        );
+    } else if let Some(runtime) = file_runtime.as_ref() {
+        let phase = runtime.phase.load(Ordering::Acquire);
+        if matches!(phase, FILE_SEND_QUEUED | FILE_SEND_TRANSMITTING) {
+            let _ = runtime.phase.compare_exchange(
+                phase,
+                FILE_SEND_CANCEL_REQUESTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+        settle_cancelled_file_send(&app, &shared_state, &mut pending_write, &mut file_runtime);
     }
 
     finish_worker(&app, &shared_state, generation, port_name, terminal_error);
@@ -1760,6 +2758,50 @@ fn finish_worker(
             message,
         );
     }
+    let active_file_send = shared_state.lock().ok().and_then(|shared| {
+        shared
+            .active_file_send
+            .as_ref()
+            .filter(|active| active.generation == generation)
+            .map(|active| (active.job_id, Arc::clone(&active.phase)))
+    });
+    if let Some((job_id, phase)) = active_file_send {
+        if terminal_error.is_none() {
+            let current_phase = phase.load(Ordering::Acquire);
+            if matches!(current_phase, FILE_SEND_QUEUED | FILE_SEND_TRANSMITTING) {
+                let _ = phase.compare_exchange(
+                    current_phase,
+                    FILE_SEND_CANCEL_REQUESTED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+            }
+        }
+        match terminal_error.as_ref() {
+            Some(failure) => publish_file_send_terminal(
+                app,
+                shared_state,
+                job_id,
+                generation,
+                SerialFileSendStatus::Error,
+                Some(if failure.code == SerialErrorCode::WriteFailed {
+                    "write-failed"
+                } else {
+                    "connection-lost"
+                }),
+                failure.message.clone(),
+            ),
+            None => publish_file_send_terminal(
+                app,
+                shared_state,
+                job_id,
+                generation,
+                SerialFileSendStatus::Cancelled,
+                Some("cancelled"),
+                FILE_SEND_CONNECTION_ENDED_MESSAGE.to_owned(),
+            ),
+        }
+    }
     let payload = {
         let Ok(mut shared) = shared_state.lock() else {
             return;
@@ -1789,6 +2831,10 @@ fn finish_worker(
 
 fn emit_state(app: &AppHandle, payload: SerialStatePayload) {
     let _ = app.emit("serial://state", payload);
+}
+
+fn emit_file_send_state(app: &AppHandle, payload: SerialFileSendPayload) {
+    let _ = app.emit("serial://file-send", payload);
 }
 
 fn unix_millis() -> u64 {
@@ -2092,6 +3138,300 @@ mod tests {
     }
 
     #[test]
+    fn file_reader_streams_bounded_chunks_in_order_without_duplicates() {
+        let source: Vec<u8> = (0..(MAX_WRITE_SIZE + 37))
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let messages = collect_file_messages(
+            std::io::Cursor::new(source.clone()),
+            source.len() as u64,
+            Arc::new(AtomicU8::new(FILE_SEND_TRANSMITTING)),
+        );
+        let mut reconstructed = Vec::new();
+        let mut chunk_lengths = Vec::new();
+        let mut saw_eof = false;
+        for message in messages {
+            match message {
+                FileReadMessage::Chunk(chunk) => {
+                    chunk_lengths.push(chunk.len());
+                    reconstructed.extend_from_slice(&chunk);
+                }
+                FileReadMessage::Eof => saw_eof = true,
+                FileReadMessage::Error { message, .. } => panic!("意外读取错误: {message}"),
+            }
+        }
+
+        assert_eq!(chunk_lengths, vec![MAX_WRITE_SIZE, 37]);
+        assert_eq!(reconstructed, source);
+        assert!(saw_eof);
+    }
+
+    #[test]
+    fn empty_file_reader_emits_only_eof() {
+        let messages = collect_file_messages(
+            std::io::Cursor::new(Vec::<u8>::new()),
+            0,
+            Arc::new(AtomicU8::new(FILE_SEND_TRANSMITTING)),
+        );
+        assert!(matches!(messages.as_slice(), [FileReadMessage::Eof]));
+    }
+
+    #[test]
+    fn file_send_size_must_fit_javascript_safe_integer() {
+        assert!(validate_file_send_size(MAX_JAVASCRIPT_SAFE_INTEGER).is_ok());
+        assert!(validate_file_send_size(MAX_JAVASCRIPT_SAFE_INTEGER + 1).is_err());
+    }
+
+    #[test]
+    fn rendezvous_file_reader_can_be_polled_with_try_recv() {
+        let phase = Arc::new(AtomicU8::new(FILE_SEND_TRANSMITTING));
+        let (chunk_tx, chunk_rx) = mpsc::sync_channel(FILE_READ_CHANNEL_CAPACITY);
+        let producer = thread::spawn(move || {
+            stream_file_chunks(std::io::Cursor::new(vec![1, 2, 3]), 3, phase, chunk_tx);
+        });
+
+        let receive_before = |deadline: Instant| loop {
+            match chunk_rx.try_recv() {
+                Ok(message) => break message,
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    thread::yield_now();
+                }
+                Err(error) => panic!("文件读取通道未按期产生消息: {error}"),
+            }
+        };
+        let chunk = receive_before(Instant::now() + Duration::from_secs(1));
+        assert!(matches!(chunk, FileReadMessage::Chunk(data) if data == vec![1, 2, 3]));
+        let eof = receive_before(Instant::now() + Duration::from_secs(1));
+        assert!(matches!(eof, FileReadMessage::Eof));
+        producer.join().unwrap();
+    }
+
+    #[test]
+    fn file_reader_reports_truncation_and_read_errors_and_ignores_growth() {
+        let truncated = collect_file_messages(
+            std::io::Cursor::new(vec![1, 2, 3]),
+            4,
+            Arc::new(AtomicU8::new(FILE_SEND_TRANSMITTING)),
+        );
+        assert!(truncated.iter().any(|message| {
+            matches!(
+                message,
+                FileReadMessage::Error {
+                    code: "source-truncated",
+                    ..
+                }
+            )
+        }));
+
+        let failed = collect_file_messages(
+            FailingReader,
+            1,
+            Arc::new(AtomicU8::new(FILE_SEND_TRANSMITTING)),
+        );
+        assert!(failed.iter().any(|message| {
+            matches!(
+                message,
+                FileReadMessage::Error {
+                    code: "source-read-failed",
+                    ..
+                }
+            )
+        }));
+
+        let grown = collect_file_messages(
+            std::io::Cursor::new(vec![10, 20, 30, 40]),
+            2,
+            Arc::new(AtomicU8::new(FILE_SEND_TRANSMITTING)),
+        );
+        let chunks: Vec<Vec<u8>> = grown
+            .into_iter()
+            .filter_map(|message| match message {
+                FileReadMessage::Chunk(chunk) => Some(chunk),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(chunks, vec![vec![10, 20]]);
+    }
+
+    #[test]
+    fn cancelled_file_reader_stops_without_publishing_data() {
+        let messages = collect_file_messages(
+            std::io::Cursor::new(vec![1, 2, 3]),
+            3,
+            Arc::new(AtomicU8::new(FILE_SEND_CANCEL_REQUESTED)),
+        );
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn cancelled_reader_disconnect_is_not_classified_as_a_read_failure() {
+        let (chunk_tx, chunk_rx) = mpsc::channel();
+        drop(chunk_tx);
+        let phase = Arc::new(AtomicU8::new(FILE_SEND_CANCEL_REQUESTED));
+        let runtime = FileSendRuntime {
+            job_id: 1,
+            generation: 2,
+            total_bytes: 3,
+            transmitted_bytes: 0,
+            phase: Arc::clone(&phase),
+            chunk_rx,
+        };
+        assert!(file_reader_disconnect_was_cancelled(&runtime));
+
+        phase.store(FILE_SEND_TRANSMITTING, Ordering::Release);
+        assert!(!file_reader_disconnect_was_cancelled(&runtime));
+    }
+
+    #[test]
+    fn file_send_cancel_is_allowed_until_draining() {
+        for initial_phase in [FILE_SEND_QUEUED, FILE_SEND_TRANSMITTING] {
+            let (mut shared, phase, job_id) = test_file_send_state(7);
+            phase.store(initial_phase, Ordering::Release);
+            if initial_phase == FILE_SEND_TRANSMITTING {
+                assert!(shared.mark_file_send_sending(job_id, 7).is_some());
+            }
+            let revision = shared.file_send_revision;
+            let (accepted, payload) = shared.request_file_send_cancel(job_id);
+            assert!(accepted);
+            assert_eq!(payload.expect("首次取消应发布状态").status, "cancelling");
+            assert_eq!(phase.load(Ordering::Acquire), FILE_SEND_CANCEL_REQUESTED);
+
+            let (accepted_again, repeated_payload) = shared.request_file_send_cancel(job_id);
+            assert!(accepted_again);
+            assert!(repeated_payload.is_none());
+            assert_eq!(shared.file_send_revision, revision + 1);
+        }
+
+        let (mut shared, phase, job_id) = test_file_send_state(9);
+        phase.store(FILE_SEND_TRANSMITTING, Ordering::Release);
+        assert!(shared.mark_file_send_sending(job_id, 9).is_some());
+        phase.store(FILE_SEND_DRAINING, Ordering::Release);
+        let revision = shared.file_send_revision;
+        let (accepted, payload) = shared.request_file_send_cancel(job_id);
+        assert!(!accepted);
+        assert!(payload.is_none());
+        assert_eq!(shared.file_send_revision, revision);
+    }
+
+    #[test]
+    fn stale_file_job_or_generation_cannot_update_state_or_add_a_terminal_event() {
+        let (mut shared, phase, job_id) = test_file_send_state(12);
+        phase.store(FILE_SEND_TRANSMITTING, Ordering::Release);
+        assert!(shared.mark_file_send_sending(job_id, 12).is_some());
+        let revision = shared.file_send_revision;
+
+        assert!(shared
+            .update_file_send_progress(job_id + 1, 12, 4)
+            .is_none());
+        assert!(shared
+            .finish_file_send(
+                job_id,
+                11,
+                SerialFileSendStatus::Cancelled,
+                Some("cancelled"),
+                "过期任务".to_owned(),
+            )
+            .is_none());
+        assert_eq!(shared.file_send_revision, revision);
+
+        assert!(shared.update_file_send_progress(job_id, 12, 4).is_some());
+        let terminal = shared
+            .finish_file_send(
+                job_id,
+                12,
+                SerialFileSendStatus::Cancelled,
+                Some("cancelled"),
+                "文件发送已取消".to_owned(),
+            )
+            .expect("当前任务应当产生终态");
+        assert_eq!(terminal.status, "cancelled");
+        let terminal_revision = shared.file_send_revision;
+        assert!(shared
+            .finish_file_send(
+                job_id,
+                12,
+                SerialFileSendStatus::Error,
+                Some("connection-lost"),
+                "重复终态".to_owned(),
+            )
+            .is_none());
+        assert_eq!(shared.file_send_revision, terminal_revision);
+    }
+
+    #[test]
+    fn partial_file_write_prefix_is_taken_exactly_once() {
+        let mut pending = Some(PendingWrite {
+            data: vec![1, 2, 3, 4, 5],
+            offset: 3,
+            origin: PendingWriteOrigin::FileSend { job_id: 21 },
+        });
+        assert_eq!(take_file_send_prefix(&mut pending, 21), Some(vec![1, 2, 3]));
+        assert!(take_file_send_prefix(&mut pending, 21).is_none());
+
+        let mut normal = Some(PendingWrite {
+            data: vec![7, 8],
+            offset: 1,
+            origin: PendingWriteOrigin::Normal,
+        });
+        assert!(take_file_send_prefix(&mut normal, 21).is_none());
+        assert!(normal.is_some());
+    }
+
+    #[test]
+    fn file_send_admission_rejects_disconnected_modbus_and_active_file() {
+        let mut shared = SharedSerialState::default();
+        assert!(shared.ensure_file_send_admission().is_err());
+
+        shared.status = SerialStatus::Connected;
+        shared.generation = 3;
+        assert!(shared.ensure_file_send_admission().is_ok());
+        shared.active_modbus = Some(ActiveModbusControl {
+            transaction_id: 1,
+            generation: 3,
+            request: vec![1, 3, 0, 0, 0, 1, 0x84, 0x0a],
+            queued_at: 0,
+            cancel: Arc::new(AtomicBool::new(false)),
+            request_phase: Arc::new(AtomicU8::new(MODBUS_REQUEST_QUEUED)),
+        });
+        assert!(shared.ensure_file_send_admission().is_err());
+
+        shared.active_modbus = None;
+        let phase = Arc::new(AtomicU8::new(FILE_SEND_QUEUED));
+        shared
+            .queue_file_send(3, "firmware.bin".to_owned(), 8, phase)
+            .unwrap();
+        assert!(shared.ensure_file_send_admission().is_err());
+    }
+
+    #[test]
+    fn file_send_payload_uses_camel_case_without_exposing_a_path() {
+        let (shared, _, _) = test_file_send_state(4);
+        let value = serde_json::to_value(shared.file_send_payload()).unwrap();
+        assert_eq!(value["fileName"], "firmware.bin");
+        assert_eq!(value["totalBytes"], 16);
+        assert!(value.get("file_name").is_none());
+        assert!(value.get("path").is_none());
+    }
+
+    #[test]
+    fn file_flush_failure_maps_to_serial_write_failure() {
+        let mut last_bus_activity = Instant::now() - Duration::from_secs(1);
+        let mut output = FlushProbe::default();
+        assert!(flush_file_send_output(&mut output, &mut last_bus_activity).is_ok());
+        assert!(output.flushed_at.is_some());
+
+        let previous_activity = last_bus_activity;
+        let mut failed_output = FlushProbe {
+            fail: true,
+            ..FlushProbe::default()
+        };
+        let failure = flush_file_send_output(&mut failed_output, &mut last_bus_activity)
+            .expect_err("flush 失败必须阻止完成");
+        assert_eq!(failure.code, SerialErrorCode::WriteFailed);
+        assert_eq!(last_bus_activity, previous_activity);
+    }
+
+    #[test]
     fn bus_activity_is_reanchored_only_after_output_flush_succeeds() {
         let mut output = FlushProbe::default();
         let mut last_bus_activity = Instant::now() - Duration::from_secs(1);
@@ -2126,6 +3466,45 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    struct FailingReader;
+
+    impl Read for FailingReader {
+        fn read(&mut self, _bytes: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("read failed"))
+        }
+    }
+
+    fn collect_file_messages<R: Read + Send + 'static>(
+        reader: R,
+        total_bytes: u64,
+        phase: Arc<AtomicU8>,
+    ) -> Vec<FileReadMessage> {
+        let (chunk_tx, chunk_rx) = mpsc::sync_channel(FILE_READ_CHANNEL_CAPACITY);
+        let producer =
+            thread::spawn(move || stream_file_chunks(reader, total_bytes, phase, chunk_tx));
+        let messages = chunk_rx.into_iter().collect();
+        producer.join().unwrap();
+        messages
+    }
+
+    fn test_file_send_state(generation: u64) -> (SharedSerialState, Arc<AtomicU8>, u64) {
+        let mut shared = SharedSerialState {
+            generation,
+            status: SerialStatus::Connected,
+            ..SharedSerialState::default()
+        };
+        let phase = Arc::new(AtomicU8::new(FILE_SEND_QUEUED));
+        let payload = shared
+            .queue_file_send(
+                generation,
+                "firmware.bin".to_owned(),
+                16,
+                Arc::clone(&phase),
+            )
+            .unwrap();
+        (shared, phase, payload.job_id)
     }
 
     fn test_worker(generation: u64) -> SerialWorker {

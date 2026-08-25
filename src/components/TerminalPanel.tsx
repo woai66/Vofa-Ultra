@@ -15,6 +15,8 @@ import {
   CirclePause,
   Download,
   Eraser,
+  FileUp,
+  FolderOpen,
   History,
   Play,
   Search,
@@ -53,8 +55,9 @@ import {
   type TerminalDirectionFilter,
 } from "../core/terminalSearch";
 import { formatModbusRtuFrame, type ModbusRtuRequest } from "../core/modbusRtu";
+import { selectSerialFilePath } from "../services/serialClient";
 import { useWorkbenchStore } from "../store/workbenchStore";
-import type { DisplayMode, LineEnding } from "../types/serial";
+import type { DisplayMode, LineEnding, SerialFileSendStatus } from "../types/serial";
 import type {
   CommandHistoryEntry,
   CommandTaskSnapshot,
@@ -238,11 +241,14 @@ export function TerminalPanel() {
   const autoResponder = useWorkbenchStore((state) => state.autoResponder);
   const modbusTransaction = useWorkbenchStore((state) => state.modbusTransaction);
   const modbusTransactions = useWorkbenchStore((state) => state.modbusTransactions);
+  const serialFileSend = useWorkbenchStore((state) => state.serialFileSend);
   const isSendingCommand = useWorkbenchStore((state) => state.isSendingCommand);
   const commandSendOrigin = useWorkbenchStore((state) => state.commandSendOrigin);
   const terminalPaused = useWorkbenchStore((state) => state.terminalPaused);
   const terminalAutoScroll = useWorkbenchStore((state) => state.terminalAutoScroll);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
+  const source = useWorkbenchStore((state) => state.source);
+  const isNativeRuntime = useWorkbenchStore((state) => state.isNativeRuntime);
   const isWorkspaceTransitioning = useWorkbenchStore(
     (state) => state.workspaceTransitionStatus !== "idle",
   );
@@ -253,6 +259,8 @@ export function TerminalPanel() {
   const clearTerminal = useWorkbenchStore((state) => state.clearTerminal);
   const clearCommandHistory = useWorkbenchStore((state) => state.clearCommandHistory);
   const send = useWorkbenchStore((state) => state.send);
+  const startFileSend = useWorkbenchStore((state) => state.startFileSend);
+  const cancelFileSend = useWorkbenchStore((state) => state.cancelFileSend);
   const startPeriodicSend = useWorkbenchStore((state) => state.startPeriodicSend);
   const stopPeriodicSend = useWorkbenchStore((state) => state.stopPeriodicSend);
   const startModbusTransaction = useWorkbenchStore((state) => state.startModbusTransaction);
@@ -261,6 +269,7 @@ export function TerminalPanel() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const fileSendTriggerRef = useRef<HTMLButtonElement>(null);
   const modbusTriggerRef = useRef<HTMLButtonElement>(null);
   const quickCommandTriggerRef = useRef<HTMLButtonElement>(null);
   const variableTriggerRef = useRef<HTMLButtonElement>(null);
@@ -275,6 +284,12 @@ export function TerminalPanel() {
   const [sendError, setSendError] = useState("");
   const [manualSendPending, setManualSendPending] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [fileSendOpen, setFileSendOpen] = useState(false);
+  const [selectedFilePath, setSelectedFilePath] = useState("");
+  const [selectedFileName, setSelectedFileName] = useState("");
+  const [fileSelectionPending, setFileSelectionPending] = useState(false);
+  const [fileStartPending, setFileStartPending] = useState(false);
+  const [fileSendError, setFileSendError] = useState("");
   const [modbusOpen, setModbusOpen] = useState(false);
   const [quickCommandsOpen, setQuickCommandsOpen] = useState(false);
   const [variablesOpen, setVariablesOpen] = useState(false);
@@ -311,7 +326,9 @@ export function TerminalPanel() {
   const taskActive = commandTask.status === "running" || commandTask.status === "stopping";
   const autoResponderActive = isAutoResponderActive(autoResponder);
   const modbusTransactionActive = modbusTransaction.status !== "idle";
+  const fileSendActive = isFileSendActive(serialFileSend.status);
   const manualSendBlocked =
+    fileSendActive ||
     modbusTransactionActive ||
     manualSendPending ||
     (isSendingCommand && commandSendOrigin !== "auto-responder");
@@ -324,6 +341,7 @@ export function TerminalPanel() {
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
     !autoResponderActive &&
+    !fileSendActive &&
     !modbusTransactionActive &&
     !taskActive;
   const canExecuteModbus =
@@ -331,8 +349,31 @@ export function TerminalPanel() {
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
     !autoResponderActive &&
+    !fileSendActive &&
     !modbusTransactionActive &&
     !taskActive;
+  const canStartFileSend =
+    isNativeRuntime &&
+    source === "serial" &&
+    connectionStatus === "connected" &&
+    selectedFilePath.length > 0 &&
+    !fileSelectionPending &&
+    !fileStartPending &&
+    !isWorkspaceTransitioning &&
+    !isSendingCommand &&
+    !autoResponderActive &&
+    !fileSendActive &&
+    !modbusTransactionActive &&
+    !taskActive;
+  const fileSendHasSnapshot = serialFileSend.jobId > 0 && serialFileSend.status !== "idle";
+  const fileSendProgressMax = Math.max(1, serialFileSend.totalBytes);
+  const fileSendProgressValue =
+    serialFileSend.totalBytes > 0
+      ? Math.min(serialFileSend.transmittedBytes, serialFileSend.totalBytes)
+      : serialFileSend.status === "completed"
+        ? 1
+        : 0;
+  const fileSendPercent = (fileSendProgressValue / fileSendProgressMax) * 100;
   const visibleEntries = useMemo(
     () =>
       filterTerminalEntries(entries, {
@@ -405,12 +446,13 @@ export function TerminalPanel() {
   }, [commandTask.status]);
 
   useEffect(() => {
-    if (!historyOpen && !modbusOpen && !quickCommandsOpen && !variablesOpen) {
+    if (!fileSendOpen && !historyOpen && !modbusOpen && !quickCommandsOpen && !variablesOpen) {
       return undefined;
     }
     const closeOnOutsidePointer = (event: PointerEvent) => {
       if (!composerRef.current?.contains(event.target as Node)) {
         setHistoryOpen(false);
+        setFileSendOpen(false);
         setModbusOpen(false);
         setQuickCommandsOpen(false);
         setVariablesOpen(false);
@@ -418,7 +460,7 @@ export function TerminalPanel() {
     };
     document.addEventListener("pointerdown", closeOnOutsidePointer);
     return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, [historyOpen, modbusOpen, quickCommandsOpen, variablesOpen]);
+  }, [fileSendOpen, historyOpen, modbusOpen, quickCommandsOpen, variablesOpen]);
 
   useEffect(() => {
     const selection = pendingSelectionRef.current;
@@ -452,12 +494,47 @@ export function TerminalPanel() {
     if (isWorkspaceTransitioning) {
       setModbusOpen(false);
       setQuickCommandsOpen(false);
+      setFileSendOpen(false);
+      setSelectedFilePath("");
+      setSelectedFileName("");
+      setFileSendError("");
     }
   }, [isWorkspaceTransitioning]);
 
   const resetHistoryNavigation = () => {
     historyCursorRef.current = null;
     historyDraftRef.current = null;
+  };
+
+  const chooseFileToSend = async () => {
+    setFileSelectionPending(true);
+    setFileSendError("");
+    try {
+      const path = await selectSerialFilePath();
+      if (path) {
+        setSelectedFilePath(path);
+        setSelectedFileName(fileNameFromPath(path));
+      }
+    } catch (error) {
+      setFileSendError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setFileSelectionPending(false);
+    }
+  };
+
+  const beginFileSend = async () => {
+    if (!selectedFilePath || fileStartPending) {
+      return;
+    }
+    setFileSendError("");
+    setFileStartPending(true);
+    try {
+      await startFileSend(selectedFilePath);
+    } catch (error) {
+      setFileSendError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setFileStartPending(false);
+    }
   };
 
   const handleCommandReferenceTabKeyDown = (
@@ -833,7 +910,18 @@ export function TerminalPanel() {
         ) : null}
       </div>
 
-      <div ref={composerRef} className="send-composer" data-workflow-open={workflowVisible}>
+      <div
+        ref={composerRef}
+        className="send-composer"
+        data-workflow-open={workflowVisible}
+        onKeyDown={(event) => {
+          if (fileSendOpen && event.key === "Escape") {
+            event.preventDefault();
+            setFileSendOpen(false);
+            fileSendTriggerRef.current?.focus();
+          }
+        }}
+      >
         <div className="send-main-row">
           <div className="send-options">
             <div className="segmented-control compact-segments" role="group" aria-label="发送格式">
@@ -918,6 +1006,32 @@ export function TerminalPanel() {
             />
           </div>
           <button
+            ref={fileSendTriggerRef}
+            className="icon-button composer-icon-button command-file-trigger"
+            type="button"
+            aria-label={fileSendOpen ? "关闭文件发送" : "打开文件发送"}
+            title={
+              isNativeRuntime && source === "serial"
+                ? "发送原始文件"
+                : "原始文件发送仅支持桌面串口"
+            }
+            aria-haspopup="dialog"
+            aria-controls="serial-file-send-popover"
+            aria-expanded={fileSendOpen}
+            data-active={fileSendOpen || fileSendActive}
+            disabled={!isNativeRuntime || source !== "serial"}
+            onClick={() => {
+              setHistoryOpen(false);
+              setModbusOpen(false);
+              setQuickCommandsOpen(false);
+              setVariablesOpen(false);
+              setFileSendOpen((open) => !open);
+            }}
+          >
+            <FileUp size={16} />
+            {fileSendActive ? <span className="file-send-activity-dot" /> : null}
+          </button>
+          <button
             ref={modbusTriggerRef}
             className="icon-button composer-icon-button command-modbus-trigger"
             type="button"
@@ -926,9 +1040,10 @@ export function TerminalPanel() {
             aria-haspopup="dialog"
             aria-expanded={modbusOpen}
             data-active={modbusOpen}
-            disabled={isWorkspaceTransitioning}
+            disabled={isWorkspaceTransitioning || fileSendActive}
             onClick={() => {
               setHistoryOpen(false);
+              setFileSendOpen(false);
               setQuickCommandsOpen(false);
               setVariablesOpen(false);
               setModbusOpen((open) => !open);
@@ -948,6 +1063,7 @@ export function TerminalPanel() {
             data-active={variablesOpen}
             onClick={() => {
               setHistoryOpen(false);
+              setFileSendOpen(false);
               setModbusOpen(false);
               setQuickCommandsOpen(false);
               setVariablesOpen((open) => !open);
@@ -967,6 +1083,7 @@ export function TerminalPanel() {
             disabled={isWorkspaceTransitioning}
             onClick={() => {
               setHistoryOpen(false);
+              setFileSendOpen(false);
               setModbusOpen(false);
               setVariablesOpen(false);
               setQuickCommandsOpen((open) => !open);
@@ -982,6 +1099,7 @@ export function TerminalPanel() {
             aria-expanded={historyOpen}
             disabled={commandHistory.length === 0}
             onClick={() => {
+              setFileSendOpen(false);
               setModbusOpen(false);
               setQuickCommandsOpen(false);
               setVariablesOpen(false);
@@ -1000,9 +1118,10 @@ export function TerminalPanel() {
             title={workflowOpen ? "收起周期发送设置" : "周期发送设置"}
             aria-expanded={workflowVisible}
             data-active={workflowVisible}
-            disabled={taskActive}
+            disabled={taskActive || fileSendActive}
             onClick={() => {
               setHistoryOpen(false);
+              setFileSendOpen(false);
               setModbusOpen(false);
               setQuickCommandsOpen(false);
               setVariablesOpen(false);
@@ -1050,6 +1169,122 @@ export function TerminalPanel() {
           >
             {templatePreview.variableCount} 个变量 · {templatePreview.byteCount} B
           </span>
+        )}
+
+        {fileSendOpen && (
+          <div
+            id="serial-file-send-popover"
+            className="serial-file-send-popover"
+            role="dialog"
+            aria-label="原始文件发送"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setFileSendOpen(false);
+                fileSendTriggerRef.current?.focus();
+              }
+            }}
+          >
+            <header className="serial-file-send-header">
+              <div>
+                <FileUp size={15} />
+                <strong>原始文件发送</strong>
+              </div>
+              <button
+                className="icon-button compact"
+                type="button"
+                aria-label="关闭文件发送"
+                title="关闭"
+                onClick={() => {
+                  setFileSendOpen(false);
+                  fileSendTriggerRef.current?.focus();
+                }}
+              >
+                <X size={14} />
+              </button>
+            </header>
+
+            <div className="serial-file-send-body">
+              <div className="serial-file-selection" data-empty={!selectedFileName}>
+                <FileUp size={19} aria-hidden="true" />
+                <div>
+                  <strong title={selectedFileName || "尚未选择文件"}>
+                    {selectedFileName || "尚未选择文件"}
+                  </strong>
+                  <span>{selectedFileName ? "已选择，等待开始" : "选择一个本机文件"}</span>
+                </div>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={fileSelectionPending || fileStartPending || fileSendActive}
+                  onClick={() => void chooseFileToSend()}
+                >
+                  <FolderOpen size={15} />
+                  {fileSelectionPending ? "选择中" : "选择"}
+                </button>
+              </div>
+
+              {fileSendHasSnapshot ? (
+                <div
+                  className="serial-file-send-progress"
+                  data-status={serialFileSend.status}
+                  role={serialFileSend.status === "error" ? "alert" : "status"}
+                >
+                  <div>
+                    <span>{fileSendStatusLabel(serialFileSend.status)}</span>
+                    <strong>{fileSendPercent.toFixed(1)}%</strong>
+                  </div>
+                  <progress
+                    aria-label={`${serialFileSend.fileName} 发送进度`}
+                    max={fileSendProgressMax}
+                    value={fileSendProgressValue}
+                  />
+                  <div>
+                    <span title={serialFileSend.fileName}>{serialFileSend.fileName}</span>
+                    <span>
+                      {formatFileBytes(serialFileSend.transmittedBytes)} /{" "}
+                      {formatFileBytes(serialFileSend.totalBytes)}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
+
+              {fileSendError || serialFileSend.message ? (
+                <p
+                  className="serial-file-send-message"
+                  data-error={Boolean(fileSendError) || serialFileSend.status === "error"}
+                  role={fileSendError || serialFileSend.status === "error" ? "alert" : "status"}
+                >
+                  {fileSendError || serialFileSend.message}
+                </p>
+              ) : null}
+            </div>
+
+            <footer className="serial-file-send-actions">
+              <span>桌面串口 · 原始字节</span>
+              {fileSendActive ? (
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={serialFileSend.status === "cancelling"}
+                  onClick={() => void cancelFileSend()}
+                >
+                  <Square size={14} />
+                  {serialFileSend.status === "cancelling" ? "取消中" : "取消"}
+                </button>
+              ) : (
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={!canStartFileSend}
+                  onClick={() => void beginFileSend()}
+                >
+                  <FileUp size={15} />
+                  {fileStartPending ? "启动中" : "开始发送"}
+                </button>
+              )}
+            </footer>
+          </div>
         )}
 
         {modbusOpen && (
@@ -1543,6 +1778,47 @@ function formatModbusCrcBytes(value: number): string {
   return [low, high]
     .map((byte) => byte.toString(16).toUpperCase().padStart(2, "0"))
     .join(" ");
+}
+
+function fileNameFromPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function fileSendStatusLabel(status: SerialFileSendStatus): string {
+  switch (status) {
+    case "queued":
+      return "等待发送";
+    case "sending":
+      return "正在发送";
+    case "cancelling":
+      return "正在取消";
+    case "completed":
+      return "发送完成";
+    case "cancelled":
+      return "已取消";
+    case "error":
+      return "发送失败";
+    case "idle":
+      return "等待开始";
+  }
+}
+
+function isFileSendActive(status: SerialFileSendStatus): boolean {
+  return status === "queued" || status === "sending" || status === "cancelling";
+}
+
+function formatFileBytes(value: number): string {
+  if (value < 1_024) {
+    return `${value} B`;
+  }
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let amount = value / 1_024;
+  let unitIndex = 0;
+  while (amount >= 1_024 && unitIndex < units.length - 1) {
+    amount /= 1_024;
+    unitIndex += 1;
+  }
+  return `${amount.toFixed(amount < 10 ? 1 : 0)} ${units[unitIndex]}`;
 }
 
 function formatTaskSummary(task: CommandTaskSnapshot): string {

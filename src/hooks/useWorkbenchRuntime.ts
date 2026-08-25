@@ -9,6 +9,7 @@ import {
 } from "../services/captureExportClient";
 import {
   getSerialState,
+  getSerialFileSendState,
   isTauriRuntime,
   subscribeToSerialEvents,
 } from "../services/serialClient";
@@ -40,6 +41,7 @@ export function useWorkbenchRuntime(): void {
   const handleSerialData = useWorkbenchStore((state) => state.handleSerialData);
   const handleSerialState = useWorkbenchStore((state) => state.handleSerialState);
   const handleSerialTx = useWorkbenchStore((state) => state.handleSerialTx);
+  const handleSerialFileSend = useWorkbenchStore((state) => state.handleSerialFileSend);
   const handleModbusTransaction = useWorkbenchStore((state) => state.handleModbusTransaction);
   const handleCaptureState = useWorkbenchStore((state) => state.handleCaptureState);
   const handleNumericLogState = useWorkbenchStore((state) => state.handleNumericLogState);
@@ -60,6 +62,7 @@ export function useWorkbenchRuntime(): void {
       onData: handleSerialData,
       onState: handleSerialState,
       onTx: handleSerialTx,
+      onFileSend: handleSerialFileSend,
       onModbusTransaction: handleModbusTransaction,
     })
       .then(async (unlisten) => {
@@ -70,9 +73,13 @@ export function useWorkbenchRuntime(): void {
 
         dispose = unlisten;
         if (nativeRuntime) {
-          const snapshot = await getSerialState();
+          const [snapshot, fileSendSnapshot] = await Promise.all([
+            getSerialState(),
+            getSerialFileSendState(),
+          ]);
           if (!cancelled) {
             handleSerialState(snapshot);
+            handleSerialFileSend(fileSendSnapshot);
           }
         }
       })
@@ -92,6 +99,7 @@ export function useWorkbenchRuntime(): void {
     };
   }, [
     handleSerialData,
+    handleSerialFileSend,
     handleModbusTransaction,
     handleSerialState,
     handleSerialTx,

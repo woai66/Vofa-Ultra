@@ -27,8 +27,9 @@ use replay::{
     pause_replay, play_replay, seek_replay, set_replay_speed, stop_replay, ReplayState,
 };
 use serial::{
-    cancel_modbus_transaction, cancel_serial_connect, connect_serial, disconnect_serial,
-    get_serial_state, list_serial_ports, send_serial, start_modbus_transaction, SerialState,
+    cancel_modbus_transaction, cancel_serial_connect, cancel_serial_file_send, connect_serial,
+    disconnect_serial, get_serial_file_send_state, get_serial_state, list_serial_ports,
+    send_serial, start_modbus_transaction, start_serial_file_send, SerialState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -48,6 +49,9 @@ pub fn run() {
             cancel_serial_connect,
             disconnect_serial,
             send_serial,
+            get_serial_file_send_state,
+            start_serial_file_send,
+            cancel_serial_file_send,
             start_modbus_transaction,
             cancel_modbus_transaction,
             get_capture_state,

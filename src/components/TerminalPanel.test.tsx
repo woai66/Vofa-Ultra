@@ -43,6 +43,7 @@ describe("TerminalPanel", () => {
     useWorkbenchStore.getState().stopPeriodicSend();
     useWorkbenchStore.setState({
       source: "simulator",
+      isNativeRuntime: false,
       connectionStatus: "connected",
       workspaceTransitionStatus: "idle",
       workspaceStorageStatus: "writable",
@@ -55,6 +56,16 @@ describe("TerminalPanel", () => {
       quickCommands: [],
       modbusTransaction: createInitialModbusRtuTransactionSnapshot(),
       modbusTransactions: [],
+      serialFileSend: {
+        jobId: 0,
+        revision: 0,
+        generation: 0,
+        status: "idle",
+        fileName: "",
+        totalBytes: 0,
+        transmittedBytes: 0,
+        message: "",
+      },
       commandTask: createInitialCommandTaskSnapshot(),
       isSendingCommand: false,
       displayMode: "text",
@@ -328,6 +339,76 @@ describe("TerminalPanel", () => {
     await waitFor(() => {
       expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.hex).toBe("01 FF 0D");
     });
+  });
+
+  it("文件发送入口展示准确进度并锁定其他发送动作", async () => {
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialFileSend: {
+        jobId: 21,
+        revision: 2,
+        generation: 7,
+        status: "sending",
+        fileName: "firmware.bin",
+        totalBytes: 4_096,
+        transmittedBytes: 2_048,
+        message: "正在发送 firmware.bin",
+      },
+    });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    const trigger = screen.getByRole("button", { name: "打开文件发送" });
+    await user.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "原始文件发送" });
+    expect(within(dialog).getByText("正在发送")).toBeVisible();
+    expect(within(dialog).getByText("50.0%")).toBeVisible();
+    expect(within(dialog).getByText("2.0 KiB / 4.0 KiB")).toBeVisible();
+    expect(within(dialog).getByRole("progressbar", { name: "firmware.bin 发送进度" })).toHaveValue(
+      2_048,
+    );
+    expect(within(dialog).getByRole("button", { name: "取消" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "展开周期发送设置" })).toBeDisabled();
+
+    await user.type(screen.getByRole("textbox", { name: "发送内容" }), "PING");
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    await user.keyboard("{Escape}");
+    expect(dialog).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("空文件发送完成后展示完整进度", async () => {
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialFileSend: {
+        jobId: 22,
+        revision: 3,
+        generation: 7,
+        status: "completed",
+        fileName: "empty.bin",
+        totalBytes: 0,
+        transmittedBytes: 0,
+        message: "文件发送已完成",
+      },
+    });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.click(screen.getByRole("button", { name: "打开文件发送" }));
+    const dialog = screen.getByRole("dialog", { name: "原始文件发送" });
+    expect(within(dialog).getByText("发送完成")).toBeVisible();
+    expect(within(dialog).getByText("100.0%")).toBeVisible();
+    expect(within(dialog).getByText("0 B / 0 B")).toBeVisible();
+    expect(
+      within(dialog).getByRole("progressbar", { name: "empty.bin 发送进度" }),
+    ).toHaveValue(1);
   });
 
   it("从变量菜单替换当前选区并展示最终字节数", async () => {

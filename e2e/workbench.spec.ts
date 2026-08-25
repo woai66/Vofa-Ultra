@@ -1823,6 +1823,100 @@ test("桌面实时链路批量记录解析后的数值 CSV", async ({ page }) =>
   expect(pageErrors).toEqual([]);
 });
 
+test("桌面串口原始文件需显式开始并可观察地取消", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await installTauriSerialMock(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "连接设备" }).click();
+  await expect(page.getByText("COM3 已连接")).toBeVisible();
+
+  const fileSendTrigger = page.getByRole("button", { name: "打开文件发送" });
+  await fileSendTrigger.click();
+  const dialog = page.getByRole("dialog", { name: "原始文件发送" });
+  const txStats = page.locator(".transfer-stats span").filter({ hasText: "TX" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "开始发送" })).toBeDisabled();
+  await expect(txStats).toHaveText("TX 0 B");
+
+  await dialog.getByRole("button", { name: "选择", exact: true }).click();
+  await expect(dialog.getByText("firmware.bin", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("已选择，等待开始")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "开始发送" })).toBeEnabled();
+  await expect(dialog.getByRole("progressbar")).toHaveCount(0);
+  await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
+  await expect(txStats).toHaveText("TX 0 B");
+
+  await dialog.getByRole("button", { name: "开始发送" }).click();
+  const progress = dialog.getByRole("progressbar", { name: "firmware.bin 发送进度" });
+  await expect(progress).toHaveAttribute("value", "2048");
+  await expect(dialog.getByText("正在发送", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("50.0%", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("2.0 KiB / 4.0 KiB", { exact: true })).toBeVisible();
+  await expect(txStats).toHaveText("TX 2.0 KB");
+  await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(1);
+
+  await page.getByRole("textbox", { name: "发送内容" }).fill("PING");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "打开 Modbus RTU 构帧器" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "展开周期发送设置" })).toBeDisabled();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+  if (!(await dialog.isVisible())) {
+    await page.getByRole("button", { name: "打开文件发送" }).click();
+  }
+  await expect(dialog).toBeVisible();
+  const mobileLayout = await dialog.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const targets = [...element.querySelectorAll<HTMLElement>("button")]
+      .filter((target) => target.offsetParent !== null)
+      .map((target) => {
+        const targetRect = target.getBoundingClientRect();
+        return {
+          name: target.getAttribute("aria-label") ?? target.textContent?.trim() ?? "",
+          width: targetRect.width,
+          height: targetRect.height,
+        };
+      });
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      documentWidth: document.documentElement.scrollWidth,
+      targets,
+    };
+  });
+  expect(mobileLayout.left).toBeGreaterThanOrEqual(0);
+  expect(mobileLayout.right).toBeLessThanOrEqual(390);
+  expect(mobileLayout.top).toBeGreaterThanOrEqual(0);
+  expect(mobileLayout.bottom).toBeLessThanOrEqual(844);
+  expect(mobileLayout.documentWidth).toBeLessThanOrEqual(390);
+  expect(
+    mobileLayout.targets.filter((target) => target.width < 44 || target.height < 44),
+  ).toEqual([]);
+
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(dialog.getByText("已取消", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("文件发送已取消；驱动已缓冲的字节仍可能发出")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "开始发送" })).toBeEnabled();
+  await expect(txStats).toHaveText("TX 2.0 KB");
+  expect(pageErrors).toEqual([]);
+
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-serial-file-send.png"),
+    fullPage: true,
+  });
+});
+
 async function replaySeekCalls(page: Page): Promise<Record<string, number>[]> {
   return page.evaluate(() => {
     const testWindow = window as unknown as {
@@ -1922,6 +2016,18 @@ async function installTauriReplayMock(
       }
       if (command === "get_serial_state") {
         return { status: "disconnected", portName: "", generation: 0, revision: 0 };
+      }
+      if (command === "get_serial_file_send_state") {
+        return {
+          jobId: 0,
+          revision: 0,
+          generation: 0,
+          status: "idle",
+          fileName: "",
+          totalBytes: 0,
+          transmittedBytes: 0,
+          message: "",
+        };
       }
       if (command === "get_capture_state") {
         return {
@@ -2084,6 +2190,20 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       generation: 0,
       revision: 0,
     };
+    let fileSendState = {
+      jobId: 0,
+      revision: 0,
+      generation: 0,
+      status: "idle",
+      fileName: "",
+      totalBytes: 0,
+      transmittedBytes: 0,
+      queuedAt: undefined as number | undefined,
+      startedAt: undefined as number | undefined,
+      endedAt: undefined as number | undefined,
+      errorCode: undefined as string | undefined,
+      message: "",
+    };
     let numericLogState = {
       status: "idle",
       sessionId: 0,
@@ -2101,6 +2221,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       }
     };
     const emitSerialState = () => emit("serial://state", { ...serialState });
+    const emitFileSendState = () => emit("serial://file-send", { ...fileSendState });
 
     const invoke = async (command: string, args: InvokeArgs): Promise<unknown> => {
       if (command === "plugin:event|listen") {
@@ -2123,6 +2244,12 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       }
       if (command === "get_serial_state") {
         return { ...serialState };
+      }
+      if (command === "get_serial_file_send_state") {
+        return { ...fileSendState };
+      }
+      if (command === "plugin:dialog|open") {
+        return "C:\\firmware\\firmware.bin";
       }
       if (command === "connect_serial") {
         const config = args?.config as { portName: string };
@@ -2166,6 +2293,69 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         };
         emitSerialState();
         return { ...serialState };
+      }
+      if (command === "start_serial_file_send") {
+        fileSendState = {
+          jobId: 21,
+          revision: fileSendState.revision + 1,
+          generation: serialState.generation,
+          status: "queued",
+          fileName: "firmware.bin",
+          totalBytes: 4_096,
+          transmittedBytes: 0,
+          queuedAt: Date.now(),
+          startedAt: undefined,
+          endedAt: undefined,
+          errorCode: undefined,
+          message: "等待发送 firmware.bin",
+        };
+        emitFileSendState();
+        window.setTimeout(() => {
+          if (fileSendState.status !== "queued") {
+            return;
+          }
+          fileSendState = {
+            ...fileSendState,
+            revision: fileSendState.revision + 1,
+            status: "sending",
+            transmittedBytes: 2_048,
+            startedAt: Date.now(),
+            message: "正在发送 firmware.bin",
+          };
+          emitFileSendState();
+          const bytes = new Uint8Array(2_048);
+          bytes.fill(0x41);
+          emit("serial://tx", {
+            data: btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join("")),
+            byteCount: bytes.length,
+            transmittedAt: Date.now(),
+            generation: serialState.generation,
+          });
+        }, 40);
+        return { ...fileSendState };
+      }
+      if (command === "cancel_serial_file_send") {
+        if (Number(args?.jobId) !== fileSendState.jobId || fileSendState.status !== "sending") {
+          return false;
+        }
+        fileSendState = {
+          ...fileSendState,
+          revision: fileSendState.revision + 1,
+          status: "cancelling",
+          message: "正在取消文件发送",
+        };
+        emitFileSendState();
+        window.setTimeout(() => {
+          fileSendState = {
+            ...fileSendState,
+            revision: fileSendState.revision + 1,
+            status: "cancelled",
+            endedAt: Date.now(),
+            message: "文件发送已取消；驱动已缓冲的字节仍可能发出",
+          };
+          emitFileSendState();
+        }, 20);
+        return true;
       }
       if (command === "get_capture_state") {
         return {

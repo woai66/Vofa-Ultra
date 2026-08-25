@@ -60,6 +60,30 @@ export interface SerialTxPayload {
   generation: number;
 }
 
+export type SerialFileSendStatus =
+  | "idle"
+  | "queued"
+  | "sending"
+  | "cancelling"
+  | "completed"
+  | "cancelled"
+  | "error";
+
+export interface SerialFileSendPayload {
+  jobId: number;
+  revision: number;
+  generation: number;
+  status: SerialFileSendStatus;
+  fileName: string;
+  totalBytes: number;
+  transmittedBytes: number;
+  queuedAt?: number;
+  startedAt?: number;
+  endedAt?: number;
+  errorCode?: string;
+  message: string;
+}
+
 export type SerialModbusTransactionStatus =
   | "waiting"
   | "completed"

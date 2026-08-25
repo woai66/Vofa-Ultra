@@ -3451,7 +3451,7 @@ textarea:focus {
   display: grid;
   min-width: 0;
   align-items: center;
-  grid-template-columns: auto minmax(120px, 1fr) 30px 30px 30px 30px 30px 76px;
+  grid-template-columns: auto minmax(120px, 1fr) repeat(6, 30px) 76px;
   gap: 7px;
 }
 
@@ -3509,6 +3509,17 @@ textarea:focus {
   border-color: var(--border);
   background: var(--surface-hover);
   color: var(--accent);
+}
+
+.file-send-activity-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--surface-0);
 }
 
 .command-count-badge {
@@ -3681,6 +3692,7 @@ textarea:focus {
 .command-history-popover,
 .command-variable-popover,
 .quick-command-popover,
+.serial-file-send-popover,
 .modbus-builder-popover {
   position: absolute;
   z-index: 50;
@@ -3695,6 +3707,177 @@ textarea:focus {
   border-radius: 6px;
   box-shadow: var(--shadow);
   background: var(--surface-0);
+}
+
+.serial-file-send-popover {
+  width: min(430px, calc(100% - 20px));
+  max-height: min(390px, calc(100vh - 120px));
+}
+
+.serial-file-send-header {
+  display: flex;
+  min-height: 40px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.serial-file-send-header > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  color: var(--text-muted);
+  gap: 7px;
+}
+
+.serial-file-send-header strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.serial-file-send-body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.serial-file-selection {
+  display: grid;
+  min-width: 0;
+  min-height: 68px;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--cyan);
+  gap: 9px;
+}
+
+.serial-file-selection[data-empty="true"] {
+  color: var(--text-subtle);
+}
+
+.serial-file-selection > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.serial-file-selection strong,
+.serial-file-selection span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serial-file-selection strong {
+  color: var(--text);
+  font-size: 10px;
+}
+
+.serial-file-selection span {
+  color: var(--text-subtle);
+  font-size: 9px;
+}
+
+.serial-file-selection .secondary-button {
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.serial-file-send-progress {
+  display: grid;
+  min-width: 0;
+  padding: 10px;
+  color: var(--accent);
+  gap: 7px;
+}
+
+.serial-file-send-progress[data-status="cancelling"],
+.serial-file-send-progress[data-status="cancelled"] {
+  color: var(--amber);
+}
+
+.serial-file-send-progress[data-status="error"] {
+  color: var(--danger);
+}
+
+.serial-file-send-progress > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.serial-file-send-progress > div:first-child span,
+.serial-file-send-progress > div:first-child strong {
+  font-size: 10px;
+}
+
+.serial-file-send-progress > div:last-child {
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+}
+
+.serial-file-send-progress > div:last-child span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serial-file-send-progress progress {
+  width: 100%;
+  height: 7px;
+  border: 0;
+  border-radius: 3px;
+  overflow: hidden;
+  accent-color: currentColor;
+  background: var(--surface-2);
+}
+
+.serial-file-send-message {
+  margin: 0;
+  padding: 0 10px 10px;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 15px;
+}
+
+.serial-file-send-message[data-error="true"] {
+  color: var(--danger);
+}
+
+.serial-file-send-actions {
+  display: flex;
+  min-height: 48px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-top: 1px solid var(--border);
+  gap: 10px;
+}
+
+.serial-file-send-actions > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serial-file-send-actions > button {
+  min-height: 32px;
+  flex: 0 0 auto;
+  padding: 0 10px;
 }
 
 .command-variable-popover {
@@ -4773,9 +4956,9 @@ textarea:focus {
 
   .send-main-row {
     grid-template-areas:
-      "options options options options options options options"
-      "payload modbus variable quick history workflow send";
-    grid-template-columns: minmax(0, 1fr) 30px 30px 30px 30px 30px 68px;
+      "options options options options options options options options"
+      "payload file modbus variable quick history workflow send";
+    grid-template-columns: minmax(0, 1fr) repeat(6, 30px) 68px;
   }
 
   .send-options {
@@ -4784,6 +4967,10 @@ textarea:focus {
 
   .send-payload-field {
     grid-area: payload;
+  }
+
+  .command-file-trigger {
+    grid-area: file;
   }
 
   .command-modbus-trigger {
@@ -5195,8 +5382,8 @@ textarea:focus {
     grid-template-areas:
       "options options options options"
       "payload payload payload payload"
-      "modbus variable quick history"
-      "workflow send send send";
+      "file modbus variable quick"
+      "history workflow send send";
     grid-template-columns: 44px 44px 44px minmax(68px, 1fr);
   }
 
@@ -5227,6 +5414,7 @@ textarea:focus {
   .command-history-header,
   .command-variable-header,
   .quick-command-header,
+  .serial-file-send-header,
   .modbus-builder-header {
     min-height: 52px;
   }
@@ -5237,6 +5425,13 @@ textarea:focus {
   .ascii-reference-search button,
   .checksum-reference-modes.segmented-control button,
   .checksum-reference-input textarea {
+    min-height: 44px;
+  }
+
+  .serial-file-selection .secondary-button,
+  .serial-file-send-actions > button,
+  .serial-file-send-header .icon-button {
+    min-width: 44px;
     min-height: 44px;
   }
 
