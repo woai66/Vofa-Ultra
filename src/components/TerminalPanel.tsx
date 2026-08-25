@@ -58,8 +58,145 @@ import { ModbusRtuBuilder } from "./ModbusRtuBuilder";
 import { QuickCommandPopover } from "./QuickCommandPopover";
 
 type RepeatMode = "count" | "continuous";
+type CommandReferenceView = "variables" | "ascii";
 
 const TERMINAL_LATEST_THRESHOLD_PX = 24;
+const MAX_ASCII_SEARCH_CHARACTERS = 32;
+
+interface AsciiReferenceEntry {
+  character: string;
+  code: number;
+  hex: string;
+  name: string;
+}
+
+const ASCII_CONTROL_CHARACTERS = [
+  ["NUL", "空字符"],
+  ["SOH", "标题开始"],
+  ["STX", "正文开始"],
+  ["ETX", "正文结束"],
+  ["EOT", "传输结束"],
+  ["ENQ", "查询"],
+  ["ACK", "确认"],
+  ["BEL", "响铃"],
+  ["BS", "退格"],
+  ["HT", "水平制表"],
+  ["LF", "换行"],
+  ["VT", "垂直制表"],
+  ["FF", "换页"],
+  ["CR", "回车"],
+  ["SO", "移出"],
+  ["SI", "移入"],
+  ["DLE", "数据链路转义"],
+  ["DC1", "设备控制一"],
+  ["DC2", "设备控制二"],
+  ["DC3", "设备控制三"],
+  ["DC4", "设备控制四"],
+  ["NAK", "否认"],
+  ["SYN", "同步空闲"],
+  ["ETB", "传输块结束"],
+  ["CAN", "取消"],
+  ["EM", "介质结束"],
+  ["SUB", "替换"],
+  ["ESC", "转义"],
+  ["FS", "文件分隔"],
+  ["GS", "组分隔"],
+  ["RS", "记录分隔"],
+  ["US", "单元分隔"],
+  ["SP", "空格"],
+] as const;
+
+const ASCII_PUNCTUATION_NAMES: Readonly<Record<string, string>> = {
+  "!": "感叹号",
+  "\"": "双引号",
+  "#": "井号",
+  "$": "美元符号",
+  "%": "百分号",
+  "&": "与号",
+  "'": "单引号",
+  "(": "左圆括号",
+  ")": "右圆括号",
+  "*": "星号",
+  "+": "加号",
+  ",": "逗号",
+  "-": "连字符",
+  ".": "句点",
+  "/": "斜杠",
+  ":": "冒号",
+  ";": "分号",
+  "<": "小于号",
+  "=": "等号",
+  ">": "大于号",
+  "?": "问号",
+  "@": "艾特符号",
+  "[": "左方括号",
+  "\\": "反斜杠",
+  "]": "右方括号",
+  "^": "脱字符",
+  "_": "下划线",
+  "`": "反引号",
+  "{": "左花括号",
+  "|": "竖线",
+  "}": "右花括号",
+  "~": "波浪号",
+};
+
+const ASCII_REFERENCE_ENTRIES: readonly AsciiReferenceEntry[] = Array.from(
+  { length: 128 },
+  (_, code) => {
+    if (code <= 32) {
+      const [character, name] = ASCII_CONTROL_CHARACTERS[code]!;
+      return { character, code, hex: code.toString(16).toUpperCase().padStart(2, "0"), name };
+    }
+    if (code === 127) {
+      return { character: "DEL", code, hex: "7F", name: "删除" };
+    }
+    const character = String.fromCharCode(code);
+    let name = ASCII_PUNCTUATION_NAMES[character] ?? "可打印字符";
+    if (code >= 48 && code <= 57) {
+      name = `数字 ${character}`;
+    } else if (code >= 65 && code <= 90) {
+      name = `大写字母 ${character}`;
+    } else if (code >= 97 && code <= 122) {
+      name = `小写字母 ${character}`;
+    }
+    return {
+      character,
+      code,
+      hex: code.toString(16).toUpperCase().padStart(2, "0"),
+      name,
+    };
+  },
+);
+
+function filterAsciiReferenceEntries(query: string): readonly AsciiReferenceEntry[] {
+  const trimmed = query.trim();
+  if (trimmed.length === 0) {
+    return ASCII_REFERENCE_ENTRIES;
+  }
+  if (trimmed.length === 1) {
+    const code = trimmed.charCodeAt(0);
+    if (code >= 33 && code <= 126) {
+      return ASCII_REFERENCE_ENTRIES.slice(code, code + 1);
+    }
+  }
+  if (/^\d{1,3}$/.test(trimmed)) {
+    const code = Number(trimmed);
+    return code <= 127 ? ASCII_REFERENCE_ENTRIES.slice(code, code + 1) : [];
+  }
+  const normalized = trimmed.toUpperCase();
+  const hexMatch = /^(?:0X)?([0-9A-F]{2})$/.exec(normalized);
+  const hexDigits = hexMatch?.[1];
+  if (hexDigits && (normalized.startsWith("0X") || /[A-F]/.test(hexDigits))) {
+    const code = Number.parseInt(hexDigits, 16);
+    return code <= 127 ? ASCII_REFERENCE_ENTRIES.slice(code, code + 1) : [];
+  }
+  return ASCII_REFERENCE_ENTRIES.filter((entry) => (
+    entry.character.toUpperCase().includes(normalized)
+    || entry.hex === normalized
+    || entry.name.toUpperCase().includes(normalized)
+  ));
+}
 
 function isTerminalViewportAtLatest(viewport: HTMLElement): boolean {
   const distanceFromLatest = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop;
@@ -115,6 +252,7 @@ export function TerminalPanel() {
   const quickCommandTriggerRef = useRef<HTMLButtonElement>(null);
   const variableTriggerRef = useRef<HTMLButtonElement>(null);
   const variableListRef = useRef<HTMLDivElement>(null);
+  const asciiSearchRef = useRef<HTMLInputElement>(null);
   const historyCursorRef = useRef<number | null>(null);
   const historyDraftRef = useRef<CommandDraft | null>(null);
   const pendingSelectionRef = useRef<number | null>(null);
@@ -126,6 +264,9 @@ export function TerminalPanel() {
   const [modbusOpen, setModbusOpen] = useState(false);
   const [quickCommandsOpen, setQuickCommandsOpen] = useState(false);
   const [variablesOpen, setVariablesOpen] = useState(false);
+  const [commandReferenceView, setCommandReferenceView] =
+    useState<CommandReferenceView>("variables");
+  const [asciiSearchQuery, setAsciiSearchQuery] = useState("");
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [intervalText, setIntervalText] = useState("1000");
   const [repeatMode, setRepeatMode] = useState<RepeatMode>("count");
@@ -141,6 +282,10 @@ export function TerminalPanel() {
   const availableVariables = useMemo(
     () => COMMAND_VARIABLE_INSERTIONS.filter((item) => item.mode === sendMode),
     [sendMode],
+  );
+  const visibleAsciiEntries = useMemo(
+    () => filterAsciiReferenceEntries(asciiSearchQuery),
+    [asciiSearchQuery],
   );
   const visibleError = templatePreview.error || sendError;
   const taskActive = commandTask.status === "running" || commandTask.status === "stopping";
@@ -267,10 +412,15 @@ export function TerminalPanel() {
   }, [message, modbusOpen, quickCommandsOpen, variablesOpen]);
 
   useEffect(() => {
-    if (variablesOpen) {
+    if (!variablesOpen) {
+      return;
+    }
+    if (commandReferenceView === "ascii") {
+      asciiSearchRef.current?.focus();
+    } else {
       variableListRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
     }
-  }, [variablesOpen]);
+  }, [availableVariables, commandReferenceView, variablesOpen]);
 
   useEffect(() => {
     if (isWorkspaceTransitioning) {
@@ -753,8 +903,8 @@ export function TerminalPanel() {
             ref={variableTriggerRef}
             className="icon-button composer-icon-button command-variable-trigger"
             type="button"
-            aria-label="插入命令变量"
-            title="插入命令变量"
+            aria-label={variablesOpen ? "关闭命令变量与 ASCII 快查" : "打开命令变量与 ASCII 快查"}
+            title="命令变量与 ASCII 快查"
             aria-haspopup="dialog"
             aria-controls="command-variable-popover"
             aria-expanded={variablesOpen}
@@ -1034,7 +1184,7 @@ export function TerminalPanel() {
             id="command-variable-popover"
             className="command-variable-popover"
             role="dialog"
-            aria-label="命令变量"
+            aria-label="命令变量与 ASCII 快查"
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault();
@@ -1046,23 +1196,137 @@ export function TerminalPanel() {
             <div className="command-variable-header">
               <div>
                 <Braces size={14} />
-                <strong>命令变量</strong>
-                <span>{sendMode.toUpperCase()}</span>
+                <strong>命令变量与 ASCII 快查</strong>
               </div>
             </div>
-            <div ref={variableListRef} className="command-variable-list">
-              {availableVariables.map((item) => (
-                <button
-                  key={item.token}
-                  type="button"
-                  aria-label={`插入${item.label} ${item.token}`}
-                  onClick={() => insertVariable(item.token)}
-                >
-                  <code>{item.token}</code>
-                  <span>{item.label}</span>
-                </button>
-              ))}
+            <div
+              className="command-reference-tabs segmented-control"
+              role="tablist"
+              aria-label="命令参考类型"
+            >
+              <button
+                id="command-reference-variables-tab"
+                type="button"
+                role="tab"
+                aria-controls="command-reference-variables-panel"
+                aria-selected={commandReferenceView === "variables"}
+                tabIndex={commandReferenceView === "variables" ? 0 : -1}
+                data-active={commandReferenceView === "variables"}
+                onKeyDown={(event) => {
+                  if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+                    event.preventDefault();
+                    setCommandReferenceView(event.key === "ArrowLeft" || event.key === "Home"
+                      ? "variables"
+                      : "ascii");
+                  }
+                }}
+                onClick={() => setCommandReferenceView("variables")}
+              >
+                变量
+              </button>
+              <button
+                id="command-reference-ascii-tab"
+                type="button"
+                role="tab"
+                aria-controls="command-reference-ascii-panel"
+                aria-selected={commandReferenceView === "ascii"}
+                tabIndex={commandReferenceView === "ascii" ? 0 : -1}
+                data-active={commandReferenceView === "ascii"}
+                onKeyDown={(event) => {
+                  if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+                    event.preventDefault();
+                    setCommandReferenceView(event.key === "ArrowRight" || event.key === "End"
+                      ? "ascii"
+                      : "variables");
+                  }
+                }}
+                onClick={() => setCommandReferenceView("ascii")}
+              >
+                ASCII
+              </button>
             </div>
+            {commandReferenceView === "variables" ? (
+              <div
+                id="command-reference-variables-panel"
+                role="tabpanel"
+                aria-labelledby="command-reference-variables-tab"
+                ref={variableListRef}
+                className="command-variable-list"
+              >
+                {availableVariables.map((item) => (
+                  <button
+                    key={item.token}
+                    type="button"
+                    aria-label={`插入${item.label} ${item.token}`}
+                    onClick={() => insertVariable(item.token)}
+                  >
+                    <code>{item.token}</code>
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div
+                id="command-reference-ascii-panel"
+                role="tabpanel"
+                aria-labelledby="command-reference-ascii-tab"
+                className="ascii-reference-panel"
+              >
+                <label className="ascii-reference-search">
+                  <Search size={14} aria-hidden="true" />
+                  <input
+                    ref={asciiSearchRef}
+                    type="search"
+                    aria-label="搜索 ASCII 字符"
+                    placeholder="字符、缩写、DEC、HEX 或中文名称"
+                    value={asciiSearchQuery}
+                    maxLength={MAX_ASCII_SEARCH_CHARACTERS}
+                    onChange={(event) => setAsciiSearchQuery(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    aria-label="清空 ASCII 搜索"
+                    title="清空 ASCII 搜索"
+                    data-visible={asciiSearchQuery.length > 0}
+                    aria-hidden={asciiSearchQuery.length === 0}
+                    disabled={asciiSearchQuery.length === 0}
+                    tabIndex={asciiSearchQuery.length > 0 ? 0 : -1}
+                    onClick={() => setAsciiSearchQuery("")}
+                  >
+                    <X size={14} />
+                  </button>
+                </label>
+                <div className="ascii-reference-table-scroll">
+                  {visibleAsciiEntries.length > 0 ? (
+                    <table aria-label="ASCII 字符表">
+                      <thead>
+                        <tr>
+                          <th scope="col">字符 / 缩写</th>
+                          <th scope="col">DEC</th>
+                          <th scope="col">HEX</th>
+                          <th scope="col">中文名称</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleAsciiEntries.map((entry) => (
+                          <tr key={entry.code}>
+                            <td><code>{entry.character}</code></td>
+                            <td>{entry.code}</td>
+                            <td><code>{entry.hex}</code></td>
+                            <td>{entry.name}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="ascii-reference-empty" role="status">
+                      <SearchX size={18} />
+                      <span>没有匹配的 ASCII 字符</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

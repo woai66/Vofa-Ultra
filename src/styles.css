@@ -4150,9 +4150,19 @@ textarea:focus {
   font-size: 9px;
 }
 
+.command-reference-tabs {
+  margin: 7px 10px;
+  flex: 0 0 auto;
+}
+
+.command-reference-tabs.segmented-control button {
+  height: 30px;
+}
+
 .command-variable-list {
   display: grid;
   min-height: 0;
+  flex: 1 1 auto;
   overflow-y: auto;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -4197,6 +4207,136 @@ textarea:focus {
 .command-variable-list span {
   color: var(--text-subtle);
   font-size: 9px;
+}
+
+.ascii-reference-panel {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.ascii-reference-search {
+  display: grid;
+  min-height: 36px;
+  flex: 0 0 auto;
+  align-items: center;
+  margin: 0 10px 7px;
+  padding-left: 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-1);
+  color: var(--text-subtle);
+  grid-template-columns: 16px minmax(0, 1fr) 34px;
+}
+
+.ascii-reference-search:focus-within {
+  border-color: var(--accent);
+}
+
+.ascii-reference-search input {
+  min-width: 0;
+  height: 34px;
+  padding: 0 7px;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 10px;
+  text-overflow: ellipsis;
+}
+
+.ascii-reference-search input:focus {
+  border: 0;
+}
+
+.ascii-reference-search input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.ascii-reference-search button {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ascii-reference-search button[data-visible="false"] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ascii-reference-table-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+
+.ascii-reference-table-scroll table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 10px;
+}
+
+.ascii-reference-table-scroll th,
+.ascii-reference-table-scroll td {
+  min-width: 0;
+  padding: 6px 9px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--chart-grid);
+  color: var(--text-muted);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ascii-reference-table-scroll th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: var(--surface-1);
+  color: var(--text-subtle);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.ascii-reference-table-scroll th:nth-child(1),
+.ascii-reference-table-scroll td:nth-child(1) {
+  width: 29%;
+}
+
+.ascii-reference-table-scroll th:nth-child(2),
+.ascii-reference-table-scroll td:nth-child(2),
+.ascii-reference-table-scroll th:nth-child(3),
+.ascii-reference-table-scroll td:nth-child(3) {
+  width: 14%;
+}
+
+.ascii-reference-table-scroll tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.ascii-reference-table-scroll code {
+  color: var(--cyan);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.ascii-reference-empty {
+  display: flex;
+  min-height: 120px;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-subtle);
+  font-size: 10px;
+  gap: 7px;
 }
 
 .command-history-list {
@@ -4959,6 +5099,21 @@ textarea:focus {
   .quick-command-header,
   .modbus-builder-header {
     min-height: 52px;
+  }
+
+  .command-reference-tabs.segmented-control button,
+  .ascii-reference-search,
+  .ascii-reference-search input,
+  .ascii-reference-search button {
+    min-height: 44px;
+  }
+
+  .ascii-reference-search {
+    grid-template-columns: 18px minmax(0, 1fr) 44px;
+  }
+
+  .ascii-reference-search button {
+    width: 44px;
   }
 
   .quick-command-popover {

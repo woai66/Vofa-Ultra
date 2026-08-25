@@ -340,16 +340,22 @@ describe("TerminalPanel", () => {
     await user.type(input, "ABCD");
     input.setSelectionRange(2, 4);
     fireEvent.select(input);
-    const variableTrigger = screen.getByRole("button", { name: "插入命令变量" });
+    const variableTrigger = screen.getByRole("button", { name: "打开命令变量与 ASCII 快查" });
     await user.click(variableTrigger);
-    const variableDialog = screen.getByRole("dialog", { name: "命令变量" });
-    expect(within(variableDialog).getAllByRole("button")[0]).toHaveFocus();
+    const variableDialog = screen.getByRole("dialog", { name: "命令变量与 ASCII 快查" });
+    expect(
+      within(variableDialog).getByRole("button", { name: /插入发送序号/ }),
+    ).toHaveFocus();
     await user.keyboard("{Escape}");
-    expect(screen.queryByRole("dialog", { name: "命令变量" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("dialog", { name: "命令变量与 ASCII 快查" }),
+    ).not.toBeInTheDocument();
     expect(variableTrigger).toHaveFocus();
 
     await user.click(variableTrigger);
-    const reopenedVariableDialog = screen.getByRole("dialog", { name: "命令变量" });
+    const reopenedVariableDialog = screen.getByRole("dialog", {
+      name: "命令变量与 ASCII 快查",
+    });
     expect(
       within(reopenedVariableDialog).queryByRole("button", { name: /U16/ }),
     ).not.toBeInTheDocument();
@@ -380,8 +386,8 @@ describe("TerminalPanel", () => {
     render(<TerminalPanel />);
     const sendFormat = screen.getByRole("group", { name: "发送格式" });
     await user.click(within(sendFormat).getByRole("button", { name: "HEX" }));
-    await user.click(screen.getByRole("button", { name: "插入命令变量" }));
-    const variableDialog = screen.getByRole("dialog", { name: "命令变量" });
+    await user.click(screen.getByRole("button", { name: "打开命令变量与 ASCII 快查" }));
+    const variableDialog = screen.getByRole("dialog", { name: "命令变量与 ASCII 快查" });
 
     expect(within(variableDialog).queryByRole("button", { name: /UTC 时间/ })).not.toBeInTheDocument();
     await user.click(
@@ -400,6 +406,57 @@ describe("TerminalPanel", () => {
           .terminalEntries.find((entry) => entry.direction === "tx")?.hex,
       ).toBe("01 00");
     });
+  });
+
+  it("ASCII 快查支持多种查询且不修改发送状态", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const input = screen.getByRole("textbox", { name: "发送内容" });
+    await user.type(input, "KEEP");
+    const variableTrigger = screen.getByRole("button", {
+      name: "打开命令变量与 ASCII 快查",
+    });
+
+    await user.click(variableTrigger);
+    const dialog = screen.getByRole("dialog", { name: "命令变量与 ASCII 快查" });
+    await user.click(within(dialog).getByRole("tab", { name: "ASCII" }));
+    const search = within(dialog).getByRole("searchbox", { name: "搜索 ASCII 字符" });
+    expect(search).toHaveFocus();
+    expect(within(dialog).getAllByRole("row")).toHaveLength(129);
+    expect(within(dialog).getByRole("row", { name: "NUL 0 00 空字符" })).toBeVisible();
+    expect(within(dialog).getByRole("row", { name: "DEL 127 7F 删除" })).toBeVisible();
+
+    for (const query of ["CR", "0D", "13", "回车"]) {
+      await user.clear(search);
+      await user.type(search, query);
+      expect(
+        within(dialog).getByRole("row", { name: "CR 13 0D 回车" }),
+      ).toBeVisible();
+      expect(within(dialog).getAllByRole("row")).toHaveLength(2);
+    }
+
+    await user.clear(search);
+    await user.type(search, "~");
+    expect(
+      within(dialog).getByRole("row", { name: "~ 126 7E 波浪号" }),
+    ).toBeVisible();
+    await user.clear(search);
+    await user.type(search, "not-found");
+    expect(within(dialog).getByRole("status")).toHaveTextContent("没有匹配的 ASCII 字符");
+    expect(within(dialog).queryByRole("table", { name: "ASCII 字符表" })).not.toBeInTheDocument();
+
+    expect(input).toHaveValue("KEEP");
+    expect(useWorkbenchStore.getState().sendMode).toBe("text");
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.filter((entry) => entry.direction === "tx"),
+    ).toEqual([]);
+
+    await user.keyboard("{Escape}");
+    expect(dialog).not.toBeInTheDocument();
+    expect(variableTrigger).toHaveFocus();
   });
 
   it("将 Modbus RTU 帧填入 HEX 草稿但只通过原发送入口产生 TX", async () => {
@@ -713,7 +770,7 @@ describe("TerminalPanel", () => {
     input.setSelectionRange(0, "${seq}".length);
     fireEvent.select(input);
 
-    await user.click(screen.getByRole("button", { name: "插入命令变量" }));
+    await user.click(screen.getByRole("button", { name: "打开命令变量与 ASCII 快查" }));
     await user.click(
       screen.getByRole("button", { name: /插入发送序号/ }),
     );

@@ -1183,12 +1183,19 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   await lineEnding.selectOption("none");
   await page.getByRole("button", { name: "展开周期发送设置" }).click();
   await expect(page.locator(".command-workflow")).toBeVisible();
-  await page.getByRole("button", { name: "插入命令变量" }).click();
-  const variableDialog = page.getByRole("dialog", { name: "命令变量" });
+  await page.getByRole("button", { name: "打开命令变量与 ASCII 快查" }).click();
+  const variableDialog = page.getByRole("dialog", { name: "命令变量与 ASCII 快查" });
   await expect(variableDialog).toBeVisible();
-  expect(await clippedVisibleHeight(variableDialog.getByRole("button").first())).toBeGreaterThanOrEqual(
-    52,
-  );
+  const firstVariable = variableDialog.getByRole("button", { name: /插入发送序号/ });
+  await expect(firstVariable).toBeFocused();
+  expect(await clippedVisibleHeight(firstVariable)).toBeGreaterThanOrEqual(52);
+  await variableDialog.getByRole("tab", { name: "ASCII" }).click();
+  const asciiSearch = variableDialog.getByRole("searchbox", { name: "搜索 ASCII 字符" });
+  await expect(asciiSearch).toBeFocused();
+  await asciiSearch.fill("0D");
+  await expect(variableDialog.getByRole("row", { name: "CR 13 0D 回车" })).toBeVisible();
+  const asciiSearchBounds = await asciiSearch.boundingBox();
+  expect(asciiSearchBounds?.height ?? 0).toBeGreaterThanOrEqual(44);
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "处理", exact: true }).click();
   await expect(page.getByRole("heading", { name: "数据处理" })).toBeVisible();
@@ -1453,10 +1460,10 @@ test("短窗口仍可操作发送栏", async ({ page }) => {
     .getByRole("group", { name: "发送格式" })
     .getByRole("button", { name: "HEX" })
     .click();
-  const variableTrigger = page.getByRole("button", { name: "插入命令变量" });
+  const variableTrigger = page.getByRole("button", { name: "打开命令变量与 ASCII 快查" });
   await variableTrigger.click();
-  const variableDialog = page.getByRole("dialog", { name: "命令变量" });
-  const firstVariable = variableDialog.getByRole("button").first();
+  const variableDialog = page.getByRole("dialog", { name: "命令变量与 ASCII 快查" });
+  const firstVariable = variableDialog.getByRole("button", { name: /插入序号 U8/ });
   await expect(firstVariable).toBeFocused();
   expect(await clippedVisibleHeight(firstVariable)).toBeGreaterThanOrEqual(48);
   await page.keyboard.press("Escape");
