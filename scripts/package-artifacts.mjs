@@ -33,6 +33,15 @@ const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$
 const RUST_TARGET_PATTERN = /^[a-z0-9_.-]+$/;
 const SOURCE_COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 
+export const PROJECT_RELEASE_COORDINATES = Object.freeze({
+  npm_repository: "https://github.com/woai66/Vofa-Ultra.git",
+  homepage: "https://github.com/woai66/Vofa-Ultra#readme",
+  issues: "https://github.com/woai66/Vofa-Ultra/issues",
+  cargo_repository: "https://github.com/woai66/Vofa-Ultra",
+  cargo_homepage: "https://github.com/woai66/Vofa-Ultra",
+  tauri_identifier: "io.github.woai66.vofaultra",
+});
+
 export const BUILD_PLATFORMS = Object.freeze({
   linux: Object.freeze({
     runner_hosts: Object.freeze({ X64: "x86_64-unknown-linux-gnu" }),
@@ -717,6 +726,36 @@ function read_cargo_package() {
   return cargo_package;
 }
 
+export function validate_repository_metadata(package_manifest, tauri_config, cargo_package) {
+  if (package_manifest?.repository?.type !== "git") {
+    fail('package.json repository.type must be "git"');
+  }
+
+  if (package_manifest.repository.url !== PROJECT_RELEASE_COORDINATES.npm_repository) {
+    fail(`package.json repository.url must be ${PROJECT_RELEASE_COORDINATES.npm_repository}`);
+  }
+
+  if (package_manifest.homepage !== PROJECT_RELEASE_COORDINATES.homepage) {
+    fail(`package.json homepage must be ${PROJECT_RELEASE_COORDINATES.homepage}`);
+  }
+
+  if (package_manifest.bugs?.url !== PROJECT_RELEASE_COORDINATES.issues) {
+    fail(`package.json bugs.url must be ${PROJECT_RELEASE_COORDINATES.issues}`);
+  }
+
+  if (cargo_package?.repository !== PROJECT_RELEASE_COORDINATES.cargo_repository) {
+    fail(`Cargo repository must be ${PROJECT_RELEASE_COORDINATES.cargo_repository}`);
+  }
+
+  if (cargo_package.homepage !== PROJECT_RELEASE_COORDINATES.cargo_homepage) {
+    fail(`Cargo homepage must be ${PROJECT_RELEASE_COORDINATES.cargo_homepage}`);
+  }
+
+  if (tauri_config?.identifier !== PROJECT_RELEASE_COORDINATES.tauri_identifier) {
+    fail(`Tauri identifier must be ${PROJECT_RELEASE_COORDINATES.tauri_identifier}`);
+  }
+}
+
 function verify_package_metadata() {
   const package_manifest = read_json(PACKAGE_PATH);
   const tauri_config = read_json(TAURI_CONFIG_PATH);
@@ -746,6 +785,8 @@ function verify_package_metadata() {
         + `tauri.conf.json=${tauri_config.bundle?.license}, Cargo.toml=${cargo_package.license}`,
     );
   }
+
+  validate_repository_metadata(package_manifest, tauri_config, cargo_package);
 
   if (tauri_config.bundle?.active !== true) {
     fail("Tauri bundling must be active");

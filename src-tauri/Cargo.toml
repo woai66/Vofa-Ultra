@@ -6,6 +6,8 @@ authors = ["Vofa-Ultra contributors"]
 edition = "2021"
 rust-version = "1.88.0"
 license = "MIT"
+repository = "https://github.com/woai66/Vofa-Ultra"
+homepage = "https://github.com/woai66/Vofa-Ultra"
 
 [lib]
 name = "vofa_ultra_lib"

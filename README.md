@@ -417,8 +417,9 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 中位数和最少样本数。Linux CI 是绝对预算的权威环境，本地结果用于诊断；原始报告和摘要写入
 `artifacts/performance/`。方法与预算维护规则见[性能基准](docs/performance.md)。
 `package.json` 是界面和诊断报告的版本来源；`pnpm check:package` 使用 `cargo metadata` 核对 npm、Tauri、Cargo
-版本、许可证与 bundle 元数据。`pnpm supply-chain:check` 按当前 Rust target 验证 npm 生产依赖和 Cargo 正常依赖
-闭包，未知或不可接受许可证会令检查失败，并用官方严格 Schema 校验 CycloneDX 1.6。自动化测试会验证模拟数据链路、
+版本、许可证、公开仓库坐标、应用标识与 bundle 元数据。`pnpm supply-chain:check` 按当前 Rust target 验证
+npm 生产依赖和 Cargo 正常依赖闭包，未知或不可接受许可证会令检查失败，并用官方严格 Schema 校验 CycloneDX 1.6。
+自动化测试会验证模拟数据链路、
 Canvas 有效像素、处理图转换链与工作区 v9 往返、RX 文本编码/文本行任意分包与生命周期边界、实时 RX 自动应答、
 快捷命令持久化/零隐式 TX、录制与回放入口权限、
 Raw 回放拖动期间零 IPC 且提交时恰好一次定位、播放中切速不换代、有界命令历史、安全变量的 TEXT / HEX 展开与

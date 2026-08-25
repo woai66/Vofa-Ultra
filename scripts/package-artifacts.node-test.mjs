@@ -8,6 +8,7 @@ import {
   BUILD_ENVIRONMENT_MAX_BYTES,
   BUILD_PLATFORMS,
   LINUX_BUILD_PACKAGES,
+  PROJECT_RELEASE_COORDINATES,
   assert_no_local_paths_in_binary,
   build_environment_file_name,
   build_ci_environment,
@@ -17,6 +18,7 @@ import {
   parse_verbose_tool_version,
   pnpm_version_from_user_agent,
   serialize_build_environment,
+  validate_repository_metadata,
 } from "./package-artifacts.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -125,6 +127,97 @@ function tool_samples(platform_name = "linux") {
       : null,
   };
 }
+
+function repository_metadata() {
+  return {
+    package_manifest: {
+      repository: {
+        type: "git",
+        url: PROJECT_RELEASE_COORDINATES.npm_repository,
+      },
+      homepage: PROJECT_RELEASE_COORDINATES.homepage,
+      bugs: { url: PROJECT_RELEASE_COORDINATES.issues },
+    },
+    tauri_config: { identifier: PROJECT_RELEASE_COORDINATES.tauri_identifier },
+    cargo_package: {
+      repository: PROJECT_RELEASE_COORDINATES.cargo_repository,
+      homepage: PROJECT_RELEASE_COORDINATES.cargo_homepage,
+    },
+  };
+}
+
+test("accepts canonical public repository metadata", () => {
+  const metadata = repository_metadata();
+  assert.doesNotThrow(() => validate_repository_metadata(
+    metadata.package_manifest,
+    metadata.tauri_config,
+    metadata.cargo_package,
+  ));
+});
+
+test("rejects npm repository type, owner, or name drift", () => {
+  for (const field_name of ["type", "url"]) {
+    const metadata = repository_metadata();
+    metadata.package_manifest.repository[field_name] = field_name === "type"
+      ? "svn"
+      : "https://github.com/example/Vofa-Ultra.git";
+    assert.throws(
+      () => validate_repository_metadata(
+        metadata.package_manifest,
+        metadata.tauri_config,
+        metadata.cargo_package,
+      ),
+      field_name === "type" ? /package\.json repository\.type/ : /package\.json repository\.url/,
+    );
+  }
+});
+
+test("rejects npm homepage and issue tracker drift", () => {
+  for (const field_name of ["homepage", "issues"]) {
+    const metadata = repository_metadata();
+    if (field_name === "homepage") {
+      metadata.package_manifest.homepage = "https://github.com/woai66/other#readme";
+    } else {
+      metadata.package_manifest.bugs.url = "https://github.com/woai66/other/issues";
+    }
+    assert.throws(
+      () => validate_repository_metadata(
+        metadata.package_manifest,
+        metadata.tauri_config,
+        metadata.cargo_package,
+      ),
+      field_name === "homepage" ? /package\.json homepage/ : /package\.json bugs\.url/,
+    );
+  }
+});
+
+test("rejects Cargo repository and homepage drift", () => {
+  for (const field_name of ["repository", "homepage"]) {
+    const metadata = repository_metadata();
+    metadata.cargo_package[field_name] = "https://github.com/woai66/other";
+    assert.throws(
+      () => validate_repository_metadata(
+        metadata.package_manifest,
+        metadata.tauri_config,
+        metadata.cargo_package,
+      ),
+      field_name === "repository" ? /Cargo repository/ : /Cargo homepage/,
+    );
+  }
+});
+
+test("rejects Tauri identifier drift", () => {
+  const metadata = repository_metadata();
+  metadata.tauri_config.identifier = "io.github.example.vofaultra";
+  assert.throws(
+    () => validate_repository_metadata(
+      metadata.package_manifest,
+      metadata.tauri_config,
+      metadata.cargo_package,
+    ),
+    /Tauri identifier/,
+  );
+});
 
 test("serializes a deterministic canonical build environment without path leakage", () => {
   const record = build_record();
