@@ -1183,6 +1183,8 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   await lineEnding.selectOption("none");
   await page.getByRole("button", { name: "展开周期发送设置" }).click();
   await expect(page.locator(".command-workflow")).toBeVisible();
+  const converterTxStats = page.locator(".transfer-stats span").filter({ hasText: "TX" });
+  const txStatsBeforeConverter = await converterTxStats.textContent();
   await page.getByRole("button", { name: "打开命令参考与校验" }).click();
   const variableDialog = page.getByRole("dialog", { name: "命令参考与校验" });
   await expect(variableDialog).toBeVisible();
@@ -1196,6 +1198,78 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   await expect(variableDialog.getByRole("row", { name: "CR 13 0D 回车" })).toBeVisible();
   const asciiSearchBounds = await asciiSearch.boundingBox();
   expect(asciiSearchBounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  await variableDialog.getByRole("tab", { name: "转换" }).click();
+  const converterPanel = variableDialog.getByRole("tabpanel", { name: "转换" });
+  const converterInput = converterPanel.getByRole("textbox", { name: "转换输入" });
+  await expect(converterInput).toBeFocused();
+  await converterInput.fill("00 00 80 3F");
+  await expect(converterPanel.getByRole("textbox", { name: "规范化 HEX" })).toHaveValue(
+    "00 00 80 3F",
+  );
+  await expect(converterPanel.getByRole("textbox", { name: "数值结果" })).toHaveValue("1");
+  await converterPanel.getByRole("combobox", { name: "数值类型" }).selectOption("i16");
+  await converterPanel.getByRole("button", { name: "数值转字节" }).click();
+  await converterPanel.getByRole("button", { name: "大端 BE" }).click();
+  await converterInput.fill("-2");
+  await expect(converterPanel.getByRole("textbox", { name: "规范化 HEX" })).toHaveValue("FF FE");
+  await expect(converterTxStats).toHaveText(txStatsBeforeConverter ?? "");
+  await expect(page.getByRole("button", { name: "命令历史，1 条" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "发送内容" })).toHaveValue("AA");
+  const converterLayout = await converterPanel.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const targetElements = Array.from(element.querySelectorAll("button, select, textarea"));
+    const targets = targetElements.map((target) => {
+      const bounds = target.getBoundingClientRect();
+      return { width: bounds.width, height: bounds.height };
+    });
+    const summaryBounds = element
+      .querySelector(".data-converter-summary")
+      ?.getBoundingClientRect();
+    const overlappingSummary = summaryBounds
+      ? targetElements
+          .filter((target) => {
+            const bounds = target.getBoundingClientRect();
+            return bounds.bottom > summaryBounds.top && bounds.top < summaryBounds.bottom;
+          })
+          .map((target) => target.getAttribute("aria-label") ?? target.textContent?.trim())
+      : ["missing summary"];
+    const occludedTargets = targetElements
+      .filter((target) => {
+        const bounds = target.getBoundingClientRect();
+        const centerX = bounds.left + bounds.width / 2;
+        const centerY = bounds.top + bounds.height / 2;
+        if (
+          centerX < rect.left ||
+          centerX > rect.right ||
+          centerY < rect.top ||
+          centerY > rect.bottom
+        ) {
+          return false;
+        }
+        const hitTarget = document.elementFromPoint(centerX, centerY);
+        return hitTarget !== target && !target.contains(hitTarget);
+      })
+      .map((target) => target.getAttribute("aria-label") ?? target.textContent?.trim());
+    return {
+      left: rect.left,
+      right: rect.right,
+      panelWidth: element.clientWidth,
+      panelScrollWidth: element.scrollWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      targets,
+      overlappingSummary,
+      occludedTargets,
+    };
+  });
+  expect(converterLayout.left).toBeGreaterThanOrEqual(0);
+  expect(converterLayout.right).toBeLessThanOrEqual(390);
+  expect(converterLayout.panelScrollWidth).toBeLessThanOrEqual(converterLayout.panelWidth + 1);
+  expect(converterLayout.documentWidth).toBeLessThanOrEqual(390);
+  expect(
+    converterLayout.targets.filter((target) => target.width < 44 || target.height < 44),
+  ).toEqual([]);
+  expect(converterLayout.overlappingSummary).toEqual([]);
+  expect(converterLayout.occludedTargets).toEqual([]);
   await variableDialog.getByRole("tab", { name: "校验" }).click();
   const checksumInput = variableDialog.getByRole("textbox", { name: "校验输入" });
   await expect(checksumInput).toBeFocused();

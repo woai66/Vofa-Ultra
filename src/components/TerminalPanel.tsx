@@ -12,7 +12,9 @@ import {
   Blocks,
   Bookmark,
   Braces,
+  Check,
   CirclePause,
+  Copy,
   Download,
   Eraser,
   FileUp,
@@ -46,6 +48,16 @@ import {
   type ChecksumInputMode,
   type ChecksumResult,
 } from "../core/checksum";
+import {
+  convertData,
+  DATA_NUMERIC_TYPE_OPTIONS,
+  MAX_DATA_CONVERTER_INPUT_CHARACTERS,
+  numericTypeByteWidth,
+  type DataConverterDirection,
+  type DataConverterEndianness,
+  type DataConverterResult,
+  type DataNumericType,
+} from "../core/dataConverter";
 import { getHorizontalTabTarget } from "../core/tabNavigation";
 import {
   filterTerminalEntries,
@@ -68,7 +80,7 @@ import { ModbusRtuBuilder } from "./ModbusRtuBuilder";
 import { QuickCommandPopover } from "./QuickCommandPopover";
 
 type RepeatMode = "count" | "continuous";
-const COMMAND_REFERENCE_VIEWS = ["variables", "ascii", "checksum"] as const;
+const COMMAND_REFERENCE_VIEWS = ["variables", "ascii", "converter", "checksum"] as const;
 type CommandReferenceView = (typeof COMMAND_REFERENCE_VIEWS)[number];
 
 const TERMINAL_LATEST_THRESHOLD_PX = 24;
@@ -231,6 +243,16 @@ interface ChecksumPreview {
   error: string;
 }
 
+interface DataConverterPreview {
+  result: DataConverterResult | null;
+  error: string;
+}
+
+interface CopiedConverterOutput {
+  target: "hex" | "numbers";
+  value: string;
+}
+
 export function TerminalPanel() {
   const entries = useWorkbenchStore((state) => state.terminalEntries);
   const displayMode = useWorkbenchStore((state) => state.displayMode);
@@ -275,6 +297,7 @@ export function TerminalPanel() {
   const variableTriggerRef = useRef<HTMLButtonElement>(null);
   const variableListRef = useRef<HTMLDivElement>(null);
   const asciiSearchRef = useRef<HTMLInputElement>(null);
+  const converterInputRef = useRef<HTMLTextAreaElement>(null);
   const checksumInputRef = useRef<HTMLTextAreaElement>(null);
   const historyCursorRef = useRef<number | null>(null);
   const historyDraftRef = useRef<CommandDraft | null>(null);
@@ -296,6 +319,15 @@ export function TerminalPanel() {
   const [commandReferenceView, setCommandReferenceView] =
     useState<CommandReferenceView>("variables");
   const [asciiSearchQuery, setAsciiSearchQuery] = useState("");
+  const [converterDirection, setConverterDirection] =
+    useState<DataConverterDirection>("bytes-to-numbers");
+  const [converterNumericType, setConverterNumericType] = useState<DataNumericType>("f32");
+  const [converterEndianness, setConverterEndianness] =
+    useState<DataConverterEndianness>("le");
+  const [converterInput, setConverterInput] = useState("");
+  const [converterCopyError, setConverterCopyError] = useState("");
+  const [copiedConverterOutput, setCopiedConverterOutput] =
+    useState<CopiedConverterOutput | null>(null);
   const [checksumInputMode, setChecksumInputMode] = useState<ChecksumInputMode>("hex");
   const [checksumInput, setChecksumInput] = useState("");
   const [workflowOpen, setWorkflowOpen] = useState(false);
@@ -322,6 +354,23 @@ export function TerminalPanel() {
     () => previewChecksum(checksumInput, checksumInputMode),
     [checksumInput, checksumInputMode],
   );
+  const converterPreview = useMemo(
+    () => previewDataConversion(
+      converterInput,
+      converterDirection,
+      converterNumericType,
+      converterEndianness,
+    ),
+    [converterDirection, converterEndianness, converterInput, converterNumericType],
+  );
+  const converterError = converterPreview.error || converterCopyError;
+  const converterUsesEndianness = numericTypeByteWidth(converterNumericType) > 1;
+  const converterHexCopied =
+    copiedConverterOutput?.target === "hex" &&
+    copiedConverterOutput.value === converterPreview.result?.normalizedHex;
+  const converterNumbersCopied =
+    copiedConverterOutput?.target === "numbers" &&
+    copiedConverterOutput.value === converterPreview.result?.numericText;
   const visibleError = templatePreview.error || sendError;
   const taskActive = commandTask.status === "running" || commandTask.status === "stopping";
   const autoResponderActive = isAutoResponderActive(autoResponder);
@@ -484,6 +533,9 @@ export function TerminalPanel() {
       case "checksum":
         checksumInputRef.current?.focus();
         break;
+      case "converter":
+        converterInputRef.current?.focus();
+        break;
       case "variables":
         variableListRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
         break;
@@ -546,6 +598,33 @@ export function TerminalPanel() {
       event.preventDefault();
       setCommandReferenceView(target);
     }
+  };
+
+  const copyConverterOutput = async (
+    target: CopiedConverterOutput["target"],
+    value: string,
+  ) => {
+    if (!value) {
+      return;
+    }
+    setConverterCopyError("");
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("当前环境不支持剪贴板写入");
+      }
+      await navigator.clipboard.writeText(value);
+      setCopiedConverterOutput({ target, value });
+    } catch (error) {
+      setCopiedConverterOutput(null);
+      setConverterCopyError(
+        error instanceof Error ? `复制失败：${error.message}` : "复制失败，请手动选择结果",
+      );
+    }
+  };
+
+  const resetConverterFeedback = () => {
+    setConverterCopyError("");
+    setCopiedConverterOutput(null);
   };
 
   const applyDraft = (draft: CommandDraft) => {
@@ -1504,6 +1583,19 @@ export function TerminalPanel() {
                 ASCII
               </button>
               <button
+                id="command-reference-converter-tab"
+                type="button"
+                role="tab"
+                aria-controls="command-reference-converter-panel"
+                aria-selected={commandReferenceView === "converter"}
+                tabIndex={commandReferenceView === "converter" ? 0 : -1}
+                data-active={commandReferenceView === "converter"}
+                onKeyDown={(event) => handleCommandReferenceTabKeyDown(event, "converter")}
+                onClick={() => setCommandReferenceView("converter")}
+              >
+                转换
+              </button>
+              <button
                 id="command-reference-checksum-tab"
                 type="button"
                 role="tab"
@@ -1597,6 +1689,191 @@ export function TerminalPanel() {
                     </div>
                   )}
                 </div>
+              </div>
+            ) : commandReferenceView === "converter" ? (
+              <div
+                id="command-reference-converter-panel"
+                role="tabpanel"
+                aria-labelledby="command-reference-converter-tab"
+                className="data-converter-panel"
+              >
+                <div className="data-converter-toolbar">
+                  <div>
+                    <span>转换方向</span>
+                    <div
+                      className="segmented-control data-converter-direction"
+                      role="group"
+                      aria-label="转换方向"
+                    >
+                      <button
+                        type="button"
+                        data-active={converterDirection === "bytes-to-numbers"}
+                        onClick={() => {
+                          setConverterDirection("bytes-to-numbers");
+                          resetConverterFeedback();
+                        }}
+                      >
+                        字节转数值
+                      </button>
+                      <button
+                        type="button"
+                        data-active={converterDirection === "numbers-to-bytes"}
+                        onClick={() => {
+                          setConverterDirection("numbers-to-bytes");
+                          resetConverterFeedback();
+                        }}
+                      >
+                        数值转字节
+                      </button>
+                    </div>
+                  </div>
+                  <label>
+                    <span>数值类型</span>
+                    <select
+                      id="data-converter-numeric-type"
+                      name="data-converter-numeric-type"
+                      aria-label="数值类型"
+                      value={converterNumericType}
+                      onChange={(event) => {
+                        setConverterNumericType(event.target.value as DataNumericType);
+                        resetConverterFeedback();
+                      }}
+                    >
+                      {DATA_NUMERIC_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div>
+                    <span>字节序</span>
+                    <div
+                      className="segmented-control data-converter-endianness"
+                      role="group"
+                      aria-label="字节序"
+                    >
+                      <button
+                        type="button"
+                        disabled={!converterUsesEndianness}
+                        data-active={converterEndianness === "le"}
+                        onClick={() => {
+                          setConverterEndianness("le");
+                          resetConverterFeedback();
+                        }}
+                      >
+                        小端 LE
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!converterUsesEndianness}
+                        data-active={converterEndianness === "be"}
+                        onClick={() => {
+                          setConverterEndianness("be");
+                          resetConverterFeedback();
+                        }}
+                      >
+                        大端 BE
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <label className="data-converter-input">
+                  <span className="sr-only">转换输入</span>
+                  <textarea
+                    id="data-converter-input"
+                    name="data-converter-input"
+                    ref={converterInputRef}
+                    aria-label="转换输入"
+                    aria-invalid={converterPreview.error ? "true" : "false"}
+                    aria-describedby="data-converter-error"
+                    placeholder={
+                      converterDirection === "bytes-to-numbers"
+                        ? "输入 HEX 字节，如 00 00 80 3F"
+                        : "输入十进制数值，以空格、逗号或分号分隔"
+                    }
+                    value={converterInput}
+                    maxLength={MAX_DATA_CONVERTER_INPUT_CHARACTERS}
+                    spellCheck={false}
+                    onChange={(event) => {
+                      setConverterInput(event.target.value);
+                      resetConverterFeedback();
+                    }}
+                  />
+                </label>
+                <span
+                  id="data-converter-error"
+                  className="data-converter-error"
+                  role={converterError ? "alert" : undefined}
+                >
+                  {converterError || "\u00a0"}
+                </span>
+                <div className="data-converter-results" aria-label="转换结果">
+                  <label>
+                    <span>规范化 HEX</span>
+                    <span className="data-converter-result-field">
+                      <textarea
+                        id="data-converter-normalized-hex"
+                        name="data-converter-normalized-hex"
+                        aria-label="规范化 HEX"
+                        value={converterPreview.result?.normalizedHex ?? ""}
+                        placeholder="--"
+                        readOnly
+                        spellCheck={false}
+                      />
+                      <button
+                        type="button"
+                        className="icon-button compact"
+                        aria-label={converterHexCopied ? "HEX 结果已复制" : "复制 HEX 结果"}
+                        title={converterHexCopied ? "已复制" : "复制 HEX 结果"}
+                        disabled={!converterPreview.result?.normalizedHex}
+                        onClick={() => void copyConverterOutput(
+                          "hex",
+                          converterPreview.result?.normalizedHex ?? "",
+                        )}
+                      >
+                        {converterHexCopied ? <Check size={13} /> : <Copy size={13} />}
+                      </button>
+                    </span>
+                  </label>
+                  <label>
+                    <span>数值结果</span>
+                    <span className="data-converter-result-field">
+                      <textarea
+                        id="data-converter-numeric-output"
+                        name="data-converter-numeric-output"
+                        aria-label="数值结果"
+                        value={converterPreview.result?.numericText ?? ""}
+                        placeholder="--"
+                        readOnly
+                        spellCheck={false}
+                      />
+                      <button
+                        type="button"
+                        className="icon-button compact"
+                        aria-label={converterNumbersCopied ? "数值结果已复制" : "复制数值结果"}
+                        title={converterNumbersCopied ? "已复制" : "复制数值结果"}
+                        disabled={!converterPreview.result?.numericText}
+                        onClick={() => void copyConverterOutput(
+                          "numbers",
+                          converterPreview.result?.numericText ?? "",
+                        )}
+                      >
+                        {converterNumbersCopied ? <Check size={13} /> : <Copy size={13} />}
+                      </button>
+                    </span>
+                  </label>
+                </div>
+                <output
+                  className="data-converter-summary"
+                  aria-label={
+                    `转换结果 ${converterPreview.result?.byteCount ?? 0} 字节，` +
+                    `${converterPreview.result?.valueCount ?? 0} 个数值`
+                  }
+                >
+                  {converterPreview.result?.byteCount ?? 0} B ·{" "}
+                  {converterPreview.result?.valueCount ?? 0} 个数值
+                </output>
               </div>
             ) : (
               <div
@@ -1754,6 +2031,26 @@ function previewCommandTemplate(
 function previewChecksum(value: string, mode: ChecksumInputMode): ChecksumPreview {
   try {
     const result = calculateChecksums(value, mode);
+    return {
+      result: result.byteCount > 0 ? result : null,
+      error: "",
+    };
+  } catch (error) {
+    return {
+      result: null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function previewDataConversion(
+  value: string,
+  direction: DataConverterDirection,
+  numericType: DataNumericType,
+  endianness: DataConverterEndianness,
+): DataConverterPreview {
+  try {
+    const result = convertData(value, direction, numericType, endianness);
     return {
       result: result.byteCount > 0 ? result : null,
       error: "",

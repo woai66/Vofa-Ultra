@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
 import {
   createInitialModbusRtuTransactionSnapshot,
@@ -595,6 +595,79 @@ describe("TerminalPanel", () => {
     await user.keyboard("{Escape}");
     expect(dialog).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it("字节数值互转支持端序和复制且不产生发送副作用", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const sendInput = screen.getByRole("textbox", { name: "发送内容" });
+    await user.type(sendInput, "KEEP");
+    const txBytesBefore = useWorkbenchStore.getState().stats.txBytes;
+
+    await user.click(screen.getByRole("button", { name: "打开命令参考与校验" }));
+    const dialog = screen.getByRole("dialog", { name: "命令参考与校验" });
+    await user.click(within(dialog).getByRole("tab", { name: "转换" }));
+    const converterInput = within(dialog).getByRole("textbox", { name: "转换输入" });
+    expect(converterInput).toHaveFocus();
+    expect(within(dialog).getByRole("combobox", { name: "数值类型" })).toHaveValue("f32");
+
+    await user.type(converterInput, "00 00 80 3F");
+    expect(within(dialog).getByRole("textbox", { name: "规范化 HEX" })).toHaveValue(
+      "00 00 80 3F",
+    );
+    expect(within(dialog).getByRole("textbox", { name: "数值结果" })).toHaveValue("1");
+    expect(within(dialog).getByLabelText("转换结果 4 字节，1 个数值")).toHaveTextContent(
+      "4 B · 1 个数值",
+    );
+
+    await user.click(within(dialog).getByRole("button", { name: "复制数值结果" }));
+    expect(await navigator.clipboard.readText()).toBe("1");
+    expect(within(dialog).getByRole("button", { name: "数值结果已复制" })).toBeVisible();
+
+    await user.selectOptions(within(dialog).getByRole("combobox", { name: "数值类型" }), "i16");
+    const directionGroup = within(dialog).getByRole("group", { name: "转换方向" });
+    await user.click(
+      within(directionGroup).getByRole("button", {
+        name: "数值转字节",
+      }),
+    );
+    const endiannessGroup = within(dialog).getByRole("group", { name: "字节序" });
+    await user.click(
+      within(endiannessGroup).getByRole("button", {
+        name: "大端 BE",
+      }),
+    );
+    await user.clear(converterInput);
+    await user.type(converterInput, "-2");
+    expect(within(dialog).getByRole("textbox", { name: "规范化 HEX" })).toHaveValue("FF FE");
+    await user.click(within(dialog).getByRole("button", { name: "复制 HEX 结果" }));
+    expect(await navigator.clipboard.readText()).toBe("FF FE");
+
+    await user.type(converterInput, ",");
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("尾随分隔符");
+    expect(within(dialog).getByRole("textbox", { name: "规范化 HEX" })).toHaveValue("");
+    await user.clear(converterInput);
+    await user.type(converterInput, "-2");
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    const clipboardWrite = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockRejectedValueOnce(new Error("permission denied"));
+    await user.click(within(dialog).getByRole("button", { name: "复制 HEX 结果" }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("复制失败：permission denied");
+    clipboardWrite.mockRestore();
+
+    expect(sendInput).toHaveValue("KEEP");
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      sendMode: "text",
+      lineEnding: "none",
+      commandHistory: [],
+    });
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.filter((entry) => entry.direction === "tx"),
+    ).toEqual([]);
+    expect(useWorkbenchStore.getState().stats.txBytes).toBe(txBytesBefore);
   });
 
   it("将 Modbus RTU 帧填入 HEX 草稿但只通过原发送入口产生 TX", async () => {
