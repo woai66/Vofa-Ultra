@@ -8,7 +8,9 @@
 首次推送标签前，维护者需要完成以下仓库设置：
 
 1. 创建名为 `release-draft` 的 Environment，限制为 `v*` 标签，并配置至少一名 required reviewer。
-2. 使用 ruleset 保护 `main` 和 `v*` 标签，禁止 force-push、删除已发布标签和绕过必需检查。
+2. 使用 ruleset 保护 `main` 和 `v*` 标签，禁止 force-push、删除已发布标签和绕过必需检查。主分支至少要求
+   `Frontend and browser`、`Performance budget`、三平台 `Rust and desktop build` 与
+   `Rust minimum supported version` 全部成功。
 3. Actions 默认 `GITHUB_TOKEN` 权限保持只读。package job 仅增加 `id-token: write` 与 `attestations: write`；
    `release-draft` job 另外获得 `actions: read` 与 `contents: write`，用于下载同 run 产物并创建 draft。
 4. 启用 Private vulnerability reporting；正式发布后建议启用 immutable releases。
@@ -30,6 +32,7 @@ GitHub 不支持按 step 缩小 job 权限，因此手动 `workflow_dispatch` �
 
 ```bash
 pnpm check
+pnpm benchmark
 pnpm check:package
 pnpm supply-chain:check
 pnpm test:e2e
@@ -54,7 +57,7 @@ git push origin v0.1.0
 每个平台 artifact 都包含安装包、项目许可证、目标 CycloneDX、第三方 NOTICE、供应链清单、构建环境记录和平台
 `SHA256SUMS`。环境记录只在 GitHub Actions 中生成，本地收集目录不能进入正式聚合。
 
-`release-draft` job 只在三个 package 全部成功后运行，并执行以下 fail-closed 检查：
+`release-draft` job 只在三个 package 与独立 Linux 性能预算全部成功后运行，并执行以下 fail-closed 检查：
 
 - 只接受当前 `github.run_number` 与 `github.run_attempt` 对应的三个平台目录，不接受旧尝试、缺失、额外或嵌套文件。
 - 再次验证每个平台 `SHA256SUMS`，拒绝空文件、未列文件、重复名称、路径逃逸和内容篡改。
@@ -114,7 +117,7 @@ gh attestation verify <asset-file> --repo <owner>/Vofa-Ultra
 
 ## 失败与重试
 
-- 任一 package 失败时不会创建 draft；如果源码、依赖或配置需要修改，必须使用新版本和新标签重新开始。
+- 性能预算或任一 package 失败时不会创建 draft；如果源码、依赖或配置需要修改，必须使用新版本和新标签重新开始。
 - 仅处理无源码变化的瞬态失败时，必须选择 **Re-run all jobs**，让三平台产物具有同一 `run_attempt`；只重跑失败
   job 会因混用旧 attempt 而被聚合器拒绝，不能跳过该门禁。
 - 同标签 draft 已存在时 job 会拒绝覆盖。只有确认源码和资产未变化后，才可删除未发布 draft 并重跑。

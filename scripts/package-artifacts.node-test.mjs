@@ -342,6 +342,8 @@ test("pins tag-only provenance for platform builds and aggregate release assets"
   );
 
   const release_job = workflow.jobs["release-draft"];
+  assert.deepEqual(release_job.needs, ["package", "performance"]);
+  assert.equal(release_job.if, "startsWith(github.ref, 'refs/tags/v')");
   assert.deepEqual(release_job.permissions, {
     actions: "read",
     attestations: "write",

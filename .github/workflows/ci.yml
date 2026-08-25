@@ -280,6 +280,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs:
       - package
+      - performance
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     environment: release-draft
