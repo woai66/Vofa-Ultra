@@ -1774,16 +1774,42 @@ test("命名工作区可保存、切换、导出并重新导入", async ({ page 
   await page.getByRole("radio", { name: /JustFloat/ }).click();
   await expect(page.locator(".workspace-title span")).toContainText("未保存");
   await page.getByRole("button", { name: "工作区" }).click();
-  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await nameInput.fill("非法\u007f名称");
+  await page.getByRole("button", { name: "导出当前" }).click();
+  await expect(page.getByRole("alert")).toHaveText("工作区名称不能包含控制字符");
+
+  await nameInput.fill("台架导出草稿");
+  const savedWorkspaceRow = page.locator(".workspace-row").filter({ hasText: "台架副本" });
+  await expect(savedWorkspaceRow).toHaveCount(1);
+  await expect(savedWorkspaceRow).toContainText("模拟器 · FireWater");
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出当前" }).click();
   const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("台架导出草稿.vofa-workspace.json");
+  await expect(page.getByRole("status")).toHaveText("当前工作副本已导出");
+  await expect(page.getByRole("alert")).toHaveCount(0);
   const downloadPath = testInfo.outputPath("workspace.json");
   await download.saveAs(downloadPath);
+  const exported = JSON.parse(await readFile(downloadPath, "utf8")) as {
+    format: string;
+    schemaVersion: number;
+    name: string;
+    config: { protocol: string };
+  };
+  expect(exported).toMatchObject({
+    format: "vofa-ultra.workspace",
+    schemaVersion: 9,
+    name: "台架导出草稿",
+    config: { protocol: "justfloat" },
+  });
+  await expect(savedWorkspaceRow).toContainText("模拟器 · FireWater");
+  await expect(page.locator(".workspace-title span")).toContainText("未保存");
 
   await page.getByLabel("导入工作区文件").setInputFiles(downloadPath);
-  await expect(page.getByText("台架副本 (2)", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "台架导出草稿 模拟器 · JustFloat" }),
+  ).toBeVisible();
   await expect(page.locator(".workspace-title span")).toContainText("台架副本");
 
   await nameInput.fill("未保存改名");
@@ -1796,21 +1822,21 @@ test("命名工作区可保存、切换、导出并重新导入", async ({ page 
   await page.getByRole("button", { name: "放弃并切换" }).click();
   await expect(page.locator(".workspace-title span")).toContainText("默认工作区");
   await expect(page.locator(".workspace-select:focus")).toContainText("默认工作区");
-  await page.getByRole("button", { name: "台架副本 模拟器 · JustFloat" }).click();
+  await page.getByRole("button", { name: "台架副本 模拟器 · FireWater" }).click();
   await expect(page.locator(".workspace-title span")).toContainText("台架副本");
   await expect(page.locator(".workspace-select:focus")).toContainText("台架副本");
 
-  await page.getByRole("button", { name: "删除工作区 台架副本 (2)" }).click();
+  await page.getByRole("button", { name: "删除工作区 台架导出草稿" }).click();
   await expect(page.getByRole("heading", { name: "删除工作区？" })).toBeVisible();
   await page.getByRole("button", { name: "确认删除" }).click();
-  await expect(page.getByText("台架副本 (2)", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("台架导出草稿", { exact: true })).toHaveCount(0);
   await expect(page.locator(".workspace-select:focus")).toContainText("台架副本");
 
   await page.reload();
   await expect(page.locator(".workspace-title span")).toContainText("台架副本");
   await page.getByRole("button", { name: "工作区" }).click();
   await expect(
-    page.getByRole("button", { name: "台架副本 模拟器 · JustFloat" }),
+    page.getByRole("button", { name: "台架副本 模拟器 · FireWater" }),
   ).toBeVisible();
 });
 

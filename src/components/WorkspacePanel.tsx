@@ -35,6 +35,9 @@ export function WorkspacePanel() {
   const workspaces = useWorkbenchStore((state) => state.workspaces);
   const activeWorkspace = useWorkbenchStore(selectActiveWorkspace);
   const isDirty = useWorkbenchStore(selectIsWorkspaceDirty);
+  const createActiveWorkspaceExport = useWorkbenchStore(
+    (state) => state.createActiveWorkspaceExport,
+  );
   const saveActiveWorkspace = useWorkbenchStore((state) => state.saveActiveWorkspace);
   const saveWorkspaceAs = useWorkbenchStore((state) => state.saveWorkspaceAs);
   const switchWorkspace = useWorkbenchStore((state) => state.switchWorkspace);
@@ -113,6 +116,15 @@ export function WorkspacePanel() {
     try {
       saveWorkspaceAs(nameDraft);
       showFeedback("新工作区已创建");
+    } catch (error) {
+      showFeedback(getErrorMessage(error), true);
+    }
+  };
+
+  const handleExportCurrent = () => {
+    try {
+      downloadWorkspace(createActiveWorkspaceExport(nameDraft));
+      showFeedback("当前工作副本已导出");
     } catch (error) {
       showFeedback(getErrorMessage(error), true);
     }
@@ -329,8 +341,8 @@ export function WorkspacePanel() {
         <button
           className="secondary-button"
           type="button"
-          disabled={!activeWorkspace || isBusy}
-          onClick={() => activeWorkspace && downloadWorkspace(activeWorkspace)}
+          disabled={!activeWorkspace || !nameDraft.trim() || isBusy}
+          onClick={handleExportCurrent}
         >
           <FileDown size={16} />
           导出当前

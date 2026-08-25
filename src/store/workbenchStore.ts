@@ -97,6 +97,7 @@ import {
   pruneAttitudeConfigForGraph,
   restoreWorkspaceConfig,
   restoreWorkspaceProfiles,
+  validateWorkspaceName,
 } from "../core/workspaces";
 import {
   abortCapture as abortCaptureClient,
@@ -530,6 +531,7 @@ export interface WorkbenchStore {
   handleReplayState(payload: ReplayStatePayload): void;
   handleReplayBatch(payload: ReplayBatchPayload): void;
   handleReplayMarkers(payload: ReplayMarkersPayload): void;
+  createActiveWorkspaceExport(name: string): WorkspaceProfile;
   saveActiveWorkspace(name: string): void;
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
@@ -2964,6 +2966,21 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return;
         }
         set({ replayMarkers: payload.markers });
+      },
+      createActiveWorkspaceExport: (name) => {
+        const state = get();
+        assertWorkspaceIdle(state);
+        const activeWorkspace = state.workspaces.find(
+          (workspace) => workspace.id === state.activeWorkspaceId,
+        );
+        if (!activeWorkspace) {
+          throw new Error("当前工作区不存在");
+        }
+        return {
+          ...activeWorkspace,
+          name: validateWorkspaceName(name),
+          config: captureWorkspaceConfigForSave(state),
+        };
       },
       saveActiveWorkspace: (name) => {
         const state = get();

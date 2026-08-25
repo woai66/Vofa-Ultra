@@ -2354,6 +2354,81 @@ describe("workbenchStore", () => {
     expect(() => useWorkbenchStore.getState().saveWorkspaceAs("原始数据")).toThrow(/已存在/);
   });
 
+  it("导出当前工作副本且不修改已保存快照与 dirty 状态", () => {
+    useWorkbenchStore.getState().setProtocol("justfloat");
+    useWorkbenchStore.getState().setTerminalRxTextEncoding("gb18030");
+    const command = quickCommand({
+      id: "quick-export",
+      name: "导出草稿命令",
+      template: "EXPORT",
+    });
+    useWorkbenchStore.getState().setQuickCommands([command]);
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(true);
+
+    const beforeExport = useWorkbenchStore.getState();
+    const savedWorkspace = beforeExport.workspaces[0]!;
+    const exported = beforeExport.createActiveWorkspaceExport("  未保存导出  ");
+
+    expect(exported).toMatchObject({
+      id: savedWorkspace.id,
+      name: "未保存导出",
+      createdAt: savedWorkspace.createdAt,
+      updatedAt: savedWorkspace.updatedAt,
+      config: {
+        protocol: "justfloat",
+        terminalRxTextEncoding: "gb18030",
+        quickCommands: [command],
+      },
+    });
+    expect(exported.config).not.toBe(savedWorkspace.config);
+    expect(exported.config.quickCommands).not.toBe(beforeExport.quickCommands);
+    expect(useWorkbenchStore.getState()).toBe(beforeExport);
+    expect(savedWorkspace).toMatchObject({
+      name: "默认工作区",
+      config: {
+        protocol: "firewater",
+        terminalRxTextEncoding: "utf-8",
+        quickCommands: [],
+      },
+    });
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(true);
+  });
+
+  it("浏览器串口工作区导出仍保留原始串口来源", () => {
+    const serialConfig = createDefaultWorkspaceConfig("serial");
+    serialConfig.serialConfig.portName = "COM11";
+    const serialWorkspace = createWorkspaceProfile(
+      "串口台架",
+      serialConfig,
+      "serial-export",
+      200,
+    );
+    useWorkbenchStore.setState({
+      isNativeRuntime: false,
+      ...serialConfig,
+      source: "simulator",
+      workspaces: [serialWorkspace],
+      activeWorkspaceId: serialWorkspace.id,
+    });
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+
+    const beforeExport = useWorkbenchStore.getState();
+    const exported = beforeExport.createActiveWorkspaceExport("串口台架导出");
+
+    expect(exported.config.source).toBe("serial");
+    expect(exported.config.serialConfig.portName).toBe("COM11");
+    expect(useWorkbenchStore.getState()).toBe(beforeExport);
+    expect(useWorkbenchStore.getState().source).toBe("simulator");
+  });
+
+  it("工作区切换期间拒绝创建当前导出快照", () => {
+    useWorkbenchStore.setState({ workspaceTransitionStatus: "switching" });
+
+    expect(() =>
+      useWorkbenchStore.getState().createActiveWorkspaceExport("切换中的工作区"),
+    ).toThrow(/工作区操作正在进行/);
+  });
+
   it("快捷命令的增改和排序参与 dirty 并随保存形成独立快照", () => {
     const first = quickCommand();
     const second = quickCommand({
@@ -3537,6 +3612,12 @@ describe("workbenchStore", () => {
     expect(() => useWorkbenchStore.getState().setQuickCommands([quickCommand()])).toThrow(
       /版本 10.*不能保存/,
     );
+    const beforeExport = useWorkbenchStore.getState();
+    expect(beforeExport.createActiveWorkspaceExport("只读工作副本")).toMatchObject({
+      name: "只读工作副本",
+      config: { displayMode: "hex" },
+    });
+    expect(useWorkbenchStore.getState()).toBe(beforeExport);
     expect(localStorage.getItem("vofa-ultra-workbench")).toBe(futureValue);
     useWorkbenchStore.persist.clearStorage();
   });
