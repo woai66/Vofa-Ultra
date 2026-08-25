@@ -452,6 +452,29 @@ test("runs feature branches once through pull requests", () => {
   assert.equal(workflow.on.workflow_dispatch, null);
 });
 
+test("generates bundled resources before Rust compilation checks", () => {
+  const workflow = parse_yaml(
+    readFileSync(path.join(PROJECT_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
+  );
+
+  for (const job_name of ["rust", "rust-msrv"]) {
+    const steps = workflow.jobs[job_name].steps;
+    const install_index = steps.findIndex(
+      (step) => step.run?.trim() === "pnpm install --frozen-lockfile",
+    );
+    const generate_index = steps.findIndex(
+      (step) => step.run?.trim() === "pnpm supply-chain:bundle",
+    );
+    const cargo_index = steps.findIndex(
+      (step) => step.run?.trim().startsWith("cargo "),
+    );
+
+    assert.equal(install_index >= 0, true, `${job_name} must install frontend dependencies`);
+    assert.equal(generate_index > install_index, true, `${job_name} must generate after install`);
+    assert.equal(cargo_index > generate_index, true, `${job_name} must generate before Cargo`);
+  }
+});
+
 test("pins tag-only provenance for platform builds and aggregate release assets", () => {
   const workflow = parse_yaml(
     readFileSync(path.join(PROJECT_ROOT, ".github", "workflows", "ci.yml"), "utf8"),

@@ -141,6 +141,9 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate bundled supply-chain metadata
+        run: pnpm supply-chain:bundle
+
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
@@ -177,6 +180,15 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+
       - name: Set up minimum supported Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
@@ -186,6 +198,12 @@ jobs:
         uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate bundled supply-chain metadata
+        run: pnpm supply-chain:bundle
 
       - name: Check locked dependencies with minimum Rust
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features
