@@ -8,8 +8,10 @@ import {
   BUILD_ENVIRONMENT_MAX_BYTES,
   BUILD_PLATFORMS,
   LINUX_BUILD_PACKAGES,
+  assert_no_local_paths_in_binary,
   build_environment_file_name,
   build_ci_environment,
+  local_path_binary_needles,
   parse_and_validate_build_environment,
   parse_linux_build_packages,
   parse_verbose_tool_version,
@@ -151,6 +153,32 @@ test("serializes a deterministic canonical build environment without path leakag
     }),
     record,
   );
+});
+
+test("rejects UTF-8 and UTF-16LE local paths without exposing the path in errors", () => {
+  const windows_path = "C:\\Users\\private-builder\\cargo home";
+  const unix_path = "/home/private-builder/project root";
+  const fixtures = [
+    Buffer.from(`prefix ${windows_path} suffix`, "utf8"),
+    Buffer.from(`prefix ${windows_path.replaceAll("\\", "/")} suffix`, "utf16le"),
+    Buffer.from(`prefix ${unix_path} suffix`, "utf8"),
+    Buffer.from(`prefix ${unix_path.replaceAll("/", "\\")} suffix`, "utf16le"),
+  ];
+
+  assert.equal(local_path_binary_needles([windows_path, unix_path]).length, 8);
+  assert.doesNotThrow(() => {
+    assert_no_local_paths_in_binary(Buffer.from("clean release executable"), [windows_path]);
+  });
+  for (const fixture of fixtures) {
+    assert.throws(
+      () => assert_no_local_paths_in_binary(fixture, [windows_path, unix_path]),
+      (error) => {
+        assert.match(error.message, /local project or Cargo path/);
+        assert.equal(error.message.includes("private-builder"), false);
+        return true;
+      },
+    );
+  }
 });
 
 test("parses allowlisted Cargo, rustc, and Linux package fields", () => {
@@ -329,6 +357,10 @@ test("pins tag-only provenance for platform builds and aggregate release assets"
     contents: "read",
     "id-token": "write",
   });
+  const tauri_build_steps = package_job.steps.filter(
+    (step) => step.run?.trim().startsWith("pnpm tauri build"),
+  );
+  assert.equal(tauri_build_steps.length, 1);
   const collect_index = package_job.steps.findIndex((step) => step.run?.includes("package:collect"));
   const attest_index = package_job.steps.findIndex((step) => step.uses === ATTESTATION_ACTION);
   const upload_index = package_job.steps.findIndex(

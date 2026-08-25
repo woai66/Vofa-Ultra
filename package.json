@@ -29,7 +29,7 @@
     "test:tooling": "node --test scripts/*.node-test.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc -b --pretty false",
-    "tauri": "tauri"
+    "tauri": "node scripts/tauri-cli.mjs"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.12",

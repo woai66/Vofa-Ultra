@@ -2,8 +2,9 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createReadStream, existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -143,6 +144,72 @@ function read_json(file_path) {
 function normalized_path(file_path) {
   const normalized = path.normalize(path.resolve(file_path));
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function resolved_and_real_paths(file_path) {
+  const resolved_path = path.resolve(file_path);
+  const paths = [resolved_path];
+  if (existsSync(resolved_path)) {
+    try {
+      paths.push(realpathSync.native(resolved_path));
+    } catch {
+      fail("Unable to resolve a local build path for release privacy verification");
+    }
+  }
+  return [...new Set(paths)];
+}
+
+function local_build_paths(environment = process.env) {
+  const configured_cargo_home = environment.CARGO_HOME;
+  const cargo_home = typeof configured_cargo_home === "string" && configured_cargo_home.length > 0
+    ? path.resolve(PROJECT_ROOT, configured_cargo_home)
+    : path.join(homedir(), ".cargo");
+  return [...new Set([
+    ...resolved_and_real_paths(PROJECT_ROOT),
+    ...resolved_and_real_paths(cargo_home),
+  ])];
+}
+
+export function local_path_binary_needles(source_paths) {
+  if (!Array.isArray(source_paths) || source_paths.length === 0) {
+    fail("Local build paths are required for release privacy verification");
+  }
+
+  const needles = [];
+  const seen_needles = new Set();
+  for (const source_path of source_paths) {
+    if (typeof source_path !== "string" || source_path.length < 2 || source_path.includes("\0")) {
+      fail("A local build path is invalid for release privacy verification");
+    }
+    const path_variants = new Set([
+      source_path,
+      source_path.replaceAll("\\", "/"),
+      source_path.replaceAll("/", "\\"),
+    ]);
+    for (const path_variant of path_variants) {
+      for (const encoding of ["utf8", "utf16le"]) {
+        const needle = Buffer.from(path_variant, encoding);
+        const needle_key = needle.toString("hex");
+        if (!seen_needles.has(needle_key)) {
+          seen_needles.add(needle_key);
+          needles.push(needle);
+        }
+      }
+    }
+  }
+  return needles;
+}
+
+export function assert_no_local_paths_in_binary(binary, source_paths) {
+  if (!Buffer.isBuffer(binary)) {
+    fail("Release executable privacy verification requires binary data");
+  }
+  if (local_path_binary_needles(source_paths).some((needle) => binary.includes(needle))) {
+    fail(
+      "Release executable contains a local project or Cargo path; "
+        + "rebuild it through pnpm tauri build",
+    );
+  }
 }
 
 function compare_stable(left, right) {
@@ -768,6 +835,23 @@ async function hash_file(file_path) {
   return hash.digest("hex");
 }
 
+async function verify_release_executable_privacy(platform_name, bundle_root) {
+  const executable_name = platform_name === "windows" ? "vofa-ultra.exe" : "vofa-ultra";
+  const executable_path = path.join(path.dirname(bundle_root), executable_name);
+  if (!existsSync(executable_path)) {
+    fail("Release executable is missing beside the bundle directory");
+  }
+
+  const executable_stat = await stat(executable_path);
+  if (!executable_stat.isFile() || executable_stat.size === 0) {
+    fail("Release executable is not a non-empty regular file");
+  }
+  assert_no_local_paths_in_binary(
+    readFileSync(executable_path),
+    local_build_paths(),
+  );
+}
+
 async function collect_artifacts(platform_name, explicit_target) {
   const {
     resolve_target_triple,
@@ -796,6 +880,8 @@ async function collect_artifacts(platform_name, explicit_target) {
   if (existsSync(output_directory) && (await readdir(output_directory)).length > 0) {
     fail(`Artifact output directory is not empty: ${output_directory}`);
   }
+
+  await verify_release_executable_privacy(platform_name, bundle_root);
 
   const bundle_files = await list_files(bundle_root);
   const selected_files = new Set();

@@ -55,6 +55,16 @@ CycloneDX Schema、完整 target、项目元数据、输入摘要、精确 NOTIC
 专属 bundle 目录收集安装包。GitHub Actions 同时采集环境记录，并把它、供应链原文件与项目 `LICENSE` 放入同一个
 平台 `SHA256SUMS`。因此下载 sidecar 与安装内容不会由两次独立扫描产生，也不会混入另一架构的旧 bundle。
 
+`pnpm tauri build` 会在非 debug 构建中为 rustc 注入路径重映射，把项目目录和 Cargo Home 的解析路径及真实路径
+分别映射为稳定的 `/workspace` 和 `/cargo-home`。包装层保留调用方已有的 encoded rustflags；只有普通
+`RUSTFLAGS` 时才按 Cargo 的参数规则转换，开发服务器和 debug 构建不受影响。CI 与正式候选包必须经过该入口，
+不能用裸 `tauri build` 或 `cargo build` 绕过。
+
+复制安装包前，`package:collect` 会扫描同一 release 目录中的裸主程序，拒绝项目目录或 Cargo Home 的解析路径、
+真实路径、正反斜杠变体及 UTF-8/UTF-16LE 表示。门禁检查未压缩的可执行文件，不把 MSI、NSIS、DMG、DEB 或
+AppImage 的外层压缩视为脱敏；错误也不会回显命中的本机路径。这项检查防止 Rust panic/source-location 字符串泄露
+构建者目录，但不等同于任意隐私数据扫描，也不使安装包自动可复现。
+
 版本标签的三个 package job 会在上传 artifact 前，为平台目录中的每个文件生成 GitHub build provenance。
 `release-draft` job 只接受当前 run attempt 的 Linux、macOS、Windows 三个 artifact，重新验证平台清单、环境记录、
 target 和项目许可证后再扁平化。重名的 `SUPPLY_CHAIN_SHA256SUMS` 会改为带 target 的名称，最终对全部 Release
