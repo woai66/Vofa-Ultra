@@ -3991,6 +3991,14 @@ describe("workbenchStore", () => {
       captureSessionId: 9,
       numericLogStatus: "recording",
       numericLogSessionId: 17,
+      waveformTrigger: {
+        ...createArmedWaveformTriggerState(
+          { channelId: "channel-0", edge: "rising", threshold: 5 },
+          5,
+        ),
+        previousTimestampSeconds: 1,
+        previousValue: 1,
+      },
     });
 
     const firstClose = prepareWorkbenchForAppClose();
@@ -4003,7 +4011,11 @@ describe("workbenchStore", () => {
       numericLogStatus: "stopping",
       runtimeTransitionStatus: "closing-app",
       statusMessage: "正在完成记录并关闭应用",
+      waveformTrigger: { phase: "idle" },
     });
+
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("10\n"), 2_000);
+    expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("idle");
 
     captureStopped.resolve({
       status: "idle",

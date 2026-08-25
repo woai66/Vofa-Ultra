@@ -3229,6 +3229,7 @@ export async function prepareWorkbenchForAppClose(): Promise<void> {
   useWorkbenchStore.setState({
     runtimeTransitionStatus: "closing-app",
     statusMessage: "正在完成记录并关闭应用",
+    waveformTrigger: createIdleWaveformTriggerState(),
   });
   const recordingsStopped = await stopCurrentRecordings(
     useWorkbenchStore.getState,
