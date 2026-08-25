@@ -83,6 +83,8 @@ describe("TerminalPanel", () => {
     const search = screen.getByRole("searchbox", { name: "搜索终端记录" });
     const direction = screen.getByRole("group", { name: "终端方向筛选" });
 
+    expect(search).toHaveAttribute("id", "terminal-search-query");
+    expect(search).toHaveAttribute("name", "terminal-search-query");
     expect(search).toHaveAttribute("maxlength", "256");
     expect(screen.getByText("3 条记录")).toBeVisible();
     await user.type(search, ".*");

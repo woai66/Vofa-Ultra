@@ -424,6 +424,8 @@ export function TerminalPanel() {
         <div className="terminal-search-field">
           <Search size={15} aria-hidden="true" />
           <input
+            id="terminal-search-query"
+            name="terminal-search-query"
             type="search"
             aria-label="搜索终端记录"
             aria-controls="terminal-record-list"
