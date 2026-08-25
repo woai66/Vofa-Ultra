@@ -7,6 +7,7 @@ import {
 } from "../core/autoResponder";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
 import {
+  buildModbusRtuRequest,
   createInitialModbusRtuTransactionSnapshot,
   simulateModbusRtuResponse,
 } from "../core/modbusRtu";
@@ -722,6 +723,145 @@ describe("workbenchStore", () => {
     backendCancellation.resolve(true);
     await flushPromises();
     expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("idle");
+  });
+
+  it("启动请求未返回时卸载会忽略迟到的原生终态", async () => {
+    const backendStart = deferred<void>();
+    const backendCancellation = deferred<boolean>();
+    startSerialModbusTransactionMock.mockReturnValueOnce(backendStart.promise);
+    cancelSerialModbusTransactionMock.mockReturnValueOnce(backendCancellation.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 9,
+    });
+    const request = {
+      operation: "write-single-register" as const,
+      unitId: 1,
+      address: 3,
+      value: 10,
+    };
+
+    const startTransaction = useWorkbenchStore
+      .getState()
+      .startModbusTransaction(request, 500);
+    const active = useWorkbenchStore.getState().modbusTransaction;
+    expect(active.status).toBe("queued");
+
+    disposeWorkbenchRuntime();
+    const localRecord = useWorkbenchStore.getState().modbusTransactions[0];
+    expect(localRecord).toMatchObject({
+      transactionId: active.transactionId,
+      status: "cancelled",
+      errorCode: "cancelled-after-transmit",
+    });
+
+    backendStart.resolve(undefined);
+    backendCancellation.resolve(true);
+    await expect(startTransaction).resolves.toBe(true);
+    await flushPromises();
+    useWorkbenchStore.getState().handleModbusTransaction({
+      transactionId: active.transactionId,
+      status: "cancelled",
+      request: testBase64(active.requestFrame),
+      startedAt: 1_000,
+      endedAt: 1_020,
+      durationMs: 20,
+      generation: active.generation,
+      errorCode: "cancelled",
+      message: "迟到的发送前取消结果",
+    });
+
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("idle");
+    expect(useWorkbenchStore.getState().modbusTransactions).toEqual([localRecord]);
+  });
+
+  it("取消请求未返回时卸载会保留原生请求风险提示", async () => {
+    const backendCancellation = deferred<boolean>();
+    cancelSerialModbusTransactionMock.mockReturnValueOnce(backendCancellation.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 10,
+    });
+    const request = {
+      operation: "write-single-register" as const,
+      unitId: 1,
+      address: 4,
+      value: 11,
+    };
+
+    await useWorkbenchStore.getState().startModbusTransaction(request, 500);
+    const active = useWorkbenchStore.getState().modbusTransaction;
+    const cancelTransaction = useWorkbenchStore.getState().cancelModbusTransaction();
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("cancelling");
+
+    disposeWorkbenchRuntime();
+    const localRecord = useWorkbenchStore.getState().modbusTransactions[0];
+    expect(cancelSerialModbusTransactionMock).toHaveBeenCalledTimes(2);
+    expect(localRecord).toMatchObject({
+      transactionId: active.transactionId,
+      status: "cancelled",
+      errorCode: "cancelled-after-transmit",
+    });
+    expect(localRecord?.message).toContain("写操作可能已被设备执行");
+
+    backendCancellation.resolve(false);
+    await expect(cancelTransaction).resolves.toBe(false);
+    await flushPromises();
+    useWorkbenchStore.getState().handleModbusTransaction({
+      transactionId: active.transactionId,
+      status: "cancelled",
+      request: testBase64(active.requestFrame),
+      startedAt: 1_000,
+      endedAt: Date.now(),
+      durationMs: 0,
+      generation: active.generation,
+      errorCode: "cancelled",
+      message: "迟到的发送前取消结果",
+    });
+
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("idle");
+    expect(useWorkbenchStore.getState().modbusTransactions).toEqual([localRecord]);
+  });
+
+  it("模拟器请求尚未发送时卸载会记录发送前取消", () => {
+    const request = {
+      operation: "write-single-register" as const,
+      unitId: 1,
+      address: 5,
+      value: 12,
+    };
+    useWorkbenchStore.setState({
+      isNativeRuntime: false,
+      source: "simulator",
+      connectionStatus: "connected",
+      modbusTransaction: {
+        transactionId: 101,
+        generation: 0,
+        status: "queued",
+        request,
+        requestFrame: buildModbusRtuRequest(request),
+        timeoutMs: 500,
+        queuedAt: Date.now(),
+        message: "等待 Modbus RTU 总线静默",
+      },
+    });
+
+    disposeWorkbenchRuntime();
+
+    expect(cancelSerialModbusTransactionMock).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("idle");
+    expect(useWorkbenchStore.getState().modbusTransactions[0]).toMatchObject({
+      transactionId: 101,
+      status: "cancelled",
+      errorCode: "cancelled",
+    });
+    expect(useWorkbenchStore.getState().modbusTransactions[0]?.message).toContain(
+      "请求尚未发送",
+    );
   });
 
   it("非法变量在发送前失败且不产生 TX、历史或任务", async () => {
