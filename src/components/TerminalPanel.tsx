@@ -39,6 +39,13 @@ import {
 } from "../core/commandWorkflow";
 import { isAutoResponderActive } from "../core/autoResponder";
 import {
+  calculateChecksums,
+  MAX_CHECKSUM_INPUT_CHARACTERS,
+  type ChecksumInputMode,
+  type ChecksumResult,
+} from "../core/checksum";
+import { getHorizontalTabTarget } from "../core/tabNavigation";
+import {
   filterTerminalEntries,
   findTerminalLiteralMatches,
   MAX_TERMINAL_SEARCH_CHARACTERS,
@@ -58,7 +65,8 @@ import { ModbusRtuBuilder } from "./ModbusRtuBuilder";
 import { QuickCommandPopover } from "./QuickCommandPopover";
 
 type RepeatMode = "count" | "continuous";
-type CommandReferenceView = "variables" | "ascii";
+const COMMAND_REFERENCE_VIEWS = ["variables", "ascii", "checksum"] as const;
+type CommandReferenceView = (typeof COMMAND_REFERENCE_VIEWS)[number];
 
 const TERMINAL_LATEST_THRESHOLD_PX = 24;
 const MAX_ASCII_SEARCH_CHARACTERS = 32;
@@ -215,6 +223,11 @@ interface CommandTemplatePreview {
   error: string;
 }
 
+interface ChecksumPreview {
+  result: ChecksumResult | null;
+  error: string;
+}
+
 export function TerminalPanel() {
   const entries = useWorkbenchStore((state) => state.terminalEntries);
   const displayMode = useWorkbenchStore((state) => state.displayMode);
@@ -253,6 +266,7 @@ export function TerminalPanel() {
   const variableTriggerRef = useRef<HTMLButtonElement>(null);
   const variableListRef = useRef<HTMLDivElement>(null);
   const asciiSearchRef = useRef<HTMLInputElement>(null);
+  const checksumInputRef = useRef<HTMLTextAreaElement>(null);
   const historyCursorRef = useRef<number | null>(null);
   const historyDraftRef = useRef<CommandDraft | null>(null);
   const pendingSelectionRef = useRef<number | null>(null);
@@ -267,6 +281,8 @@ export function TerminalPanel() {
   const [commandReferenceView, setCommandReferenceView] =
     useState<CommandReferenceView>("variables");
   const [asciiSearchQuery, setAsciiSearchQuery] = useState("");
+  const [checksumInputMode, setChecksumInputMode] = useState<ChecksumInputMode>("hex");
+  const [checksumInput, setChecksumInput] = useState("");
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [intervalText, setIntervalText] = useState("1000");
   const [repeatMode, setRepeatMode] = useState<RepeatMode>("count");
@@ -286,6 +302,10 @@ export function TerminalPanel() {
   const visibleAsciiEntries = useMemo(
     () => filterAsciiReferenceEntries(asciiSearchQuery),
     [asciiSearchQuery],
+  );
+  const checksumPreview = useMemo(
+    () => previewChecksum(checksumInput, checksumInputMode),
+    [checksumInput, checksumInputMode],
   );
   const visibleError = templatePreview.error || sendError;
   const taskActive = commandTask.status === "running" || commandTask.status === "stopping";
@@ -415,10 +435,16 @@ export function TerminalPanel() {
     if (!variablesOpen) {
       return;
     }
-    if (commandReferenceView === "ascii") {
-      asciiSearchRef.current?.focus();
-    } else {
-      variableListRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    switch (commandReferenceView) {
+      case "ascii":
+        asciiSearchRef.current?.focus();
+        break;
+      case "checksum":
+        checksumInputRef.current?.focus();
+        break;
+      case "variables":
+        variableListRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+        break;
     }
   }, [availableVariables, commandReferenceView, variablesOpen]);
 
@@ -432,6 +458,17 @@ export function TerminalPanel() {
   const resetHistoryNavigation = () => {
     historyCursorRef.current = null;
     historyDraftRef.current = null;
+  };
+
+  const handleCommandReferenceTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    current: CommandReferenceView,
+  ) => {
+    const target = getHorizontalTabTarget(COMMAND_REFERENCE_VIEWS, current, event.key);
+    if (target !== undefined) {
+      event.preventDefault();
+      setCommandReferenceView(target);
+    }
   };
 
   const applyDraft = (draft: CommandDraft) => {
@@ -903,8 +940,8 @@ export function TerminalPanel() {
             ref={variableTriggerRef}
             className="icon-button composer-icon-button command-variable-trigger"
             type="button"
-            aria-label={variablesOpen ? "关闭命令变量与 ASCII 快查" : "打开命令变量与 ASCII 快查"}
-            title="命令变量与 ASCII 快查"
+            aria-label={variablesOpen ? "关闭命令参考与校验" : "打开命令参考与校验"}
+            title="命令参考与校验"
             aria-haspopup="dialog"
             aria-controls="command-variable-popover"
             aria-expanded={variablesOpen}
@@ -1183,8 +1220,9 @@ export function TerminalPanel() {
           <div
             id="command-variable-popover"
             className="command-variable-popover"
+            data-view={commandReferenceView}
             role="dialog"
-            aria-label="命令变量与 ASCII 快查"
+            aria-label="命令参考与校验"
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault();
@@ -1196,7 +1234,7 @@ export function TerminalPanel() {
             <div className="command-variable-header">
               <div>
                 <Braces size={14} />
-                <strong>命令变量与 ASCII 快查</strong>
+                <strong>命令参考与校验</strong>
               </div>
             </div>
             <div
@@ -1212,14 +1250,7 @@ export function TerminalPanel() {
                 aria-selected={commandReferenceView === "variables"}
                 tabIndex={commandReferenceView === "variables" ? 0 : -1}
                 data-active={commandReferenceView === "variables"}
-                onKeyDown={(event) => {
-                  if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-                    event.preventDefault();
-                    setCommandReferenceView(event.key === "ArrowLeft" || event.key === "Home"
-                      ? "variables"
-                      : "ascii");
-                  }
-                }}
+                onKeyDown={(event) => handleCommandReferenceTabKeyDown(event, "variables")}
                 onClick={() => setCommandReferenceView("variables")}
               >
                 变量
@@ -1232,17 +1263,23 @@ export function TerminalPanel() {
                 aria-selected={commandReferenceView === "ascii"}
                 tabIndex={commandReferenceView === "ascii" ? 0 : -1}
                 data-active={commandReferenceView === "ascii"}
-                onKeyDown={(event) => {
-                  if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-                    event.preventDefault();
-                    setCommandReferenceView(event.key === "ArrowRight" || event.key === "End"
-                      ? "ascii"
-                      : "variables");
-                  }
-                }}
+                onKeyDown={(event) => handleCommandReferenceTabKeyDown(event, "ascii")}
                 onClick={() => setCommandReferenceView("ascii")}
               >
                 ASCII
+              </button>
+              <button
+                id="command-reference-checksum-tab"
+                type="button"
+                role="tab"
+                aria-controls="command-reference-checksum-panel"
+                aria-selected={commandReferenceView === "checksum"}
+                tabIndex={commandReferenceView === "checksum" ? 0 : -1}
+                data-active={commandReferenceView === "checksum"}
+                onKeyDown={(event) => handleCommandReferenceTabKeyDown(event, "checksum")}
+                onClick={() => setCommandReferenceView("checksum")}
+              >
+                校验
               </button>
             </div>
             {commandReferenceView === "variables" ? (
@@ -1265,7 +1302,7 @@ export function TerminalPanel() {
                   </button>
                 ))}
               </div>
-            ) : (
+            ) : commandReferenceView === "ascii" ? (
               <div
                 id="command-reference-ascii-panel"
                 role="tabpanel"
@@ -1325,6 +1362,94 @@ export function TerminalPanel() {
                     </div>
                   )}
                 </div>
+              </div>
+            ) : (
+              <div
+                id="command-reference-checksum-panel"
+                role="tabpanel"
+                aria-labelledby="command-reference-checksum-tab"
+                className="checksum-reference-panel"
+              >
+                <div className="checksum-reference-toolbar">
+                  <div
+                    className="segmented-control checksum-reference-modes"
+                    role="group"
+                    aria-label="校验输入格式"
+                  >
+                    <button
+                      type="button"
+                      data-active={checksumInputMode === "text"}
+                      onClick={() => setChecksumInputMode("text")}
+                    >
+                      TEXT
+                    </button>
+                    <button
+                      type="button"
+                      data-active={checksumInputMode === "hex"}
+                      onClick={() => setChecksumInputMode("hex")}
+                    >
+                      HEX
+                    </button>
+                  </div>
+                  <output aria-label={`校验输入 ${checksumPreview.result?.byteCount ?? 0} 字节`}>
+                    {checksumPreview.result?.byteCount ?? 0} B
+                  </output>
+                </div>
+                <label className="checksum-reference-input">
+                  <span className="sr-only">校验输入</span>
+                  <textarea
+                    ref={checksumInputRef}
+                    aria-label="校验输入"
+                    aria-invalid={checksumPreview.error ? "true" : "false"}
+                    aria-describedby="checksum-reference-error"
+                    placeholder={checksumInputMode === "text" ? "输入 UTF-8 文本" : "输入 HEX 字节"}
+                    value={checksumInput}
+                    maxLength={MAX_CHECKSUM_INPUT_CHARACTERS}
+                    spellCheck={false}
+                    onChange={(event) => setChecksumInput(event.target.value)}
+                  />
+                </label>
+                <span
+                  id="checksum-reference-error"
+                  className="checksum-reference-error"
+                  role={checksumPreview.error ? "alert" : undefined}
+                >
+                  {checksumPreview.error || "\u00a0"}
+                </span>
+                <dl className="checksum-reference-results" aria-label="校验结果">
+                  <div>
+                    <dt>CRC-16/MODBUS</dt>
+                    <dd>
+                      <code>{formatChecksumHex(checksumPreview.result?.crc16Modbus, 4)}</code>
+                      <span>
+                        {checksumPreview.result
+                          ? `低字节在前 ${formatModbusCrcBytes(checksumPreview.result.crc16Modbus)}`
+                          : "低字节在前"}
+                      </span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>CRC-32</dt>
+                    <dd>
+                      <code>{formatChecksumHex(checksumPreview.result?.crc32, 8)}</code>
+                      <span>32 位</span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>XOR-8</dt>
+                    <dd>
+                      <code>{formatChecksumHex(checksumPreview.result?.xor8, 2)}</code>
+                      <span>逐字节异或</span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>SUM-8</dt>
+                    <dd>
+                      <code>{formatChecksumHex(checksumPreview.result?.sum8, 2)}</code>
+                      <span>累加低 8 位</span>
+                    </dd>
+                  </div>
+                </dl>
               </div>
             )}
           </div>
@@ -1389,6 +1514,35 @@ function previewCommandTemplate(
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function previewChecksum(value: string, mode: ChecksumInputMode): ChecksumPreview {
+  try {
+    const result = calculateChecksums(value, mode);
+    return {
+      result: result.byteCount > 0 ? result : null,
+      error: "",
+    };
+  } catch (error) {
+    return {
+      result: null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function formatChecksumHex(value: number | undefined, width: number): string {
+  return value === undefined
+    ? "--"
+    : `0x${value.toString(16).toUpperCase().padStart(width, "0")}`;
+}
+
+function formatModbusCrcBytes(value: number): string {
+  const low = value & 0xff;
+  const high = (value >>> 8) & 0xff;
+  return [low, high]
+    .map((byte) => byte.toString(16).toUpperCase().padStart(2, "0"))
+    .join(" ");
 }
 
 function formatTaskSummary(task: CommandTaskSnapshot): string {

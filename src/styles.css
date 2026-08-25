@@ -3701,6 +3701,10 @@ textarea:focus {
   width: min(420px, calc(100% - 20px));
 }
 
+.command-variable-popover[data-view="checksum"] {
+  max-height: min(360px, calc(100vh - 120px));
+}
+
 .quick-command-popover {
   width: min(480px, calc(100% - 20px));
   max-height: min(420px, calc(100vh - 120px));
@@ -4337,6 +4341,132 @@ textarea:focus {
   color: var(--text-subtle);
   font-size: 10px;
   gap: 7px;
+}
+
+.checksum-reference-panel {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.checksum-reference-toolbar {
+  display: flex;
+  min-height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 10px 7px;
+  gap: 8px;
+}
+
+.checksum-reference-modes {
+  flex: 0 0 132px;
+}
+
+.checksum-reference-modes.segmented-control button {
+  height: 30px;
+}
+
+.checksum-reference-toolbar output {
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.checksum-reference-input {
+  display: block;
+  flex: 0 0 auto;
+  margin: 0 10px;
+}
+
+.checksum-reference-input textarea {
+  display: block;
+  width: 100%;
+  height: 58px;
+  min-height: 58px;
+  padding: 7px 9px;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  outline: 0;
+  background: var(--surface-1);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.checksum-reference-input textarea:focus {
+  border-color: var(--accent);
+}
+
+.checksum-reference-input textarea[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.checksum-reference-error {
+  min-height: 14px;
+  flex: 0 0 auto;
+  margin: 2px 10px 4px;
+  color: var(--danger);
+  font-size: 9px;
+  line-height: 14px;
+  overflow-wrap: anywhere;
+}
+
+.checksum-reference-results {
+  display: grid;
+  min-height: 0;
+  margin: 0;
+  border-top: 1px solid var(--border);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.checksum-reference-results > div {
+  display: grid;
+  min-width: 0;
+  min-height: 52px;
+  align-content: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--chart-grid);
+  gap: 3px;
+}
+
+.checksum-reference-results > div:nth-child(odd) {
+  border-right: 1px solid var(--chart-grid);
+}
+
+.checksum-reference-results dt {
+  color: var(--text-subtle);
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.checksum-reference-results dd {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  gap: 1px;
+}
+
+.checksum-reference-results code {
+  overflow: hidden;
+  color: var(--cyan);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.checksum-reference-results span {
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .command-history-list {
@@ -5104,7 +5234,9 @@ textarea:focus {
   .command-reference-tabs.segmented-control button,
   .ascii-reference-search,
   .ascii-reference-search input,
-  .ascii-reference-search button {
+  .ascii-reference-search button,
+  .checksum-reference-modes.segmented-control button,
+  .checksum-reference-input textarea {
     min-height: 44px;
   }
 

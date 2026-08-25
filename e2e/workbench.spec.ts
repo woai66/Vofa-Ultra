@@ -1183,8 +1183,8 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   await lineEnding.selectOption("none");
   await page.getByRole("button", { name: "展开周期发送设置" }).click();
   await expect(page.locator(".command-workflow")).toBeVisible();
-  await page.getByRole("button", { name: "打开命令变量与 ASCII 快查" }).click();
-  const variableDialog = page.getByRole("dialog", { name: "命令变量与 ASCII 快查" });
+  await page.getByRole("button", { name: "打开命令参考与校验" }).click();
+  const variableDialog = page.getByRole("dialog", { name: "命令参考与校验" });
   await expect(variableDialog).toBeVisible();
   const firstVariable = variableDialog.getByRole("button", { name: /插入发送序号/ });
   await expect(firstVariable).toBeFocused();
@@ -1196,6 +1196,22 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   await expect(variableDialog.getByRole("row", { name: "CR 13 0D 回车" })).toBeVisible();
   const asciiSearchBounds = await asciiSearch.boundingBox();
   expect(asciiSearchBounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  await variableDialog.getByRole("tab", { name: "校验" }).click();
+  const checksumInput = variableDialog.getByRole("textbox", { name: "校验输入" });
+  await expect(checksumInput).toBeFocused();
+  await checksumInput.fill("31 32 33 34 35 36 37 38 39");
+  await expect(variableDialog.getByText("0x4B37")).toBeVisible();
+  await expect(variableDialog.getByText("低字节在前 37 4B")).toBeVisible();
+  await expect(variableDialog.getByText("0xCBF43926")).toBeVisible();
+  const xorResult = variableDialog.getByText("0x31", { exact: true });
+  const sumResult = variableDialog.getByText("0xDD", { exact: true });
+  await expect(xorResult).toBeVisible();
+  await expect(sumResult).toBeVisible();
+  expect(await clippedVisibleHeight(xorResult)).toBeGreaterThanOrEqual(12);
+  expect(await clippedVisibleHeight(sumResult)).toBeGreaterThanOrEqual(12);
+  await expect(page.getByRole("textbox", { name: "发送内容" })).toHaveValue("AA");
+  const checksumInputBounds = await checksumInput.boundingBox();
+  expect(checksumInputBounds?.height ?? 0).toBeGreaterThanOrEqual(44);
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "处理", exact: true }).click();
   await expect(page.getByRole("heading", { name: "数据处理" })).toBeVisible();
@@ -1460,9 +1476,9 @@ test("短窗口仍可操作发送栏", async ({ page }) => {
     .getByRole("group", { name: "发送格式" })
     .getByRole("button", { name: "HEX" })
     .click();
-  const variableTrigger = page.getByRole("button", { name: "打开命令变量与 ASCII 快查" });
+  const variableTrigger = page.getByRole("button", { name: "打开命令参考与校验" });
   await variableTrigger.click();
-  const variableDialog = page.getByRole("dialog", { name: "命令变量与 ASCII 快查" });
+  const variableDialog = page.getByRole("dialog", { name: "命令参考与校验" });
   const firstVariable = variableDialog.getByRole("button", { name: /插入序号 U8/ });
   await expect(firstVariable).toBeFocused();
   expect(await clippedVisibleHeight(firstVariable)).toBeGreaterThanOrEqual(48);
