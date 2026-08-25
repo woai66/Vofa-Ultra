@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { installAppCloseHandler } from "../services/appLifecycle";
 import {
   getCaptureState,
   subscribeToCaptureEvents,
@@ -25,6 +26,7 @@ import {
 import { startSimulator } from "../services/simulator";
 import {
   disposeWorkbenchRuntime,
+  prepareWorkbenchForAppClose,
   useWorkbenchStore,
 } from "../store/workbenchStore";
 
@@ -51,6 +53,28 @@ export function useWorkbenchRuntime(): void {
   const handleReplayState = useWorkbenchStore((state) => state.handleReplayState);
   const handleReplayBatch = useWorkbenchStore((state) => state.handleReplayBatch);
   const handleReplayMarkers = useWorkbenchStore((state) => state.handleReplayMarkers);
+
+  useEffect(() => {
+    let cancelled = false;
+    let dispose: () => void = () => undefined;
+
+    void installAppCloseHandler(prepareWorkbenchForAppClose)
+      .then((unlisten) => {
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+        dispose = unlisten;
+      })
+      .catch((error: unknown) => {
+        console.error("初始化应用关闭监听失败", error);
+      });
+
+    return () => {
+      cancelled = true;
+      dispose();
+    };
+  }, []);
 
   useEffect(() => {
     const nativeRuntime = isTauriRuntime();

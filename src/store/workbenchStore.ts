@@ -321,7 +321,8 @@ type RuntimeTransitionStatus =
   | "selecting-replay"
   | "opening-replay"
   | "controlling-replay"
-  | "switching-workspace";
+  | "switching-workspace"
+  | "closing-app";
 
 export interface WorkbenchStore {
   isNativeRuntime: boolean;
@@ -3221,6 +3222,21 @@ export function disposeWorkbenchRuntime(): void {
       await cancelPendingSerialConnection();
     }
   })().catch(() => undefined);
+}
+
+export async function prepareWorkbenchForAppClose(): Promise<void> {
+  stopCurrentCommandWorkflows("runtime-dispose");
+  useWorkbenchStore.setState({
+    runtimeTransitionStatus: "closing-app",
+    statusMessage: "正在完成记录并关闭应用",
+  });
+  const recordingsStopped = await stopCurrentRecordings(
+    useWorkbenchStore.getState,
+    useWorkbenchStore.setState,
+  );
+  if (!recordingsStopped) {
+    throw new Error("记录任务未能在应用关闭前正常完成");
+  }
 }
 
 function cancelModbusTransactionForRuntimeDispose(): void {

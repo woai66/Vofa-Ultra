@@ -382,8 +382,9 @@ Zustand。渲染循环用单位四元数 slerp 平滑更新，系统要求减少
 
 ## 安全边界
 
-- capability 仅启用 `core:default`、`dialog:allow-open` 和 `dialog:allow-save`；Rust 持有选中的源/目标路径，
-  WebView 不具备通用文件系统、进程、Shell 或 opener 权限。
+- capability 仅启用 `core:default`、主窗口 `core:window:allow-destroy`、`dialog:allow-open` 和
+  `dialog:allow-save`；`destroy` 只在已拦截的关闭请求完成有界收尾后调用。Rust 持有选中的源/目标路径，WebView
+  不具备通用文件系统、进程、Shell 或 opener 权限。
 - CSP 默认只允许自身资源，并显式禁用 `base-uri`、`object-src` 和 `frame-src`。
 - 窗口保持不透明和系统装饰，避免透明窗口带来的可读性与平台兼容问题。
 - 主 WebView 不执行动态字符串代码、JavaScript 插件或原生库。用户选择的 `.vux` 仅在 Rust 主进程内的受限
@@ -460,7 +461,9 @@ CSV 固定为 `sample_index,timestamp_unix_us,elapsed_us,channel_kind,channel_id
 目标文件优先位于下载目录 `Vofa-Ultra`，失败时回退应用数据目录 `recordings`。writer 使用 `create_new` 写唯一
 `.csv.part`；正常停止后 flush、`sync_all` 并原子改名为 `.csv`。中止、磁盘错误或 panic 保留 `.part` 的可诊断
 前缀并在状态中返回实际路径，底层 I/O 失败时末行可能不完整。断开、自动重连边界、切换工作区和打开回放都会
-先 flush 前端队列并等待 writer 收尾；应用退出则由 Rust state Drop 中止并交给回收线程，最多等待 2 秒。
+先 flush 前端队列并等待 writer 收尾。主窗口关闭请求也会先停止命令工作流，把原始捕获和数值日志原子切到
+stopping，并复用相同收尾路径；重复关闭共享同一次操作。整个关闭收尾最多等待 12 秒，超时或失败后仍关闭窗口，
+由 Rust Drop 保守中止并保留未完成文件，不会把可能缺样的数据提交为完整 `.csv`。
 
 ## 流式捕获导出
 

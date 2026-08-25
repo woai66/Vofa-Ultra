@@ -2192,9 +2192,27 @@ test("桌面实时链路批量记录解析后的数值 CSV", async ({ page }) =>
     ],
   ]);
 
-  await page.getByRole("button", { name: "停止数值记录" }).click();
+  await page.evaluate(async () => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { requestClose(): Promise<void> };
+    };
+    await testWindow.__TAURI_TEST__.requestClose();
+  });
   await expect(page.getByLabel("数值记录状态")).toContainText("未记录数值");
   await expect(page.getByText("numeric.csv", { exact: true })).toBeVisible();
+  const closeOperations = await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { closeOperations: string[]; destroyCount: number };
+    };
+    return {
+      closeOperations: testWindow.__TAURI_TEST__.closeOperations,
+      destroyCount: testWindow.__TAURI_TEST__.destroyCount,
+    };
+  });
+  expect(closeOperations).toEqual({
+    closeOperations: ["append_numeric_log", "stop_numeric_log", "destroy"],
+    destroyCount: 1,
+  });
   expect(pageErrors).toEqual([]);
 });
 
@@ -2518,6 +2536,11 @@ async function installTauriReplayMock(
     };
     testWindow.__TAURI_INTERNALS__ = {
       invoke,
+      metadata: {
+        currentWindow: {
+          label: "main",
+        },
+      },
       transformCallback: (callback: Callback, once = false) => {
         const id = nextCallbackId;
         nextCallbackId += 1;
@@ -2589,6 +2612,8 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       message: "",
     };
     const numericLogBatches: unknown[][] = [];
+    const closeOperations: string[] = [];
+    let destroyCount = 0;
 
     const emit = (event: string, payload: unknown) => {
       for (const callbackId of listeners.get(event) ?? []) {
@@ -2612,6 +2637,11 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           event,
           (listeners.get(event) ?? []).filter((id) => id !== eventId),
         );
+        return undefined;
+      }
+      if (command === "plugin:window|destroy") {
+        closeOperations.push("destroy");
+        destroyCount += 1;
         return undefined;
       }
       if (command === "list_serial_ports") {
@@ -2761,6 +2791,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         return { ...numericLogState };
       }
       if (command === "append_numeric_log") {
+        closeOperations.push("append_numeric_log");
         const samples = (args?.samples as unknown[]) ?? [];
         numericLogBatches.push(samples);
         numericLogState = {
@@ -2773,6 +2804,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         return undefined;
       }
       if (command === "stop_numeric_log") {
+        closeOperations.push("stop_numeric_log");
         numericLogState = {
           ...numericLogState,
           status: "idle",
@@ -2841,14 +2873,22 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       __TAURI_INTERNALS__: Record<string, unknown>;
       __TAURI_EVENT_PLUGIN_INTERNALS__: Record<string, unknown>;
       __TAURI_TEST__: {
+        closeOperations: string[];
+        destroyCount: number;
         emitNumericData(): void;
         loseDevice(): void;
+        requestClose(): Promise<void>;
         restoreDevice(): void;
         numericLogBatches: unknown[][];
       };
     };
     testWindow.__TAURI_INTERNALS__ = {
       invoke,
+      metadata: {
+        currentWindow: {
+          label: "main",
+        },
+      },
       transformCallback: (callback: Callback, once = false) => {
         const id = nextCallbackId;
         nextCallbackId += 1;
@@ -2866,6 +2906,10 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       unregisterListener: (_event: string, id: number) => callbacks.delete(id),
     };
     testWindow.__TAURI_TEST__ = {
+      closeOperations,
+      get destroyCount() {
+        return destroyCount;
+      },
       numericLogBatches,
       emitNumericData: () => {
         emit("serial://data", {
@@ -2874,6 +2918,17 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           receivedAt: 1_700_000_000_000,
           generation: serialState.generation,
         });
+      },
+      requestClose: async () => {
+        await Promise.all(
+          (listeners.get("tauri://close-requested") ?? []).map((callbackId) =>
+            callbacks.get(callbackId)?.({
+              event: "tauri://close-requested",
+              id: callbackId,
+              payload: null,
+            }),
+          ),
+        );
       },
       loseDevice: () => {
         ports = [];

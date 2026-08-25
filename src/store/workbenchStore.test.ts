@@ -76,6 +76,7 @@ import type {
 import type { QuickCommand } from "../types/workbench";
 import {
   disposeWorkbenchRuntime,
+  prepareWorkbenchForAppClose,
   selectIsWorkspaceDirty,
   useWorkbenchStore,
   WORKBENCH_MIGRATABLE_STORAGE_VERSIONS,
@@ -3975,6 +3976,82 @@ describe("workbenchStore", () => {
       captureStatus: "idle",
       numericLogStatus: "idle",
       numericLogSampleCount: 6,
+    });
+  });
+
+  it("应用关闭前幂等完成两类记录", async () => {
+    const captureStopped = deferred<CaptureStatePayload>();
+    const numericLogStopped = deferred<NumericLogStatePayload>();
+    stopCaptureMock.mockReturnValue(captureStopped.promise);
+    stopNumericLogMock.mockReturnValue(numericLogStopped.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      connectionStatus: "connected",
+      captureStatus: "recording",
+      captureSessionId: 9,
+      numericLogStatus: "recording",
+      numericLogSessionId: 17,
+    });
+
+    const firstClose = prepareWorkbenchForAppClose();
+    const secondClose = prepareWorkbenchForAppClose();
+
+    expect(stopCaptureMock).toHaveBeenCalledOnce();
+    expect(stopNumericLogMock).toHaveBeenCalledOnce();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureStatus: "stopping",
+      numericLogStatus: "stopping",
+      runtimeTransitionStatus: "closing-app",
+      statusMessage: "正在完成记录并关闭应用",
+    });
+
+    captureStopped.resolve({
+      status: "idle",
+      sessionId: 9,
+      revision: 6,
+      formatVersion: 2,
+      path: "C:\\captures\\complete.vucap",
+      endedAtUnixMs: 2_000,
+      dataBytes: 128,
+      recordCount: 4,
+      markerCount: 1,
+    });
+    numericLogStopped.resolve(
+      numericLogState("idle", {
+        sessionId: 17,
+        revision: 6,
+        path: "C:\\captures\\numeric.csv",
+        endedAtUnixMs: 2_000,
+        outputBytes: 256,
+        sampleCount: 6,
+      }),
+    );
+    await expect(Promise.all([firstClose, secondClose])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      captureStatus: "idle",
+      numericLogStatus: "idle",
+      numericLogPath: "C:\\captures\\numeric.csv",
+      numericLogSampleCount: 6,
+    });
+  });
+
+  it("应用关闭收尾失败时保留错误状态并拒绝伪装成功", async () => {
+    stopNumericLogMock.mockRejectedValue(new Error("append failed"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      numericLogStatus: "recording",
+      numericLogSessionId: 17,
+    });
+
+    await expect(prepareWorkbenchForAppClose()).rejects.toThrow(
+      /记录任务未能在应用关闭前正常完成/,
+    );
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      numericLogStatus: "error",
+      numericLogMessage: "append failed",
     });
   });
 
