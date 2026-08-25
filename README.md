@@ -83,11 +83,12 @@ pnpm tauri dev
 ### 无签名候选包
 
 GitHub Actions 的普通 push 和 PR 会在 Windows、macOS、Linux 执行最终桌面二进制构建，但跳过安装包生成。
-手动运行 `CI` workflow，或推送与项目版本完全一致的标签（例如 `v0.1.0`），才会额外生成以下候选产物：
+手动运行 `CI` workflow，或推送与项目版本完全一致的标签（例如 `v0.1.0`），才会额外生成以下候选产物。
+当前自动化只覆盖 x86_64；ARM64 与 Apple Silicon 原生包尚未进入构建和验收范围。
 
-- Windows：MSI 与 NSIS 安装程序。
-- macOS：DMG 磁盘映像。
-- Linux：DEB 与 AppImage。
+- Windows x64：MSI 与 NSIS 安装程序。
+- macOS Intel x64：DMG 磁盘映像。
+- Linux x64：DEB 与 AppImage。
 - 每个完整 Rust target 独立的 CycloneDX 1.6 SBOM、第三方许可证/NOTICE 原文、项目 `LICENSE` 和供应链校验清单。
 - GitHub runner image、实际 Node/pnpm/Tauri CLI/Cargo/rustc/LLVM，以及 Linux 明确安装系统包的 canonical 环境记录。
 - 绑定版本、触发 commit、workflow run 与预发布通道的构建信息，以及对应版本的 CHANGELOG 摘要。
