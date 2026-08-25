@@ -14,7 +14,9 @@
 3. Actions 默认 `GITHUB_TOKEN` 权限保持只读。package job 仅增加 `id-token: write` 与 `attestations: write`；
    `release-draft` job 另外获得 `actions: read` 与 `contents: write`，用于下载同 run 产物并创建 draft。
 4. 启用 Private vulnerability reporting；正式发布后建议启用 immutable releases。
-5. 代码签名证书、公证凭据和私钥只能放在受保护 Environment，不能提供给 PR、普通 push 或无签名 package job。
+5. 公布并验证私密行为报告渠道，更新[社区行为准则](../CODE_OF_CONDUCT.md)，且不能复用未启用或用途不符的
+   安全漏洞入口。
+6. 代码签名证书、公证凭据和私钥只能放在受保护 Environment，不能提供给 PR、普通 push 或无签名 package job。
 
 Environment 尚未配置保护规则时，workflow 仍只会创建 draft，但这不满足正式发布要求。
 GitHub 不支持按 step 缩小 job 权限，因此手动 `workflow_dispatch` 的 package job 也会获得 OIDC/attestation 权限，
