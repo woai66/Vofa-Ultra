@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { ProcessingGraphConfig } from "../src/types/processingGraph";
+import type { TerminalEntry } from "../src/types/workbench";
 
 async function expectValidTabPanelReferences(page: Page, tablistName: string): Promise<void> {
   const tabs = page.getByRole("tablist", { name: tablistName }).getByRole("tab");
@@ -41,6 +42,29 @@ async function ingestProtocolText(page: Page, text: string, timestamp: number): 
     },
     { payload: text, receivedAt: timestamp },
   );
+}
+
+async function replaceTerminalEntries(page: Page, entries: TerminalEntry[]): Promise<void> {
+  await page.evaluate(async (terminalEntries) => {
+    type WorkbenchStoreHandle = {
+      setState(state: { terminalEntries: TerminalEntry[] }): void;
+    };
+    const runtime = globalThis as typeof globalThis & {
+      __vofaUltraE2eStore?: WorkbenchStoreHandle;
+    };
+    if (!runtime.__vofaUltraE2eStore) {
+      const moduleUrl = performance
+        .getEntriesByType("resource")
+        .map((entry) => entry.name)
+        .find((name) => name.includes("/src/store/workbenchStore.ts"));
+      if (!moduleUrl) {
+        throw new Error("找不到页面当前使用的工作台 Store 模块");
+      }
+      const module = await import(/* @vite-ignore */ moduleUrl);
+      runtime.__vofaUltraE2eStore = module.useWorkbenchStore as WorkbenchStoreHandle;
+    }
+    runtime.__vofaUltraE2eStore.setState({ terminalEntries });
+  }, entries);
 }
 
 test("标签组支持标准键盘导航", async ({ page }) => {
@@ -196,6 +220,127 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
 
   await page.screenshot({
     path: testInfo.outputPath("desktop-workbench.png"),
+    fullPage: true,
+  });
+});
+
+test("终端按当前显示内容执行字面量搜索和方向过滤", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+
+  await page.goto("/");
+  await replaceTerminalEntries(page, [
+    {
+      id: 901,
+      direction: "rx",
+      timestamp: 1_700_000_000_000,
+      text: "Temperature .* 23.5",
+      hex: "54 65 6D 70",
+      byteCount: 18,
+    },
+    {
+      id: 902,
+      direction: "rx",
+      timestamp: 1_700_000_000_001,
+      text: "Voltage 3.3",
+      hex: "56 6F 6C 74",
+      byteCount: 11,
+    },
+    {
+      id: 903,
+      direction: "tx",
+      timestamp: 1_700_000_000_002,
+      text: "SET RATE",
+      hex: "53 45 54",
+      byteCount: 8,
+    },
+  ]);
+
+  const search = page.getByRole("searchbox", { name: "搜索终端记录" });
+  const direction = page.getByRole("group", { name: "终端方向筛选" });
+  await search.fill(".*");
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 3 条记录");
+  await expect(page.locator(".terminal-line")).toHaveCount(1);
+  await expect(page.locator(".terminal-search-match")).toHaveText(".*");
+
+  await direction.getByRole("button", { name: "TX" }).click();
+  await expect(page.getByText("没有匹配的终端记录")).toBeVisible();
+  await page.getByRole("button", { name: "清空终端搜索" }).click();
+  await expect(page.locator('.terminal-line[data-direction="tx"]')).toContainText("SET RATE");
+
+  await page
+    .getByRole("group", { name: "接收显示格式" })
+    .getByRole("button", { name: "HEX" })
+    .click();
+  await search.fill("53 45");
+  await expect(page.locator('.terminal-line[data-direction="tx"] code')).toContainText("53 45 54");
+  await expect(page.locator(".terminal-search-match")).toHaveText("53 45");
+
+  await direction.getByRole("button", { name: "全部" }).click();
+  await page
+    .getByRole("group", { name: "接收显示格式" })
+    .getByRole("button", { name: "TEXT" })
+    .click();
+  await replaceTerminalEntries(
+    page,
+    Array.from({ length: 800 }, (_, index): TerminalEntry => ({
+      id: 1_000 + index,
+      direction: index % 2 === 0 ? "rx" : "tx",
+      timestamp: 1_700_000_001_000 + index,
+      text:
+        index % 2 === 0
+          ? `needle ${index % 4 === 0 ? "long payload ".repeat(30) : "payload"} ${index}`
+          : `other ${index}`,
+      hex: index % 2 === 0 ? "6E 65 65 64 6C 65" : "6F 74 68 65 72",
+      byteCount: 16,
+    })),
+  );
+  await search.fill("needle");
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("400 / 800 条记录");
+  await expect.poll(() => page.locator(".terminal-line").count()).toBeGreaterThan(0);
+  expect(await page.locator(".terminal-line").count()).toBeLessThan(400);
+  expect(await page.locator('.terminal-line[data-direction="rx"]').count()).toBe(
+    await page.locator(".terminal-line").count(),
+  );
+  await expect(page.locator(".terminal-search-match").first()).toHaveText("needle");
+  await page.screenshot({
+    path: testInfo.outputPath("terminal-search-desktop.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".sidebar")).toBeHidden();
+  await expect(page.locator(".terminal-filter-bar")).toBeVisible();
+  const mobileLayout = await page.locator(".terminal-filter-bar").evaluate((bar) => {
+    const searchField = bar.querySelector<HTMLElement>(".terminal-search-field");
+    const searchInput = bar.querySelector<HTMLElement>(".terminal-search-field input");
+    const clearButton = bar.querySelector<HTMLElement>(".terminal-search-field button");
+    const buttons = [...bar.querySelectorAll<HTMLElement>(".terminal-direction-filter button")];
+    return {
+      documentOverflow: document.documentElement.scrollWidth - window.innerWidth,
+      barOverflow: bar.scrollWidth - bar.clientWidth,
+      searchHeight: searchField?.getBoundingClientRect().height ?? 0,
+      searchInputHeight: searchInput?.getBoundingClientRect().height ?? 0,
+      clearButtonHeight: clearButton?.getBoundingClientRect().height ?? 0,
+      buttonHeights: buttons.map((button) => button.getBoundingClientRect().height),
+    };
+  });
+  expect(mobileLayout.documentOverflow).toBeLessThanOrEqual(1);
+  expect(mobileLayout.barOverflow).toBeLessThanOrEqual(1);
+  expect(mobileLayout.searchHeight).toBeGreaterThanOrEqual(44);
+  expect(mobileLayout.searchInputHeight).toBeGreaterThanOrEqual(44);
+  expect(mobileLayout.clearButtonHeight).toBeGreaterThanOrEqual(44);
+  expect(mobileLayout.buttonHeights.every((height) => height >= 44)).toBe(true);
+  expect(pageErrors).toEqual([]);
+
+  await page.screenshot({
+    path: testInfo.outputPath("terminal-search-mobile.png"),
     fullPage: true,
   });
 });
@@ -560,7 +705,7 @@ test("安全命令变量逐次展开且非法表达式零发送", async ({ page 
     .getByRole("group", { name: "接收显示格式" })
     .getByRole("button", { name: "HEX" })
     .click();
-  await page.getByRole("button", { name: "清空终端" }).click();
+  await page.getByRole("button", { name: "清空终端", exact: true }).click();
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await page.getByRole("button", { name: "暂停终端显示" }).click();
   await expect(txLines.locator("code")).toHaveText("01 00");

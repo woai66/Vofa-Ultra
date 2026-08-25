@@ -15,6 +15,7 @@
 - 三平台 canonical 构建环境记录，以及绑定实际 package job 与最终聚合资产的 GitHub provenance。
 - 实验性 `.vux` Wasm 实时附加解析器，提供会话级 RX 授权、独立波形通道、确定性 pack/verify 工具、v1 JSON
   Schema 和由真实 Rust 运行时验证的最小示例。
+- 终端按当前 TEXT/HEX 内容执行大小写不敏感的字面量搜索、命中高亮和全部/RX/TX 方向过滤。
 
 ### Changed
 

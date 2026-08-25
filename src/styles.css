@@ -3232,6 +3232,87 @@ textarea:focus {
   font-size: 9px;
 }
 
+.terminal-filter-bar {
+  display: grid;
+  min-width: 0;
+  min-height: 38px;
+  flex: 0 0 38px;
+  align-items: center;
+  grid-template-columns: minmax(140px, 1fr) auto;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-0);
+  gap: 8px;
+}
+
+.terminal-search-field {
+  display: grid;
+  min-width: 0;
+  height: 28px;
+  align-items: center;
+  grid-template-columns: 20px minmax(0, 1fr) 26px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-1);
+  color: var(--text-subtle);
+}
+
+.terminal-search-field:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.terminal-search-field > svg {
+  justify-self: end;
+}
+
+.terminal-search-field input {
+  min-width: 0;
+  height: 26px;
+  padding: 0 7px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+}
+
+.terminal-search-field input::placeholder {
+  color: var(--text-subtle);
+}
+
+.terminal-search-field input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.terminal-search-field button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.terminal-search-field button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.terminal-search-field button:disabled {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.terminal-direction-filter {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(36px, 1fr));
+}
+
 .terminal-viewport {
   min-width: 0;
   min-height: 76px;
@@ -3296,6 +3377,12 @@ textarea:focus {
   color: var(--text);
   font-family: inherit;
   white-space: pre-wrap;
+}
+
+.terminal-search-match {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--amber) 42%, transparent);
+  color: inherit;
 }
 
 .terminal-line small {
@@ -4215,6 +4302,28 @@ textarea:focus {
 
   .terminal-toolbar .panel-title-group > svg {
     display: none;
+  }
+
+  .terminal-filter-bar {
+    min-height: 54px;
+    flex-basis: 54px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 4px 7px;
+    gap: 6px;
+  }
+
+  .terminal-search-field {
+    height: 46px;
+    grid-template-columns: 22px minmax(0, 1fr) 44px;
+  }
+
+  .terminal-search-field input {
+    height: 44px;
+  }
+
+  .terminal-search-field button {
+    width: 44px;
+    height: 44px;
   }
 
   .status-item {

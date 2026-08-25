@@ -3,7 +3,35 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
 import { useWorkbenchStore } from "../store/workbenchStore";
+import type { TerminalEntry } from "../types/workbench";
 import { TerminalPanel } from "./TerminalPanel";
+
+const SEARCH_ENTRIES: TerminalEntry[] = [
+  {
+    id: 101,
+    direction: "rx",
+    timestamp: 1_000,
+    text: "Temperature .* 23.5",
+    hex: "54 65 6D 70",
+    byteCount: 18,
+  },
+  {
+    id: 102,
+    direction: "rx",
+    timestamp: 1_001,
+    text: "Voltage 3.3",
+    hex: "56 6F 6C 74",
+    byteCount: 11,
+  },
+  {
+    id: 103,
+    direction: "tx",
+    timestamp: 1_002,
+    text: "SET RATE",
+    hex: "53 45 54",
+    byteCount: 8,
+  },
+];
 
 describe("TerminalPanel", () => {
   beforeEach(() => {
@@ -30,6 +58,65 @@ describe("TerminalPanel", () => {
   afterEach(() => {
     useWorkbenchStore.getState().stopPeriodicSend();
     cleanup();
+  });
+
+  it("区分空终端和已有记录但零匹配的状态", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    expect(screen.getByText("接收数据将在这里显示")).toBeVisible();
+    expect(screen.queryByText("没有匹配的终端记录")).not.toBeInTheDocument();
+
+    useWorkbenchStore.setState({ terminalEntries: SEARCH_ENTRIES });
+    await user.type(screen.getByRole("searchbox", { name: "搜索终端记录" }), "not-found");
+    expect(screen.queryByText("接收数据将在这里显示")).not.toBeInTheDocument();
+    expect(screen.getByText("没有匹配的终端记录")).toBeVisible();
+  });
+
+  it("组合字面量搜索与 RX/TX 方向过滤且不修改原记录", async () => {
+    useWorkbenchStore.setState({ terminalEntries: SEARCH_ENTRIES });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const search = screen.getByRole("searchbox", { name: "搜索终端记录" });
+    const direction = screen.getByRole("group", { name: "终端方向筛选" });
+
+    expect(search).toHaveAttribute("maxlength", "256");
+    expect(screen.getByText("3 条记录")).toBeVisible();
+    await user.type(search, ".*");
+    expect(screen.getByText("1 / 3 条记录")).toBeVisible();
+    expect(screen.getByRole("button", { name: "导出全部终端记录" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "清空全部终端记录" })).toBeEnabled();
+
+    await user.click(within(direction).getByRole("button", { name: "TX" }));
+    expect(within(direction).getByRole("button", { name: "TX" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByText("0 / 3 条记录")).toBeVisible();
+    expect(screen.getByText("没有匹配的终端记录")).toBeVisible();
+    expect(useWorkbenchStore.getState().terminalEntries).toEqual(SEARCH_ENTRIES);
+
+    await user.click(screen.getByRole("button", { name: "清空终端搜索" }));
+    expect(search).toHaveValue("");
+    expect(screen.getByText("1 / 3 条记录")).toBeVisible();
+    await user.click(within(direction).getByRole("button", { name: "全部" }));
+    expect(screen.getByText("3 条记录")).toBeVisible();
+  });
+
+  it("搜索当前显示格式并在 TEXT 与 HEX 间重新计算结果", async () => {
+    useWorkbenchStore.setState({ terminalEntries: SEARCH_ENTRIES });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const search = screen.getByRole("searchbox", { name: "搜索终端记录" });
+
+    await user.type(search, "54 65");
+    expect(screen.getByText("0 / 3 条记录")).toBeVisible();
+    await user.click(
+      within(screen.getByRole("group", { name: "接收显示格式" })).getByRole("button", {
+        name: "HEX",
+      }),
+    );
+    expect(search).toHaveAttribute("placeholder", "搜索 HEX 内容");
+    expect(screen.getByText("1 / 3 条记录")).toBeVisible();
   });
 
   it("用上下键恢复命令格式并在末尾返回原草稿", async () => {

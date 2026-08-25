@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowDownToLine,
@@ -8,11 +15,14 @@ import {
   Eraser,
   History,
   Play,
+  Search,
+  SearchX,
   Send,
   Square,
   TerminalSquare,
   Timer,
   Trash2,
+  X,
 } from "lucide-react";
 import {
   COMMAND_VARIABLE_INSERTIONS,
@@ -26,6 +36,13 @@ import {
   MIN_COMMAND_INTERVAL_MS,
 } from "../core/commandWorkflow";
 import { isAutoResponderActive } from "../core/autoResponder";
+import {
+  filterTerminalEntries,
+  findTerminalLiteralMatches,
+  MAX_TERMINAL_SEARCH_CHARACTERS,
+  terminalEntryPayload,
+  type TerminalDirectionFilter,
+} from "../core/terminalSearch";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { DisplayMode, LineEnding } from "../types/serial";
 import type {
@@ -90,6 +107,8 @@ export function TerminalPanel() {
   const [intervalText, setIntervalText] = useState("1000");
   const [repeatMode, setRepeatMode] = useState<RepeatMode>("count");
   const [repeatCountText, setRepeatCountText] = useState("10");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [directionFilter, setDirectionFilter] = useState<TerminalDirectionFilter>("all");
   const hasPayload = message.length > 0 || lineEnding !== "none";
   const templatePreview = useMemo(
     () => previewCommandTemplate(message, sendMode, lineEnding),
@@ -114,18 +133,36 @@ export function TerminalPanel() {
     !isSendingCommand &&
     !autoResponderActive &&
     !taskActive;
+  const visibleEntries = useMemo(
+    () =>
+      filterTerminalEntries(entries, {
+        direction: directionFilter,
+        displayMode,
+        query: searchQuery,
+      }),
+    [directionFilter, displayMode, entries, searchQuery],
+  );
+  const filtersActive = searchQuery.length > 0 || directionFilter !== "all";
+  const recordSummary = filtersActive
+    ? `${visibleEntries.length} / ${entries.length} 条记录`
+    : `${entries.length} 条记录`;
+  const exportTerminalLabel = filtersActive ? "导出全部终端记录" : "导出终端记录";
+  const clearTerminalLabel = filtersActive ? "清空全部终端记录" : "清空终端";
+  const lastVisibleEntryId = visibleEntries.at(-1)?.id;
   const rowVirtualizer = useVirtualizer({
-    count: entries.length,
+    count: visibleEntries.length,
     getScrollElement: () => viewportRef.current,
+    getItemKey: (index) => visibleEntries[index]?.id ?? index,
     estimateSize: () => 24,
     overscan: 12,
+    useFlushSync: false,
   });
 
   useEffect(() => {
-    if (terminalAutoScroll && !terminalPaused && entries.length > 0) {
-      rowVirtualizer.scrollToIndex(entries.length - 1, { align: "end" });
+    if (terminalAutoScroll && !terminalPaused && visibleEntries.length > 0) {
+      rowVirtualizer.scrollToIndex(visibleEntries.length - 1, { align: "end" });
     }
-  }, [entries.length, rowVirtualizer, terminalAutoScroll, terminalPaused]);
+  }, [lastVisibleEntryId, rowVirtualizer, terminalAutoScroll, terminalPaused, visibleEntries.length]);
 
   useEffect(() => {
     if (["running", "stopping", "error"].includes(commandTask.status)) {
@@ -305,7 +342,7 @@ export function TerminalPanel() {
           <TerminalSquare size={17} />
           <div>
             <h2 id="terminal-title">数据终端</h2>
-            <span className="panel-subtitle">{entries.length} 条记录</span>
+            <span className="panel-subtitle">{recordSummary}</span>
           </div>
         </div>
         <div className="panel-actions">
@@ -339,8 +376,8 @@ export function TerminalPanel() {
           <button
             className="icon-button"
             type="button"
-            aria-label="导出终端记录"
-            title="导出终端记录"
+            aria-label={exportTerminalLabel}
+            title={exportTerminalLabel}
             disabled={!entries.length}
             onClick={() => exportTerminalEntries(entries, displayMode)}
           >
@@ -349,8 +386,8 @@ export function TerminalPanel() {
           <button
             className="icon-button"
             type="button"
-            aria-label="清空终端"
-            title="清空终端"
+            aria-label={clearTerminalLabel}
+            title={clearTerminalLabel}
             disabled={!entries.length}
             onClick={clearTerminal}
           >
@@ -359,11 +396,77 @@ export function TerminalPanel() {
         </div>
       </header>
 
-      <div ref={viewportRef} className="terminal-viewport" role="log" aria-live="off">
+      <div className="terminal-filter-bar" role="search" aria-label="终端记录筛选">
+        <div className="terminal-search-field">
+          <Search size={15} aria-hidden="true" />
+          <input
+            type="search"
+            aria-label="搜索终端记录"
+            aria-controls="terminal-record-list"
+            maxLength={MAX_TERMINAL_SEARCH_CHARACTERS}
+            value={searchQuery}
+            spellCheck={false}
+            placeholder={displayMode === "text" ? "搜索 TEXT 内容" : "搜索 HEX 内容"}
+            onChange={(event) => setSearchQuery(event.target.value)}
+          />
+          <button
+            type="button"
+            aria-label="清空终端搜索"
+            title="清空终端搜索"
+            disabled={!searchQuery}
+            onClick={() => setSearchQuery("")}
+          >
+            <X size={14} />
+          </button>
+        </div>
+        <div
+          className="segmented-control compact-segments terminal-direction-filter"
+          role="group"
+          aria-label="终端方向筛选"
+        >
+          <button
+            type="button"
+            data-active={directionFilter === "all"}
+            aria-pressed={directionFilter === "all"}
+            onClick={() => setDirectionFilter("all")}
+          >
+            全部
+          </button>
+          <button
+            type="button"
+            data-active={directionFilter === "rx"}
+            aria-pressed={directionFilter === "rx"}
+            onClick={() => setDirectionFilter("rx")}
+          >
+            RX
+          </button>
+          <button
+            type="button"
+            data-active={directionFilter === "tx"}
+            aria-pressed={directionFilter === "tx"}
+            onClick={() => setDirectionFilter("tx")}
+          >
+            TX
+          </button>
+        </div>
+      </div>
+
+      <div
+        ref={viewportRef}
+        id="terminal-record-list"
+        className="terminal-viewport"
+        role="log"
+        aria-live="off"
+      >
         {entries.length === 0 ? (
           <div className="terminal-empty">
             <ArrowDownToLine size={24} />
             <span>接收数据将在这里显示</span>
+          </div>
+        ) : visibleEntries.length === 0 ? (
+          <div className="terminal-empty">
+            <SearchX size={24} />
+            <span>没有匹配的终端记录</span>
           </div>
         ) : (
           <div
@@ -371,7 +474,7 @@ export function TerminalPanel() {
             style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
           >
             {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const entry = entries[virtualRow.index];
+              const entry = visibleEntries[virtualRow.index];
               if (!entry) {
                 return null;
               }
@@ -386,7 +489,12 @@ export function TerminalPanel() {
                 >
                   <time>{formatTime(entry.timestamp)}</time>
                   <span className="direction-label">{entry.direction.toUpperCase()}</span>
-                  <code>{displayMode === "text" ? entry.text : entry.hex}</code>
+                  <code>
+                    <HighlightedTerminalPayload
+                      value={terminalEntryPayload(entry, displayMode)}
+                      query={searchQuery}
+                    />
+                  </code>
                   <small>{entry.byteCount} B</small>
                 </div>
               );
@@ -750,6 +858,30 @@ export function TerminalPanel() {
       </div>
     </section>
   );
+}
+
+function HighlightedTerminalPayload({ value, query }: { value: string; query: string }) {
+  const matches = findTerminalLiteralMatches(value, query);
+  if (matches.length === 0) {
+    return value;
+  }
+  const content: ReactNode[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    if (match.start > cursor) {
+      content.push(value.slice(cursor, match.start));
+    }
+    content.push(
+      <mark className="terminal-search-match" key={`${match.start}-${match.end}`}>
+        {value.slice(match.start, match.end)}
+      </mark>,
+    );
+    cursor = match.end;
+  }
+  if (cursor < value.length) {
+    content.push(value.slice(cursor));
+  }
+  return content;
 }
 
 function previewCommandTemplate(
