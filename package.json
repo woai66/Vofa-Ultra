@@ -16,6 +16,7 @@
     "benchmark:verify": "node scripts/performance-budget.mjs",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:tooling && pnpm build",
     "check:package": "node scripts/package-artifacts.mjs verify",
+    "check:release": "node scripts/release-artifacts.mjs verify",
     "preview": "vite preview --host 127.0.0.1",
     "package:collect": "node scripts/package-artifacts.mjs collect",
     "release:stage": "node scripts/release-artifacts.mjs stage",

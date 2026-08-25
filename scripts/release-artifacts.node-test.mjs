@@ -24,7 +24,9 @@ import {
   is_prerelease_version,
   parse_checksum_manifest,
   RELEASE_PLATFORMS,
+  run_release_artifacts_command,
   stage_release_artifacts,
+  validate_release_changelog,
   verify_checksum_directory,
 } from "./release-artifacts.mjs";
 
@@ -33,6 +35,18 @@ const PACKAGE_MANIFEST = JSON.parse(
   readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8"),
 );
 const VERSION = PACKAGE_MANIFEST.version;
+const READY_CHANGELOG = [
+  "# Changes",
+  "",
+  "## [Unreleased]",
+  "",
+  `## [${VERSION}] - 2026-08-25`,
+  "",
+  "### Added",
+  "",
+  "- Release fixture.",
+  "",
+].join("\n");
 const RUN_NUMBER = "42";
 const RUN_ID = "4242";
 const RUN_ATTEMPT = "1";
@@ -174,6 +188,13 @@ async function verify_fixture_supply_chain(options) {
   };
 }
 
+function stage_fixture(options) {
+  return stage_release_artifacts({
+    changelog_text: READY_CHANGELOG,
+    ...options,
+  });
+}
+
 test("parses only stable flat checksum manifests", () => {
   const first_hash = "0".repeat(64);
   const second_hash = "1".repeat(64);
@@ -195,7 +216,7 @@ test("parses only stable flat checksum manifests", () => {
   );
 });
 
-test("classifies release channels and extracts an exact categorized changelog section", () => {
+test("classifies release channels and validates an exact ready changelog section", () => {
   assert.equal(is_prerelease_version("0.9.0"), true);
   assert.equal(is_prerelease_version("1.0.0-rc.1"), true);
   assert.equal(is_prerelease_version("1.0.0"), false);
@@ -220,6 +241,10 @@ test("classifies release channels and extracts an exact categorized changelog se
     extract_release_changelog(changelog, "1.0.0-rc.1"),
     "## [1.0.0-rc.1] - 2026-08-24\n\n### Added\n\n- Candidate feature.\n",
   );
+  assert.equal(
+    validate_release_changelog(changelog, "1.0.0-rc.1"),
+    "## [1.0.0-rc.1] - 2026-08-24\n\n### Added\n\n- Candidate feature.\n",
+  );
   assert.throws(
     () => extract_release_changelog(changelog, "2.0.0"),
     /exactly one release section/,
@@ -227,6 +252,106 @@ test("classifies release channels and extracts an exact categorized changelog se
   assert.throws(
     () => extract_release_changelog("## [1.0.0]\n\nNo categorized entries.\n", "1.0.0"),
     /categorized entries/,
+  );
+  assert.throws(
+    () => validate_release_changelog(
+      changelog.replace(
+        "## [Unreleased]\r\n\r\n",
+        "## [Unreleased]\r\n\r\n### Added\r\n\r\n- Pending feature.\r\n\r\n",
+      ),
+      "1.0.0-rc.1",
+    ),
+    /Unreleased section must be empty/,
+  );
+  assert.throws(
+    () => validate_release_changelog(
+      "## [1.0.0]\n\n### Added\n\n- Released feature.\n",
+      "1.0.0",
+    ),
+    /exactly one Unreleased section/,
+  );
+  assert.throws(
+    () => validate_release_changelog(
+      changelog.replace(
+        "## [1.0.0-rc.1] - 2026-08-24",
+        "## [1.1.0] - 2026-08-25\n\n### Added\n\n- Newer feature.\n\n"
+          + "## [1.0.0-rc.1] - 2026-08-24",
+      ),
+      "1.0.0-rc.1",
+    ),
+    /first release section after Unreleased must be 1\.0\.0-rc\.1/,
+  );
+  assert.throws(
+    () => validate_release_changelog(
+      changelog.replace(
+        "## [1.0.0-rc.1] - 2026-08-24",
+        "## Release notes\n\n## [1.0.0-rc.1] - 2026-08-24",
+      ),
+      "1.0.0-rc.1",
+    ),
+    /first release section after Unreleased must be 1\.0\.0-rc\.1/,
+  );
+});
+
+test("dispatches release CLI commands with injected workspace dependencies", async () => {
+  const logs = [];
+  const stage_calls = [];
+  const dependencies = {
+    log: (message) => logs.push(message),
+    read_changelog: () => READY_CHANGELOG,
+    read_project_version: () => VERSION,
+    stage_release_artifacts: async (options) => {
+      stage_calls.push(options);
+      return {
+        file_names: ["candidate.bin"],
+        output_root: options.output_root,
+        tag_name: options.tag_name,
+      };
+    },
+  };
+
+  assert.deepEqual(
+    await run_release_artifacts_command(["verify"], dependencies),
+    { command: "verify", version: VERSION },
+  );
+  assert.equal(stage_calls.length, 0);
+  assert.equal(logs[0], `Verified release changelog for Vofa-Ultra v${VERSION}`);
+
+  const stage_args = [
+    "stage",
+    "downloaded",
+    "release",
+    RUN_NUMBER,
+    `v${VERSION}`,
+    SOURCE_COMMIT,
+    RUN_ID,
+    RUN_ATTEMPT,
+  ];
+  const dispatched = await run_release_artifacts_command(stage_args, dependencies);
+  assert.equal(dispatched.command, "stage");
+  assert.equal(dispatched.result.file_names.length, 1);
+  assert.deepEqual(stage_calls, [{
+    input_root: "downloaded",
+    output_root: "release",
+    run_attempt: RUN_ATTEMPT,
+    run_id: RUN_ID,
+    run_number: RUN_NUMBER,
+    source_commit: SOURCE_COMMIT,
+    tag_name: `v${VERSION}`,
+  }]);
+  assert.match(logs[1], /Staged 1 verified assets for draft release/);
+
+  await assert.rejects(
+    run_release_artifacts_command(["verify", "unexpected"], dependencies),
+    /Usage: release-artifacts\.mjs verify/,
+  );
+  await assert.rejects(
+    run_release_artifacts_command(stage_args.slice(0, -1), dependencies),
+    /Usage: release-artifacts\.mjs verify/,
+  );
+  await assert.rejects(
+    run_release_artifacts_command([...stage_args, "unexpected"], dependencies),
+    /Usage: release-artifacts\.mjs verify/,
   );
 });
 
@@ -238,7 +363,7 @@ test("stages deterministic flat assets from exactly three verified platforms", a
     const second_output = path.join(temporary_root, "release-b");
     create_download_tree(input_root);
 
-    const first = await stage_release_artifacts({
+    const first = await stage_fixture({
       input_root,
       output_root: first_output,
       run_attempt: RUN_ATTEMPT,
@@ -248,7 +373,7 @@ test("stages deterministic flat assets from exactly three verified platforms", a
       tag_name: `v${VERSION}`,
       verify_supply_chain: verify_fixture_supply_chain,
     });
-    const second = await stage_release_artifacts({
+    const second = await stage_fixture({
       input_root,
       output_root: second_output,
       run_attempt: RUN_ATTEMPT,
@@ -274,10 +399,16 @@ test("stages deterministic flat assets from exactly three verified platforms", a
     assert.equal(build_info.github_run_attempt, RUN_ATTEMPT);
     assert.equal(build_info.tag_name, `v${VERSION}`);
     assert.equal(build_info.prerelease, is_prerelease_version(VERSION));
-    assert.match(
-      readFileSync(path.join(first_output, "RELEASE_CHANGELOG.md"), "utf8"),
-      new RegExp(`^## \\[${VERSION.replaceAll(".", "\\.")}\\]`, "u"),
+    const release_changelog = readFileSync(
+      path.join(first_output, "RELEASE_CHANGELOG.md"),
+      "utf8",
     );
+    const version_pattern = new RegExp(
+      `^## \\[${VERSION.replaceAll(".", "\\.")}\\]`,
+      "u",
+    );
+    assert.match(release_changelog, version_pattern);
+    assert.match(release_changelog, /- Release fixture\./);
     for (const platform of Object.values(RELEASE_PLATFORMS)) {
       assert.equal(
         first.file_names.includes(`SUPPLY_CHAIN_SHA256SUMS-${platform.target_triple}`),
@@ -314,7 +445,7 @@ test("rejects source artifacts that do not match their checksum manifest", async
     );
     writeFileSync(installer_path, "tampered\n");
     await assert.rejects(
-      stage_release_artifacts({
+      stage_fixture({
         input_root,
         output_root: path.join(temporary_root, "release"),
         run_attempt: RUN_ATTEMPT,
@@ -399,7 +530,7 @@ test("rejects semantically invalid build environments after checksum verificatio
       );
       write_checksum_manifest(linux_directory);
       await assert.rejects(
-        stage_release_artifacts({
+        stage_fixture({
           input_root,
           output_root: path.join(temporary_root, `output-${test_case.name}`),
           run_attempt: RUN_ATTEMPT,
@@ -427,7 +558,7 @@ test("rejects semantically invalid build environments after checksum verificatio
     );
     write_checksum_manifest(windows_directory);
     await assert.rejects(
-      stage_release_artifacts({
+      stage_fixture({
         input_root: missing_root,
         output_root: path.join(temporary_root, "output-missing"),
         run_attempt: RUN_ATTEMPT,
@@ -450,7 +581,7 @@ test("rejects stale runs, reused outputs, wrong tags, and changed project licens
     const input_root = path.join(temporary_root, "downloaded");
     create_download_tree(input_root);
     await assert.rejects(
-      stage_release_artifacts({
+      stage_fixture({
         input_root,
         output_root: path.join(temporary_root, "wrong-tag"),
         run_attempt: RUN_ATTEMPT,
@@ -463,7 +594,7 @@ test("rejects stale runs, reused outputs, wrong tags, and changed project licens
       /Release tag must be/,
     );
     await assert.rejects(
-      stage_release_artifacts({
+      stage_fixture({
         input_root,
         output_root: path.join(temporary_root, "stale-run"),
         run_attempt: RUN_ATTEMPT,
@@ -476,7 +607,7 @@ test("rejects stale runs, reused outputs, wrong tags, and changed project licens
       /exactly the three current-run platform artifacts/,
     );
     await assert.rejects(
-      stage_release_artifacts({
+      stage_fixture({
         input_root,
         output_root: path.join(temporary_root, "stale-attempt"),
         run_attempt: "2",
@@ -489,7 +620,7 @@ test("rejects stale runs, reused outputs, wrong tags, and changed project licens
       /exactly the three current-run platform artifacts/,
     );
     await assert.rejects(
-      stage_release_artifacts({
+      stage_fixture({
         input_root,
         output_root: path.join(temporary_root, "wrong-source"),
         run_attempt: RUN_ATTEMPT,
@@ -506,7 +637,7 @@ test("rejects stale runs, reused outputs, wrong tags, and changed project licens
     mkdirSync(reused_output);
     writeFileSync(path.join(reused_output, "old-asset"), "stale\n");
     await assert.rejects(
-      stage_release_artifacts({
+      stage_fixture({
         input_root,
         output_root: reused_output,
         run_attempt: RUN_ATTEMPT,
@@ -526,7 +657,7 @@ test("rejects stale runs, reused outputs, wrong tags, and changed project licens
     writeFileSync(path.join(linux_directory, "LICENSE"), "different license\n");
     write_checksum_manifest(linux_directory);
     await assert.rejects(
-      stage_release_artifacts({
+      stage_fixture({
         input_root,
         output_root: path.join(temporary_root, "wrong-license"),
         run_attempt: RUN_ATTEMPT,

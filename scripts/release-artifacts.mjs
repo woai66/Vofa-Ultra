@@ -64,7 +64,7 @@ export function is_prerelease_version(version) {
   return version.startsWith("0.") || version.includes("-");
 }
 
-export function extract_release_changelog(text, version) {
+function normalize_changelog_lines(text) {
   if (typeof text !== "string") {
     fail("CHANGELOG.md must be text");
   }
@@ -72,11 +72,10 @@ export function extract_release_changelog(text, version) {
   if (normalized.includes("\r")) {
     fail("CHANGELOG.md contains unsupported line endings");
   }
-  const escaped_version = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const heading_pattern = new RegExp(
-    `^## \\[${escaped_version}\\](?: - \\d{4}-\\d{2}-\\d{2})?$`,
-  );
-  const lines = normalized.split("\n");
+  return normalized.split("\n");
+}
+
+function find_changelog_section(lines, heading_pattern, label) {
   const matches = [];
   for (let index = 0; index < lines.length; index += 1) {
     if (heading_pattern.test(lines[index])) {
@@ -84,7 +83,7 @@ export function extract_release_changelog(text, version) {
     }
   }
   if (matches.length !== 1) {
-    fail(`CHANGELOG.md must contain exactly one release section for ${version}`);
+    fail(`CHANGELOG.md must contain exactly one ${label}`);
   }
   const start = matches[0];
   let end = lines.length;
@@ -94,7 +93,26 @@ export function extract_release_changelog(text, version) {
       break;
     }
   }
-  const section_lines = lines.slice(start, end);
+  return {
+    end,
+    lines: lines.slice(start, end),
+  };
+}
+
+function release_heading_pattern(version) {
+  const escaped_version = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `^## \\[${escaped_version}\\](?: - \\d{4}-\\d{2}-\\d{2})?$`,
+  );
+}
+
+function extract_release_changelog_from_lines(lines, version) {
+  const section = find_changelog_section(
+    lines,
+    release_heading_pattern(version),
+    `release section for ${version}`,
+  );
+  const section_lines = section.lines;
   while (section_lines.at(-1) === "") {
     section_lines.pop();
   }
@@ -103,6 +121,28 @@ export function extract_release_changelog(text, version) {
     fail(`CHANGELOG.md release section for ${version} must contain categorized entries`);
   }
   return `${section_lines.join("\n")}\n`;
+}
+
+export function extract_release_changelog(text, version) {
+  return extract_release_changelog_from_lines(normalize_changelog_lines(text), version);
+}
+
+export function validate_release_changelog(text, version) {
+  const lines = normalize_changelog_lines(text);
+  const unreleased = find_changelog_section(
+    lines,
+    /^## \[Unreleased\]$/,
+    "Unreleased section",
+  );
+  if (unreleased.lines.slice(1).some((line) => line.trim() !== "")) {
+    fail("CHANGELOG.md Unreleased section must be empty before release");
+  }
+  const first_release_heading = lines[unreleased.end];
+  if (first_release_heading === undefined
+    || !release_heading_pattern(version).test(first_release_heading)) {
+    fail(`CHANGELOG.md first release section after Unreleased must be ${version}`);
+  }
+  return extract_release_changelog_from_lines(lines, version);
 }
 
 async function sha256_file(file_path) {
@@ -342,6 +382,10 @@ export async function stage_release_artifacts(options) {
   const tag_name = options.tag_name;
   const source_commit = String(options.source_commit ?? "");
   const version = read_project_version();
+  const changelog = validate_release_changelog(
+    options.changelog_text ?? readFileSync(CHANGELOG_PATH, "utf8"),
+    version,
+  );
   const verify_supply_chain = options.verify_supply_chain ?? verify_supply_chain_artifacts;
 
   if (!/^[1-9]\d*$/.test(run_number)) {
@@ -430,10 +474,6 @@ export async function stage_release_artifacts(options) {
     }
   }
 
-  const changelog = extract_release_changelog(
-    readFileSync(CHANGELOG_PATH, "utf8"),
-    version,
-  );
   await writeFile(path.join(output_root, RELEASE_CHANGELOG_NAME), changelog, "utf8");
   staged_names.add(RELEASE_CHANGELOG_NAME);
 
@@ -482,7 +522,7 @@ export async function stage_release_artifacts(options) {
   };
 }
 
-async function main() {
+export async function run_release_artifacts_command(args, dependencies = {}) {
   const [
     command,
     input_root,
@@ -492,8 +532,20 @@ async function main() {
     source_commit,
     run_id,
     run_attempt,
-  ] = process.argv.slice(2);
+  ] = args;
+  const read_version = dependencies.read_project_version ?? read_project_version;
+  const read_changelog = dependencies.read_changelog
+    ?? (() => readFileSync(CHANGELOG_PATH, "utf8"));
+  const stage_release = dependencies.stage_release_artifacts ?? stage_release_artifacts;
+  const log = dependencies.log ?? ((message) => console.log(message));
+  if (command === "verify" && args.length === 1) {
+    const version = read_version();
+    validate_release_changelog(read_changelog(), version);
+    log(`Verified release changelog for Vofa-Ultra v${version}`);
+    return { command, version };
+  }
   if (command !== "stage"
+    || args.length !== 8
     || !input_root
     || !output_root
     || !run_number
@@ -502,12 +554,12 @@ async function main() {
     || !run_id
     || !run_attempt) {
     fail(
-      "Usage: release-artifacts.mjs stage "
+      "Usage: release-artifacts.mjs verify | release-artifacts.mjs stage "
         + "<downloaded-artifact-root> <output-root> <run-number> <tag> <source-commit> "
         + "<run-id> <run-attempt>",
     );
   }
-  const result = await stage_release_artifacts({
+  const result = await stage_release({
     input_root,
     output_root,
     run_attempt,
@@ -516,10 +568,15 @@ async function main() {
     source_commit,
     tag_name,
   });
-  console.log(
+  log(
     `Staged ${result.file_names.length} verified assets for draft release ${result.tag_name} `
       + `in ${result.output_root}`,
   );
+  return { command, result };
+}
+
+async function main() {
+  await run_release_artifacts_command(process.argv.slice(2));
 }
 
 const is_main = process.argv[1]

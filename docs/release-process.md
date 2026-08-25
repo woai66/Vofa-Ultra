@@ -26,14 +26,15 @@ GitHub 不支持按 step 缩小 job 权限，因此手动 `workflow_dispatch` �
 1. 从已 review 且 CI 通过的发布分支开始，确保工作区干净。
 2. 同步 `package.json`、`src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 的版本。
 3. 把 `CHANGELOG.md` 的待发布条目整理为唯一的 `## [<version>]` 章节，包含分类标题和至少一条变更；缺少该章节
-   会使聚合器失败。对照 `compatibility-policy.json` 和[兼容性与弃用政策](compatibility.md)，确认升级、弃用与
-   迁移说明完整。
+   或 `Unreleased` 仍有内容会使本地与聚合校验失败。对照 `compatibility-policy.json` 和
+   [兼容性与弃用政策](compatibility.md)，确认升级、弃用与迁移说明完整。
 4. 执行仓库质量门禁：
 
 ```bash
 pnpm check
 pnpm benchmark
 pnpm check:package
+pnpm check:release
 pnpm supply-chain:check
 pnpm test:e2e
 pnpm tauri build --ci --no-bundle

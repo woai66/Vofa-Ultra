@@ -88,6 +88,7 @@ GitHub Actions 的普通 push 和 PR 会在 Windows、macOS、Linux 执行最终
 - 绑定版本、触发 commit、workflow run 与预发布通道的构建信息，以及对应版本的 CHANGELOG 摘要。
 - 覆盖安装包与上述发布材料的 `SHA256SUMS`。
 
+候选构建首先运行 `pnpm check:release`，要求当前版本只有一个已分类的发布章节，且 `Unreleased` 已清空。
 手动 workflow 的产物只保留在对应 Actions run 中 14 天。版本标签还会在独立性能预算与三平台全部成功后复验并
 聚合当前 run 的产物，并在创建前后确认远端标签仍指向触发 commit，再通过受保护的 `release-draft` Environment
 创建无签名 draft Release。标签构建会分别为实际三平台 package 输出和复验后的聚合 assets 生成 GitHub provenance；v0.x 和带
