@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AutoResponderRule, AutoResponderSnapshot } from "../types/automation";
+import { LEGACY_LINE_ENDINGS } from "../types/serial";
 import {
   AutoResponderRuntime,
   CommandSendArbiter,
@@ -90,6 +91,13 @@ describe("自动应答规则", () => {
       /ID 重复/,
     );
     expect(() => parseAutoResponderRules([rule({ cooldownMs: 19 })])).toThrow(/冷却时间/);
+  });
+
+  it("只在当前格式接受 CR 响应行尾", () => {
+    const crRule = rule({ lineEnding: "cr" });
+
+    expect(parseAutoResponderRules([crRule])).toEqual([crRule]);
+    expect(() => parseAutoResponderRules([crRule], LEGACY_LINE_ENDINGS)).toThrow(/行尾无效/);
   });
 });
 

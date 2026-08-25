@@ -330,6 +330,7 @@ export function AutomationPanel() {
               >
                 <option value="none">无</option>
                 <option value="lf">LF</option>
+                <option value="cr">CR</option>
                 <option value="crlf">CRLF</option>
               </select>
             </label>

@@ -57,7 +57,7 @@ describe("AutomationPanel", () => {
     fireEvent.change(screen.getByLabelText("响应模板"), {
       target: { value: "ACK ${seq}" },
     });
-    await user.selectOptions(screen.getByRole("combobox", { name: "响应行尾" }), "lf");
+    await user.selectOptions(screen.getByRole("combobox", { name: "响应行尾" }), "cr");
     await user.clear(screen.getByRole("spinbutton", { name: "冷却时间（毫秒）" }));
     await user.type(screen.getByRole("spinbutton", { name: "冷却时间（毫秒）" }), "250");
     await user.click(screen.getByRole("button", { name: "保存规则" }));
@@ -68,7 +68,7 @@ describe("AutomationPanel", () => {
         triggerMode: "text",
         trigger: "READY",
         response: "ACK ${seq}",
-        lineEnding: "lf",
+        lineEnding: "cr",
         cooldownMs: 250,
       }),
     ]);

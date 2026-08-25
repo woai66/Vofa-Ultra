@@ -7,6 +7,7 @@ import {
   createQuickCommand,
   parseQuickCommands,
 } from "./quickCommands";
+import { LEGACY_LINE_ENDINGS } from "../types/serial";
 import type { QuickCommand } from "../types/workbench";
 
 function command(overrides: Partial<QuickCommand> = {}): QuickCommand {
@@ -41,8 +42,8 @@ describe("快捷命令", () => {
   });
 
   it("允许只发送行尾并拒绝空命令和非法模板", () => {
-    expect(parseQuickCommands([command({ template: "", lineEnding: "lf" })])).toEqual([
-      command({ template: "", lineEnding: "lf" }),
+    expect(parseQuickCommands([command({ template: "", lineEnding: "cr" })])).toEqual([
+      command({ template: "", lineEnding: "cr" }),
     ]);
     expect(() =>
       parseQuickCommands([command({ template: "", lineEnding: "none" })]),
@@ -53,6 +54,13 @@ describe("快捷命令", () => {
     expect(() =>
       parseQuickCommands([command({ template: "${unknown}" })]),
     ).toThrow(/未知命令变量/);
+  });
+
+  it("只在当前格式接受 CR 行尾", () => {
+    const crCommand = command({ lineEnding: "cr" });
+
+    expect(parseQuickCommands([crCommand])).toEqual([crCommand]);
+    expect(() => parseQuickCommands([crCommand], LEGACY_LINE_ENDINGS)).toThrow(/行尾无效/);
   });
 
   it("拒绝未知字段、重复或非法 ID 和非法名称", () => {

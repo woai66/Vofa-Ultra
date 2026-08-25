@@ -58,12 +58,12 @@ describe("工作区文件", () => {
     });
   });
 
-  it("以严格的 v5 格式往返处理图、姿态、自动应答与快捷命令配置", () => {
+  it("以严格的 v6 格式往返 CR 行尾及完整工作区配置", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.serialConfig.portName = "COM7";
     config.protocol = "justfloat";
     config.sendMode = "hex";
-    config.lineEnding = "crlf";
+    config.lineEnding = "cr";
     config.channelVisibility = { "channel-2": false };
     config.processingGraph = {
       enabled: true,
@@ -82,13 +82,14 @@ describe("工作区文件", () => {
     config.attitudeConfig.channels.pitch = "channel-1";
     config.attitudeConfig.channels.yaw = "derived:output";
     config.autoResponderRules = [createDefaultAutoResponderRule("ready", "设备就绪")];
+    config.autoResponderRules[0]!.lineEnding = "cr";
     config.quickCommands = [
       {
         id: "quick-status",
         name: "查询状态",
         template: "STATUS?",
         mode: "text",
-        lineEnding: "crlf",
+        lineEnding: "cr",
       },
     ];
     const profile = createWorkspaceProfile("台架 A", config, "bench-a", 100);
@@ -97,7 +98,7 @@ describe("工作区文件", () => {
 
     expect(parsed).toEqual({
       format: "vofa-ultra.workspace",
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: "台架 A",
       config,
     });
@@ -128,7 +129,7 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(5);
+    expect(parsed.schemaVersion).toBe(6);
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.channels).toEqual({
       roll: "",
@@ -159,7 +160,7 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(5);
+    expect(parsed.schemaVersion).toBe(6);
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
     expect(parsed.config.autoResponderRules).toEqual([]);
@@ -181,7 +182,7 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(5);
+    expect(parsed.schemaVersion).toBe(6);
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
     expect(parsed.config.autoResponderRules).toEqual([]);
     expect(parsed.config.quickCommands).toEqual([]);
@@ -199,12 +200,99 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(5);
+    expect(parsed.schemaVersion).toBe(6);
     expect(parsed.config.autoResponderRules).toEqual(config.autoResponderRules);
     expect(parsed.config.quickCommands).toEqual([]);
   });
 
-  it("严格校验 v5 姿态字段、快捷命令及派生通道引用", () => {
+  it("导入严格 v5 后无损迁移为 v6", () => {
+    const config = createDefaultWorkspaceConfig("serial");
+    config.lineEnding = "crlf";
+    config.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
+    config.autoResponderRules[0]!.lineEnding = "lf";
+    config.quickCommands = [
+      {
+        id: "legacy-quick",
+        name: "旧快捷命令",
+        template: "STATUS?",
+        mode: "text",
+        lineEnding: "crlf",
+      },
+    ];
+    const exported = JSON.parse(
+      serializeWorkspace(createWorkspaceProfile("v5 工作区", config, "legacy-v5", 100)),
+    ) as Record<string, unknown>;
+    exported.schemaVersion = 5;
+
+    const parsed = parseWorkspaceExport(JSON.stringify(exported));
+
+    expect(parsed.schemaVersion).toBe(6);
+    expect(parsed.config).toEqual(config);
+  });
+
+  it.each([1, 2, 3, 4, 5] as const)("v%d 顶层行尾仍拒绝 CR", (schemaVersion) => {
+    const exported = JSON.parse(
+      serializeWorkspace(
+        createWorkspaceProfile(
+          `v${schemaVersion} 工作区`,
+          createDefaultWorkspaceConfig("simulator"),
+          `legacy-v${schemaVersion}`,
+          100,
+        ),
+      ),
+    ) as Record<string, unknown>;
+    const config = exported.config as Record<string, unknown>;
+    config.lineEnding = "cr";
+    if (schemaVersion < 5) {
+      delete config.quickCommands;
+    }
+    if (schemaVersion < 4) {
+      delete config.autoResponderRules;
+    }
+    if (schemaVersion < 3) {
+      delete config.attitudeConfig;
+    }
+    if (schemaVersion < 2) {
+      delete config.processingGraph;
+    }
+    exported.schemaVersion = schemaVersion;
+
+    expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/行尾/);
+  });
+
+  it.each([
+    [4, "autoResponderRules"],
+    [5, "autoResponderRules"],
+    [5, "quickCommands"],
+  ] as const)("v%d 的历史 %s 行尾仍拒绝 CR", (schemaVersion, field) => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
+    config.quickCommands = [
+      {
+        id: "legacy-quick",
+        name: "旧快捷命令",
+        template: "PING",
+        mode: "text",
+        lineEnding: "none",
+      },
+    ];
+    if (field === "autoResponderRules") {
+      config.autoResponderRules[0]!.lineEnding = "cr";
+    } else {
+      config.quickCommands[0]!.lineEnding = "cr";
+    }
+    const exported = JSON.parse(
+      serializeWorkspace(createWorkspaceProfile("历史工作区", config, "legacy", 100)),
+    ) as Record<string, unknown>;
+    if (schemaVersion === 4) {
+      delete (exported.config as Record<string, unknown>).quickCommands;
+    }
+    exported.schemaVersion = schemaVersion;
+
+    expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/行尾/);
+  });
+
+  it("严格校验 v6 姿态字段、快捷命令及派生通道引用", () => {
     const profile = createWorkspaceProfile(
       "姿态工作区",
       createDefaultWorkspaceConfig("simulator"),
@@ -265,7 +353,7 @@ describe("工作区文件", () => {
 
   it.each([
     ["错误格式", { format: "other", schemaVersion: 1 }],
-    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 6 }],
+    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 7 }],
   ])("拒绝%s", (_label, overrides) => {
     const profile = createWorkspaceProfile(
       "默认工作区",

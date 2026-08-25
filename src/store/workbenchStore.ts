@@ -176,6 +176,7 @@ import type {
   SerialStatePayload,
   SerialTxPayload,
 } from "../types/serial";
+import { LEGACY_LINE_ENDINGS } from "../types/serial";
 import type {
   AttitudeChannelValue,
   AttitudeConfig,
@@ -199,7 +200,7 @@ import type {
 } from "../types/processingGraph";
 import type {
   ChartWindowSeconds,
-  WorkspaceExportV5,
+  WorkspaceExportV6,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AutoResponderRule, AutoResponderSnapshot } from "../types/automation";
@@ -216,8 +217,8 @@ const MAX_POINTS_PER_CHANNEL = 2_000;
 const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY = 2_048;
 export const WORKBENCH_STORAGE_KEY = "vofa-ultra-workbench";
-export const WORKBENCH_STORAGE_VERSION = 5;
-export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [0, 1, 2, 3, 4] as const;
+export const WORKBENCH_STORAGE_VERSION = 6;
+export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [0, 1, 2, 3, 4, 5] as const;
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
   phase: "off",
@@ -493,7 +494,7 @@ export interface WorkbenchStore {
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
   deleteWorkspace(id: string): Promise<boolean>;
-  importWorkspace(workspace: WorkspaceExportV5): string;
+  importWorkspace(workspace: WorkspaceExportV6): string;
 }
 
 type PersistedWorkbenchState = Pick<
@@ -2817,13 +2818,17 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!WORKBENCH_MIGRATABLE_STORAGE_VERSIONS.some((candidate) => candidate === version)) {
           throw new Error(`不支持从持久化版本 ${version} 降级到 ${WORKBENCH_STORAGE_VERSION}`);
         }
-        const config = restoreWorkspaceConfig(persistedState, INITIAL_WORKSPACE_CONFIG);
+        const config = restoreWorkspaceConfig(
+          persistedState,
+          INITIAL_WORKSPACE_CONFIG,
+          LEGACY_LINE_ENDINGS,
+        );
         const restoredWorkspaces = restoreWorkspaceProfiles(
           isRecord(persistedState) ? persistedState.workspaces : undefined,
+          LEGACY_LINE_ENDINGS,
         );
         const workspaces =
-          (version === 1 || version === 2 || version === 3 || version === 4) &&
-            restoredWorkspaces.length > 0
+          version >= 1 && restoredWorkspaces.length > 0
             ? restoredWorkspaces
             : [
                 createWorkspaceProfile(

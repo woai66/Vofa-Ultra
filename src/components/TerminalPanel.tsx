@@ -620,6 +620,7 @@ export function TerminalPanel() {
               >
                 <option value="none">无行尾</option>
                 <option value="lf">LF</option>
+                <option value="cr">CR</option>
                 <option value="crlf">CRLF</option>
               </select>
             </div>
@@ -1075,6 +1076,8 @@ function lineEndingLabel(lineEnding: LineEnding): string {
   switch (lineEnding) {
     case "lf":
       return "LF";
+    case "cr":
+      return "CR";
     case "crlf":
       return "CRLF";
     default:

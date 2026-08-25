@@ -40,7 +40,9 @@ export interface WorkspaceConfigV5 extends WorkspaceConfigV4 {
   quickCommands: QuickCommand[];
 }
 
-export type WorkspaceConfig = WorkspaceConfigV5;
+export type WorkspaceConfigV6 = WorkspaceConfigV5;
+
+export type WorkspaceConfig = WorkspaceConfigV6;
 
 export interface WorkspaceProfile {
   id: string;
@@ -83,4 +85,11 @@ export interface WorkspaceExportV5 {
   schemaVersion: 5;
   name: string;
   config: WorkspaceConfigV5;
+}
+
+export interface WorkspaceExportV6 {
+  format: "vofa-ultra.workspace";
+  schemaVersion: 6;
+  name: string;
+  config: WorkspaceConfigV6;
 }

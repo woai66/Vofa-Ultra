@@ -380,7 +380,7 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   expect(layout.documentWidth).toBeLessThanOrEqual(320);
 });
 
-test("处理图生成独立派生通道并随 v5 工作区往返", async ({ page }, testInfo) => {
+test("处理图生成独立派生通道并随 v6 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -434,7 +434,7 @@ test("处理图生成独立派生通道并随 v5 工作区往返", async ({ page
     schemaVersion: number;
     config: { processingGraph: ProcessingGraphConfig };
   };
-  expect(exported.schemaVersion).toBe(5);
+  expect(exported.schemaVersion).toBe(6);
   expect(exported.config.processingGraph).toMatchObject({
     enabled: true,
     nodes: [
@@ -458,7 +458,7 @@ test("处理图生成独立派生通道并随 v5 工作区往返", async ({ page
   expect(pageErrors).toEqual([]);
 });
 
-test("实时 RX 自动应答保持有界运行并随 v5 工作区往返", async ({ page }, testInfo) => {
+test("实时 RX 自动应答保持有界运行并随 v6 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -511,7 +511,7 @@ test("实时 RX 自动应答保持有界运行并随 v5 工作区往返", async 
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 5,
+    schemaVersion: 6,
     config: {
       autoResponderRules: [
         {
@@ -760,7 +760,7 @@ test("快捷命令持久载入且只经显式发送产生 TX", async ({ page }, 
   await page.getByRole("button", { name: "启动模拟" }).click();
   const input = page.getByRole("textbox", { name: "发送内容" });
   await input.fill("PING-${seq}");
-  await page.getByRole("combobox", { name: "行尾" }).selectOption("lf");
+  await page.getByRole("combobox", { name: "行尾" }).selectOption("cr");
   await page.getByRole("button", { name: "打开快捷命令" }).click();
   const dialog = page.getByRole("dialog", { name: "快捷命令" });
   await dialog.getByRole("textbox", { name: "快捷命令名称" }).fill("状态查询");
@@ -781,12 +781,19 @@ test("快捷命令持久载入且只经显式发送产生 TX", async ({ page }, 
   await expect(
     page.getByRole("group", { name: "发送格式" }).getByRole("button", { name: "文本" }),
   ).toHaveAttribute("data-active", "true");
-  await expect(page.getByRole("combobox", { name: "行尾" })).toHaveValue("lf");
+  await expect(page.getByRole("combobox", { name: "行尾" })).toHaveValue("cr");
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
 
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(1);
   await expect(page.getByRole("button", { name: "命令历史，1 条" })).toBeVisible();
+  await page
+    .getByRole("group", { name: "接收显示格式" })
+    .getByRole("button", { name: "HEX" })
+    .click();
+  await expect(page.locator('.terminal-line[data-direction="tx"] code')).toHaveText(
+    "50 49 4E 47 2D 31 0D",
+  );
 
   await page.reload();
   await page.setViewportSize({ width: 320, height: 568 });
@@ -1269,7 +1276,7 @@ async function canvasScreenshotSignature(locator: Locator): Promise<{
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({
-    version: 6,
+    version: 7,
     state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
   });
   await page.addInitScript((value) => {
@@ -1278,7 +1285,7 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("button", { name: "工作区" }).click();
-  await expect(page.getByRole("alert")).toContainText("版本 6 的较新配置");
+  await expect(page.getByRole("alert")).toContainText("版本 7 的较新配置");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();

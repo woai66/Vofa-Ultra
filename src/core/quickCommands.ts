@@ -2,7 +2,7 @@ import {
   compileCommandTemplate,
   renderCommandTemplate,
 } from "./commandTemplate";
-import type { DisplayMode, LineEnding } from "../types/serial";
+import { LINE_ENDINGS, type DisplayMode, type LineEnding } from "../types/serial";
 import type { QuickCommand } from "../types/workbench";
 
 export const MAX_QUICK_COMMANDS = 32;
@@ -17,7 +17,10 @@ const TEMPLATE_VALIDATION_CONTEXT = {
   taskStartedAtMs: 0,
 } as const;
 
-export function parseQuickCommands(value: unknown): QuickCommand[] {
+export function parseQuickCommands(
+  value: unknown,
+  allowedLineEndings: readonly LineEnding[] = LINE_ENDINGS,
+): QuickCommand[] {
   if (!Array.isArray(value)) {
     throw new Error("快捷命令必须是数组");
   }
@@ -25,7 +28,7 @@ export function parseQuickCommands(value: unknown): QuickCommand[] {
     throw new Error(`快捷命令最多包含 ${MAX_QUICK_COMMANDS} 条`);
   }
 
-  const commands = value.map(parseQuickCommand);
+  const commands = value.map((command) => parseQuickCommand(command, allowedLineEndings));
   const usedIds = new Set<string>();
   let totalTemplateBytes = 0;
   for (const command of commands) {
@@ -84,7 +87,10 @@ export function createQuickCommand(
   return created;
 }
 
-function parseQuickCommand(value: unknown): QuickCommand {
+function parseQuickCommand(
+  value: unknown,
+  allowedLineEndings: readonly LineEnding[],
+): QuickCommand {
   const record = requireRecord(value, "快捷命令");
   assertExactKeys(record, QUICK_COMMAND_KEYS, "快捷命令");
 
@@ -102,7 +108,7 @@ function parseQuickCommand(value: unknown): QuickCommand {
 
   const template = requireString(record.template, "快捷命令模板");
   const mode = requireEnum(record.mode, ["text", "hex"], "快捷命令格式");
-  const lineEnding = requireEnum(record.lineEnding, ["none", "lf", "crlf"], "快捷命令行尾");
+  const lineEnding = requireEnum(record.lineEnding, allowedLineEndings, "快捷命令行尾");
   const compiled = compileCommandTemplate(template, mode);
   const rendered = renderCommandTemplate(compiled, TEMPLATE_VALIDATION_CONTEXT, lineEnding);
   if (rendered.bytes.length === 0) {

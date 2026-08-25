@@ -5,6 +5,7 @@ import {
   type CompiledCommandTemplate,
 } from "./commandTemplate";
 import type { PreparedCommand } from "./commandWorkflow";
+import { LINE_ENDINGS, type LineEnding } from "../types/serial";
 import type {
   AutoResponderRule,
   AutoResponderSnapshot,
@@ -119,7 +120,10 @@ export function areAutoResponderRulesEqual(
   });
 }
 
-export function parseAutoResponderRules(value: unknown): AutoResponderRule[] {
+export function parseAutoResponderRules(
+  value: unknown,
+  allowedLineEndings: readonly LineEnding[] = LINE_ENDINGS,
+): AutoResponderRule[] {
   if (!Array.isArray(value)) {
     throw new Error("自动应答规则必须是数组");
   }
@@ -127,7 +131,7 @@ export function parseAutoResponderRules(value: unknown): AutoResponderRule[] {
     throw new Error(`自动应答最多包含 ${MAX_AUTO_RESPONDER_RULES} 条规则`);
   }
 
-  const rules = value.map(parseAutoResponderRule);
+  const rules = value.map((rule) => parseAutoResponderRule(rule, allowedLineEndings));
   const usedIds = new Set<string>();
   for (const rule of rules) {
     if (usedIds.has(rule.id)) {
@@ -142,17 +146,20 @@ export function createDefaultAutoResponderRule(
   id: string,
   name = "新建规则",
 ): AutoResponderRule {
-  return parseAutoResponderRule({
-    id,
-    name,
-    enabled: true,
-    triggerMode: "hex",
-    trigger: "0A",
-    responseMode: "text",
-    response: "ACK",
-    lineEnding: "none",
-    cooldownMs: 1_000,
-  });
+  return parseAutoResponderRule(
+    {
+      id,
+      name,
+      enabled: true,
+      triggerMode: "hex",
+      trigger: "0A",
+      responseMode: "text",
+      response: "ACK",
+      lineEnding: "none",
+      cooldownMs: 1_000,
+    },
+    LINE_ENDINGS,
+  );
 }
 
 export class AutoResponderRuntime {
@@ -617,7 +624,10 @@ export class CommandSendArbiter {
   }
 }
 
-function parseAutoResponderRule(value: unknown): AutoResponderRule {
+function parseAutoResponderRule(
+  value: unknown,
+  allowedLineEndings: readonly LineEnding[],
+): AutoResponderRule {
   const record = requireRecord(value, "自动应答规则");
   assertExactKeys(record, AUTO_RESPONDER_RULE_KEYS, "自动应答规则");
   const id = requireString(record.id, "规则 ID");
@@ -644,7 +654,7 @@ function parseAutoResponderRule(value: unknown): AutoResponderRule {
       `响应模板不能超过 ${MAX_AUTO_RESPONDER_RESPONSE_TEMPLATE_BYTES / 1024} KiB`,
     );
   }
-  const lineEnding = requireEnum(record.lineEnding, ["none", "lf", "crlf"], "响应行尾");
+  const lineEnding = requireEnum(record.lineEnding, allowedLineEndings, "响应行尾");
   const responseTemplate = compileCommandTemplate(response, responseMode);
   if (
     renderCommandTemplate(

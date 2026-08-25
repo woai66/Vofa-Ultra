@@ -202,6 +202,32 @@ describe("TerminalPanel", () => {
     expect(screen.getByRole("button", { name: "命令历史，0 条" })).toBeDisabled();
   });
 
+  it("在 TEXT 和 HEX 发送中追加单字节 CR", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const input = screen.getByRole("textbox", { name: "发送内容" });
+    const lineEnding = screen.getByRole("combobox", { name: "行尾" });
+
+    await user.selectOptions(lineEnding, "cr");
+    await user.type(input, "AT");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.hex).toBe("41 54 0D");
+    });
+
+    await user.click(
+      within(screen.getByRole("group", { name: "发送格式" })).getByRole("button", {
+        name: "HEX",
+      }),
+    );
+    await user.clear(input);
+    await user.type(input, "01 FF");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.hex).toBe("01 FF 0D");
+    });
+  });
+
   it("从变量菜单替换当前选区并展示最终字节数", async () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
@@ -388,7 +414,7 @@ describe("TerminalPanel", () => {
     const input = screen.getByRole("textbox", { name: "发送内容" });
 
     fireEvent.change(input, { target: { value: "SET ${seq}" } });
-    await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "crlf");
+    await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "cr");
     await user.click(screen.getByRole("button", { name: "打开快捷命令" }));
     const dialog = screen.getByRole("dialog", { name: "快捷命令" });
     const nameInput = within(dialog).getByRole("textbox", { name: "快捷命令名称" });
@@ -403,7 +429,7 @@ describe("TerminalPanel", () => {
         name: "启动采样",
         template: "SET ${seq}",
         mode: "text",
-        lineEnding: "crlf",
+        lineEnding: "cr",
       }),
     ]);
     expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
@@ -426,7 +452,7 @@ describe("TerminalPanel", () => {
         name: "文本",
       }),
     ).toHaveAttribute("data-active", "true");
-    expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("crlf");
+    expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("cr");
     expect(input).toHaveFocus();
     expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
     expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
@@ -438,7 +464,7 @@ describe("TerminalPanel", () => {
   ] as const)("%s 下空列表聚焦关闭按钮并支持 Escape", async (_, storageStatus) => {
     useWorkbenchStore.setState({
       workspaceStorageStatus: storageStatus,
-      incompatibleStorageVersion: storageStatus === "newer-version" ? 6 : null,
+      incompatibleStorageVersion: storageStatus === "newer-version" ? 7 : null,
     });
     const user = userEvent.setup();
     render(<TerminalPanel />);

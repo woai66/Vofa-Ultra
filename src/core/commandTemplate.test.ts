@@ -140,7 +140,7 @@ describe("命令模板", () => {
 
     const exact = compileCommandTemplate("x".repeat(MAX_COMMAND_BYTES), "text");
     expect(renderCommandTemplate(exact, CONTEXT, "none").bytes).toHaveLength(MAX_COMMAND_BYTES);
-    expect(() => renderCommandTemplate(exact, CONTEXT, "lf")).toThrow(/单次发送不能超过/);
+    expect(() => renderCommandTemplate(exact, CONTEXT, "cr")).toThrow(/单次发送不能超过/);
   });
 
   it("所有 UI 插入项都能在对应模式编译和渲染", () => {

@@ -16,6 +16,14 @@ describe("HEX codec", () => {
   });
 });
 describe("outbound codec", () => {
+  it("为文本添加 CR", () => {
+    expect(Array.from(encodeOutbound("AT", "text", "cr"))).toEqual([0x41, 0x54, 0x0d]);
+  });
+
+  it("为 HEX 数据添加 CR 字节", () => {
+    expect(Array.from(encodeOutbound("01 FF", "hex", "cr"))).toEqual([0x01, 0xff, 0x0d]);
+  });
+
   it("为文本添加 CRLF", () => {
     const result = encodeOutbound("AT", "text", "crlf");
     expect(new TextDecoder().decode(result)).toBe("AT\r\n");

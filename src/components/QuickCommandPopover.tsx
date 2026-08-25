@@ -390,6 +390,9 @@ function lineEndingLabel(lineEnding: LineEnding): string {
   if (lineEnding === "lf") {
     return "LF";
   }
+  if (lineEnding === "cr") {
+    return "CR";
+  }
   if (lineEnding === "crlf") {
     return "CRLF";
   }

@@ -3,6 +3,7 @@ import type { DisplayMode, LineEnding } from "../types/serial";
 const LINE_ENDINGS: Record<LineEnding, string> = {
   none: "",
   lf: "\n",
+  cr: "\r",
   crlf: "\r\n",
 };
 
