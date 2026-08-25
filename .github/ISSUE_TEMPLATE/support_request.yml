@@ -1,0 +1,76 @@
+name: 支持请求
+description: 提交文档疑问或一般使用问题
+title: "support: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        此表单用于 Vofa-Ultra 的文档和一般使用问题。可复现缺陷、功能建议与真实硬件测试请使用对应表单；
+        安全漏洞和社区行为事件不要在此公开。提交前请删除设备序列号、凭据、业务载荷和用户绝对路径。
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已阅读用户手册和故障排查矩阵，并搜索过现有 Issue。
+          required: true
+        - label: 这不是需要私密报告的安全漏洞或社区行为事件。
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Vofa-Ultra 版本或 commit
+      description: 填写发布版本、候选版本或完整 commit SHA。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: 运行环境
+      options:
+        - Windows 桌面应用
+        - macOS 桌面应用
+        - Linux 桌面应用
+        - 浏览器预览
+        - 尚未运行应用
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标与卡点
+      description: 说明想完成的工作流、当前卡住的位置，以及期望获得什么信息。
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempted
+    attributes:
+      label: 已尝试的步骤
+      description: 列出查阅的文档、执行的操作和观察到的结果。
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 相关环境信息
+      description: 仅填写定位问题所需的系统、安装方式、协议或串口参数；真实硬件证据请使用硬件兼容性报告。
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 脱敏截图或日志
+      description: 不要包含 USB 序列号、密钥、凭据、业务载荷、用户名或绝对路径。
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已检查全部文本和附件，不包含设备唯一序列号或其他敏感信息。
+          required: true
