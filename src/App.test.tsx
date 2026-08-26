@@ -11,7 +11,10 @@ vi.mock("./components/AttitudeScene", () => ({
   AttitudeScene: () => <div role="img" aria-label="三维姿态视图" />,
 }));
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  localStorage.removeItem("vofa-ultra-workspace-split");
+});
 
 describe("App", () => {
   it("呈现串口工作台的核心区域", () => {
@@ -85,6 +88,64 @@ describe("App", () => {
     expect(attitudeTab).toHaveFocus();
     await user.keyboard("{End}");
     expect(attitudeTab).toHaveFocus();
+  });
+
+  it("分隔条支持键盘调节、边界定位、复位和本地持久化", async () => {
+    localStorage.setItem("vofa-ultra-workspace-split", "0.4200");
+    const user = userEvent.setup();
+    render(<App />);
+
+    const separator = screen.getByRole("separator", { name: "调整主视图与终端高度" });
+    expect(separator).toHaveAttribute("aria-controls", "workspace-waveform-panel workspace-terminal-panel");
+    expect(separator).toHaveAttribute("aria-valuemin", "40");
+    expect(separator).toHaveAttribute("aria-valuemax", "66");
+    expect(separator).toHaveAttribute("aria-valuenow", "42");
+
+    separator.focus();
+    await user.keyboard("{ArrowDown}");
+    expect(separator).toHaveAttribute("aria-valuenow", "44");
+    expect(Number.parseFloat(localStorage.getItem("vofa-ultra-workspace-split") ?? "0")).toBeCloseTo(
+      0.44,
+    );
+
+    await user.keyboard("{Home}");
+    expect(separator).toHaveAttribute("aria-valuenow", "40");
+    await user.keyboard("{End}");
+    expect(separator).toHaveAttribute("aria-valuenow", "66");
+    await user.dblClick(separator);
+    expect(separator).toHaveAttribute("aria-valuenow", "61");
+    expect(Number.parseFloat(localStorage.getItem("vofa-ultra-workspace-split") ?? "0")).toBeCloseTo(
+      1.35 / (1.35 + 0.85),
+      3,
+    );
+  });
+
+  it("布局分段控件在主视图、分栏和终端专注间切换", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const content = document.querySelector(".workspace-content");
+    const split = screen.getByRole("button", { name: "分栏显示" });
+    const primary = screen.getByRole("button", { name: "专注波形视图" });
+    const terminal = screen.getByRole("button", { name: "专注终端" });
+    expect(content).toHaveAttribute("data-layout-mode", "split");
+    expect(split).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(terminal);
+    expect(content).toHaveAttribute("data-layout-mode", "terminal");
+    expect(terminal).toHaveAttribute("aria-pressed", "true");
+    await user.click(primary);
+    expect(content).toHaveAttribute("data-layout-mode", "primary");
+    expect(primary).toHaveAttribute("aria-pressed", "true");
+    await user.click(split);
+    expect(content).toHaveAttribute("data-layout-mode", "split");
+
+    await user.click(screen.getByRole("tab", { name: "姿态" }));
+    expect(screen.getByRole("button", { name: "专注姿态视图" })).toBeInTheDocument();
+    expect(screen.getByRole("separator")).toHaveAttribute(
+      "aria-controls",
+      "workspace-attitude-panel workspace-terminal-panel",
+    );
   });
 
   it("从侧栏保存命名工作区并更新标题", async () => {
