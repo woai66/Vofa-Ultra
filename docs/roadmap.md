@@ -20,9 +20,9 @@
 发布前门槛：
 
 - [x] 在 Windows 完成首次 Rust 构建与测试并提交 `Cargo.lock`
-- [x] 在 macOS、Linux CI 中验证锁定依赖的 Rust 构建与测试
-- [x] 开启 Tauri bundle，配置三平台无签名候选安装包与 SHA-256 流水线
-- [ ] 在 GitHub Actions 首次实际生成并核验三平台候选安装包
+- [ ] 在 macOS、Linux 上人工验证锁定依赖的 Rust 构建与测试
+- [x] 提供 Tauri 三平台无签名候选安装包与 SHA-256 的本地命令
+- [ ] 项目稳定后再评估最小化的 GitHub Actions 检查
 - [ ] 在 Windows、macOS、Linux 完成候选包安装、启动和卸载冒烟测试
 - [ ] 在 Windows 上完成至少两种 USB 串口芯片的连接、收发、拔插和重连验证
 - [ ] 验证软件流控、硬件流控以及 DTR / RTS 行为
@@ -94,17 +94,17 @@
 
 - [x] 姿态视图按需加载，首屏与 3D 模块的原始/gzip 体积预算进入生产构建门禁。
 - [x] 界面与诊断版本由 package 元数据构建注入，Tauri/Cargo 版本漂移由 package gate 拒绝。
-- [x] 每目标 CycloneDX SBOM、许可证允许策略、第三方 notices 与完整校验清单进入 CI 和安装包资源。
-- [x] 三平台产物二次复验、commit/run 绑定记录、版本 CHANGELOG 与受保护 draft/prerelease 门禁。
+- [x] 每目标 CycloneDX SBOM、许可证允许策略、第三方 notices 与完整校验清单进入本地检查和安装包资源。
+- [ ] 项目稳定后再设计三平台产物复验与 draft/prerelease 门禁。
 - [ ] Windows、macOS、Linux 签名安装包和校验值。
-- [x] 三平台实际 runner/toolchain 环境记录，以及平台原始产物和聚合 Release assets 的 GitHub 来源证明。
-- [x] 固定三平台 GitHub hosted runner 的 OS release 标签，并继续记录每次构建的实际镜像与工具链版本。
+- [ ] 恢复线上构建后记录三平台 runner/toolchain 环境，并评估 GitHub 来源证明。
+- [ ] 恢复线上构建后选择稳定的三平台 runner，并记录实际镜像与工具链版本。
 - [ ] 引入可复核的 Linux 软件源快照，并评估 Windows/macOS 可重建环境，推进安装包字节级可复现构建。
 - [x] 机器可验证的配置兼容性承诺、稳定协议 wire ID / 解析契约和弃用策略。
 - [x] 用户手册与故障排查矩阵覆盖当前连接、采集、自动化和文件工作流。
 - [x] 硬件兼容性证据门槛、空清单和结构化报告模板。
 - [ ] 用三平台候选包及至少两种 USB 串口芯片的实测记录填充硬件兼容性清单。
-- [x] 协议、处理图、扩展同步分批复制与饱和数据平面的性能基准和回归阈值进入独立 Linux CI 门禁。
+- [x] 协议、处理图、扩展同步分批复制与饱和数据平面提供本地性能基准和回归阈值。
 
 ## 当前非目标
 
