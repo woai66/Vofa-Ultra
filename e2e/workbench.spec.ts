@@ -172,6 +172,60 @@ async function readWaveformCanvasStats(page: Page): Promise<{
   });
 }
 
+test("主题偏好跟随系统并持久化固定选择", async ({ page }, testInfo) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/");
+
+  const root = page.locator("html");
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  expect(await page.evaluate(() => localStorage.getItem("vofa-ultra-theme"))).toBe("system");
+
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(root).toHaveAttribute("data-theme", "light");
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const appearance = page.getByRole("group", { name: "外观" });
+  const system_button = appearance.getByRole("button", { name: "系统" });
+  const dark_button = appearance.getByRole("button", { name: "深色" });
+  await expect(system_button).toHaveAttribute("aria-pressed", "true");
+
+  await dark_button.click();
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  expect(await page.evaluate(() => localStorage.getItem("vofa-ultra-theme"))).toBe("dark");
+
+  await page.reload();
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await expect(appearance.getByRole("button", { name: "深色" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  await appearance.getByRole("button", { name: "系统" }).click();
+  await expect(root).toHaveAttribute("data-theme", "light");
+  expect(await page.evaluate(() => localStorage.getItem("vofa-ultra-theme"))).toBe("system");
+
+  await page.screenshot({
+    path: testInfo.outputPath("system-theme-desktop.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 320, height: 568 });
+  await expect(appearance).toBeVisible();
+  const theme_buttons = appearance.getByRole("button");
+  await expect(theme_buttons).toHaveCount(3);
+  for (let index = 0; index < 3; index += 1) {
+    const box = await theme_buttons.nth(index).boundingBox();
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44);
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("system-theme-mobile.png"),
+    fullPage: true,
+  });
+});
+
 test("标签组支持标准键盘导航", async ({ page }) => {
   await page.goto("/");
 

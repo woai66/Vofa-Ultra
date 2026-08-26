@@ -5,6 +5,7 @@ import {
   Download,
   Eraser,
   Gauge,
+  Monitor,
   Moon,
   Play,
   RefreshCw,
@@ -20,7 +21,7 @@ import {
   PROTOCOL_DROP_REASON_LABELS,
 } from "../core/protocols";
 import { isRecoveryActivePhase } from "../core/serialRecovery";
-import type { ThemeMode } from "../App";
+import type { ThemePreference } from "../App";
 import {
   BAUD_RATES,
   type ProtocolKind,
@@ -43,12 +44,17 @@ import { WorkspacePanel } from "./WorkspacePanel";
 
 interface SidebarProps {
   activePanel: SidebarPanel;
-  theme: ThemeMode;
+  themePreference: ThemePreference;
   onClose(): void;
-  onThemeChange(theme: ThemeMode): void;
+  onThemePreferenceChange(theme: ThemePreference): void;
 }
 
-export function Sidebar({ activePanel, theme, onClose, onThemeChange }: SidebarProps) {
+export function Sidebar({
+  activePanel,
+  themePreference,
+  onClose,
+  onThemePreferenceChange,
+}: SidebarProps) {
   return (
     <aside className="sidebar">
       <button
@@ -70,7 +76,10 @@ export function Sidebar({ activePanel, theme, onClose, onThemeChange }: SidebarP
         <WorkspacePanel />
       </div>
       {activePanel === "settings" && (
-        <SettingsPanel theme={theme} onThemeChange={onThemeChange} />
+        <SettingsPanel
+          themePreference={themePreference}
+          onThemePreferenceChange={onThemePreferenceChange}
+        />
       )}
     </aside>
   );
@@ -621,7 +630,10 @@ function ChannelRow({
   );
 }
 
-function SettingsPanel({ theme, onThemeChange }: Pick<SidebarProps, "theme" | "onThemeChange">) {
+function SettingsPanel({
+  themePreference,
+  onThemePreferenceChange,
+}: Pick<SidebarProps, "themePreference" | "onThemePreferenceChange">) {
   const chartWindowSeconds = useWorkbenchStore((state) => state.chartWindowSeconds);
   const setChartWindowSeconds = useWorkbenchStore((state) => state.setChartWindowSeconds);
   const terminalAutoScroll = useWorkbenchStore((state) => state.terminalAutoScroll);
@@ -647,10 +659,28 @@ function SettingsPanel({ theme, onThemeChange }: Pick<SidebarProps, "theme" | "o
           role="group"
           aria-labelledby="appearance-label"
         >
-          <button type="button" data-active={theme === "dark"} onClick={() => onThemeChange("dark")}>
+          <button
+            type="button"
+            aria-pressed={themePreference === "system"}
+            data-active={themePreference === "system"}
+            onClick={() => onThemePreferenceChange("system")}
+          >
+            <Monitor size={15} /> 系统
+          </button>
+          <button
+            type="button"
+            aria-pressed={themePreference === "dark"}
+            data-active={themePreference === "dark"}
+            onClick={() => onThemePreferenceChange("dark")}
+          >
             <Moon size={15} /> 深色
           </button>
-          <button type="button" data-active={theme === "light"} onClick={() => onThemeChange("light")}>
+          <button
+            type="button"
+            aria-pressed={themePreference === "light"}
+            data-active={themePreference === "light"}
+            onClick={() => onThemePreferenceChange("light")}
+          >
             <Sun size={15} /> 浅色
           </button>
         </div>

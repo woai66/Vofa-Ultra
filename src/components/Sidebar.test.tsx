@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyProtocolHealth } from "../core/protocols";
 import { useWorkbenchStore } from "../store/workbenchStore";
@@ -53,9 +53,9 @@ describe("Sidebar 串口恢复界面", () => {
     render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={onClose}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -67,9 +67,9 @@ describe("Sidebar 串口恢复界面", () => {
     render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -102,9 +102,9 @@ describe("Sidebar 串口恢复界面", () => {
     render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -129,9 +129,9 @@ describe("Sidebar 串口恢复界面", () => {
     render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -162,9 +162,9 @@ describe("Sidebar 协议解析健康度", () => {
   it("区分等待、健康与丢帧状态并提供可操作原因", () => {
     const props = {
       activePanel: "channels" as const,
-      theme: "dark" as const,
+      themePreference: "dark" as const,
       onClose: vi.fn(),
-      onThemeChange: vi.fn(),
+      onThemePreferenceChange: vi.fn(),
     };
     const { rerender } = render(<Sidebar {...props} />);
 
@@ -192,9 +192,9 @@ describe("Sidebar 协议解析健康度", () => {
     render(
       <Sidebar
         activePanel="channels"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -234,9 +234,9 @@ describe("Sidebar 协议解析健康度", () => {
     render(
       <Sidebar
         activePanel="channels"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -244,5 +244,43 @@ describe("Sidebar 协议解析健康度", () => {
     expect(health).toHaveTextContent("已丢弃 2 帧");
     expect(health).toHaveTextContent("浮点帧长度未按 4 字节对齐");
     expect(health).toHaveTextContent("JustFloat：1–16 个小端 float32");
+  });
+});
+
+describe("Sidebar 主题偏好", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("显示三种主题模式并提交用户选择", () => {
+    const on_theme_preference_change = vi.fn();
+    const { rerender } = render(
+      <Sidebar
+        activePanel="settings"
+        themePreference="system"
+        onClose={vi.fn()}
+        onThemePreferenceChange={on_theme_preference_change}
+      />,
+    );
+    const appearance = screen.getByRole("group", { name: "外观" });
+    const system_button = within(appearance).getByRole("button", { name: "系统" });
+    const dark_button = within(appearance).getByRole("button", { name: "深色" });
+    const light_button = within(appearance).getByRole("button", { name: "浅色" });
+
+    expect(system_button).toHaveAttribute("aria-pressed", "true");
+    expect(dark_button).toHaveAttribute("aria-pressed", "false");
+    expect(light_button).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(light_button);
+    expect(on_theme_preference_change).toHaveBeenCalledWith("light");
+
+    rerender(
+      <Sidebar
+        activePanel="settings"
+        themePreference="light"
+        onClose={vi.fn()}
+        onThemePreferenceChange={on_theme_preference_change}
+      />,
+    );
+    expect(light_button).toHaveAttribute("aria-pressed", "true");
   });
 });

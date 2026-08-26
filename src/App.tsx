@@ -23,9 +23,23 @@ import {
 } from "./store/workbenchStore";
 
 export type ThemeMode = "dark" | "light";
+export type ThemePreference = "system" | ThemeMode;
 
 const WORKSPACE_VIEWS = ["waveform", "attitude"] as const;
 type WorkspaceView = (typeof WORKSPACE_VIEWS)[number];
+const THEME_STORAGE_KEY = "vofa-ultra-theme";
+const SYSTEM_THEME_QUERY = "(prefers-color-scheme: light)";
+
+function readThemePreference(): ThemePreference {
+  const saved_theme = localStorage.getItem(THEME_STORAGE_KEY);
+  return saved_theme === "dark" || saved_theme === "light" || saved_theme === "system"
+    ? saved_theme
+    : "system";
+}
+
+function readSystemTheme(): ThemeMode {
+  return window.matchMedia(SYSTEM_THEME_QUERY).matches ? "light" : "dark";
+}
 
 const loadAttitudePanel = () => import("./components/AttitudePanel");
 const AttitudePanel = lazy(async () => {
@@ -44,22 +58,37 @@ export default function App() {
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
   const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
   const replayPath = useWorkbenchStore((state) => state.replayPath);
-  const [theme, setTheme] = useState<ThemeMode>(() => {
-    const savedTheme = localStorage.getItem("vofa-ultra-theme");
-    if (savedTheme === "dark" || savedTheme === "light") {
-      return savedTheme;
-    }
-    return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-  });
+  const [theme_preference, setThemePreference] = useState<ThemePreference>(readThemePreference);
+  const [system_theme, setSystemTheme] = useState<ThemeMode>(readSystemTheme);
+  const theme = theme_preference === "system" ? system_theme : theme_preference;
 
   useWorkbenchRuntime();
 
   const replayLoaded = replaySessionId > 0 && replayStatus !== "idle";
 
   useEffect(() => {
+    const media_query = window.matchMedia(SYSTEM_THEME_QUERY);
+    const handle_change = (event: MediaQueryListEvent) => {
+      setSystemTheme(event.matches ? "light" : "dark");
+    };
+
+    setSystemTheme(media_query.matches ? "light" : "dark");
+    if (typeof media_query.addEventListener === "function") {
+      media_query.addEventListener("change", handle_change);
+      return () => media_query.removeEventListener("change", handle_change);
+    }
+
+    media_query.addListener(handle_change);
+    return () => media_query.removeListener(handle_change);
+  }, []);
+
+  useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem("vofa-ultra-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem(THEME_STORAGE_KEY, theme_preference);
+  }, [theme_preference]);
 
   const selectSidebarPanel = (panel: SidebarPanel) => {
     if (panel === sidebarPanel) {
@@ -95,9 +124,9 @@ export default function App() {
       <ActivityRail activePanel={sidebarPanel} onSelect={selectSidebarPanel} />
       <Sidebar
         activePanel={sidebarPanel}
-        theme={theme}
+        themePreference={theme_preference}
         onClose={() => setSidebarOpen(false)}
-        onThemeChange={setTheme}
+        onThemePreferenceChange={setThemePreference}
       />
 
       <main className="workspace">
