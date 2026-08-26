@@ -44,7 +44,7 @@
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "2.7.2",
     "crc": "4.3.2",
-    "lucide-react": "^0.468.0",
+    "lucide-react": "^1.33.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "three": "^0.185.1",
