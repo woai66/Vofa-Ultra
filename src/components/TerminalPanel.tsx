@@ -817,7 +817,11 @@ export function TerminalPanel() {
   };
 
   return (
-    <section className="workspace-panel terminal-panel" aria-labelledby="terminal-title">
+    <section
+      id="workspace-terminal-panel"
+      className="workspace-panel terminal-panel"
+      aria-labelledby="terminal-title"
+    >
       <header className="panel-toolbar terminal-toolbar">
         <div className="panel-title-group">
           <TerminalSquare size={17} />

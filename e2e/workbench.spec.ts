@@ -279,6 +279,147 @@ test("标签组支持标准键盘导航", async ({ page }) => {
   await expect(exportPanel).toBeHidden();
 });
 
+test("工作台分栏支持拖拽、键盘、持久化、专注模式和窄屏回退", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+
+  await page.setViewportSize({ width: 1_280, height: 800 });
+  await page.goto("/");
+  const content = page.locator(".workspace-content");
+  const primaryPanel = page.locator("#workspace-waveform-panel");
+  const terminalPanel = page.locator("#workspace-terminal-panel");
+  const separator = page.getByRole("separator", { name: "调整主视图与终端高度" });
+  await expect(content).toHaveAttribute("data-layout-mode", "split");
+  await expect(separator).toHaveAttribute("aria-valuenow", "61");
+  await expect(primaryPanel).toBeVisible();
+  await expect(terminalPanel).toBeVisible();
+
+  const initialPrimaryHeight = await primaryPanel.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  const initialTerminalHeight = await terminalPanel.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  const separatorBox = await separator.boundingBox();
+  expect(separatorBox).not.toBeNull();
+  if (!separatorBox) {
+    throw new Error("工作台分隔条没有可用边界");
+  }
+  await page.mouse.move(
+    separatorBox.x + separatorBox.width / 2,
+    separatorBox.y + separatorBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    separatorBox.x + separatorBox.width / 2,
+    separatorBox.y + separatorBox.height / 2 - 70,
+    { steps: 4 },
+  );
+  await page.mouse.up();
+
+  const resizedPrimaryHeight = await primaryPanel.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  const resizedTerminalHeight = await terminalPanel.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  expect(resizedPrimaryHeight).toBeLessThan(initialPrimaryHeight - 50);
+  expect(resizedTerminalHeight).toBeGreaterThan(initialTerminalHeight + 50);
+  const storedSplit = await page.evaluate(() =>
+    Number.parseFloat(localStorage.getItem("vofa-ultra-workspace-split") ?? ""),
+  );
+  expect(storedSplit).toBeGreaterThanOrEqual(0.4);
+  expect(storedSplit).toBeLessThan(0.61);
+
+  await page.reload();
+  await expect(separator).toHaveAttribute("aria-valuenow", String(Math.round(storedSplit * 100)));
+  await expect
+    .poll(() => primaryPanel.evaluate((element) => element.getBoundingClientRect().height))
+    .toBeLessThan(initialPrimaryHeight - 50);
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-workspace-layout.png"),
+    fullPage: true,
+  });
+
+  await separator.focus();
+  await page.keyboard.press("Home");
+  await expect(separator).toHaveAttribute("aria-valuenow", "40");
+  await page.keyboard.press("End");
+  await expect(separator).toHaveAttribute("aria-valuenow", "66");
+  await separator.dblclick();
+  await expect(separator).toHaveAttribute("aria-valuenow", "61");
+
+  const splitButton = page.getByRole("button", { name: "分栏显示" });
+  const primaryButton = page.getByRole("button", { name: "专注波形视图" });
+  const terminalButton = page.getByRole("button", { name: "专注终端" });
+  await terminalButton.click();
+  await expect(content).toHaveAttribute("data-layout-mode", "terminal");
+  await expect(primaryPanel).toBeHidden();
+  await expect(terminalPanel).toBeVisible();
+  await splitButton.click();
+  await expect(primaryPanel).toBeVisible();
+  await expect(separator).toBeVisible();
+  await primaryButton.click();
+  await expect(content).toHaveAttribute("data-layout-mode", "primary");
+  await expect(primaryPanel).toBeVisible();
+  await expect(terminalPanel).toBeHidden();
+
+  await terminalButton.click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+  await expect(page.locator(".sidebar")).toBeHidden();
+  await expect(page.getByRole("group", { name: "工作区布局" })).toBeHidden();
+  await expect(separator).toBeHidden();
+  await expect(primaryPanel).toBeVisible();
+  await expect(terminalPanel).toBeVisible();
+  const mobileLayout = await page.locator(".app-shell").evaluate((element) => ({
+    width: element.getBoundingClientRect().width,
+    documentWidth: document.documentElement.scrollWidth,
+  }));
+  expect(mobileLayout.width).toBeLessThanOrEqual(390);
+  expect(mobileLayout.documentWidth).toBeLessThanOrEqual(390);
+  const mobileSendButton = page.getByRole("button", { name: "发送", exact: true });
+  const sendAndRailBounds = await page.evaluate(() => {
+    const send = document.querySelector<HTMLElement>(".send-button");
+    const rail = document.querySelector<HTMLElement>(".activity-rail");
+    if (!send || !rail) {
+      return null;
+    }
+    const sendRect = send.getBoundingClientRect();
+    const railRect = rail.getBoundingClientRect();
+    return {
+      sendBottom: sendRect.bottom,
+      sendHeight: sendRect.height,
+      railTop: railRect.top,
+    };
+  });
+  expect(sendAndRailBounds).not.toBeNull();
+  expect(sendAndRailBounds?.sendHeight ?? 0).toBeGreaterThanOrEqual(44);
+  expect(sendAndRailBounds?.sendBottom ?? 845).toBeLessThanOrEqual(
+    (sendAndRailBounds?.railTop ?? 0) + 1,
+  );
+  expect(await clippedVisibleHeight(mobileSendButton)).toBeGreaterThanOrEqual(44);
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-workspace-layout.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await content.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(mobileSendButton).toBeInViewport();
+  expect(await clippedVisibleHeight(mobileSendButton)).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  expect(pageErrors).toEqual([]);
+});
+
 test("终端上滚挂起跟随并可回到最新", async ({ page }) => {
   await page.goto("/");
   const entries = Array.from(
