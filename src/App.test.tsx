@@ -1,6 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { APP_DISPLAY_VERSION } from "./core/appMetadata";
 import { createEmptyProtocolHealth } from "./core/protocols";
@@ -11,12 +11,136 @@ vi.mock("./components/AttitudeScene", () => ({
   AttitudeScene: () => <div role="img" aria-label="三维姿态视图" />,
 }));
 
+interface MatchMediaController {
+  add_listener: ReturnType<typeof vi.fn>;
+  remove_listener: ReturnType<typeof vi.fn>;
+  set_matches(matches: boolean): void;
+}
+
+function installMatchMedia(
+  initial_matches: boolean,
+  use_legacy_listener = false,
+): MatchMediaController {
+  let matches = initial_matches;
+  let change_listener: ((event: MediaQueryListEvent) => void) | undefined;
+  const add_event_listener = vi.fn((_event: string, listener: unknown) => {
+    change_listener = listener as (event: MediaQueryListEvent) => void;
+  });
+  const remove_event_listener = vi.fn((_event: string, listener: unknown) => {
+    if (change_listener === listener) {
+      change_listener = undefined;
+    }
+  });
+  const add_listener = vi.fn((listener: (event: MediaQueryListEvent) => void) => {
+    change_listener = listener;
+  });
+  const remove_listener = vi.fn((listener: (event: MediaQueryListEvent) => void) => {
+    if (change_listener === listener) {
+      change_listener = undefined;
+    }
+  });
+  const media_query = {
+    get matches() {
+      return matches;
+    },
+    media: "(prefers-color-scheme: light)",
+    onchange: null,
+    addEventListener: use_legacy_listener ? undefined : add_event_listener,
+    removeEventListener: use_legacy_listener ? undefined : remove_event_listener,
+    addListener: add_listener,
+    removeListener: remove_listener,
+    dispatchEvent: vi.fn(),
+  } as unknown as MediaQueryList;
+  vi.mocked(window.matchMedia).mockReturnValue(media_query);
+
+  return {
+    add_listener,
+    remove_listener,
+    set_matches(next_matches: boolean) {
+      matches = next_matches;
+      change_listener?.({
+        matches: next_matches,
+        media: media_query.media,
+      } as MediaQueryListEvent);
+    },
+  };
+}
+
+let system_theme: MatchMediaController;
+
+beforeEach(() => {
+  localStorage.clear();
+  delete document.documentElement.dataset.theme;
+  vi.mocked(window.matchMedia).mockReset();
+  system_theme = installMatchMedia(false);
+});
+
 afterEach(() => {
   cleanup();
   localStorage.removeItem("vofa-ultra-workspace-split");
 });
 
 describe("App", () => {
+  it("默认跟随运行中的系统主题并保存系统偏好", () => {
+    render(<App />);
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    expect(localStorage.getItem("vofa-ultra-theme")).toBe("system");
+
+    act(() => system_theme.set_matches(true));
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(localStorage.getItem("vofa-ultra-theme")).toBe("system");
+  });
+
+  it("把无效的历史主题配置恢复为系统偏好", () => {
+    localStorage.setItem("vofa-ultra-theme", "contrast");
+    system_theme = installMatchMedia(true);
+    render(<App />);
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(localStorage.getItem("vofa-ultra-theme")).toBe("system");
+  });
+
+  it("保留旧的固定主题配置且不受系统变化影响", () => {
+    localStorage.setItem("vofa-ultra-theme", "dark");
+    system_theme = installMatchMedia(true);
+    render(<App />);
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    act(() => system_theme.set_matches(false));
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    expect(localStorage.getItem("vofa-ultra-theme")).toBe("dark");
+  });
+
+  it("从设置切换主题偏好并恢复系统跟随", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^设置$/ }));
+    const system_button = screen.getByRole("button", { name: "系统" });
+    const light_button = screen.getByRole("button", { name: "浅色" });
+    expect(system_button).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(light_button);
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(localStorage.getItem("vofa-ultra-theme")).toBe("light");
+
+    await user.click(system_button);
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    expect(localStorage.getItem("vofa-ultra-theme")).toBe("system");
+    act(() => system_theme.set_matches(true));
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+  });
+
+  it("在旧式媒体查询 API 上注册并清理主题监听", () => {
+    system_theme = installMatchMedia(false, true);
+    const { unmount } = render(<App />);
+
+    expect(system_theme.add_listener).toHaveBeenCalledOnce();
+    unmount();
+    expect(system_theme.remove_listener).toHaveBeenCalledOnce();
+  });
+
   it("呈现串口工作台的核心区域", () => {
     render(<App />);
 

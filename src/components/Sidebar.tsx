@@ -9,6 +9,7 @@ import {
   Eye,
   EyeOff,
   Gauge,
+  Monitor,
   Moon,
   Pencil,
   Play,
@@ -32,7 +33,7 @@ import {
 } from "../core/protocols";
 import { isRecoveryActivePhase } from "../core/serialRecovery";
 import { presentSerialPort, sortSerialPorts } from "../core/serialPorts";
-import type { ThemeMode } from "../App";
+import type { ThemePreference } from "../App";
 import {
   BAUD_RATES,
   type ProtocolKind,
@@ -63,12 +64,17 @@ const ExtensionPanel = lazy(() =>
 
 interface SidebarProps {
   activePanel: SidebarPanel;
-  theme: ThemeMode;
+  themePreference: ThemePreference;
   onClose(): void;
-  onThemeChange(theme: ThemeMode): void;
+  onThemePreferenceChange(theme: ThemePreference): void;
 }
 
-export function Sidebar({ activePanel, theme, onClose, onThemeChange }: SidebarProps) {
+export function Sidebar({
+  activePanel,
+  themePreference,
+  onClose,
+  onThemePreferenceChange,
+}: SidebarProps) {
   return (
     <aside className="sidebar">
       <button
@@ -98,7 +104,10 @@ export function Sidebar({ activePanel, theme, onClose, onThemeChange }: SidebarP
         <WorkspacePanel />
       </div>
       {activePanel === "settings" && (
-        <SettingsPanel theme={theme} onThemeChange={onThemeChange} />
+        <SettingsPanel
+          themePreference={themePreference}
+          onThemePreferenceChange={onThemePreferenceChange}
+        />
       )}
     </aside>
   );
@@ -1010,7 +1019,10 @@ function ChannelRow({
   );
 }
 
-function SettingsPanel({ theme, onThemeChange }: Pick<SidebarProps, "theme" | "onThemeChange">) {
+function SettingsPanel({
+  themePreference,
+  onThemePreferenceChange,
+}: Pick<SidebarProps, "themePreference" | "onThemePreferenceChange">) {
   const chartWindowSeconds = useWorkbenchStore((state) => state.chartWindowSeconds);
   const setChartWindowSeconds = useWorkbenchStore((state) => state.setChartWindowSeconds);
   const terminalAutoScroll = useWorkbenchStore((state) => state.terminalAutoScroll);
@@ -1038,17 +1050,25 @@ function SettingsPanel({ theme, onThemeChange }: Pick<SidebarProps, "theme" | "o
         >
           <button
             type="button"
-            aria-pressed={theme === "dark"}
-            data-active={theme === "dark"}
-            onClick={() => onThemeChange("dark")}
+            aria-pressed={themePreference === "system"}
+            data-active={themePreference === "system"}
+            onClick={() => onThemePreferenceChange("system")}
+          >
+            <Monitor size={15} /> 系统
+          </button>
+          <button
+            type="button"
+            aria-pressed={themePreference === "dark"}
+            data-active={themePreference === "dark"}
+            onClick={() => onThemePreferenceChange("dark")}
           >
             <Moon size={15} /> 深色
           </button>
           <button
             type="button"
-            aria-pressed={theme === "light"}
-            data-active={theme === "light"}
-            onClick={() => onThemeChange("light")}
+            aria-pressed={themePreference === "light"}
+            data-active={themePreference === "light"}
+            onClick={() => onThemePreferenceChange("light")}
           >
             <Sun size={15} /> 浅色
           </button>
