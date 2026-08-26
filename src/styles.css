@@ -2596,6 +2596,82 @@ textarea:focus {
   background: var(--surface-1);
 }
 
+.waveform-scale-tools {
+  position: sticky;
+  z-index: 2;
+  left: 0;
+  display: flex;
+  height: 34px;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 0 8px;
+  border-right: 1px solid var(--border);
+  background: var(--surface-0);
+  box-shadow: 6px 0 10px color-mix(in srgb, var(--surface-1) 68%, transparent);
+  gap: 6px;
+}
+
+.waveform-scale-mode {
+  display: grid;
+  height: 26px;
+  grid-template-columns: repeat(2, 38px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-1);
+}
+
+.waveform-scale-mode button {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-subtle);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.waveform-scale-mode button + button {
+  border-left: 1px solid var(--border);
+}
+
+.waveform-scale-mode button:hover {
+  color: var(--text);
+}
+
+.waveform-scale-mode button[data-active="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.waveform-focus-channel {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 6px minmax(82px, 112px);
+  align-items: center;
+  gap: 5px;
+}
+
+.waveform-focus-channel > span {
+  width: 6px;
+  height: 18px;
+  border-radius: 2px;
+  background: var(--text-subtle);
+}
+
+.waveform-focus-channel select {
+  width: 112px;
+  height: 26px;
+  min-width: 0;
+  padding: 0 22px 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-1);
+  color: var(--text);
+  font-size: 9px;
+}
+
 .channel-readout {
   display: grid;
   min-width: 118px;
@@ -2609,6 +2685,11 @@ textarea:focus {
 
 .channel-readout[data-visible="false"] {
   opacity: 0.4;
+}
+
+.channel-readout[data-focused="true"] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 -2px var(--accent);
 }
 
 .channel-readout > span {
@@ -5537,6 +5618,27 @@ textarea:focus {
     flex-basis: 52px;
     padding-right: 7px;
     padding-left: 10px;
+  }
+
+  .channel-strip,
+  .waveform-scale-tools,
+  .channel-readout {
+    min-height: 44px;
+    height: 44px;
+  }
+
+  .channel-strip {
+    flex-basis: 44px;
+  }
+
+  .waveform-scale-mode {
+    height: 44px;
+    grid-template-columns: repeat(2, 44px);
+  }
+
+  .waveform-scale-mode button,
+  .waveform-focus-channel select {
+    height: 44px;
   }
 
   .waveform-panel .panel-title-group > svg,

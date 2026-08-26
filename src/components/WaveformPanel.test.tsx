@@ -10,10 +10,24 @@ import type { ChannelSeries } from "../types/workbench";
 import { WaveformPanel } from "./WaveformPanel";
 
 interface UPlotMockInstance {
+  readonly options: UPlotMockOptions;
   readonly setData: ReturnType<typeof vi.fn>;
+  readonly valToPosScaleKeys: string[];
   simulateScale(scaleKey: string): void;
   simulateSelection(): void;
   simulateXZoom(): Promise<void>;
+}
+
+interface UPlotMockOptions {
+  width: number;
+  height: number;
+  scales?: Record<string, { auto?: boolean; time?: boolean }>;
+  axes?: Array<{ scale?: string; stroke?: string }>;
+  series?: Array<{ label?: string; scale?: string; show?: boolean }>;
+  hooks?: {
+    setScale?: Array<(chart: unknown, scaleKey: string) => void>;
+    setSelect?: Array<(chart: unknown) => void>;
+  };
 }
 
 const uPlotMockInstances = vi.hoisted(() => [] as UPlotMockInstance[]);
@@ -23,6 +37,8 @@ vi.mock("uplot", () => ({
     readonly over = document.createElement("div");
     readonly select = { left: 0, top: 0, width: 0, height: 0 };
     readonly setData = vi.fn();
+    readonly valToPosScaleKeys: string[] = [];
+    readonly options: UPlotMockOptions;
     width: number;
     height: number;
     private readonly hooks: {
@@ -31,19 +47,13 @@ vi.mock("uplot", () => ({
     };
 
     constructor(
-      options: {
-        width: number;
-        height: number;
-        hooks?: {
-          setScale?: Array<(chart: unknown, scaleKey: string) => void>;
-          setSelect?: Array<(chart: unknown) => void>;
-        };
-      },
+      options: UPlotMockOptions,
       _data: unknown,
       target: HTMLElement,
     ) {
       this.width = options.width;
       this.height = options.height;
+      this.options = options;
       this.hooks = options.hooks ?? {};
       this.over.className = "u-over";
       target.append(this.over);
@@ -59,7 +69,8 @@ vi.mock("uplot", () => ({
       return position;
     }
 
-    valToPos(value: number): number {
+    valToPos(value: number, scaleKey: string): number {
+      this.valToPosScaleKeys.push(scaleKey);
       return value;
     }
 
@@ -150,6 +161,126 @@ describe("WaveformPanel 波形测量", () => {
     render(<WaveformPanel theme="dark" />);
 
     expect(screen.getByRole("button", { name: "开启波形测量" })).toBeDisabled();
+  });
+
+  it("默认为共享量程并为独立量程分配通道 scale 与焦点轴", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<WaveformPanel theme="dark" />);
+
+    const sharedChart = latestUPlotMock();
+    expect(Object.keys(sharedChart.options.scales ?? {})).toEqual(["x", "y"]);
+    expect(sharedChart.options.series?.slice(1).map((series) => series.scale)).toEqual([
+      "y",
+      "y",
+    ]);
+    expect(sharedChart.options.axes?.map((axis) => axis.scale)).toEqual(["x", "y"]);
+    expect(screen.getByRole("button", { name: "共享" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.click(screen.getByRole("button", { name: "独立" }));
+    const independentChart = latestUPlotMock();
+    expect(Object.keys(independentChart.options.scales ?? {})).toEqual([
+      "x",
+      "channel:channel-0",
+      "channel:channel-1",
+    ]);
+    expect(independentChart.options.series?.slice(1).map((series) => series.scale)).toEqual([
+      "channel:channel-0",
+      "channel:channel-1",
+    ]);
+    expect(independentChart.options.axes?.map((axis) => axis.scale)).toEqual([
+      "x",
+      "channel:channel-0",
+    ]);
+    expect(independentChart.options.axes?.[1]?.stroke).toBe(TEST_CHANNELS[0]?.color);
+    expect(container.querySelector('.channel-readout[data-focused="true"] small')).toHaveTextContent(
+      "电压",
+    );
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "独立量程焦点通道" }),
+      "channel-1",
+    );
+    const focusedChart = latestUPlotMock();
+    expect(focusedChart.options.axes?.map((axis) => axis.scale)).toEqual([
+      "x",
+      "channel:channel-1",
+    ]);
+    expect(focusedChart.options.axes?.[1]?.stroke).toBe(TEST_CHANNELS[1]?.color);
+    expect(container.querySelector('.channel-readout[data-focused="true"] small')).toHaveTextContent(
+      "电流",
+    );
+  });
+
+  it("独立量程在焦点通道隐藏后回退并允许所有通道隐藏", async () => {
+    const user = userEvent.setup();
+    render(<WaveformPanel theme="dark" />);
+    await user.click(screen.getByRole("button", { name: "独立" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "独立量程焦点通道" }),
+      "channel-1",
+    );
+
+    act(() => {
+      useWorkbenchStore.setState({
+        channels: TEST_CHANNELS.map((channel) =>
+          channel.id === "channel-1" ? { ...channel, visible: false } : channel,
+        ),
+      });
+    });
+    expect(screen.getByRole("combobox", { name: "独立量程焦点通道" })).toHaveValue(
+      "channel-0",
+    );
+    expect(latestUPlotMock().options.axes?.map((axis) => axis.scale)).toEqual([
+      "x",
+      "channel:channel-0",
+    ]);
+
+    act(() => {
+      useWorkbenchStore.setState({
+        channels: TEST_CHANNELS.map((channel) => ({ ...channel, visible: false })),
+      });
+    });
+    expect(screen.getByRole("combobox", { name: "独立量程焦点通道" })).toBeDisabled();
+    expect(latestUPlotMock().options.axes?.map((axis) => axis.scale)).toEqual(["x"]);
+    expect(screen.getByRole("button", { name: "开启波形测量" })).toBeDisabled();
+  });
+
+  it("独立量程测量使用被测通道 scale 并同步焦点轴", async () => {
+    const user = userEvent.setup();
+    render(<WaveformPanel theme="dark" />);
+    await user.click(screen.getByRole("button", { name: "独立" }));
+    await user.click(screen.getByRole("button", { name: "开启波形测量" }));
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "测量通道" }), "channel-1");
+
+    const measuredChart = latestUPlotMock();
+    expect(measuredChart.valToPosScaleKeys.slice(-4)).toEqual([
+      "x",
+      "x",
+      "channel:channel-1",
+      "channel:channel-1",
+    ]);
+    expect(screen.getByRole("combobox", { name: "独立量程焦点通道" })).toHaveValue(
+      "channel-1",
+    );
+    expect(latestUPlotMock().options.axes?.map((axis) => axis.scale)).toEqual([
+      "x",
+      "channel:channel-1",
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "关闭波形测量" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "独立量程焦点通道" }),
+      "channel-0",
+    );
+    await user.click(screen.getByRole("button", { name: "开启波形测量" }));
+    expect(screen.getByRole("combobox", { name: "测量通道" })).toHaveValue("channel-1");
+    expect(screen.getByRole("combobox", { name: "独立量程焦点通道" })).toHaveValue(
+      "channel-1",
+    );
   });
 
   it("触发只列出基础和派生通道并可布防解除", async () => {
