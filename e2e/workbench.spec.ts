@@ -1072,6 +1072,43 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
     .poll(async () => (await canvasScreenshotSignature(canvas)).hash)
     .not.toBe(frozenCanvas.hash);
 
+  const contextLossSupported = await canvas.evaluate((element) => {
+    const testCanvas = element as HTMLCanvasElement & {
+      contextLossExtension?: WEBGL_lose_context;
+    };
+    const extension = testCanvas.getContext("webgl2")?.getExtension("WEBGL_lose_context");
+    if (!extension) {
+      return false;
+    }
+    testCanvas.contextLossExtension = extension;
+    extension.loseContext();
+    return true;
+  });
+  expect(contextLossSupported).toBe(true);
+  await expect(scene).toHaveAttribute("data-renderer", "lost");
+  await expect(page.locator(".attitude-state-overlay[role=\"alert\"]")).toContainText(
+    "显卡上下文已丢失，正在等待自动恢复",
+  );
+
+  await canvas.evaluate((element) => {
+    const testCanvas = element as HTMLCanvasElement & {
+      contextLossExtension?: WEBGL_lose_context;
+    };
+    const extension = testCanvas.contextLossExtension;
+    delete testCanvas.contextLossExtension;
+    extension?.restoreContext();
+  });
+  await expect(scene).toHaveAttribute("data-renderer", "ready");
+  await expect(page.locator(".attitude-state-overlay[role=\"alert\"]")).toHaveCount(0);
+  await expect
+    .poll(async () => (await canvasScreenshotSignature(canvas)).bytes)
+    .toBeGreaterThan(10_000);
+  const restoredCanvas = await canvasScreenshotSignature(canvas);
+  await expect
+    .poll(async () => (await canvasScreenshotSignature(canvas)).hash)
+    .not.toBe(restoredCanvas.hash);
+  await scene.screenshot({ path: testInfo.outputPath("desktop-attitude-restored.png") });
+
   const mobileViewports = [
     { width: 390, height: 844 },
     { width: 320, height: 568 },
@@ -1106,12 +1143,17 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
     expect(layout.bottom).toBeLessThanOrEqual(viewport.height);
     expect(layout.documentWidth).toBeLessThanOrEqual(viewport.width);
     expect(layout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(true);
+    await configuration.getByRole("button", { name: "关闭姿态配置" }).click();
+    await expect(configuration).not.toBeVisible();
+    const mobileCanvas = await canvasScreenshotSignature(canvas);
+    expect(mobileCanvas.width).toBeGreaterThan(200);
+    expect(mobileCanvas.height).toBeGreaterThan(100);
+    expect(mobileCanvas.bytes).toBeGreaterThan(5_000);
+    await page.screenshot({
+      path: testInfo.outputPath(`mobile-${viewport.width}-attitude.png`),
+      fullPage: true,
+    });
   }
-
-  await page.screenshot({
-    path: testInfo.outputPath("mobile-320-attitude.png"),
-    fullPage: true,
-  });
   expect(pageErrors).toEqual([]);
 });
 

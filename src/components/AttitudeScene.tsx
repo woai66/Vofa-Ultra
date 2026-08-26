@@ -53,9 +53,9 @@ export function AttitudeScene({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const orientationRef = useRef(orientation);
   const runtimeRef = useRef<SceneRuntime | null>(null);
-  const [rendererStatus, setRendererStatus] = useState<"loading" | "ready" | "error">(
-    "loading",
-  );
+  const [rendererStatus, setRendererStatus] = useState<
+    "loading" | "ready" | "lost" | "error"
+  >("loading");
   orientationRef.current = orientation;
 
   useEffect(() => {
@@ -84,8 +84,6 @@ export function AttitudeScene({
       return undefined;
     }
 
-    onRendererError(null);
-    setRendererStatus("ready");
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.outputColorSpace = SRGBColorSpace;
 
@@ -159,9 +157,24 @@ export function AttitudeScene({
     const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     const currentOrientation = initialOrientation.clone();
     const targetOrientation = initialOrientation.clone();
-    let animationFrame = 0;
+    let animationFrame: number | null = null;
+    let contextLost = false;
+    let disposed = false;
     let lastFrameAt = performance.now();
+
+    const stopRendering = () => {
+      if (animationFrame === null) {
+        return;
+      }
+      cancelAnimationFrame(animationFrame);
+      animationFrame = null;
+    };
+
     const renderFrame = (now: number) => {
+      animationFrame = null;
+      if (disposed || contextLost) {
+        return;
+      }
       const elapsedSeconds = Math.min(0.1, Math.max(0, (now - lastFrameAt) / 1_000));
       lastFrameAt = now;
       targetOrientation.copy(toThreeQuaternion(orientationRef.current));
@@ -170,12 +183,55 @@ export function AttitudeScene({
       device.quaternion.copy(currentOrientation);
       controls.update();
       renderer.render(scene, camera);
+      if (!disposed && !contextLost) {
+        animationFrame = requestAnimationFrame(renderFrame);
+      }
+    };
+
+    const startRendering = () => {
+      if (disposed || contextLost || animationFrame !== null) {
+        return;
+      }
+      lastFrameAt = performance.now();
       animationFrame = requestAnimationFrame(renderFrame);
     };
-    animationFrame = requestAnimationFrame(renderFrame);
+
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      if (disposed || contextLost) {
+        return;
+      }
+      contextLost = true;
+      stopRendering();
+      setRendererStatus("lost");
+      onRendererError("显卡上下文已丢失，正在等待自动恢复");
+    };
+
+    const handleContextRestored = () => {
+      if (disposed || !contextLost) {
+        return;
+      }
+      contextLost = false;
+      resize();
+      if (contextLost) {
+        return;
+      }
+      onRendererError(null);
+      setRendererStatus("ready");
+      startRendering();
+    };
+
+    canvas.addEventListener("webglcontextlost", handleContextLost);
+    canvas.addEventListener("webglcontextrestored", handleContextRestored);
+    onRendererError(null);
+    setRendererStatus("ready");
+    startRendering();
 
     return () => {
-      cancelAnimationFrame(animationFrame);
+      disposed = true;
+      canvas.removeEventListener("webglcontextlost", handleContextLost);
+      canvas.removeEventListener("webglcontextrestored", handleContextRestored);
+      stopRendering();
       resizeObserver.disconnect();
       controls.dispose();
       runtimeRef.current = null;
