@@ -526,15 +526,23 @@ describe("TerminalPanel", () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
 
-    await user.click(screen.getByRole("button", { name: "命令历史，1 条" }));
-    const historyDialog = screen.getByRole("dialog", { name: "命令历史" });
+    const historyTrigger = screen.getByRole("button", { name: "命令历史，1 条" });
+    await user.click(historyTrigger);
+    let historyDialog = screen.getByRole("dialog", { name: "命令历史" });
     expect(historyDialog).toHaveTextContent("CRC32-LE");
+    expect(within(historyDialog).getByRole("button", { name: /PING/ })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "命令历史" })).not.toBeInTheDocument();
+    expect(historyTrigger).toHaveFocus();
+
+    await user.click(historyTrigger);
+    historyDialog = screen.getByRole("dialog", { name: "命令历史" });
     await user.click(within(historyDialog).getByRole("button", { name: /PING/ }));
     expect(screen.getByRole("textbox", { name: "发送内容" })).toHaveValue("PING");
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("crlf");
     expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("crc32-le");
 
-    await user.click(screen.getByRole("button", { name: "命令历史，1 条" }));
+    await user.click(historyTrigger);
     await user.click(screen.getByRole("button", { name: "清空命令历史" }));
     expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
     expect(screen.getByRole("button", { name: "命令历史，0 条" })).toBeDisabled();

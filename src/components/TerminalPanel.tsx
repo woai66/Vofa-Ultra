@@ -339,6 +339,7 @@ export function TerminalPanel() {
   const modbusTriggerRef = useRef<HTMLButtonElement>(null);
   const quickCommandTriggerRef = useRef<HTMLButtonElement>(null);
   const variableTriggerRef = useRef<HTMLButtonElement>(null);
+  const historyTriggerRef = useRef<HTMLButtonElement>(null);
   const variableListRef = useRef<HTMLDivElement>(null);
   const exportControlRef = useRef<HTMLDivElement>(null);
   const exportTriggerRef = useRef<HTMLButtonElement>(null);
@@ -1269,10 +1270,15 @@ export function TerminalPanel() {
         className="send-composer"
         data-workflow-open={workflowVisible}
         onKeyDown={(event) => {
-          if (fileSendOpen && event.key === "Escape") {
+          if (event.key === "Escape" && (fileSendOpen || historyOpen)) {
             event.preventDefault();
-            setFileSendOpen(false);
-            fileSendTriggerRef.current?.focus();
+            if (fileSendOpen) {
+              setFileSendOpen(false);
+              fileSendTriggerRef.current?.focus();
+            } else {
+              setHistoryOpen(false);
+              historyTriggerRef.current?.focus();
+            }
           }
         }}
       >
@@ -1471,6 +1477,7 @@ export function TerminalPanel() {
             <Bookmark size={16} />
           </button>
           <button
+            ref={historyTriggerRef}
             className="icon-button composer-icon-button command-history-trigger"
             type="button"
             aria-label={`命令历史，${commandHistory.length} 条`}
@@ -1785,7 +1792,11 @@ export function TerminalPanel() {
         )}
 
         {historyOpen && (
-          <div className="command-history-popover" role="dialog" aria-label="命令历史">
+          <div
+            className="command-history-popover"
+            role="dialog"
+            aria-label="命令历史"
+          >
             <div className="command-history-header">
               <div>
                 <History size={14} />
@@ -1815,6 +1826,7 @@ export function TerminalPanel() {
                   <button
                     key={`${entry.sentAt}-${index}`}
                     type="button"
+                    autoFocus={index === commandHistory.length - 1}
                     onClick={() => {
                       recallHistory(index);
                       setHistoryOpen(false);
