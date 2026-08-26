@@ -19,6 +19,13 @@ import {
 } from "lucide-react";
 import uPlot, { type AlignedData, type Options } from "uplot";
 import type { ThemeMode } from "../App";
+import type { SpectrumAnalysisResult } from "../core/spectrum";
+import {
+  MAX_SPECTRUM_SAMPLE_RATE_HZ,
+  MIN_SPECTRUM_SAMPLE_RATE_HZ,
+  SPECTRUM_WINDOW_SIZES,
+  type SpectrumWindowSize,
+} from "../core/spectrumConfig";
 import {
   calculateWaveformMeasurement,
   createInitialMeasurementAnchors,
@@ -33,13 +40,20 @@ import type {
   WaveformTriggerPhase,
 } from "../core/waveformTrigger";
 import { useWorkbenchStore } from "../store/workbenchStore";
-import type { ChannelSeries } from "../types/workbench";
+import type { ChannelSeries, DataPoint } from "../types/workbench";
 import type { ChartWindowSeconds } from "../types/workspace";
 
 interface WaveformPanelProps {
   theme: ThemeMode;
   onMeasurementModeChange?(enabled: boolean): void;
 }
+
+type WaveformViewMode = "time" | "spectrum";
+type SpectrumPanelAnalysisResult = SpectrumAnalysisResult | { readonly status: "load-error" };
+type SpectrumAnalyzer = typeof import("../core/spectrum").analyzeSpectrum;
+
+const SPECTRUM_REFRESH_INTERVAL_MS = 100;
+let spectrumAnalyzerPromise: Promise<SpectrumAnalyzer> | null = null;
 
 export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelProps) {
   const rawChannels = useWorkbenchStore((state) => state.channels);
@@ -72,6 +86,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   );
   const clearChart = useWorkbenchStore((state) => state.clearChart);
   const [measurementEnabled, setMeasurementEnabled] = useState(false);
+  const [viewMode, setViewMode] = useState<WaveformViewMode>("time");
   const [triggerControlsOpen, setTriggerControlsOpen] = useState(false);
   const [triggerChannelId, setTriggerChannelId] = useState("");
   const [triggerEdge, setTriggerEdge] = useState<WaveformTriggerEdge>("rising");
@@ -81,6 +96,10 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   const [measurementChannelId, setMeasurementChannelId] = useState("");
   const [measurementAnchors, setMeasurementAnchors] =
     useState<WaveformMeasurementAnchors | null>(null);
+  const [spectrumChannelId, setSpectrumChannelId] = useState("");
+  const [spectrumWindowSize, setSpectrumWindowSize] =
+    useState<SpectrumWindowSize>(SPECTRUM_WINDOW_SIZES[0]);
+  const [spectrumSampleRateInput, setSpectrumSampleRateInput] = useState("");
   const pausedBeforeMeasurementRef = useRef(false);
   const previousChartDataRevisionRef = useRef(chartDataRevision);
   const triggerConfig = waveformTrigger.config;
@@ -125,6 +144,25 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
         : null,
     [chartWindowSeconds, measurementAnchors, selectedChannel],
   );
+  const selectedSpectrumChannel =
+    channels.find((channel) => channel.id === spectrumChannelId) ??
+    channels.find((channel) => channel.visible && channel.points.length > 0) ??
+    channels.find((channel) => channel.points.length > 0) ??
+    channels[0];
+  const spectrumSampleRateHz = parseSpectrumSampleRate(spectrumSampleRateInput);
+  const spectrumAnalysisKey = [
+    selectedSpectrumChannel?.id ?? "none",
+    spectrumWindowSize,
+    spectrumSampleRateHz ?? "invalid",
+    chartDataRevision,
+  ].join(":");
+  const spectrumAnalysis = useThrottledSpectrumAnalysis(
+    viewMode === "spectrum",
+    spectrumAnalysisKey,
+    selectedSpectrumChannel?.points,
+    spectrumWindowSize,
+    spectrumSampleRateHz,
+  );
 
   useEffect(() => {
     if (triggerConfig) {
@@ -151,6 +189,13 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       }
     }
   }, [triggerChannelId, triggerChannels, waveformTrigger.phase]);
+
+  useEffect(() => {
+    const nextChannelId = selectedSpectrumChannel?.id ?? "";
+    if (nextChannelId !== spectrumChannelId) {
+      setSpectrumChannelId(nextChannelId);
+    }
+  }, [selectedSpectrumChannel?.id, spectrumChannelId]);
 
   const resetMeasurement = useCallback(
     (restorePause: boolean) => {
@@ -359,6 +404,20 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     clearChart();
   };
 
+  const handleViewModeChange = (mode: WaveformViewMode) => {
+    if (mode === viewMode) {
+      return;
+    }
+    setWaveformFollowSuspended(false);
+    if (mode === "spectrum") {
+      if (measurementEnabled) {
+        resetMeasurement(true);
+      }
+      setTriggerControlsOpen(false);
+    }
+    setViewMode(mode);
+  };
+
   return (
     <section
       className="workspace-panel waveform-panel"
@@ -367,12 +426,13 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       data-trigger-controls={triggerControlsOpen}
       data-trigger-phase={waveformTrigger.phase}
       data-follow-suspended={waveformFollowSuspended}
+      data-view-mode={viewMode}
     >
       <header className="panel-toolbar">
         <div className="panel-title-group">
           <Waves size={17} />
           <div>
-            <h2 id="waveform-title">实时波形</h2>
+            <h2 id="waveform-title">{viewMode === "time" ? "实时波形" : "频谱分析"}</h2>
             <span className="panel-subtitle">{channels.length} 个通道</span>
           </div>
           <span className="live-state" data-paused={chartPaused}>
@@ -381,57 +441,83 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
           </span>
         </div>
         <div className="panel-actions">
-          <div className="time-window-control" role="group" aria-label="波形时间窗">
-            {[5, 15, 30, 60].map((seconds) => (
-              <button
-                key={seconds}
-                type="button"
-                data-active={chartWindowSeconds === seconds}
-                disabled={isWorkspaceTransitioning}
-                onClick={() => handleWindowChange(seconds as ChartWindowSeconds)}
-              >
-                {seconds}s
-              </button>
-            ))}
+          <div
+            className="segmented-control compact-segments waveform-view-control"
+            role="group"
+            aria-label="波形视图"
+          >
+            <button
+              type="button"
+              data-active={viewMode === "time"}
+              aria-pressed={viewMode === "time"}
+              onClick={() => handleViewModeChange("time")}
+            >
+              时域
+            </button>
+            <button
+              type="button"
+              data-active={viewMode === "spectrum"}
+              aria-pressed={viewMode === "spectrum"}
+              onClick={() => handleViewModeChange("spectrum")}
+            >
+              频谱
+            </button>
           </div>
-          <button
-            className="icon-button waveform-follow-latest"
-            type="button"
-            aria-label="回到实时波形"
-            aria-hidden={!waveformFollowSuspended}
-            title={waveformFollowSuspended ? "回到实时波形" : undefined}
-            data-active={waveformFollowSuspended}
-            data-visible={waveformFollowSuspended}
-            disabled={!waveformFollowSuspended}
-            onClick={() => setWaveformFollowSuspended(false)}
-          >
-            <LocateFixed size={16} />
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
-            title={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
-            aria-expanded={triggerControlsOpen}
-            aria-controls="waveform-trigger-controls"
-            data-active={triggerControlsOpen || waveformTrigger.phase !== "idle"}
-            disabled={measurementEnabled}
-            onClick={() => setTriggerControlsOpen((open) => !open)}
-          >
-            <Crosshair size={16} />
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
-            title={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
-            aria-pressed={measurementEnabled}
-            data-active={measurementEnabled}
-            disabled={!initialMeasurementAnchors || triggerRunning}
-            onClick={handleMeasurementToggle}
-          >
-            <Ruler size={16} />
-          </button>
+          {viewMode === "time" && (
+            <>
+              <div className="time-window-control" role="group" aria-label="波形时间窗">
+                {[5, 15, 30, 60].map((seconds) => (
+                  <button
+                    key={seconds}
+                    type="button"
+                    data-active={chartWindowSeconds === seconds}
+                    disabled={isWorkspaceTransitioning}
+                    onClick={() => handleWindowChange(seconds as ChartWindowSeconds)}
+                  >
+                    {seconds}s
+                  </button>
+                ))}
+              </div>
+              <button
+                className="icon-button waveform-follow-latest"
+                type="button"
+                aria-label="回到实时波形"
+                aria-hidden={!waveformFollowSuspended}
+                title={waveformFollowSuspended ? "回到实时波形" : undefined}
+                data-active={waveformFollowSuspended}
+                data-visible={waveformFollowSuspended}
+                disabled={!waveformFollowSuspended}
+                onClick={() => setWaveformFollowSuspended(false)}
+              >
+                <LocateFixed size={16} />
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
+                title={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
+                aria-expanded={triggerControlsOpen}
+                aria-controls="waveform-trigger-controls"
+                data-active={triggerControlsOpen || waveformTrigger.phase !== "idle"}
+                disabled={measurementEnabled}
+                onClick={() => setTriggerControlsOpen((open) => !open)}
+              >
+                <Crosshair size={16} />
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
+                title={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
+                aria-pressed={measurementEnabled}
+                data-active={measurementEnabled}
+                disabled={!initialMeasurementAnchors || triggerRunning}
+                onClick={handleMeasurementToggle}
+              >
+                <Ruler size={16} />
+              </button>
+            </>
+          )}
           <button
             className="icon-button"
             type="button"
@@ -466,7 +552,21 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
         </div>
       )}
 
-      {triggerControlsOpen && (
+      {viewMode === "spectrum" && (
+        <SpectrumControls
+          channels={channels}
+          selectedChannel={selectedSpectrumChannel}
+          sampleRateInput={spectrumSampleRateInput}
+          sampleRateHz={spectrumSampleRateHz}
+          windowSize={spectrumWindowSize}
+          analysis={spectrumAnalysis}
+          onChannelChange={setSpectrumChannelId}
+          onSampleRateChange={setSpectrumSampleRateInput}
+          onWindowSizeChange={setSpectrumWindowSize}
+        />
+      )}
+
+      {viewMode === "time" && triggerControlsOpen && (
         <div
           id="waveform-trigger-controls"
           className="waveform-trigger-strip"
@@ -542,7 +642,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
         </div>
       )}
 
-      {measurementEnabled && selectedChannel && measurementResult && (
+      {viewMode === "time" && measurementEnabled && selectedChannel && measurementResult && (
         <MeasurementStrip
           channels={channels}
           selectedChannel={selectedChannel}
@@ -562,6 +662,22 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
             <strong>等待数据帧</strong>
             <span>连接设备或启动模拟数据源</span>
           </div>
+        ) : viewMode === "spectrum" ? (
+          spectrumAnalysis?.status === "ok" && selectedSpectrumChannel ? (
+            <SpectrumChart
+              analysis={spectrumAnalysis}
+              channel={selectedSpectrumChannel}
+              theme={theme}
+            />
+          ) : (
+            <SpectrumState
+              analysis={spectrumAnalysis}
+              sampleRateInput={spectrumSampleRateInput}
+              sampleRateHz={spectrumSampleRateHz}
+              selectedChannel={selectedSpectrumChannel}
+              windowSize={spectrumWindowSize}
+            />
+          )
         ) : (
           <WaveformChart
             channels={channels}
@@ -582,6 +698,368 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       </div>
     </section>
   );
+}
+
+interface SpectrumControlsProps {
+  channels: ChannelSeries[];
+  selectedChannel: ChannelSeries | undefined;
+  sampleRateInput: string;
+  sampleRateHz: number | null;
+  windowSize: SpectrumWindowSize;
+  analysis: SpectrumPanelAnalysisResult | null;
+  onChannelChange(channelId: string): void;
+  onSampleRateChange(value: string): void;
+  onWindowSizeChange(windowSize: SpectrumWindowSize): void;
+}
+
+function SpectrumControls({
+  channels,
+  selectedChannel,
+  sampleRateInput,
+  sampleRateHz,
+  windowSize,
+  analysis,
+  onChannelChange,
+  onSampleRateChange,
+  onWindowSizeChange,
+}: SpectrumControlsProps) {
+  const ready = analysis?.status === "ok" ? analysis : null;
+  const sampleRateInvalid = sampleRateInput.trim().length > 0 && sampleRateHz === null;
+
+  return (
+    <div className="spectrum-control-strip" aria-label="频谱设置">
+      <label className="spectrum-channel-control">
+        <span
+          className="spectrum-channel-swatch"
+          style={{ backgroundColor: selectedChannel?.color }}
+          aria-hidden="true"
+        />
+        <span className="sr-only">频谱通道</span>
+        <select
+          id="spectrum-channel"
+          name="spectrum-channel"
+          aria-label="频谱通道"
+          value={selectedChannel?.id ?? ""}
+          onChange={(event) => onChannelChange(event.target.value)}
+        >
+          {channels.length === 0 && <option value="">无通道</option>}
+          {channels.map((channel) => (
+            <option key={channel.id} value={channel.id}>
+              {channel.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="spectrum-sample-rate-control">
+        <span>采样率</span>
+        <input
+          id="spectrum-sample-rate"
+          name="spectrum-sample-rate"
+          type="number"
+          inputMode="decimal"
+          min={MIN_SPECTRUM_SAMPLE_RATE_HZ}
+          max={MAX_SPECTRUM_SAMPLE_RATE_HZ}
+          step="any"
+          aria-label="频谱采样率"
+          aria-invalid={sampleRateInvalid}
+          value={sampleRateInput}
+          onChange={(event) => onSampleRateChange(event.target.value)}
+        />
+        <small>Hz</small>
+      </label>
+      <div className="spectrum-window-control" role="group" aria-label="频谱点数">
+        {SPECTRUM_WINDOW_SIZES.map((size) => (
+          <button
+            key={size}
+            type="button"
+            aria-pressed={windowSize === size}
+            data-active={windowSize === size}
+            onClick={() => onWindowSizeChange(size)}
+          >
+            {size}
+          </button>
+        ))}
+      </div>
+      <dl className="spectrum-readouts" aria-label="频谱分析结果">
+        <SpectrumReadout label="Fs" value={formatFrequency(ready?.sampleRateHz ?? sampleRateHz)} />
+        <SpectrumReadout
+          label="Δf"
+          value={formatFrequency(ready?.frequencyResolutionHz ?? null)}
+        />
+        <SpectrumReadout
+          label="Peak"
+          value={formatFrequency(ready?.peakFrequencyHz ?? null)}
+        />
+        <SpectrumReadout label="Amp" value={ready ? formatValue(ready.peakAmplitude) : "--"} />
+      </dl>
+    </div>
+  );
+}
+
+function SpectrumReadout({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
+interface SpectrumStateProps {
+  analysis: SpectrumPanelAnalysisResult | null;
+  sampleRateInput: string;
+  sampleRateHz: number | null;
+  selectedChannel: ChannelSeries | undefined;
+  windowSize: SpectrumWindowSize;
+}
+
+function SpectrumState({
+  analysis,
+  sampleRateInput,
+  sampleRateHz,
+  selectedChannel,
+  windowSize,
+}: SpectrumStateProps) {
+  let title = "正在计算频谱";
+  let detail = selectedChannel?.name ?? "";
+  if (!selectedChannel) {
+    title = "没有可分析通道";
+    detail = "";
+  } else if (sampleRateInput.trim().length === 0) {
+    title = "未设置采样率";
+    detail = `${MIN_SPECTRUM_SAMPLE_RATE_HZ} Hz - 1 MHz`;
+  } else if (sampleRateHz === null) {
+    title = "采样率超出范围";
+    detail = `${MIN_SPECTRUM_SAMPLE_RATE_HZ} Hz - 1 MHz`;
+  } else if (analysis?.status === "insufficient") {
+    title = "样本不足";
+    detail = `${analysis.availablePointCount} / ${analysis.requiredPointCount}`;
+  } else if (analysis?.status === "invalid-data") {
+    title = "通道数据无效";
+    detail = "所选窗口包含非有限数值";
+  } else if (analysis?.status === "load-error") {
+    title = "频谱模块加载失败";
+    detail = "FFT 计算模块不可用";
+  } else if (analysis === null) {
+    detail = `${selectedChannel.name} · ${windowSize} 点`;
+  }
+
+  return (
+    <div className="panel-empty-state spectrum-state" role="status" aria-live="polite">
+      <Waves size={30} strokeWidth={1.4} />
+      <strong>{title}</strong>
+      {detail && <span>{detail}</span>}
+    </div>
+  );
+}
+
+interface SpectrumChartProps {
+  analysis: Extract<SpectrumAnalysisResult, { status: "ok" }>;
+  channel: ChannelSeries;
+  theme: ThemeMode;
+}
+
+function SpectrumChart({ analysis, channel, theme }: SpectrumChartProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<uPlot | null>(null);
+  const data = useMemo(
+    () => [analysis.frequenciesHz, analysis.amplitudes] as AlignedData,
+    [analysis.amplitudes, analysis.frequenciesHz],
+  );
+  const initialDataRef = useRef(data);
+  initialDataRef.current = data;
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return undefined;
+    }
+    const computed = getComputedStyle(container);
+    const options: Options = {
+      width: Math.max(container.clientWidth, 200),
+      height: Math.max(container.clientHeight, 180),
+      padding: [12, 14, 2, 0],
+      cursor: {
+        drag: { x: false, y: false, setScale: false },
+        focus: { prox: 24 },
+        points: { size: 5, width: 1 },
+      },
+      legend: { show: false },
+      scales: {
+        x: { time: false },
+        y: { auto: true },
+      },
+      axes: [
+        {
+          label: "频率 (Hz)",
+          stroke: computed.getPropertyValue("--text-muted").trim(),
+          grid: { stroke: computed.getPropertyValue("--chart-grid").trim(), width: 1 },
+          ticks: { stroke: computed.getPropertyValue("--chart-grid-strong").trim(), width: 1 },
+          font: "11px ui-monospace, SFMono-Regular, Consolas, monospace",
+          size: 42,
+        },
+        {
+          label: "幅值",
+          stroke: computed.getPropertyValue("--text-muted").trim(),
+          grid: { stroke: computed.getPropertyValue("--chart-grid").trim(), width: 1 },
+          ticks: { stroke: computed.getPropertyValue("--chart-grid-strong").trim(), width: 1 },
+          font: "11px ui-monospace, SFMono-Regular, Consolas, monospace",
+          size: 58,
+        },
+      ],
+      series: [
+        {},
+        {
+          label: channel.name,
+          stroke: channel.color,
+          width: 1.8,
+          points: { show: false },
+        },
+      ],
+    };
+    const chart = new uPlot(options, initialDataRef.current, container);
+    chartRef.current = chart;
+    const observer = new ResizeObserver(() => {
+      const width = Math.max(container.clientWidth, 200);
+      const height = Math.max(container.clientHeight, 180);
+      if (chart.width !== width || chart.height !== height) {
+        chart.setSize({ width, height });
+      }
+    });
+    observer.observe(container);
+    return () => {
+      observer.disconnect();
+      chart.destroy();
+      chartRef.current = null;
+    };
+  }, [channel.color, channel.id, channel.name, theme]);
+
+  useLayoutEffect(() => {
+    chartRef.current?.setData(data, true);
+  }, [data]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="waveform-chart spectrum-chart"
+      aria-label={`${channel.name} 频谱图`}
+    />
+  );
+}
+
+interface SpectrumInput {
+  active: boolean;
+  key: string;
+  points: readonly DataPoint[] | undefined;
+  windowSize: SpectrumWindowSize;
+  sampleRateHz: number | null;
+}
+
+function loadSpectrumAnalyzer(): Promise<SpectrumAnalyzer> {
+  if (spectrumAnalyzerPromise === null) {
+    spectrumAnalyzerPromise = import("../core/spectrum")
+      .then((module) => module.analyzeSpectrum)
+      .catch((error: unknown) => {
+        spectrumAnalyzerPromise = null;
+        throw error;
+      });
+  }
+  return spectrumAnalyzerPromise;
+}
+
+function useThrottledSpectrumAnalysis(
+  active: boolean,
+  key: string,
+  points: readonly DataPoint[] | undefined,
+  windowSize: SpectrumWindowSize,
+  sampleRateHz: number | null,
+): SpectrumPanelAnalysisResult | null {
+  const latestInputRef = useRef<SpectrumInput>({
+    active,
+    key,
+    points,
+    windowSize,
+    sampleRateHz,
+  });
+  const lastAnalysisAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const analysisGenerationRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
+  const [snapshot, setSnapshot] = useState<{
+    key: string;
+    result: SpectrumPanelAnalysisResult;
+  } | null>(null);
+  latestInputRef.current = { active, key, points, windowSize, sampleRateHz };
+
+  useEffect(() => {
+    if (!active || !points || sampleRateHz === null) {
+      analysisGenerationRef.current += 1;
+      if (timerRef.current !== null) {
+        globalThis.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      return;
+    }
+    const runAnalysis = () => {
+      timerRef.current = null;
+      const input = latestInputRef.current;
+      if (!input.active || !input.points || input.sampleRateHz === null) {
+        return;
+      }
+      lastAnalysisAtRef.current = performance.now();
+      const analysisGeneration = ++analysisGenerationRef.current;
+      void loadSpectrumAnalyzer()
+        .then((analyzeSpectrum) => {
+          const latestInput = latestInputRef.current;
+          if (
+            analysisGeneration !== analysisGenerationRef.current ||
+            !latestInput.active ||
+            !latestInput.points ||
+            latestInput.sampleRateHz === null
+          ) {
+            return;
+          }
+          setSnapshot({
+            key: latestInput.key,
+            result: analyzeSpectrum(
+              latestInput.points,
+              latestInput.windowSize,
+              latestInput.sampleRateHz,
+            ),
+          });
+        })
+        .catch(() => {
+          const latestInput = latestInputRef.current;
+          if (
+            analysisGeneration === analysisGenerationRef.current &&
+            latestInput.active
+          ) {
+            setSnapshot({ key: latestInput.key, result: { status: "load-error" } });
+          }
+        });
+    };
+    if (timerRef.current !== null) {
+      return;
+    }
+    const elapsed = performance.now() - lastAnalysisAtRef.current;
+    const delay = Math.max(0, SPECTRUM_REFRESH_INTERVAL_MS - elapsed);
+    if (delay === 0) {
+      runAnalysis();
+      return;
+    }
+    timerRef.current = globalThis.setTimeout(runAnalysis, delay);
+  }, [active, key, points, sampleRateHz, windowSize]);
+
+  useEffect(
+    () => () => {
+      analysisGenerationRef.current += 1;
+      if (timerRef.current !== null) {
+        globalThis.clearTimeout(timerRef.current);
+      }
+    },
+    [],
+  );
+
+  return active && snapshot?.key === key ? snapshot.result : null;
 }
 
 interface MeasurementStripProps {
@@ -1043,6 +1521,18 @@ function triggerActionLabel(phase: WaveformTriggerPhase): string {
 
 function formatTriggerThreshold(value: number): string {
   return Number.isFinite(value) ? String(value) : "";
+}
+
+function parseSpectrumSampleRate(value: string): number | null {
+  if (value.trim().length === 0) {
+    return null;
+  }
+  const sampleRateHz = Number(value);
+  return Number.isFinite(sampleRateHz) &&
+    sampleRateHz >= MIN_SPECTRUM_SAMPLE_RATE_HZ &&
+    sampleRateHz <= MAX_SPECTRUM_SAMPLE_RATE_HZ
+    ? sampleRateHz
+    : null;
 }
 
 function createAlignedData(channels: ChannelSeries[], windowSeconds: number): AlignedData {
