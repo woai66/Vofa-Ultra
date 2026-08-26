@@ -439,6 +439,38 @@ textarea:disabled {
   margin: 0;
 }
 
+.recording-directory-section {
+  align-items: stretch;
+}
+
+.recording-directory-actions {
+  display: flex;
+  min-width: 66px;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.recording-directory-value {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recording-directory-value strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recording-directory-value code {
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
 .capture-marker-section {
   align-items: stretch;
 }

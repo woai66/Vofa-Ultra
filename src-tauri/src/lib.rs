@@ -3,6 +3,7 @@ mod capture_export;
 mod extensions;
 mod modbus_rtu;
 mod numeric_log;
+mod recording_directory;
 mod replay;
 mod serial;
 

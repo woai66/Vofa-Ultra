@@ -125,6 +125,7 @@ import {
   startNumericLog as startNumericLogClient,
   stopNumericLog as stopNumericLogClient,
 } from "../services/numericLogClient";
+import { selectRecordingDirectoryPath } from "../services/recordingDirectoryClient";
 import {
   cancelSerialFileSend as cancelSerialFileSendClient,
   cancelSerialModbusTransaction,
@@ -403,6 +404,9 @@ export interface WorkbenchStore {
   activeWorkspaceId: string;
   workspaceTransitionStatus: "idle" | "switching" | "deleting";
   runtimeTransitionStatus: RuntimeTransitionStatus;
+  recordingDirectoryStatus: "idle" | "selecting";
+  recordingDirectory: string;
+  recordingDirectoryMessage: string;
   workspaceStorageStatus: "writable" | "newer-version";
   incompatibleStorageVersion: number | null;
   captureStatus: CaptureUiStatus;
@@ -530,6 +534,8 @@ export interface WorkbenchStore {
   deactivateExtension(): Promise<boolean>;
   resetExtension(): Promise<boolean>;
   toggleExtensionChannel(channelId: string): void;
+  selectRecordingDirectory(): Promise<boolean>;
+  resetRecordingDirectory(): boolean;
   startCapture(): Promise<boolean>;
   stopCapture(): Promise<boolean>;
   addCaptureMarker(label: string, color: CaptureMarkerColor): boolean;
@@ -652,6 +658,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       activeWorkspaceId: INITIAL_WORKSPACE.id,
       workspaceTransitionStatus: "idle",
       runtimeTransitionStatus: "idle",
+      recordingDirectoryStatus: "idle",
+      recordingDirectory: "",
+      recordingDirectoryMessage: "",
       workspaceStorageStatus: "writable",
       incompatibleStorageVersion: null,
       captureStatus: "idle",
@@ -2171,11 +2180,58 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         protocolParser.clearHealth();
         set({ protocolHealth: protocolParser.getHealthSnapshot() });
       },
+      selectRecordingDirectory: async () => {
+        const state = get();
+        if (!state.isNativeRuntime) {
+          set({
+            recordingDirectoryMessage: "浏览器预览不支持选择记录目录",
+          });
+          return false;
+        }
+        if (
+          state.workspaceTransitionStatus !== "idle" ||
+          state.runtimeTransitionStatus !== "idle" ||
+          state.recordingDirectoryStatus !== "idle" ||
+          isCaptureActive(state.captureStatus) ||
+          isNumericLogActive(state.numericLogStatus)
+        ) {
+          return false;
+        }
+        set({ recordingDirectoryStatus: "selecting" });
+        try {
+          const directory = await selectRecordingDirectoryPath();
+          if (directory === null) {
+            return false;
+          }
+          set({ recordingDirectory: directory, recordingDirectoryMessage: "" });
+          return true;
+        } catch (error) {
+          set({ recordingDirectoryMessage: getErrorMessage(error) });
+          return false;
+        } finally {
+          set({ recordingDirectoryStatus: "idle" });
+        }
+      },
+      resetRecordingDirectory: () => {
+        const state = get();
+        if (
+          state.workspaceTransitionStatus !== "idle" ||
+          state.runtimeTransitionStatus !== "idle" ||
+          state.recordingDirectoryStatus !== "idle" ||
+          isCaptureActive(state.captureStatus) ||
+          isNumericLogActive(state.numericLogStatus)
+        ) {
+          return false;
+        }
+        set({ recordingDirectory: "", recordingDirectoryMessage: "" });
+        return true;
+      },
       startCapture: async () => {
         const state = get();
         if (
           state.workspaceTransitionStatus !== "idle" ||
           state.runtimeTransitionStatus !== "idle" ||
+          state.recordingDirectoryStatus !== "idle" ||
           isCaptureActive(state.captureStatus) ||
           hasReplaySession(state)
         ) {
@@ -2199,6 +2255,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             source: state.source,
             protocol: state.protocol,
             serialConfig: state.serialConfig,
+            ...(state.recordingDirectory
+              ? { destinationDirectory: state.recordingDirectory }
+              : {}),
           });
           get().handleCaptureState(payload);
           return payload.status === "recording";
@@ -2284,6 +2343,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (
           state.workspaceTransitionStatus !== "idle" ||
           state.runtimeTransitionStatus !== "idle" ||
+          state.recordingDirectoryStatus !== "idle" ||
           isNumericLogActive(state.numericLogStatus) ||
           hasReplaySession(state)
         ) {
@@ -2322,6 +2382,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           const payload = await startNumericLogClient({
             source: state.source,
             protocol: state.protocol,
+            ...(state.recordingDirectory
+              ? { destinationDirectory: state.recordingDirectory }
+              : {}),
           });
           get().handleNumericLogState(payload);
           return payload.status === "recording";
