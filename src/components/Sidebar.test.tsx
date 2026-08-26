@@ -180,7 +180,7 @@ describe("Sidebar 协议解析健康度", () => {
     rerender(<Sidebar {...props} />);
     expect(health).toHaveTextContent("已丢弃 1 帧");
     expect(health).toHaveTextContent("最近：包含非有限数值");
-    expect(health).toHaveTextContent("FireWater：每行 1–16 个有限数值");
+    expect(health).toHaveTextContent("FireWater：每行 1–16 个有限数值，命名字段使用 : 或 =");
     expect(screen.getByRole("button", { name: "清空解析统计" })).toBeEnabled();
 
     fireEvent.click(screen.getByRole("button", { name: "清空解析统计" }));

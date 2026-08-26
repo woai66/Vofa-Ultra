@@ -831,17 +831,24 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   const health = page.getByRole("region", { name: "协议解析健康度" });
   await expect(health).toContainText("已丢弃 1 帧");
   await expect(health).toContainText("最近：包含非有限数值");
-  await expect(health).toContainText("FireWater：每行 1–16 个有限数值");
+  await expect(health).toContainText("FireWater：每行 1–16 个有限数值，命名字段使用 : 或 =");
 
   await page.getByRole("button", { name: "清空解析统计" }).click();
   await expect(health).toContainText("等待完整帧");
   await expect(page.locator(".protocol-warning-status")).toHaveCount(0);
 
-  await ingestProtocolText(page, "1,2,3\n", 1_100);
+  await ingestProtocolText(page, "yaw=1.234 pitch=0.567 cur=0.8\n", 1_100);
   await expect(health).toContainText("解析正常");
   await expect(health).toContainText("成功 1");
   await expect(page.getByLabel("数据通道列表").getByRole("button")).toHaveCount(3);
-  await expect(page.locator(".terminal-line").last()).toContainText("1,2,3");
+  await expect(page.getByLabel("数据通道列表").locator(".channel-name")).toHaveText([
+    "yaw",
+    "pitch",
+    "cur",
+  ]);
+  await expect(page.locator(".terminal-line").last()).toContainText(
+    "yaw=1.234 pitch=0.567 cur=0.8",
+  );
 
   await page.setViewportSize({ width: 320, height: 700 });
   const layout = await health.evaluate((element) => {

@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- FireWater 命名通道兼容严格的 `label=value` 遥测行，同时保留纯数值和 `label:value` 输入。
+
 ## [0.1.0] - 2026-08-26
 
 ### Added
