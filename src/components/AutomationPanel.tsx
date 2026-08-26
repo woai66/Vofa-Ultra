@@ -80,6 +80,14 @@ export function AutomationPanel() {
     setIsError(error);
   };
 
+  const blockRuleMutationForDirtyDraft = () => {
+    if (!draftDirty) {
+      return false;
+    }
+    showFeedback("请先保存或还原当前规则修改");
+    return true;
+  };
+
   const updateDraft = <K extends keyof AutoResponderRule>(
     key: K,
     value: AutoResponderRule[K],
@@ -89,6 +97,9 @@ export function AutomationPanel() {
   };
 
   const selectRule = (rule: AutoResponderRule) => {
+    if (blockRuleMutationForDirtyDraft()) {
+      return;
+    }
     setSelectedId(rule.id);
     setDraft({ ...rule });
     setFeedback("");
@@ -96,6 +107,9 @@ export function AutomationPanel() {
 
   const addRule = () => {
     if (editorDisabled || rules.length >= MAX_AUTO_RESPONDER_RULES) {
+      return;
+    }
+    if (blockRuleMutationForDirtyDraft()) {
       return;
     }
     const next = createDefaultAutoResponderRule(
@@ -128,6 +142,9 @@ export function AutomationPanel() {
     if (editorDisabled) {
       return;
     }
+    if (blockRuleMutationForDirtyDraft()) {
+      return;
+    }
     const index = rules.findIndex((candidate) => candidate.id === rule.id);
     const nextRules = rules.filter((candidate) => candidate.id !== rule.id);
     try {
@@ -143,6 +160,9 @@ export function AutomationPanel() {
 
   const toggleRule = (rule: AutoResponderRule, enabled: boolean) => {
     if (editorDisabled) {
+      return;
+    }
+    if (blockRuleMutationForDirtyDraft()) {
       return;
     }
     try {
@@ -205,6 +225,12 @@ export function AutomationPanel() {
           <span>发送 <strong>{runtime.sentCount}</strong></span>
         </div>
       </section>
+
+      {feedback && (
+        <div className="automation-feedback" role={isError ? "alert" : "status"} data-error={isError}>
+          {feedback}
+        </div>
+      )}
 
       <section className="automation-rules-section" aria-labelledby="automation-rules-title">
         <div className="automation-rules-heading">
@@ -358,7 +384,12 @@ export function AutomationPanel() {
               aria-label="还原规则修改"
               title="还原修改"
               disabled={editorDisabled || !draftDirty}
-              onClick={() => selectedRule && setDraft({ ...selectedRule })}
+              onClick={() => {
+                if (selectedRule) {
+                  setDraft({ ...selectedRule });
+                  setFeedback("");
+                }
+              }}
             >
               <RotateCcw size={15} />
             </button>
@@ -375,11 +406,6 @@ export function AutomationPanel() {
         </section>
       )}
 
-      {feedback && (
-        <div className="automation-feedback" role={isError ? "alert" : "status"} data-error={isError}>
-          {feedback}
-        </div>
-      )}
     </div>
   );
 }
