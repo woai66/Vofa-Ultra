@@ -54,13 +54,17 @@ CycloneDX Schema、完整 target、项目元数据、输入摘要、精确 NOTIC
 
 `pnpm tauri build` 会在非 debug 构建中为 rustc 注入路径重映射，把项目目录和 Cargo Home 的解析路径及真实路径
 分别映射为稳定的 `/workspace` 和 `/cargo-home`。包装层保留调用方已有的 encoded rustflags；只有普通
-`RUSTFLAGS` 时才按 Cargo 的参数规则转换，开发服务器和 debug 构建不受影响。CI 与正式候选包必须经过该入口，
+`RUSTFLAGS` 时才按 Cargo 的参数规则转换，开发服务器和 debug 构建不受影响。本地正式候选包必须经过该入口，
 不能用裸 `tauri build` 或 `cargo build` 绕过。
 
 复制安装包前，`package:collect` 会扫描同一 release 目录中的裸主程序，拒绝项目目录或 Cargo Home 的解析路径、
 真实路径、正反斜杠变体及 UTF-8/UTF-16LE 表示。检查会扫描未压缩的可执行文件，不把 MSI、NSIS、DMG、DEB 或
 AppImage 的外层压缩视为脱敏；错误也不会回显命中的本机路径。这项检查防止 Rust panic/source-location 字符串泄露
 构建者目录，但不等同于任意隐私数据扫描，也不使安装包自动可复现。
+
+每次非 debug 的 `pnpm tauri build` 开始前，包装层只清理本次 target 的生成型 `release/bundle` 目录。所有平台格式
+必须在同一次命令中生成；缺少任一预期格式时，收集器会拒绝继续。这能阻止不同构建轮次的旧安装包混入候选目录，
+但不能证明压缩安装包内的主程序与当前裸主程序完全一致。
 
 未来的线上发布方案可在三个平台分别生成 provenance，再复验并聚合当前版本的资产。该方案当前未实现，也不能
 替代签名、公证、安装或真实串口验收；设计草案见[发布流程](release-process.md)。
