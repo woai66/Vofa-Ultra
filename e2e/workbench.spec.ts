@@ -782,6 +782,160 @@ test("独立量程让混合数量级通道保持可读并正确映射测量游�
   });
 });
 
+test("终端时间基准按缓存和可见记录计算并跨刷新保留", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await page.goto("/");
+  await replaceTerminalEntries(page, [
+    {
+      id: 41_001,
+      direction: "rx",
+      timestamp: 1_700_000_000_000,
+      text: "first rx",
+      hex: "01",
+      byteCount: 1,
+    },
+    {
+      id: 41_002,
+      direction: "tx",
+      timestamp: 1_700_000_000_125,
+      text: "first tx",
+      hex: "02",
+      byteCount: 1,
+    },
+    {
+      id: 41_003,
+      direction: "rx",
+      timestamp: 1_699_999_999_900,
+      text: "late rx line",
+      hex: "03",
+      byteCount: 1,
+    },
+    {
+      id: 41_004,
+      direction: "tx",
+      timestamp: 1_700_000_000_900,
+      text: "second tx",
+      hex: "04",
+      byteCount: 1,
+    },
+  ]);
+
+  const timeMode = page.getByRole("group", { name: "终端时间基准" });
+  const timeCells = page.locator(".terminal-line time");
+  await expect(timeMode.getByRole("button", { name: "绝对时间" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await timeMode.getByRole("button", { name: "相对缓存起点" }).click();
+  await expect(timeCells).toHaveText([
+    "+00:00:00.000",
+    "+00:00:00.125",
+    "-00:00:00.100",
+    "+00:00:00.900",
+  ]);
+
+  await timeMode.getByRole("button", { name: "距上一条可见记录" }).click();
+  await expect(timeCells).toHaveText([
+    "--",
+    "+00:00:00.125",
+    "-00:00:00.225",
+    "+00:00:01.000",
+  ]);
+  await page
+    .getByRole("group", { name: "终端方向筛选" })
+    .getByRole("button", { name: "TX" })
+    .click();
+  await expect(timeCells).toHaveText(["--", "+00:00:00.775"]);
+  await page.screenshot({
+    path: testInfo.outputPath("terminal-time-desktop.png"),
+    fullPage: true,
+  });
+
+  await replaceTerminalEntries(
+    page,
+    Array.from({ length: 800 }, (_, index): TerminalEntry => ({
+      id: 43_000 + index,
+      direction: "tx",
+      timestamp: 1_700_001_000_000 + index * 20,
+      text: `virtual ${index}`,
+      hex: "07",
+      byteCount: 1,
+    })),
+  );
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText(
+    "800 / 800 条记录",
+  );
+  await expect
+    .poll(async () => {
+      const mountedLabels = await page.locator(".terminal-line time").allTextContents();
+      return (
+        mountedLabels.length > 0 &&
+        mountedLabels.every((label) => label === "+00:00:00.020")
+      );
+    })
+    .toBe(true);
+
+  await page.reload();
+  await expect(
+    page.getByRole("group", { name: "终端时间基准" }).getByRole("button", {
+      name: "距上一条可见记录",
+    }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await replaceTerminalEntries(page, [
+    {
+      id: 42_001,
+      direction: "rx",
+      timestamp: 1_700_000_100_000,
+      text: "mobile first",
+      hex: "05",
+      byteCount: 1,
+    },
+    {
+      id: 42_002,
+      direction: "rx",
+      timestamp: 1_700_000_100_250,
+      text: "mobile second",
+      hex: "06",
+      byteCount: 1,
+    },
+  ]);
+  await page.setViewportSize({ width: 600, height: 700 });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".sidebar")).toBeHidden();
+  const compactTimeMode = page.getByRole("combobox", { name: "终端时间基准" });
+  await expect(compactTimeMode).toHaveValue("interval");
+  await expect(page.getByRole("combobox", { name: "终端方向筛选" })).toHaveValue("all");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(600);
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  const mobileBounds = await compactTimeMode
+    .evaluate((control) => {
+      const controlRect = control.getBoundingClientRect();
+      const filterRect = control.closest(".terminal-filter-bar")?.getBoundingClientRect();
+      return {
+        controlLeft: controlRect.left,
+        controlRight: controlRect.right,
+        filterLeft: filterRect?.left ?? -1,
+        filterRight: filterRect?.right ?? -1,
+      };
+    });
+  expect(mobileBounds.controlLeft).toBeGreaterThanOrEqual(mobileBounds.filterLeft);
+  expect(mobileBounds.controlRight).toBeLessThanOrEqual(mobileBounds.filterRight);
+  expect(await compactTimeMode.evaluate((control) => control.getBoundingClientRect().height)).toBe(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await page.screenshot({
+    path: testInfo.outputPath("terminal-time-mobile.png"),
+    fullPage: true,
+  });
+  expect(pageErrors).toEqual([]);
+});
+
 test("单次触发在后半窗结束时冻结且后台接收继续", async ({ page }) => {
   await page.goto("/");
   await setWorkbenchState(page, {
@@ -975,14 +1129,16 @@ test("终端按当前显示内容执行字面量搜索和方向过滤", async ({
     const searchField = bar.querySelector<HTMLElement>(".terminal-search-field");
     const searchInput = bar.querySelector<HTMLElement>(".terminal-search-field input");
     const clearButton = bar.querySelector<HTMLElement>(".terminal-search-field button");
-    const buttons = [...bar.querySelectorAll<HTMLElement>(".terminal-direction-filter button")];
+    const selects = [
+      ...bar.querySelectorAll<HTMLElement>(".terminal-mobile-filter-selects select"),
+    ];
     return {
       documentOverflow: document.documentElement.scrollWidth - window.innerWidth,
       barOverflow: bar.scrollWidth - bar.clientWidth,
       searchHeight: searchField?.getBoundingClientRect().height ?? 0,
       searchInputHeight: searchInput?.getBoundingClientRect().height ?? 0,
       clearButtonHeight: clearButton?.getBoundingClientRect().height ?? 0,
-      buttonHeights: buttons.map((button) => button.getBoundingClientRect().height),
+      selectHeights: selects.map((select) => select.getBoundingClientRect().height),
     };
   });
   expect(mobileLayout.documentOverflow).toBeLessThanOrEqual(1);
@@ -990,7 +1146,8 @@ test("终端按当前显示内容执行字面量搜索和方向过滤", async ({
   expect(mobileLayout.searchHeight).toBeGreaterThanOrEqual(44);
   expect(mobileLayout.searchInputHeight).toBeGreaterThanOrEqual(44);
   expect(mobileLayout.clearButtonHeight).toBeGreaterThanOrEqual(44);
-  expect(mobileLayout.buttonHeights.every((height) => height >= 44)).toBe(true);
+  expect(mobileLayout.selectHeights).toHaveLength(2);
+  expect(mobileLayout.selectHeights.every((height) => height >= 44)).toBe(true);
   expect(pageErrors).toEqual([]);
 
   await page.screenshot({

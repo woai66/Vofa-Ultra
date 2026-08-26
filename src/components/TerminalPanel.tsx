@@ -61,6 +61,13 @@ import {
 } from "../core/dataConverter";
 import { getHorizontalTabTarget } from "../core/tabNavigation";
 import {
+  formatTerminalTime,
+  parseTerminalTimeMode,
+  TERMINAL_TIME_MODE_STORAGE_KEY,
+  terminalTimeDateTime,
+  type TerminalTimeMode,
+} from "../core/terminalTime";
+import {
   filterTerminalEntries,
   findTerminalLiteralMatches,
   MAX_TERMINAL_SEARCH_CHARACTERS,
@@ -83,6 +90,16 @@ import { QuickCommandPopover } from "./QuickCommandPopover";
 type RepeatMode = "count" | "continuous";
 const COMMAND_REFERENCE_VIEWS = ["variables", "ascii", "converter", "checksum"] as const;
 type CommandReferenceView = (typeof COMMAND_REFERENCE_VIEWS)[number];
+
+const TERMINAL_TIME_MODE_OPTIONS: readonly {
+  mode: TerminalTimeMode;
+  label: string;
+  description: string;
+}[] = [
+  { mode: "absolute", label: "ABS", description: "绝对时间" },
+  { mode: "relative", label: "REL", description: "相对缓存起点" },
+  { mode: "interval", label: "ΔT", description: "距上一条可见记录" },
+];
 
 const TERMINAL_LATEST_THRESHOLD_PX = 24;
 const MAX_ASCII_SEARCH_CHARACTERS = 32;
@@ -349,6 +366,9 @@ export function TerminalPanel() {
   const [repeatCountText, setRepeatCountText] = useState("10");
   const [searchQuery, setSearchQuery] = useState("");
   const [directionFilter, setDirectionFilter] = useState<TerminalDirectionFilter>("all");
+  const [terminalTimeMode, setTerminalTimeMode] = useState<TerminalTimeMode>(() =>
+    parseTerminalTimeMode(localStorage.getItem(TERMINAL_TIME_MODE_STORAGE_KEY)),
+  );
   const [terminalFollowSuspended, setTerminalFollowSuspended] = useState(false);
   const hasPayload = message.length > 0 || lineEnding !== "none";
   const templatePreview = useMemo(
@@ -452,6 +472,7 @@ export function TerminalPanel() {
   const exportTerminalLabel = filtersActive ? "导出全部终端记录" : "导出终端记录";
   const clearTerminalLabel = filtersActive ? "清空全部终端记录" : "清空终端";
   const lastVisibleEntryId = visibleEntries.at(-1)?.id;
+  const terminalTimeOrigin = entries.at(0)?.timestamp;
   const rowVirtualizer = useVirtualizer({
     count: visibleEntries.length,
     getScrollElement: () => viewportRef.current,
@@ -461,6 +482,10 @@ export function TerminalPanel() {
     useFlushSync: false,
     anchorTo: "end",
   });
+
+  useEffect(() => {
+    localStorage.setItem(TERMINAL_TIME_MODE_STORAGE_KEY, terminalTimeMode);
+  }, [terminalTimeMode]);
 
   useEffect(() => {
     if (
@@ -1002,6 +1027,63 @@ export function TerminalPanel() {
             TX
           </button>
         </div>
+        <div
+          className="segmented-control compact-segments terminal-time-mode"
+          role="group"
+          aria-label="终端时间基准"
+        >
+          {TERMINAL_TIME_MODE_OPTIONS.map((option) => (
+            <button
+              key={option.mode}
+              type="button"
+              data-active={terminalTimeMode === option.mode}
+              aria-pressed={terminalTimeMode === option.mode}
+              aria-label={option.description}
+              title={option.description}
+              onClick={() => setTerminalTimeMode(option.mode)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <div className="terminal-mobile-filter-selects">
+          <label>
+            <span className="sr-only">终端时间基准</span>
+            <select
+              id="terminal-mobile-time-mode"
+              name="terminal-mobile-time-mode"
+              aria-label="终端时间基准"
+              title="终端时间基准"
+              value={terminalTimeMode}
+              onChange={(event) =>
+                setTerminalTimeMode(event.target.value as TerminalTimeMode)
+              }
+            >
+              {TERMINAL_TIME_MODE_OPTIONS.map((option) => (
+                <option key={option.mode} value={option.mode}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span className="sr-only">终端方向筛选</span>
+            <select
+              id="terminal-mobile-direction-filter"
+              name="terminal-mobile-direction-filter"
+              aria-label="终端方向筛选"
+              title="终端方向筛选"
+              value={directionFilter}
+              onChange={(event) =>
+                setDirectionFilter(event.target.value as TerminalDirectionFilter)
+              }
+            >
+              <option value="all">全部</option>
+              <option value="rx">RX</option>
+              <option value="tx">TX</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       <div className="terminal-log-shell">
@@ -1035,6 +1117,13 @@ export function TerminalPanel() {
                 if (!entry) {
                   return null;
                 }
+                const timeLabel = formatTerminalTime(
+                  entry.timestamp,
+                  terminalTimeMode,
+                  terminalTimeOrigin,
+                  visibleEntries[virtualRow.index - 1]?.timestamp,
+                );
+                const timeDescription = terminalTimeDescription(terminalTimeMode, timeLabel);
                 return (
                   <div
                     key={entry.id}
@@ -1044,7 +1133,14 @@ export function TerminalPanel() {
                     data-index={virtualRow.index}
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
-                    <time>{formatTime(entry.timestamp)}</time>
+                    <time
+                      data-time-mode={terminalTimeMode}
+                      dateTime={terminalTimeDateTime(entry.timestamp)}
+                      aria-label={timeDescription}
+                      title={timeDescription}
+                    >
+                      {timeLabel}
+                    </time>
                     <span className="direction-label">{entry.direction.toUpperCase()}</span>
                     <code>
                       <HighlightedTerminalPayload
@@ -2248,14 +2344,15 @@ function lineEndingLabel(lineEnding: LineEnding): string {
   }
 }
 
-function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    fractionalSecondDigits: 3,
-    hour12: false,
-  }).format(timestamp);
+function terminalTimeDescription(mode: TerminalTimeMode, label: string): string {
+  switch (mode) {
+    case "relative":
+      return `相对缓存起点 ${label}`;
+    case "interval":
+      return label === "--" ? "没有上一条可见记录" : `距上一条可见记录 ${label}`;
+    default:
+      return `绝对时间 ${label}`;
+  }
 }
 
 function terminalRxBoundaryLabel(boundary: NonNullable<TerminalEntry["rxBoundary"]>): string {
