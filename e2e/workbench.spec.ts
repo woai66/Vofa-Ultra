@@ -1868,6 +1868,21 @@ test("实时 RX 自动应答保持有界运行并随 v11 工作区往返", async
   await expect(page.getByLabel("规则名称")).toHaveValue("规则 1");
   await expect(page.getByLabel("触发内容")).toHaveValue("0A");
   await expect(page.getByLabel("响应模板")).toHaveValue("ACK");
+  await page.getByRole("button", { name: "添加自动应答规则" }).click();
+  await expect(page.getByLabel("规则名称")).toHaveValue("规则 2");
+  await page.getByLabel("规则名称").fill("尚未保存");
+  const rule_list = page.getByRole("list", { name: "自动应答规则" });
+  await rule_list.locator(".automation-rule-select").filter({ hasText: "规则 1" }).click();
+  await expect(page.getByLabel("规则名称")).toHaveValue("尚未保存");
+  await expect(page.getByText("请先保存或还原当前规则修改")).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("automation-draft-protection.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "还原规则修改" }).click();
+  await rule_list.locator(".automation-rule-select").filter({ hasText: "规则 1" }).click();
+  await expect(page.getByLabel("规则名称")).toHaveValue("规则 1");
+  await page.getByRole("button", { name: "删除规则 规则 2" }).click();
 
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await page.getByRole("button", { name: "启动模拟" }).click();
