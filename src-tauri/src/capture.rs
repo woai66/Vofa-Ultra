@@ -1876,16 +1876,23 @@ fn run_capture_writer(
             }
         }
 
-        if progress_dirty && last_progress.elapsed() >= PROGRESS_INTERVAL {
-            core.publish_progress(
+        match flush_progress_if_due(
+            &mut writer,
+            &mut progress_dirty,
+            &mut last_progress,
+            Instant::now(),
+        ) {
+            Ok(true) => core.publish_progress(
                 &app,
                 session_id,
                 stats.data_bytes(),
                 stats.record_count(),
                 stats.marker_count(),
-            );
-            progress_dirty = false;
-            last_progress = Instant::now();
+            ),
+            Ok(false) => {}
+            Err(error) => {
+                outcome = Some(WriterOutcome::Failed(format!("刷新录制文件失败: {error}")));
+            }
         }
     }
 
@@ -1906,6 +1913,22 @@ fn run_capture_writer(
         stats.record_count(),
         stats.marker_count(),
     );
+}
+
+fn flush_progress_if_due<W: Write>(
+    writer: &mut W,
+    progress_dirty: &mut bool,
+    last_progress: &mut Instant,
+    now: Instant,
+) -> io::Result<bool> {
+    if !*progress_dirty || now.saturating_duration_since(*last_progress) < PROGRESS_INTERVAL {
+        return Ok(false);
+    }
+
+    writer.flush()?;
+    *progress_dirty = false;
+    *last_progress = now;
+    Ok(true)
 }
 
 fn write_file_header<W: Write>(writer: &mut W, header_bytes: &[u8]) -> io::Result<()> {
@@ -2192,6 +2215,26 @@ mod tests {
         wire_id_evolution: String,
     }
 
+    #[derive(Default)]
+    struct FlushProbe {
+        flush_count: usize,
+        fail_flush: bool,
+    }
+
+    impl Write for FlushProbe {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flush_count += 1;
+            if self.fail_flush {
+                return Err(io::Error::other("forced flush failure"));
+            }
+            Ok(())
+        }
+    }
+
     fn sample_header() -> CaptureHeader {
         CaptureHeader {
             source: "serial".to_owned(),
@@ -2226,6 +2269,58 @@ mod tests {
         bytes.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&header_bytes);
         bytes
+    }
+
+    #[test]
+    fn progress_flush_clears_dirty_state_only_after_success() {
+        let mut writer = FlushProbe {
+            fail_flush: true,
+            ..FlushProbe::default()
+        };
+        let mut progress_dirty = true;
+        let mut last_progress = Instant::now();
+        let progress_now = last_progress + PROGRESS_INTERVAL;
+
+        let error = flush_progress_if_due(
+            &mut writer,
+            &mut progress_dirty,
+            &mut last_progress,
+            progress_now,
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "forced flush failure");
+        assert!(progress_dirty);
+        assert_eq!(writer.flush_count, 1);
+
+        writer.fail_flush = false;
+        assert!(flush_progress_if_due(
+            &mut writer,
+            &mut progress_dirty,
+            &mut last_progress,
+            progress_now,
+        )
+        .unwrap());
+        assert!(!progress_dirty);
+        assert_eq!(last_progress, progress_now);
+        assert_eq!(writer.flush_count, 2);
+    }
+
+    #[test]
+    fn progress_flush_waits_for_dirty_interval() {
+        let mut writer = FlushProbe::default();
+        let mut progress_dirty = true;
+        let mut last_progress = Instant::now();
+        let progress_now = last_progress + PROGRESS_INTERVAL / 2;
+
+        assert!(!flush_progress_if_due(
+            &mut writer,
+            &mut progress_dirty,
+            &mut last_progress,
+            progress_now,
+        )
+        .unwrap());
+        assert!(progress_dirty);
+        assert_eq!(writer.flush_count, 0);
     }
 
     fn write_v1_footer<W: Write>(
