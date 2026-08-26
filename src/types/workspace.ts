@@ -17,6 +17,7 @@ import type {
   TerminalRxRecordMode,
   TerminalRxTextEncoding,
 } from "./workbench";
+import type { CommandChecksumMode } from "../core/checksum";
 
 export type ChartWindowSeconds = 5 | 15 | 30 | 60;
 
@@ -98,7 +99,11 @@ export interface WorkspaceConfigV10 extends WorkspaceConfigV9 {
   channelPresentations: ChannelPresentations;
 }
 
-export type WorkspaceConfig = WorkspaceConfigV10;
+export interface WorkspaceConfigV11 extends WorkspaceConfigV10 {
+  commandChecksum: CommandChecksumMode;
+}
+
+export type WorkspaceConfig = WorkspaceConfigV11;
 
 export interface WorkspaceProfile {
   id: string;
@@ -176,4 +181,11 @@ export interface WorkspaceExportV10 {
   schemaVersion: 10;
   name: string;
   config: WorkspaceConfigV10;
+}
+
+export interface WorkspaceExportV11 {
+  format: "vofa-ultra.workspace";
+  schemaVersion: 11;
+  name: string;
+  config: WorkspaceConfigV11;
 }

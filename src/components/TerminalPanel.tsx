@@ -45,9 +45,12 @@ import {
   MIN_COMMAND_INTERVAL_MS,
 } from "../core/commandWorkflow";
 import { isAutoResponderActive } from "../core/autoResponder";
+import { formatHex } from "../core/codec";
 import {
+  COMMAND_CHECKSUM_MODES,
   calculateChecksums,
   MAX_CHECKSUM_INPUT_CHARACTERS,
+  type CommandChecksumMode,
   type ChecksumInputMode,
   type ChecksumResult,
 } from "../core/checksum";
@@ -252,11 +255,13 @@ interface CommandDraft {
   value: string;
   mode: DisplayMode;
   lineEnding: LineEnding;
+  checksumMode?: CommandChecksumMode;
 }
 
 interface CommandTemplatePreview {
   byteCount: number;
   variableCount: number;
+  checksumHex: string;
   error: string;
 }
 
@@ -280,6 +285,7 @@ export function TerminalPanel() {
   const displayMode = useWorkbenchStore((state) => state.displayMode);
   const sendMode = useWorkbenchStore((state) => state.sendMode);
   const lineEnding = useWorkbenchStore((state) => state.lineEnding);
+  const commandChecksum = useWorkbenchStore((state) => state.commandChecksum);
   const terminalRxRecordMode = useWorkbenchStore((state) => state.terminalRxRecordMode);
   const terminalRxLineEnding = useWorkbenchStore((state) => state.terminalRxLineEnding);
   const terminalRxTextEncoding = useWorkbenchStore((state) => state.terminalRxTextEncoding);
@@ -302,6 +308,7 @@ export function TerminalPanel() {
   const setDisplayMode = useWorkbenchStore((state) => state.setDisplayMode);
   const setSendMode = useWorkbenchStore((state) => state.setSendMode);
   const setLineEnding = useWorkbenchStore((state) => state.setLineEnding);
+  const setCommandChecksum = useWorkbenchStore((state) => state.setCommandChecksum);
   const setTerminalRxRecordMode = useWorkbenchStore(
     (state) => state.setTerminalRxRecordMode,
   );
@@ -378,9 +385,10 @@ export function TerminalPanel() {
   );
   const [terminalFollowSuspended, setTerminalFollowSuspended] = useState(false);
   const hasPayload = message.length > 0 || lineEnding !== "none";
+  const hasSendableFrame = hasPayload || commandChecksum !== "none";
   const templatePreview = useMemo(
-    () => previewCommandTemplate(message, sendMode, lineEnding),
-    [lineEnding, message, sendMode],
+    () => previewCommandTemplate(message, sendMode, lineEnding, commandChecksum),
+    [commandChecksum, lineEnding, message, sendMode],
   );
   const availableVariables = useMemo(
     () => COMMAND_VARIABLE_INSERTIONS.filter((item) => item.mode === sendMode),
@@ -689,6 +697,9 @@ export function TerminalPanel() {
     setMessage(draft.value);
     setSendMode(draft.mode);
     setLineEnding(draft.lineEnding);
+    if (draft.checksumMode !== undefined) {
+      setCommandChecksum(draft.checksumMode);
+    }
     setSendError("");
     setVariablesOpen(false);
   };
@@ -715,7 +726,7 @@ export function TerminalPanel() {
     resetHistoryNavigation();
     setHistoryOpen(false);
     setModbusOpen(false);
-    applyDraft({ value, mode: "hex", lineEnding: "none" });
+    applyDraft({ value, mode: "hex", lineEnding: "none", checksumMode: "none" });
   };
 
   const executeModbusTransaction = (request: ModbusRtuRequest, timeoutMs: number) =>
@@ -743,7 +754,12 @@ export function TerminalPanel() {
       return;
     }
     if (historyCursorRef.current === null) {
-      historyDraftRef.current = { value: message, mode: sendMode, lineEnding };
+      historyDraftRef.current = {
+        value: message,
+        mode: sendMode,
+        lineEnding,
+        checksumMode: commandChecksum,
+      };
     }
     historyCursorRef.current = index;
     applyDraft(entry);
@@ -756,7 +772,12 @@ export function TerminalPanel() {
     const cursor = historyCursorRef.current;
     if (direction === "previous") {
       if (cursor === null) {
-        historyDraftRef.current = { value: message, mode: sendMode, lineEnding };
+        historyDraftRef.current = {
+          value: message,
+          mode: sendMode,
+          lineEnding,
+          checksumMode: commandChecksum,
+        };
         historyCursorRef.current = commandHistory.length - 1;
       } else {
         historyCursorRef.current = Math.max(0, cursor - 1);
@@ -787,7 +808,7 @@ export function TerminalPanel() {
   };
 
   const submit = async () => {
-    if (!hasPayload || templatePreview.error || taskActive || manualSendBlocked) {
+    if (!hasSendableFrame || templatePreview.error || taskActive || manualSendBlocked) {
       return;
     }
     setSendError("");
@@ -1277,6 +1298,29 @@ export function TerminalPanel() {
                 HEX
               </button>
             </div>
+            <div className="send-checksum-field">
+              <label className="send-field-caption" htmlFor="send-checksum">
+                校验
+              </label>
+              <select
+                id="send-checksum"
+                name="send-checksum"
+                aria-label="校验"
+                value={commandChecksum}
+                disabled={isWorkspaceTransitioning}
+                onChange={(event) => {
+                  resetHistoryNavigation();
+                  setSendError("");
+                  setCommandChecksum(event.target.value as CommandChecksumMode);
+                }}
+              >
+                {COMMAND_CHECKSUM_MODES.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="send-line-ending-field">
               <label className="send-field-caption" htmlFor="send-line-ending">
                 行尾
@@ -1313,7 +1357,7 @@ export function TerminalPanel() {
               aria-describedby={
                 visibleError
                   ? "command-send-error"
-                  : hasPayload
+                  : hasSendableFrame
                     ? "command-template-summary"
                     : undefined
               }
@@ -1472,7 +1516,7 @@ export function TerminalPanel() {
               type="button"
               disabled={
                 connectionStatus !== "connected" ||
-                !hasPayload ||
+                !hasSendableFrame ||
                 Boolean(templatePreview.error) ||
                 isWorkspaceTransitioning ||
                 manualSendBlocked
@@ -1485,14 +1529,17 @@ export function TerminalPanel() {
           )}
         </div>
 
-        {hasPayload && !templatePreview.error && (
+        {hasSendableFrame && !templatePreview.error && (
           <span
             id="command-template-summary"
             className="command-template-summary"
-            data-dynamic={templatePreview.variableCount > 0}
-            aria-label={`命令模板包含 ${templatePreview.variableCount} 个变量，最终 ${templatePreview.byteCount} 字节`}
+            data-dynamic={
+              templatePreview.variableCount > 0 || Boolean(templatePreview.checksumHex)
+            }
+            aria-label={commandTemplateSummaryLabel(templatePreview)}
           >
             {templatePreview.variableCount} 个变量 · {templatePreview.byteCount} B
+            {templatePreview.checksumHex ? ` · 校验 ${templatePreview.checksumHex}` : ""}
           </span>
         )}
 
@@ -1765,6 +1812,9 @@ export function TerminalPanel() {
                     <code>{historyPreview(entry)}</code>
                     <span>
                       {entry.mode.toUpperCase()} · {lineEndingLabel(entry.lineEnding)} ·{" "}
+                      {entry.checksumMode === "none"
+                        ? "无校验"
+                        : entry.checksumMode.toUpperCase()} ·{" "}
                       {entry.variableCount > 0
                         ? `最近 ${entry.encodedBytes} B`
                         : `${entry.encodedBytes} B`}
@@ -2251,6 +2301,7 @@ function previewCommandTemplate(
   value: string,
   mode: DisplayMode,
   lineEnding: LineEnding,
+  checksumMode: CommandChecksumMode,
 ): CommandTemplatePreview {
   try {
     const template = compileCommandTemplate(value, mode);
@@ -2259,19 +2310,27 @@ function previewCommandTemplate(
       template,
       { sequence: 1, nowMs, taskStartedAtMs: nowMs },
       lineEnding,
+      checksumMode,
     );
     return {
       byteCount: rendered.bytes.length,
       variableCount: rendered.variableCount,
+      checksumHex: formatHex(rendered.checksumBytes),
       error: "",
     };
   } catch (error) {
     return {
       byteCount: 0,
       variableCount: 0,
+      checksumHex: "",
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function commandTemplateSummaryLabel(preview: CommandTemplatePreview): string {
+  const summary = `命令模板包含 ${preview.variableCount} 个变量，最终 ${preview.byteCount} 字节`;
+  return preview.checksumHex ? `${summary}，校验尾 ${preview.checksumHex}` : summary;
 }
 
 function previewChecksum(value: string, mode: ChecksumInputMode): ChecksumPreview {

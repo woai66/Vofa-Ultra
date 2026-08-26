@@ -9,8 +9,8 @@
 
 | 数据面 | 当前写入 | 当前读取/迁移 | 遇到未来版本 |
 | --- | --- | --- | --- |
-| 工作区 JSON `vofa-ultra.workspace` | v10 | 严格读取 v1-v10，导入后归一为 v10 | 拒绝导入，不猜测字段含义 |
-| 本地工作台状态 `vofa-ultra-workbench` | v10 | 从 v0-v9 迁移；v10 直接恢复 | 保留原值并进入只读保护，禁止覆盖 |
+| 工作区 JSON `vofa-ultra.workspace` | v11 | 严格读取 v1-v11，导入后归一为 v11 | 拒绝导入，不猜测字段含义 |
+| 本地工作台状态 `vofa-ultra-workbench` | v11 | 从 v0-v10 迁移；v11 直接恢复 | 保留原值并进入只读保护，禁止覆盖 |
 | VUCAP 捕获文件 | v2 | 流式读取 v1/v2 | 明确拒绝，不按当前版本猜测 |
 | 协议 wire ID | `firewater`、`justfloat`、`raw` | 已发布 ID 永久保持原含义 | 旧客户端明确拒绝未知 ID |
 | `.vux` Wasm 扩展 | packer 写 schema/API v1 | 桌面端只读 v1；状态为 experimental | 明确拒绝未知 schema/API |
@@ -22,24 +22,28 @@
 本地状态是应用恢复数据，不是跨设备交换格式。需要备份、迁移或提交 Issue 时，应导出工作区 JSON；不要依赖
 浏览器或 WebView 的 `localStorage` 文件位置。
 
+工作区 v11 增加 `commandChecksum`，严格接受 `none`、`crc16-modbus-le`、`crc16-modbus-be`、`crc32-le`、
+`crc32-be`、`xor8` 和 `sum8`。该字段只控制发送栏的手动与周期命令，按“模板展开 payload、原始校验字节、TX
+行尾”的顺序构帧；自动应答、Modbus 事务和原始文件发送不读取它。v1-v10 迁移为 `none`，不会让历史工作区在
+升级后开始隐式追加字节。高于 v11 的工作区仍拒绝导入，本地状态仍保留原值并进入只读保护。
+
 工作区 v10 增加 `channelPresentations`，严格保存 FireWater 与 JustFloat 各自 `channel-0..15` 的可选别名、单位
 和颜色。旧版本迁移为空配置；协议、通道 ID、字段集合、字符串边界和 `#RRGGBB | null` 颜色均严格校验。该字段
-只定义展示，不改变 parser 原名、数值或其他数据格式。高于 v10 的工作区仍拒绝导入，本地状态仍保留原值并进入
-只读保护。
+只定义展示，不改变 parser 原名、数值或其他数据格式。合法 v10 配置会继续迁移到当前 v11。
 
 工作区 v9 为处理图增加 `bytes_to_number` 与 `number_to_byte` 两类固定节点。v1-v8 仍按各自历史节点枚举严格
 读取；标记为 v8 却包含新节点的文件会被拒绝，不会借用 v9 语义猜测。合法旧图无损迁移，v9 图使用当前节点枚举
-迁移到 v10，不会丢失转换节点。
+迁移到 v11，不会丢失转换节点。
 
 工作区 v8 增加 `terminalRxTextEncoding`，只允许 `utf-8`、`gb18030` 和 `windows-1252`。严格的 v1-v7 文件
-迁移时补为 `utf-8`；迁移到当前 v10 后仍保留该选择。
+迁移时补为 `utf-8`；迁移到当前 v11 后仍保留该选择。
 
 工作区 v7 增加 `terminalRxRecordMode` 和 `terminalRxLineEnding`，分别保存终端 RX 按读取块/文本行记录的方式与
 文本行使用的 LF/CRLF/CR 分隔符。严格的 v1-v6 文件迁移时补为 `chunk` 和 `lf`，保持旧版本每个读取块一条
-记录的行为；迁移到 v10 后仍保留该选择。
+记录的行为；迁移到 v11 后仍保留该选择。
 
 工作区 v6 在顶层发送配置、自动应答和快捷命令的行尾枚举中新增 `cr`，表示只追加单字节 `0D`。严格的 v1-v5
-reader 仍只接受 `none`、`lf` 和 `crlf`，不会把新值倒灌到历史 schema；迁移到 v10 后继续保留 v6 的 CR-only
+reader 仍只接受 `none`、`lf` 和 `crlf`，不会把新值倒灌到历史 schema；迁移到 v11 后继续保留 v6 的 CR-only
 语义。
 
 工作区 v5 在 v4 基础上增加命名快捷命令。每条命令保存稳定 ID、名称、原始模板、TEXT/HEX 模式和行尾；数组

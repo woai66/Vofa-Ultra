@@ -27,7 +27,38 @@ describe("命令模板", () => {
       "seq=1 ms=1700000123456 s=1700000123 utc=2023-11-14T22:15:23.456Z " +
         "start=1700000000000\n",
     );
+    expect(rendered.checksumBytes).toHaveLength(0);
     expect(rendered.variableCount).toBe(5);
+  });
+
+  it("严格按模板 payload、原始校验字节、行尾的顺序组帧", () => {
+    const template = compileCommandTemplate("123456789", "text");
+    const rendered = renderCommandTemplate(template, CONTEXT, "crlf", "crc16-modbus-le");
+
+    expect(Array.from(rendered.checksumBytes)).toEqual([0x37, 0x4b]);
+    expect(Array.from(rendered.bytes)).toEqual([
+      ...Array.from(new TextEncoder().encode("123456789")),
+      0x37,
+      0x4b,
+      0x0d,
+      0x0a,
+    ]);
+  });
+
+  it("对变量展开后的二进制 payload 计算校验且不把行尾纳入计算", () => {
+    const template = compileCommandTemplate("AA ${seq:u16be}", "hex");
+    const rendered = renderCommandTemplate(template, CONTEXT, "crlf", "crc16-modbus-le");
+
+    expect(Array.from(rendered.checksumBytes)).toEqual([0x90, 0x20]);
+    expect(Array.from(rendered.bytes)).toEqual([0xaa, 0x00, 0x01, 0x90, 0x20, 0x0d, 0x0a]);
+  });
+
+  it("空模板仍能生成空 payload 的校验尾并随后追加行尾", () => {
+    const template = compileCommandTemplate("", "text");
+    const rendered = renderCommandTemplate(template, CONTEXT, "lf", "crc32-be");
+
+    expect(Array.from(rendered.checksumBytes)).toEqual([0, 0, 0, 0]);
+    expect(Array.from(rendered.bytes)).toEqual([0, 0, 0, 0, 0x0a]);
   });
 
   it("用 $$ 转义美元符号且不递归解释展开结果", () => {
@@ -141,6 +172,38 @@ describe("命令模板", () => {
     const exact = compileCommandTemplate("x".repeat(MAX_COMMAND_BYTES), "text");
     expect(renderCommandTemplate(exact, CONTEXT, "none").bytes).toHaveLength(MAX_COMMAND_BYTES);
     expect(() => renderCommandTemplate(exact, CONTEXT, "cr")).toThrow(/单次发送不能超过/);
+
+    const exactWithChecksum = compileCommandTemplate(
+      "x".repeat(MAX_COMMAND_BYTES - 2),
+      "text",
+    );
+    expect(
+      renderCommandTemplate(exactWithChecksum, CONTEXT, "none", "crc16-modbus-be").bytes,
+    ).toHaveLength(MAX_COMMAND_BYTES);
+    expect(() =>
+      renderCommandTemplate(exactWithChecksum, CONTEXT, "lf", "crc16-modbus-be"),
+    ).toThrow(/单次发送不能超过/);
+
+    const checksumOverflow = compileCommandTemplate(
+      "x".repeat(MAX_COMMAND_BYTES - 1),
+      "text",
+    );
+    expect(() =>
+      renderCommandTemplate(checksumOverflow, CONTEXT, "none", "crc16-modbus-le"),
+    ).toThrow(/单次发送不能超过/);
+
+    const exactWithChecksumAndLineEnding = compileCommandTemplate(
+      "x".repeat(MAX_COMMAND_BYTES - 3),
+      "text",
+    );
+    expect(
+      renderCommandTemplate(
+        exactWithChecksumAndLineEnding,
+        CONTEXT,
+        "lf",
+        "crc16-modbus-le",
+      ).bytes,
+    ).toHaveLength(MAX_COMMAND_BYTES);
   });
 
   it("所有 UI 插入项都能在对应模式编译和渲染", () => {

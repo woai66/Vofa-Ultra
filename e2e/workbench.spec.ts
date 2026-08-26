@@ -1513,7 +1513,7 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   expect(layout.documentWidth).toBeLessThanOrEqual(320);
 });
 
-test("通道展示配置按协议隔离并随 v10 工作区往返", async ({ page }, testInfo) => {
+test("通道展示配置按协议隔离并随 v11 工作区往返", async ({ page }, testInfo) => {
   await page.goto("/");
   await ingestProtocolText(page, "voltage:12.5,current:2\n", 1_000);
   await page.getByRole("button", { name: "通道", exact: true }).click();
@@ -1570,7 +1570,7 @@ test("通道展示配置按协议隔离并随 v10 工作区往返", async ({ pag
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 10,
+    schemaVersion: 11,
     config: {
       channelPresentations: {
         firewater: {
@@ -1627,7 +1627,7 @@ test("通道展示配置按协议隔离并随 v10 工作区往返", async ({ pag
   }
 });
 
-test("处理图转换节点生成派生通道并随 v10 工作区往返", async ({ page }, testInfo) => {
+test("处理图转换节点生成派生通道并随 v11 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -1685,7 +1685,7 @@ test("处理图转换节点生成派生通道并随 v10 工作区往返", async 
     schemaVersion: number;
     config: { processingGraph: ProcessingGraphConfig };
   };
-  expect(exported.schemaVersion).toBe(10);
+  expect(exported.schemaVersion).toBe(11);
   expect(exported.config.processingGraph).toMatchObject({
     enabled: true,
     nodes: [
@@ -1710,7 +1710,7 @@ test("处理图转换节点生成派生通道并随 v10 工作区往返", async 
   expect(pageErrors).toEqual([]);
 });
 
-test("实时 RX 自动应答保持有界运行并随 v10 工作区往返", async ({ page }, testInfo) => {
+test("实时 RX 自动应答保持有界运行并随 v11 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -1763,7 +1763,7 @@ test("实时 RX 自动应答保持有界运行并随 v10 工作区往返", async
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 10,
+    schemaVersion: 11,
     config: {
       autoResponderRules: [
         {
@@ -1910,6 +1910,67 @@ test("有界命令历史与可取消周期发送形成完整工作流", async ({
   await expect(taskStatus).toHaveText(stoppedStatus ?? "");
 });
 
+test("发送栏自动校验尾按帧顺序发送并随 v11 工作区往返", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+
+  await page
+    .getByRole("group", { name: "发送格式" })
+    .getByRole("button", { name: "HEX" })
+    .click();
+  const checksum = page.getByRole("combobox", { name: "校验" });
+  await checksum.selectOption("crc16-modbus-le");
+  await page.getByRole("combobox", { name: "行尾", exact: true }).selectOption("lf");
+  await page
+    .getByRole("textbox", { name: "发送内容" })
+    .fill("31 32 33 34 35 36 37 38 39");
+  await expect(
+    page.getByLabel("命令模板包含 0 个变量，最终 12 字节，校验尾 37 4B"),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await page
+    .getByRole("group", { name: "接收显示格式" })
+    .getByRole("button", { name: "HEX" })
+    .click();
+  await expect(page.locator('.terminal-line[data-direction="tx"] code').last()).toHaveText(
+    "31 32 33 34 35 36 37 38 39 37 4B 0A",
+  );
+
+  await checksum.selectOption("none");
+  await page.getByRole("button", { name: "命令历史，1 条" }).click();
+  const history = page.getByRole("dialog", { name: "命令历史" });
+  await expect(history).toContainText("CRC16-MODBUS-LE");
+  await history.getByRole("button", { name: /31 32 33 34/ }).click();
+  await expect(checksum).toHaveValue("crc16-modbus-le");
+
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  await page.getByRole("textbox", { name: "工作区名称" }).fill("校验工作区");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出当前" }).click();
+  const download = await downloadPromise;
+  const downloadPath = testInfo.outputPath("checksum-workspace.json");
+  await download.saveAs(downloadPath);
+  const exported = JSON.parse(await readFile(downloadPath, "utf8")) as {
+    schemaVersion: number;
+    config: { commandChecksum: string };
+  };
+  expect(exported).toMatchObject({
+    schemaVersion: 11,
+    config: { commandChecksum: "crc16-modbus-le" },
+  });
+
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  await checksum.selectOption("none");
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  await page.getByLabel("导入工作区文件").setInputFiles(downloadPath);
+  await page.getByRole("button", { name: "校验工作区 (2) 模拟器 · FireWater" }).click();
+  await page.getByRole("button", { name: "放弃并切换" }).click();
+  await expect(checksum).toHaveValue("crc16-modbus-le");
+});
+
 test("Modbus RTU 构帧和单事务主站经统一链路工作且窄屏可操作", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -1922,6 +1983,7 @@ test("Modbus RTU 构帧和单事务主站经统一链路工作且窄屏可操作
   await page.goto("/");
   await page.getByRole("button", { name: "启动模拟" }).click();
   await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+  await page.getByRole("combobox", { name: "校验" }).selectOption("crc16-modbus-le");
   await page.getByRole("button", { name: "打开 Modbus RTU 构帧器" }).click();
   let builder = page.getByRole("dialog", { name: "Modbus RTU 构帧器" });
   await expect(builder.getByLabel("Modbus RTU 帧预览")).toHaveText(
@@ -1933,6 +1995,7 @@ test("Modbus RTU 构帧和单事务主站经统一链路工作且窄屏可操作
     "01 03 00 00 00 01 84 0A",
   );
   await expect(page.getByRole("combobox", { name: "行尾", exact: true })).toHaveValue("none");
+  await expect(page.getByRole("combobox", { name: "校验" })).toHaveValue("none");
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await page
@@ -2415,6 +2478,29 @@ test("中窄屏关闭侧栏后活动导航保持可操作", async ({ page }) => 
     )
     .toBeLessThanOrEqual(0);
 
+  const sendComposerLayout = await page.locator(".send-main-row").evaluate((element) => {
+    const options = element.querySelector<HTMLElement>(".send-options");
+    const payload = element.querySelector<HTMLElement>(".send-payload-field");
+    if (!options || !payload) {
+      return null;
+    }
+    const optionsRect = options.getBoundingClientRect();
+    const payloadRect = payload.getBoundingClientRect();
+    return {
+      optionsBottom: optionsRect.bottom,
+      optionsScrollWidth: options.scrollWidth,
+      optionsWidth: options.clientWidth,
+      payloadTop: payloadRect.top,
+    };
+  });
+  expect(sendComposerLayout).not.toBeNull();
+  expect(sendComposerLayout?.optionsScrollWidth ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(
+    (sendComposerLayout?.optionsWidth ?? 0) + 1,
+  );
+  expect(sendComposerLayout?.optionsBottom ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(
+    sendComposerLayout?.payloadTop ?? 0,
+  );
+
   await page.getByRole("button", { name: "通道" }).click();
   await expect(page.getByRole("heading", { name: "数据通道" })).toBeVisible();
 });
@@ -2639,7 +2725,7 @@ test("命名工作区可保存、切换、导出并重新导入", async ({ page 
   };
   expect(exported).toMatchObject({
     format: "vofa-ultra.workspace",
-    schemaVersion: 10,
+    schemaVersion: 11,
     name: "台架导出草稿",
     config: { protocol: "justfloat" },
   });
@@ -2741,7 +2827,7 @@ async function canvasScreenshotStats(locator: Locator): Promise<{
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({
-    version: 11,
+    version: 12,
     state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
   });
   await page.addInitScript((value) => {
@@ -2750,7 +2836,7 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("button", { name: "工作区" }).click();
-  await expect(page.getByRole("alert")).toContainText("版本 11 的较新配置");
+  await expect(page.getByRole("alert")).toContainText("版本 12 的较新配置");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();

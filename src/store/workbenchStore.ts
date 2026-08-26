@@ -27,6 +27,10 @@ import {
   type CompiledCommandTemplate,
 } from "../core/commandTemplate";
 import {
+  parseCommandChecksumMode,
+  type CommandChecksumMode,
+} from "../core/checksum";
+import {
   cloneQuickCommands,
   parseQuickCommands,
 } from "../core/quickCommands";
@@ -232,7 +236,7 @@ import type {
   ChannelPresentationProtocol,
   ChannelPresentations,
   ChartWindowSeconds,
-  WorkspaceExportV10,
+  WorkspaceExportV11,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AutoResponderRule, AutoResponderSnapshot } from "../types/automation";
@@ -250,7 +254,7 @@ const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY =
   MAX_TERMINAL_UNTERMINATED_LINE_BYTES + MAX_TERMINAL_LINE_ENDING_BYTES;
 export const WORKBENCH_STORAGE_KEY = "vofa-ultra-workbench";
-export const WORKBENCH_STORAGE_VERSION = 10;
+export const WORKBENCH_STORAGE_VERSION = 11;
 export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [
   0,
   1,
@@ -262,6 +266,7 @@ export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [
   7,
   8,
   9,
+  10,
 ] as const;
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
@@ -378,6 +383,7 @@ export interface WorkbenchStore {
   displayMode: DisplayMode;
   sendMode: DisplayMode;
   lineEnding: LineEnding;
+  commandChecksum: CommandChecksumMode;
   terminalRxRecordMode: TerminalRxRecordMode;
   terminalRxLineEnding: TerminalRxLineEnding;
   terminalRxTextEncoding: TerminalRxTextEncoding;
@@ -506,6 +512,7 @@ export interface WorkbenchStore {
   setDisplayMode(mode: DisplayMode): void;
   setSendMode(mode: DisplayMode): void;
   setLineEnding(lineEnding: LineEnding): void;
+  setCommandChecksum(mode: CommandChecksumMode): void;
   setTerminalRxRecordMode(mode: TerminalRxRecordMode): void;
   setTerminalRxLineEnding(lineEnding: TerminalRxLineEnding): void;
   setTerminalRxTextEncoding(encoding: TerminalRxTextEncoding): void;
@@ -568,7 +575,7 @@ export interface WorkbenchStore {
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
   deleteWorkspace(id: string): Promise<boolean>;
-  importWorkspace(workspace: WorkspaceExportV10): string;
+  importWorkspace(workspace: WorkspaceExportV11): string;
 }
 
 type PersistedWorkbenchState = Pick<
@@ -579,6 +586,7 @@ type PersistedWorkbenchState = Pick<
   | "displayMode"
   | "sendMode"
   | "lineEnding"
+  | "commandChecksum"
   | "terminalRxRecordMode"
   | "terminalRxLineEnding"
   | "terminalRxTextEncoding"
@@ -632,6 +640,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       displayMode: INITIAL_WORKSPACE_CONFIG.displayMode,
       sendMode: INITIAL_WORKSPACE_CONFIG.sendMode,
       lineEnding: INITIAL_WORKSPACE_CONFIG.lineEnding,
+      commandChecksum: INITIAL_WORKSPACE_CONFIG.commandChecksum,
       terminalRxRecordMode: INITIAL_WORKSPACE_CONFIG.terminalRxRecordMode,
       terminalRxLineEnding: INITIAL_WORKSPACE_CONFIG.terminalRxLineEnding,
       terminalRxTextEncoding: INITIAL_WORKSPACE_CONFIG.terminalRxTextEncoding,
@@ -1370,11 +1379,16 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       send: async (value, mode, lineEnding) => {
         const template = compileCommandTemplate(value, mode);
         const nowMs = Date.now();
-        const command = prepareCommandTemplate(template, lineEnding, {
-          sequence: 1,
-          nowMs,
-          taskStartedAtMs: nowMs,
-        });
+        const command = prepareCommandTemplate(
+          template,
+          lineEnding,
+          get().commandChecksum,
+          {
+            sequence: 1,
+            nowMs,
+            taskStartedAtMs: nowMs,
+          },
+        );
         if (command.bytes.length === 0) {
           return;
         }
@@ -1441,6 +1455,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         getCommandScheduler().start({
           template,
           lineEnding,
+          checksumMode: get().commandChecksum,
           intervalMs,
           repeatCount,
         });
@@ -1949,6 +1964,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       setLineEnding: (lineEnding) => {
         if (get().workspaceTransitionStatus === "idle") {
           set({ lineEnding });
+        }
+      },
+      setCommandChecksum: (commandChecksum) => {
+        if (get().workspaceTransitionStatus === "idle") {
+          set({ commandChecksum: parseCommandChecksumMode(commandChecksum) });
         }
       },
       setTerminalRxRecordMode: (terminalRxRecordMode) => {
@@ -3237,6 +3257,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         displayMode: state.displayMode,
         sendMode: state.sendMode,
         lineEnding: state.lineEnding,
+        commandChecksum: state.commandChecksum,
         terminalRxRecordMode: state.terminalRxRecordMode,
         terminalRxLineEnding: state.terminalRxLineEnding,
         terminalRxTextEncoding: state.terminalRxTextEncoding,
@@ -3894,13 +3915,15 @@ function assertCommandSize(bytes: Uint8Array): void {
 function prepareCommandTemplate(
   template: CompiledCommandTemplate,
   lineEnding: LineEnding,
+  checksumMode: CommandChecksumMode,
   context: CommandTemplateContext,
 ): PreparedCommand {
-  const rendered = renderCommandTemplate(template, context, lineEnding);
+  const rendered = renderCommandTemplate(template, context, lineEnding, checksumMode);
   return {
     value: template.source,
     mode: template.mode,
     lineEnding,
+    checksumMode,
     bytes: rendered.bytes,
     variableCount: rendered.variableCount,
   };
@@ -3947,6 +3970,7 @@ function executePreparedCommand(
                 value: command.value,
                 mode: command.mode,
                 lineEnding: command.lineEnding,
+                checksumMode: command.checksumMode,
                 payloadBytes: commandHistoryPayloadBytes(command.value),
                 encodedBytes: command.bytes.length,
                 variableCount: command.variableCount,
@@ -4401,6 +4425,7 @@ async function applyWorkspaceSnapshot(
     displayMode: config.displayMode,
     sendMode: config.sendMode,
     lineEnding: config.lineEnding,
+    commandChecksum: config.commandChecksum,
     terminalRxRecordMode: config.terminalRxRecordMode,
     terminalRxLineEnding: config.terminalRxLineEnding,
     terminalRxTextEncoding: config.terminalRxTextEncoding,

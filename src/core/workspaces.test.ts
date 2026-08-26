@@ -21,6 +21,7 @@ function removeCurrentTerminalRxFields(config: Record<string, unknown>): void {
   delete config.terminalRxLineEnding;
   delete config.terminalRxTextEncoding;
   delete config.channelPresentations;
+  delete config.commandChecksum;
 }
 
 describe("工作区文件", () => {
@@ -65,12 +66,13 @@ describe("工作区文件", () => {
     });
   });
 
-  it("以严格的 v10 格式往返转换节点、文本编码及完整工作区配置", () => {
+  it("以严格的 v11 格式往返校验模式、转换节点及完整工作区配置", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.serialConfig.portName = "COM7";
     config.protocol = "justfloat";
     config.sendMode = "hex";
     config.lineEnding = "cr";
+    config.commandChecksum = "crc16-modbus-be";
     config.terminalRxRecordMode = "line";
     config.terminalRxLineEnding = "crlf";
     config.terminalRxTextEncoding = "gb18030";
@@ -134,7 +136,7 @@ describe("工作区文件", () => {
 
     expect(parsed).toEqual({
       format: "vofa-ultra.workspace",
-      schemaVersion: 10,
+      schemaVersion: 11,
       name: "台架 A",
       config,
     });
@@ -173,7 +175,8 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.schemaVersion).toBe(11);
+    expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.channels).toEqual({
@@ -206,7 +209,8 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.schemaVersion).toBe(11);
+    expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
@@ -230,7 +234,8 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.schemaVersion).toBe(11);
+    expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
     expect(parsed.config.autoResponderRules).toEqual([]);
@@ -250,13 +255,14 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.schemaVersion).toBe(11);
+    expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.autoResponderRules).toEqual(config.autoResponderRules);
     expect(parsed.config.quickCommands).toEqual([]);
   });
 
-  it("导入严格 v5 后无损迁移为 v10", () => {
+  it("导入严格 v5 后无损迁移为 v11", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.lineEnding = "crlf";
     config.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
@@ -278,8 +284,8 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(10);
-    expect(parsed.config).toEqual(config);
+    expect(parsed.schemaVersion).toBe(11);
+    expect(parsed.config).toEqual({ ...config, commandChecksum: "none" });
   });
 
   it("导入严格 v6 后补充默认接收记录方式与行尾", () => {
@@ -292,7 +298,8 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.schemaVersion).toBe(11);
+    expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config).toMatchObject({
       terminalRxRecordMode: "chunk",
       terminalRxLineEnding: "lf",
@@ -308,16 +315,18 @@ describe("工作区文件", () => {
     const exportedConfig = exported.config as Record<string, unknown>;
     delete exportedConfig.terminalRxTextEncoding;
     delete exportedConfig.channelPresentations;
+    delete exportedConfig.commandChecksum;
     exported.schemaVersion = 7;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.schemaVersion).toBe(11);
+    expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.terminalRxTextEncoding).toBe("utf-8");
   });
 
-  it("导入合法 v8 处理图后无损迁移为 v10", () => {
+  it("导入合法 v8 处理图后无损迁移为 v11", () => {
     const config = createDefaultWorkspaceConfig("simulator");
     config.processingGraph = {
       enabled: true,
@@ -330,11 +339,13 @@ describe("工作区文件", () => {
       serializeWorkspace(createWorkspaceProfile("v8 工作区", config, "legacy-v8", 100)),
     ) as Record<string, unknown>;
     delete (exported.config as Record<string, unknown>).channelPresentations;
+    delete (exported.config as Record<string, unknown>).commandChecksum;
     exported.schemaVersion = 8;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.schemaVersion).toBe(11);
+    expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.processingGraph).toEqual(config.processingGraph);
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
   });
@@ -367,13 +378,50 @@ describe("工作区文件", () => {
       serializeWorkspace(createWorkspaceProfile("v9 工作区", config, "legacy-v9", 100)),
     ) as Record<string, unknown>;
     delete (exported.config as Record<string, unknown>).channelPresentations;
+    delete (exported.config as Record<string, unknown>).commandChecksum;
     exported.schemaVersion = 9;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.schemaVersion).toBe(11);
+    expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.processingGraph).toEqual(config.processingGraph);
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
+  });
+
+  it("导入严格 v10 后补充默认命令校验模式", () => {
+    const config = createDefaultWorkspaceConfig("serial");
+    config.channelPresentations.firewater["channel-0"] = {
+      alias: "温度",
+      unit: "degC",
+      color: "#123456",
+    };
+    const exported = JSON.parse(
+      serializeWorkspace(createWorkspaceProfile("v10 工作区", config, "legacy-v10", 100)),
+    ) as Record<string, unknown>;
+    delete (exported.config as Record<string, unknown>).commandChecksum;
+    exported.schemaVersion = 10;
+
+    const parsed = parseWorkspaceExport(JSON.stringify(exported));
+
+    expect(parsed.schemaVersion).toBe(11);
+    expect(parsed.config).toEqual({ ...config, commandChecksum: "none" });
+  });
+
+  it("v10 继续严格拒绝提前出现的 v11 字段", () => {
+    const exported = JSON.parse(
+      serializeWorkspace(
+        createWorkspaceProfile(
+          "伪 v10",
+          createDefaultWorkspaceConfig("simulator"),
+          "invalid-v10",
+          100,
+        ),
+      ),
+    ) as Record<string, unknown>;
+    exported.schemaVersion = 10;
+
+    expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/commandChecksum/);
   });
 
   it("v9 继续严格拒绝提前出现的 v10 字段", () => {
@@ -407,6 +455,7 @@ describe("工作区文件", () => {
       serializeWorkspace(createWorkspaceProfile("伪 v8", config, "invalid-v8", 100)),
     ) as Record<string, unknown>;
     delete (exported.config as Record<string, unknown>).channelPresentations;
+    delete (exported.config as Record<string, unknown>).commandChecksum;
     exported.schemaVersion = 8;
 
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/kind/);
@@ -476,7 +525,7 @@ describe("工作区文件", () => {
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/行尾/);
   });
 
-  it("严格校验 v10 姿态字段、快捷命令、接收配置及派生通道引用", () => {
+  it("严格校验 v11 姿态字段、快捷命令、接收配置及派生通道引用", () => {
     const profile = createWorkspaceProfile(
       "姿态工作区",
       createDefaultWorkspaceConfig("simulator"),
@@ -559,7 +608,7 @@ describe("工作区文件", () => {
     ).toThrow(/未知字段/);
   });
 
-  it("严格校验 v10 通道展示字段", () => {
+  it("严格校验 v11 通道展示与命令校验字段", () => {
     const exported = JSON.parse(
       serializeWorkspace(
         createWorkspaceProfile(
@@ -571,6 +620,15 @@ describe("工作区文件", () => {
       ),
     ) as Record<string, unknown>;
     const config = exported.config as Record<string, unknown>;
+
+    expect(() =>
+      parseWorkspaceExport(
+        JSON.stringify({
+          ...exported,
+          config: { ...config, commandChecksum: "crc16-modbus" },
+        }),
+      ),
+    ).toThrow(/命令校验模式/);
 
     const missing = { ...config };
     delete missing.channelPresentations;
@@ -610,7 +668,7 @@ describe("工作区文件", () => {
 
   it.each([
     ["错误格式", { format: "other", schemaVersion: 1 }],
-    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 11 }],
+    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 12 }],
   ])("拒绝%s", (_label, overrides) => {
     const profile = createWorkspaceProfile(
       "默认工作区",
@@ -802,6 +860,18 @@ describe("工作区本地恢复", () => {
     );
   });
 
+  it("本地命令校验模式严格恢复，损坏时使用 fallback", () => {
+    const fallback = createDefaultWorkspaceConfig("simulator");
+    fallback.commandChecksum = "sum8";
+
+    expect(
+      restoreWorkspaceConfig({ commandChecksum: "crc32-be" }, fallback).commandChecksum,
+    ).toBe("crc32-be");
+    expect(
+      restoreWorkspaceConfig({ commandChecksum: "crc16-modbus" }, fallback).commandChecksum,
+    ).toBe("sum8");
+  });
+
   it("损坏的本地快捷命令恢复为独立 fallback 副本", () => {
     const fallback = createDefaultWorkspaceConfig("simulator");
     fallback.quickCommands = [
@@ -871,7 +941,7 @@ describe("工作区本地恢复", () => {
     );
   });
 
-  it("比较配置时忽略通道键顺序", () => {
+  it("比较配置时忽略通道键顺序并纳入命令校验模式", () => {
     const left = createDefaultWorkspaceConfig("simulator");
     const right = createDefaultWorkspaceConfig("simulator");
     left.channelVisibility = { "channel-2": false, "channel-0": false };
@@ -905,6 +975,10 @@ describe("工作区本地恢复", () => {
       unit: "V",
       color: null,
     };
+    expect(areWorkspaceConfigsEqual(left, right)).toBe(true);
+    right.commandChecksum = "xor8";
+    expect(areWorkspaceConfigsEqual(left, right)).toBe(false);
+    left.commandChecksum = "xor8";
     expect(areWorkspaceConfigsEqual(left, right)).toBe(true);
     right.processingGraph.enabled = true;
     expect(areWorkspaceConfigsEqual(left, right)).toBe(false);

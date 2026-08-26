@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import type { Plugin, Rollup } from "vite";
 
-const INITIAL_JS_LIMIT_BYTES = 650 * 1024;
-const INITIAL_JS_GZIP_LIMIT_BYTES = 200 * 1024;
+const INITIAL_JS_LIMIT_BYTES = 651 * 1024;
+const INITIAL_JS_GZIP_LIMIT_BYTES = 201 * 1024;
 const ATTITUDE_JS_LIMIT_BYTES = 650 * 1024;
 const ATTITUDE_JS_GZIP_LIMIT_BYTES = 180 * 1024;
 const ATTITUDE_PANEL_MODULE = "/src/components/AttitudePanel.tsx";

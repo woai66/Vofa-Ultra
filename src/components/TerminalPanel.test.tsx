@@ -74,6 +74,7 @@ describe("TerminalPanel", () => {
       displayMode: "text",
       sendMode: "text",
       lineEnding: "none",
+      commandChecksum: "none",
       terminalRxRecordMode: "chunk",
       terminalRxLineEnding: "lf",
       terminalRxTextEncoding: "utf-8",
@@ -423,10 +424,13 @@ describe("TerminalPanel", () => {
   });
 
   it("用上下键恢复命令格式并在末尾返回原草稿", async () => {
+    useWorkbenchStore.getState().setCommandChecksum("sum8");
     await useWorkbenchStore.getState().send("FIRST", "text", "lf");
+    useWorkbenchStore.getState().setCommandChecksum("xor8");
     await useWorkbenchStore.getState().send("AA", "hex", "none");
     useWorkbenchStore.getState().setSendMode("hex");
     useWorkbenchStore.getState().setLineEnding("none");
+    useWorkbenchStore.getState().setCommandChecksum("crc32-be");
     const user = userEvent.setup();
     render(<TerminalPanel />);
     const input = screen.getByRole("textbox", {
@@ -441,6 +445,7 @@ describe("TerminalPanel", () => {
       "data-active",
       "true",
     );
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("xor8");
 
     await user.keyboard("{ArrowUp}");
     expect(input).toHaveValue("FIRST");
@@ -449,6 +454,7 @@ describe("TerminalPanel", () => {
       "true",
     );
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("lf");
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("sum8");
 
     await user.keyboard("{ArrowDown}{ArrowDown}");
     expect(input).toHaveValue("draft");
@@ -457,6 +463,7 @@ describe("TerminalPanel", () => {
       "true",
     );
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("none");
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("crc32-be");
   });
 
   it("组合输入或文本选区存在时保留原生方向键行为", async () => {
@@ -477,15 +484,19 @@ describe("TerminalPanel", () => {
   });
 
   it("从历史菜单恢复命令并清空会话历史", async () => {
+    useWorkbenchStore.getState().setCommandChecksum("crc32-le");
     await useWorkbenchStore.getState().send("PING", "text", "crlf");
+    useWorkbenchStore.getState().setCommandChecksum("none");
     const user = userEvent.setup();
     render(<TerminalPanel />);
 
     await user.click(screen.getByRole("button", { name: "命令历史，1 条" }));
     const historyDialog = screen.getByRole("dialog", { name: "命令历史" });
+    expect(historyDialog).toHaveTextContent("CRC32-LE");
     await user.click(within(historyDialog).getByRole("button", { name: /PING/ }));
     expect(screen.getByRole("textbox", { name: "发送内容" })).toHaveValue("PING");
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("crlf");
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("crc32-le");
 
     await user.click(screen.getByRole("button", { name: "命令历史，1 条" }));
     await user.click(screen.getByRole("button", { name: "清空命令历史" }));
@@ -516,6 +527,60 @@ describe("TerminalPanel", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => {
       expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.hex).toBe("01 FF 0D");
+    });
+  });
+
+  it("自动附加所选校验尾并在预览中展示最终帧", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const checksum = screen.getByRole("combobox", { name: "校验" });
+    const input = screen.getByRole("textbox", { name: "发送内容" });
+
+    expect(within(checksum).getAllByRole("option")).toHaveLength(7);
+    await user.click(
+      within(screen.getByRole("group", { name: "发送格式" })).getByRole("button", {
+        name: "HEX",
+      }),
+    );
+    await user.selectOptions(checksum, "crc16-modbus-le");
+    await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "cr");
+    await user.type(input, "31 32 33 34 35 36 37 38 39");
+
+    expect(
+      screen.getByLabelText("命令模板包含 0 个变量，最终 12 字节，校验尾 37 4B"),
+    ).toHaveTextContent("0 个变量 · 12 B · 校验 37 4B");
+
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.hex).toBe(
+        "31 32 33 34 35 36 37 38 39 37 4B 0D",
+      );
+    });
+    expect(useWorkbenchStore.getState().commandHistory[0]).toMatchObject({
+      checksumMode: "crc16-modbus-le",
+      encodedBytes: 12,
+    });
+  });
+
+  it("允许空 payload 仅发送校验尾", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "校验" }), "sum8");
+    expect(
+      screen.getByLabelText("命令模板包含 0 个变量，最终 1 字节，校验尾 00"),
+    ).toHaveTextContent("0 个变量 · 1 B · 校验 00");
+    expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.hex).toBe("00");
+    });
+    expect(useWorkbenchStore.getState().commandHistory[0]).toMatchObject({
+      value: "",
+      lineEnding: "none",
+      checksumMode: "sum8",
+      encodedBytes: 1,
     });
   });
 
@@ -849,6 +914,7 @@ describe("TerminalPanel", () => {
   });
 
   it("将 Modbus RTU 帧填入 HEX 草稿但只通过原发送入口产生 TX", async () => {
+    useWorkbenchStore.getState().setCommandChecksum("crc16-modbus-le");
     const user = userEvent.setup();
     render(<TerminalPanel />);
 
@@ -878,6 +944,7 @@ describe("TerminalPanel", () => {
       }),
     ).toHaveAttribute("data-active", "true");
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("none");
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("none");
     expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
     expect(
       useWorkbenchStore
@@ -991,6 +1058,7 @@ describe("TerminalPanel", () => {
       }),
     );
     await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "none");
+    await user.selectOptions(screen.getByRole("combobox", { name: "校验" }), "sum8");
     await user.click(screen.getByRole("button", { name: "打开快捷命令" }));
     await user.click(screen.getByRole("button", { name: "载入快捷命令 启动采样" }));
 
@@ -1001,6 +1069,7 @@ describe("TerminalPanel", () => {
       }),
     ).toHaveAttribute("data-active", "true");
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("cr");
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("sum8");
     expect(input).toHaveFocus();
     expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
     expect(useWorkbenchStore.getState().commandHistory).toEqual([]);

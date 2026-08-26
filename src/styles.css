@@ -4258,6 +4258,7 @@ textarea:focus {
 
 .send-options {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 5px;
 }
@@ -4275,6 +4276,18 @@ textarea:focus {
   flex: 0 0 105px;
   align-items: center;
   gap: 5px;
+}
+
+.send-checksum-field {
+  display: flex;
+  width: 192px;
+  flex: 0 0 192px;
+  align-items: center;
+  gap: 5px;
+}
+
+.send-checksum-field select {
+  width: 164px;
 }
 
 .send-payload-field {
@@ -5929,6 +5942,59 @@ textarea:focus {
   }
 }
 
+@media (max-width: 900px) {
+  .send-main-row {
+    grid-template-areas:
+      "options options options options options options options options"
+      "payload file modbus variable quick history workflow send";
+    grid-template-columns: minmax(0, 1fr) repeat(6, 30px) 68px;
+  }
+
+  .send-options {
+    grid-area: options;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+  }
+
+  .send-options > * {
+    flex-shrink: 0;
+  }
+
+  .send-payload-field {
+    grid-area: payload;
+  }
+
+  .command-file-trigger {
+    grid-area: file;
+  }
+
+  .command-modbus-trigger {
+    grid-area: modbus;
+  }
+
+  .command-variable-trigger {
+    grid-area: variable;
+  }
+
+  .command-quick-trigger {
+    grid-area: quick;
+  }
+
+  .command-history-trigger {
+    grid-area: history;
+  }
+
+  .command-workflow-trigger {
+    grid-area: workflow;
+  }
+
+  .send-button {
+    grid-area: send;
+  }
+}
+
 @media (max-width: 720px) {
   .workspace-header-meta,
   .workspace-layout-controls,
@@ -5992,49 +6058,6 @@ textarea:focus {
 
   .trigger-phase {
     display: none;
-  }
-
-  .send-main-row {
-    grid-template-areas:
-      "options options options options options options options options"
-      "payload file modbus variable quick history workflow send";
-    grid-template-columns: minmax(0, 1fr) repeat(6, 30px) 68px;
-  }
-
-  .send-options {
-    grid-area: options;
-  }
-
-  .send-payload-field {
-    grid-area: payload;
-  }
-
-  .command-file-trigger {
-    grid-area: file;
-  }
-
-  .command-modbus-trigger {
-    grid-area: modbus;
-  }
-
-  .command-variable-trigger {
-    grid-area: variable;
-  }
-
-  .command-quick-trigger {
-    grid-area: quick;
-  }
-
-  .command-history-trigger {
-    grid-area: history;
-  }
-
-  .command-workflow-trigger {
-    grid-area: workflow;
-  }
-
-  .send-button {
-    grid-area: send;
   }
 
   .status-item:nth-of-type(3),

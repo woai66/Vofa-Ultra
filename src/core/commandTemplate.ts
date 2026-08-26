@@ -1,4 +1,9 @@
 import { encodeOutbound, parseHex } from "./codec";
+import {
+  createCommandChecksumSuffix,
+  DEFAULT_COMMAND_CHECKSUM_MODE,
+  type CommandChecksumMode,
+} from "./checksum";
 import type { DisplayMode, LineEnding } from "../types/serial";
 
 export const MAX_COMMAND_BYTES = 64 * 1024;
@@ -54,6 +59,7 @@ export interface CommandTemplateContext {
 
 export interface RenderedCommandTemplate {
   readonly bytes: Uint8Array;
+  readonly checksumBytes: Uint8Array;
   readonly variableCount: number;
 }
 
@@ -189,6 +195,7 @@ export function renderCommandTemplate(
   template: CompiledCommandTemplate,
   context: CommandTemplateContext,
   lineEnding: LineEnding,
+  checksumMode: CommandChecksumMode = DEFAULT_COMMAND_CHECKSUM_MODE,
 ): RenderedCommandTemplate {
   validateContext(context);
   const chunks: Uint8Array[] = [];
@@ -202,15 +209,18 @@ export function renderCommandTemplate(
     byteLength = appendBoundedChunk(chunks, bytes, byteLength);
   }
 
-  const suffix = encodeOutbound("", "text", lineEnding);
-  byteLength = appendBoundedChunk(chunks, suffix, byteLength);
+  const payload = concatenateChunks(chunks, byteLength);
+  const checksumBytes = createCommandChecksumSuffix(payload, checksumMode);
+  byteLength = appendBoundedChunk(chunks, checksumBytes, byteLength);
+  const lineEndingBytes = encodeOutbound("", "text", lineEnding);
+  byteLength = appendBoundedChunk(chunks, lineEndingBytes, byteLength);
   const bytes = new Uint8Array(byteLength);
   let offset = 0;
   for (const chunk of chunks) {
     bytes.set(chunk, offset);
     offset += chunk.length;
   }
-  return { bytes, variableCount: template.variableCount };
+  return { bytes, checksumBytes, variableCount: template.variableCount };
 }
 
 function parseVariableToken(content: string, mode: DisplayMode): VariableToken {
@@ -382,4 +392,14 @@ function appendBoundedChunk(
     chunks.push(chunk);
   }
   return currentLength + chunk.length;
+}
+
+function concatenateChunks(chunks: readonly Uint8Array[], byteLength: number): Uint8Array {
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
 }

@@ -35,6 +35,10 @@ import {
   parseChannelPresentations,
 } from "./channelPresentation";
 import {
+  DEFAULT_COMMAND_CHECKSUM_MODE,
+  parseCommandChecksumMode,
+} from "./checksum";
+import {
   TERMINAL_RX_LINE_ENDINGS,
   TERMINAL_RX_RECORD_MODES,
   TERMINAL_RX_TEXT_ENCODINGS,
@@ -52,7 +56,8 @@ import type {
   WorkspaceConfigV8,
   WorkspaceConfigV9,
   WorkspaceConfigV10,
-  WorkspaceExportV10,
+  WorkspaceConfigV11,
+  WorkspaceExportV11,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AttitudeConfig } from "../types/attitude";
@@ -60,7 +65,7 @@ import type { ProcessingGraphConfig } from "../types/processingGraph";
 import type { LineEnding } from "../types/serial";
 
 export const WORKSPACE_FILE_FORMAT = "vofa-ultra.workspace";
-export const WORKSPACE_SCHEMA_VERSION = 10;
+export const WORKSPACE_SCHEMA_VERSION = 11;
 export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   1,
   2,
@@ -71,6 +76,7 @@ export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   7,
   8,
   9,
+  10,
   WORKSPACE_SCHEMA_VERSION,
 ] as const;
 export const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
@@ -113,6 +119,10 @@ const WORKSPACE_CONFIG_V10_KEYS = [
   ...WORKSPACE_CONFIG_V9_KEYS,
   "channelPresentations",
 ] as const;
+const WORKSPACE_CONFIG_V11_KEYS = [
+  ...WORKSPACE_CONFIG_V10_KEYS,
+  "commandChecksum",
+] as const;
 const SERIAL_CONFIG_KEYS = [
   "portName",
   "baudRate",
@@ -152,6 +162,7 @@ export function createDefaultWorkspaceConfig(source: WorkspaceConfig["source"]):
     autoResponderRules: [],
     quickCommands: [],
     channelPresentations: createDefaultChannelPresentations(),
+    commandChecksum: DEFAULT_COMMAND_CHECKSUM_MODE,
   };
 }
 
@@ -178,6 +189,7 @@ export function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
     autoResponderRules: cloneAutoResponderRules(config.autoResponderRules),
     quickCommands: cloneQuickCommands(config.quickCommands),
     channelPresentations: cloneChannelPresentations(config.channelPresentations),
+    commandChecksum: config.commandChecksum,
   };
 }
 
@@ -216,7 +228,8 @@ export function areWorkspaceConfigsEqual(
     areAttitudeConfigsEqual(left.attitudeConfig, right.attitudeConfig) &&
     areAutoResponderRulesEqual(left.autoResponderRules, right.autoResponderRules) &&
     areQuickCommandsEqual(left.quickCommands, right.quickCommands) &&
-    areChannelPresentationsEqual(left.channelPresentations, right.channelPresentations)
+    areChannelPresentationsEqual(left.channelPresentations, right.channelPresentations) &&
+    left.commandChecksum === right.commandChecksum
   );
 }
 
@@ -294,7 +307,7 @@ export function assertWorkspaceNameAvailable(
 }
 
 export function serializeWorkspace(profile: WorkspaceProfile): string {
-  const exported: WorkspaceExportV10 = {
+  const exported: WorkspaceExportV11 = {
     format: WORKSPACE_FILE_FORMAT,
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     name: profile.name,
@@ -305,7 +318,7 @@ export function serializeWorkspace(profile: WorkspaceProfile): string {
   return serialized;
 }
 
-export function parseWorkspaceExport(text: string): WorkspaceExportV10 {
+export function parseWorkspaceExport(text: string): WorkspaceExportV11 {
   assertWorkspaceFileSize(text);
 
   let parsed: unknown;
@@ -346,9 +359,28 @@ export function parseWorkspaceConfig(value: unknown): WorkspaceConfig {
 function parseWorkspaceConfigWithLineEndings(
   value: unknown,
   allowedLineEndings: readonly LineEnding[],
+): WorkspaceConfigV11 {
+  const record = requireRecord(value, "工作区配置");
+  assertExactKeys(record, WORKSPACE_CONFIG_V11_KEYS, "工作区配置");
+  return {
+    ...parseWorkspaceConfigV10Record(record, allowedLineEndings),
+    commandChecksum: parseCommandChecksumMode(record.commandChecksum),
+  };
+}
+
+function parseWorkspaceConfigV10(
+  value: unknown,
+  allowedLineEndings: readonly LineEnding[] = LINE_ENDINGS,
 ): WorkspaceConfigV10 {
   const record = requireRecord(value, "工作区配置");
   assertExactKeys(record, WORKSPACE_CONFIG_V10_KEYS, "工作区配置");
+  return parseWorkspaceConfigV10Record(record, allowedLineEndings);
+}
+
+function parseWorkspaceConfigV10Record(
+  record: Record<string, unknown>,
+  allowedLineEndings: readonly LineEnding[],
+): WorkspaceConfigV10 {
   return {
     ...parseWorkspaceConfigV9Record(record, allowedLineEndings),
     channelPresentations: parseChannelPresentations(record.channelPresentations),
@@ -657,9 +689,23 @@ function migrateWorkspaceConfigV9(config: WorkspaceConfigV9): WorkspaceConfigV10
   };
 }
 
+function migrateWorkspaceConfigV10(config: WorkspaceConfigV10): WorkspaceConfigV11 {
+  return {
+    ...config,
+    commandChecksum: DEFAULT_COMMAND_CHECKSUM_MODE,
+  };
+}
+
 function parseVersionedWorkspaceConfig(version: unknown, value: unknown): WorkspaceConfig {
   if (version === WORKSPACE_SCHEMA_VERSION) {
     return parseWorkspaceConfig(value);
+  }
+  return migrateWorkspaceConfigV10(parseVersionedWorkspaceConfigV10(version, value));
+}
+
+function parseVersionedWorkspaceConfigV10(version: unknown, value: unknown): WorkspaceConfigV10 {
+  if (version === 10) {
+    return parseWorkspaceConfigV10(value);
   }
   return migrateWorkspaceConfigV9(parseVersionedWorkspaceConfigV9(version, value));
 }
@@ -765,6 +811,8 @@ export function restoreWorkspaceConfig(
   const channelPresentations =
     tryParseChannelPresentations(record.channelPresentations) ??
     cloneChannelPresentations(fallback.channelPresentations);
+  const commandChecksum =
+    tryParseCommandChecksumMode(record.commandChecksum) ?? fallback.commandChecksum;
   return {
     source: isEnum(record.source, ["serial", "simulator"]) ? record.source : fallback.source,
     protocol: isEnum(record.protocol, PROTOCOL_IDS)
@@ -823,6 +871,7 @@ export function restoreWorkspaceConfig(
     autoResponderRules,
     quickCommands,
     channelPresentations,
+    commandChecksum,
   };
 }
 
@@ -891,53 +940,49 @@ function parseWorkspaceProfileConfig(
   allowedLineEndings: readonly LineEnding[],
   processingGraphSchema: ProcessingGraphSchemaMode,
 ): WorkspaceConfig {
-  if (Object.hasOwn(configRecord, "channelPresentations")) {
+  if (Object.hasOwn(configRecord, "commandChecksum")) {
     return parseWorkspaceConfigWithLineEndings(configRecord, allowedLineEndings);
+  }
+  if (Object.hasOwn(configRecord, "channelPresentations")) {
+    return migrateWorkspaceConfigV10(
+      parseWorkspaceConfigV10(configRecord, allowedLineEndings),
+    );
   }
   if (Object.hasOwn(configRecord, "terminalRxTextEncoding")) {
     const config = processingGraphSchema === "legacy"
       ? migrateWorkspaceConfigV8(parseWorkspaceConfigV8(configRecord, allowedLineEndings))
       : parseWorkspaceConfigV9(configRecord, allowedLineEndings);
-    return migrateWorkspaceConfigV9(config);
+    return migrateWorkspaceConfigV10(migrateWorkspaceConfigV9(config));
   }
   if (Object.hasOwn(configRecord, "terminalRxRecordMode")) {
-    return migrateWorkspaceConfigV9(
-      migrateWorkspaceConfigV8(
-        migrateWorkspaceConfigV7(parseWorkspaceConfigV7(configRecord, allowedLineEndings)),
-      ),
-    );
-  }
-  if (Object.hasOwn(configRecord, "quickCommands")) {
-    return migrateWorkspaceConfigV9(
-      migrateWorkspaceConfigV8(
-        migrateWorkspaceConfigV7(
-          migrateWorkspaceConfigV6(parseWorkspaceConfigV6(configRecord, allowedLineEndings)),
+    return migrateWorkspaceConfigV10(
+      migrateWorkspaceConfigV9(
+        migrateWorkspaceConfigV8(
+          migrateWorkspaceConfigV7(parseWorkspaceConfigV7(configRecord, allowedLineEndings)),
         ),
       ),
     );
   }
-  if (Object.hasOwn(configRecord, "autoResponderRules")) {
-    return migrateWorkspaceConfigV9(
-      migrateWorkspaceConfigV8(
-        migrateWorkspaceConfigV7(
-          migrateWorkspaceConfigV6(
-            migrateWorkspaceConfigV5(
-              migrateWorkspaceConfigV4(parseWorkspaceConfigV4(configRecord, allowedLineEndings)),
-            ),
+  if (Object.hasOwn(configRecord, "quickCommands")) {
+    return migrateWorkspaceConfigV10(
+      migrateWorkspaceConfigV9(
+        migrateWorkspaceConfigV8(
+          migrateWorkspaceConfigV7(
+            migrateWorkspaceConfigV6(parseWorkspaceConfigV6(configRecord, allowedLineEndings)),
           ),
         ),
       ),
     );
   }
-  if (Object.hasOwn(configRecord, "attitudeConfig")) {
-    return migrateWorkspaceConfigV9(
-      migrateWorkspaceConfigV8(
-        migrateWorkspaceConfigV7(
-          migrateWorkspaceConfigV6(
-            migrateWorkspaceConfigV5(
-              migrateWorkspaceConfigV4(
-                migrateWorkspaceConfigV3(
-                  parseWorkspaceConfigV3(configRecord, allowedLineEndings),
+  if (Object.hasOwn(configRecord, "autoResponderRules")) {
+    return migrateWorkspaceConfigV10(
+      migrateWorkspaceConfigV9(
+        migrateWorkspaceConfigV8(
+          migrateWorkspaceConfigV7(
+            migrateWorkspaceConfigV6(
+              migrateWorkspaceConfigV5(
+                migrateWorkspaceConfigV4(
+                  parseWorkspaceConfigV4(configRecord, allowedLineEndings),
                 ),
               ),
             ),
@@ -946,16 +991,16 @@ function parseWorkspaceProfileConfig(
       ),
     );
   }
-  if (Object.hasOwn(configRecord, "processingGraph")) {
-    return migrateWorkspaceConfigV9(
-      migrateWorkspaceConfigV8(
-        migrateWorkspaceConfigV7(
-          migrateWorkspaceConfigV6(
-            migrateWorkspaceConfigV5(
-              migrateWorkspaceConfigV4(
-                migrateWorkspaceConfigV3(
-                  migrateWorkspaceConfigV2(
-                    parseWorkspaceConfigV2(configRecord, allowedLineEndings),
+  if (Object.hasOwn(configRecord, "attitudeConfig")) {
+    return migrateWorkspaceConfigV10(
+      migrateWorkspaceConfigV9(
+        migrateWorkspaceConfigV8(
+          migrateWorkspaceConfigV7(
+            migrateWorkspaceConfigV6(
+              migrateWorkspaceConfigV5(
+                migrateWorkspaceConfigV4(
+                  migrateWorkspaceConfigV3(
+                    parseWorkspaceConfigV3(configRecord, allowedLineEndings),
                   ),
                 ),
               ),
@@ -965,16 +1010,39 @@ function parseWorkspaceProfileConfig(
       ),
     );
   }
-  return migrateWorkspaceConfigV9(
-    migrateWorkspaceConfigV8(
-      migrateWorkspaceConfigV7(
-        migrateWorkspaceConfigV6(
-          migrateWorkspaceConfigV5(
-            migrateWorkspaceConfigV4(
-              migrateWorkspaceConfigV3(
-                migrateWorkspaceConfigV2(
-                  migrateWorkspaceConfigV1(
-                    parseWorkspaceConfigV1(configRecord, allowedLineEndings),
+  if (Object.hasOwn(configRecord, "processingGraph")) {
+    return migrateWorkspaceConfigV10(
+      migrateWorkspaceConfigV9(
+        migrateWorkspaceConfigV8(
+          migrateWorkspaceConfigV7(
+            migrateWorkspaceConfigV6(
+              migrateWorkspaceConfigV5(
+                migrateWorkspaceConfigV4(
+                  migrateWorkspaceConfigV3(
+                    migrateWorkspaceConfigV2(
+                      parseWorkspaceConfigV2(configRecord, allowedLineEndings),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  return migrateWorkspaceConfigV10(
+    migrateWorkspaceConfigV9(
+      migrateWorkspaceConfigV8(
+        migrateWorkspaceConfigV7(
+          migrateWorkspaceConfigV6(
+            migrateWorkspaceConfigV5(
+              migrateWorkspaceConfigV4(
+                migrateWorkspaceConfigV3(
+                  migrateWorkspaceConfigV2(
+                    migrateWorkspaceConfigV1(
+                      parseWorkspaceConfigV1(configRecord, allowedLineEndings),
+                    ),
                   ),
                 ),
               ),
@@ -1093,6 +1161,14 @@ function tryParseQuickCommands(value: unknown, allowedLineEndings: readonly Line
 function tryParseChannelPresentations(value: unknown) {
   try {
     return parseChannelPresentations(value);
+  } catch {
+    return null;
+  }
+}
+
+function tryParseCommandChecksumMode(value: unknown) {
+  try {
+    return parseCommandChecksumMode(value);
   } catch {
     return null;
   }
