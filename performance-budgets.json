@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "benchmarks": [
+    {
+      "id": "协议与数据处理热路径 > FireWater 1 MiB 分片解析",
+      "maxMedianMs": 40,
+      "minimumSamples": 15,
+      "workAmount": 1048666,
+      "workUnit": "bytes"
+    },
+    {
+      "id": "协议与数据处理热路径 > JustFloat 1 MiB 分片解析",
+      "maxMedianMs": 8,
+      "minimumSamples": 15,
+      "workAmount": 1048628,
+      "workUnit": "bytes"
+    },
+    {
+      "id": "协议与数据处理热路径 > 20 节点处理图执行 4096 帧",
+      "maxMedianMs": 12,
+      "minimumSamples": 15,
+      "workAmount": 81920,
+      "workUnit": "evaluations"
+    },
+    {
+      "id": "协议与数据处理热路径 > 20 节点转换图执行 4096 帧",
+      "maxMedianMs": 12,
+      "minimumSamples": 15,
+      "workAmount": 81920,
+      "workUnit": "evaluations"
+    },
+    {
+      "id": "工作台数据平面 > 已饱和实时链路摄入 16 KiB JustFloat",
+      "maxMedianMs": 10,
+      "minimumSamples": 15,
+      "workAmount": 16400,
+      "workUnit": "bytes"
+    },
+    {
+      "id": "工作台数据平面 > 已饱和回放链路摄入 64 条记录",
+      "maxMedianMs": 5,
+      "minimumSamples": 15,
+      "workAmount": 192,
+      "workUnit": "frames"
+    },
+    {
+      "id": "扩展同步入口 > 512 KiB RX 分批复制",
+      "maxMedianMs": 1,
+      "minimumSamples": 15,
+      "workAmount": 524288,
+      "workUnit": "bytes"
+    }
+  ]
+}

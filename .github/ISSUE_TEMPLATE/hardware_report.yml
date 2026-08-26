@@ -1,0 +1,216 @@
+name: 硬件兼容性报告
+description: 提交可复核的真实串口设备测试证据
+title: "test: "
+labels:
+  - hardware
+body:
+  - type: markdown
+    attributes:
+      value: |
+        本表单只收集真实硬件测试。填写前请阅读
+        [硬件兼容性证据规范](../../docs/hardware-compatibility.md)和
+        [故障排查矩阵](../../docs/troubleshooting.md)。
+        不要提交 USB 序列号值、端口绝对路径、用户名、业务载荷、密钥或凭据。
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已检查全部文本和附件，只记录唯一序列号是否存在，不包含其值或其他敏感信息。
+          required: true
+
+  - type: input
+    id: test_date
+    attributes:
+      label: 测试日期
+      description: 使用 YYYY-MM-DD。
+      placeholder: 2026-08-25
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Vofa-Ultra 版本或 commit
+      placeholder: v0.1.0 或完整 commit SHA
+    validations:
+      required: true
+
+  - type: dropdown
+    id: build_type
+    attributes:
+      label: 构建类型
+      options:
+        - 正式发布包
+        - 候选安装包
+        - 本地开发构建
+    validations:
+      required: true
+
+  - type: input
+    id: package
+    attributes:
+      label: 安装包或启动方式
+      description: 例如 MSI、NSIS、DMG、DEB、AppImage 或 pnpm tauri dev；附校验值时先脱敏路径。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: textarea
+    id: os_details
+    attributes:
+      label: 系统与架构
+      description: 记录系统版本、架构；Linux 还需发行版、内核和权限或 udev 配置。
+      placeholder: |
+        系统版本：
+        架构：
+        内核 / WebKit / 相关配置：
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware
+    attributes:
+      label: 适配器、板卡与驱动
+      description: 记录芯片、板卡型号、USB VID/PID、驱动名称和版本。
+      placeholder: |
+        适配器芯片：
+        板卡型号：
+        VID:PID：
+        驱动及版本：
+    validations:
+      required: true
+
+  - type: dropdown
+    id: serial_identity
+    attributes:
+      label: 是否存在非空唯一序列号
+      description: 只选择是否存在，不要在任何字段或附件中填写序列号值。
+      options:
+        - 是
+        - 否
+        - 无法确认
+    validations:
+      required: true
+
+  - type: textarea
+    id: serial_config
+    attributes:
+      label: 完整串口参数
+      placeholder: |
+        波特率：
+        数据位：
+        校验：
+        停止位：
+        流控：无 / 软件 / 硬件
+        DTR：
+        RTS：
+    validations:
+      required: true
+
+  - type: textarea
+    id: fixture
+    attributes:
+      label: 目标固件、夹具与协议
+      description: 记录可公开的版本和确定性测试 payload 生成规则，不要粘贴业务数据。
+      placeholder: |
+        固件 / 夹具版本：
+        协议：FireWater / JustFloat / Raw Data
+        测试 payload 生成与校验规则：
+    validations:
+      required: true
+
+  - type: textarea
+    id: capability_results
+    attributes:
+      label: 能力逐项结果
+      description: 每项填写通过、失败或未验证，并附次数或观察结果；不要删除未测试项。
+      value: |
+        枚举：
+        连接：
+        RX：
+        TX：
+        重复连接（至少 10 次）：
+        连接中拔插（至少 5 次）：
+        自动重连：
+        软件流控：
+        硬件流控：
+        DTR：
+        RTS：
+        VUCAP 录制 / 回放：
+        数值 CSV：
+        CSV / JSONL / BIN 导出：
+    validations:
+      required: true
+
+  - type: textarea
+    id: metrics
+    attributes:
+      label: 时长、速率与校验统计
+      placeholder: |
+        测试时长：
+        波特率 / 实际吞吐：
+        RX / TX 字节数：
+        校验方式：
+        丢帧 / 内容错误 / I/O 错误数：
+        连接、拔插和重连次数：
+    validations:
+      required: true
+
+  - type: input
+    id: error_codes
+    attributes:
+      label: 稳定错误码
+      description: 填写应用诊断中的稳定错误码；没有则填写“无”。
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 脱敏证据
+      description: 附诊断、日志摘要、截图、文件 SHA-256 或受控记录链接，并说明每份证据对应的步骤。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: conclusion
+    attributes:
+      label: 建议结论
+      description: 维护者复核后才会写入兼容性清单。
+      options:
+        - 已验证
+        - 部分验证
+        - 社区报告
+        - 失败
+    validations:
+      required: true
+
+  - type: textarea
+    id: limitations
+    attributes:
+      label: 未验证项与已知限制
+      description: 明确列出所有未验证能力、失败条件和可能影响结论的环境差异。
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: evidence_confirmation
+    attributes:
+      label: 证据确认
+      options:
+        - label: 本报告来自真实设备测试，不是根据底层库、CI、模拟器或相似芯片推断。
+          required: true
+        - label: 未验证项均已明确标记，失败结果和错误计数没有省略。
+          required: true

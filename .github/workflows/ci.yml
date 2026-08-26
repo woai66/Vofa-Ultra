@@ -1,0 +1,559 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend and browser
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release changelog
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        run: pnpm check:release
+
+      - name: Run static checks, tests, and build
+        run: pnpm check
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run browser tests
+        run: pnpm test:e2e
+
+      - name: Upload browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-test-results
+          path: test-results
+          if-no-files-found: ignore
+
+  performance:
+    name: Performance budget
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run performance budgets
+        run: pnpm benchmark
+
+      - name: Upload performance diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: performance-report
+          path: artifacts/performance
+          if-no-files-found: ignore
+          retention-days: 14
+
+  rust:
+    name: Rust and desktop build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-22.04
+          - windows-2022
+          - macos-15-intel
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate bundled supply-chain metadata
+        run: pnpm supply-chain:bundle
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Lint Rust
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Test Rust
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Validate package metadata
+        run: pnpm check:package
+
+      - name: Validate dependency licenses and SBOM
+        run: pnpm supply-chain:check
+
+      - name: Build desktop executable
+        run: pnpm tauri build --ci --no-bundle
+
+  rust-msrv:
+    name: Rust minimum supported version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+
+      - name: Set up minimum supported Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.88.0
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate bundled supply-chain metadata
+        run: pnpm supply-chain:bundle
+
+      - name: Check locked dependencies with minimum Rust
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features
+
+  package:
+    name: Unsigned package (${{ matrix.platform }})
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - frontend
+      - rust
+      - rust-msrv
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux
+            rust_target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+          - os: windows-2022
+            platform: windows
+            rust_target: x86_64-pc-windows-msvc
+            bundles: msi,nsis
+          - os: macos-15-intel
+            platform: macos
+            rust_target: x86_64-apple-darwin
+            bundles: dmg
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.98.0
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate package metadata
+        run: pnpm check:package
+
+      - name: Fetch Rust dependencies for target
+        run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.rust_target }}
+
+      - name: Build unsigned bundles
+        run: pnpm tauri build --ci --no-sign --target ${{ matrix.rust_target }} --bundles "${{ matrix.bundles }}"
+
+      - name: Stage bundles, supply-chain metadata, and checksums
+        run: pnpm package:collect ${{ matrix.platform }} ${{ matrix.rust_target }}
+
+      - name: Attest tagged platform build outputs
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: artifacts/${{ matrix.platform }}/*
+
+      - name: Upload unsigned bundles and release metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vofa-ultra-${{ matrix.platform }}-${{ github.run_number }}-${{ github.run_attempt }}
+          path: artifacts/${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release-draft:
+    name: Draft GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - package
+      - performance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    environment: release-draft
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.2
+          cache: pnpm
+
+      - name: Install release verifier dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Download current-run platform artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: vofa-ultra-*-${{ github.run_number }}-${{ github.run_attempt }}
+          path: downloaded-artifacts
+
+      - name: Reverify and stage release assets
+        env:
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_NUMBER: ${{ github.run_number }}
+          RELEASE_TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          release_source_sha="$(git rev-parse 'HEAD^{commit}')"
+          pnpm release:stage downloaded-artifacts release-assets \
+            "$RELEASE_RUN_NUMBER" "$RELEASE_TAG_NAME" "$release_source_sha" \
+            "$RELEASE_RUN_ID" "$RELEASE_RUN_ATTEMPT"
+
+      - name: Preflight aggregate provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          resolve_remote_tag_commit() {
+            local object_tsv
+            local object_type
+            local object_sha
+            local depth
+
+            object_tsv="$(
+              gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG_NAME}" \
+                --jq '[.object.type, .object.sha] | @tsv'
+            )"
+            IFS=$'\t' read -r object_type object_sha <<< "$object_tsv"
+
+            for depth in {1..8}; do
+              case "$object_type" in
+                commit)
+                  if [[ ! "$object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+                    echo "Remote tag resolved to an invalid commit: $object_sha" >&2
+                    return 1
+                  fi
+                  printf '%s\n' "$object_sha"
+                  return 0
+                  ;;
+                tag)
+                  object_tsv="$(
+                    gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}" \
+                      --jq '[.object.type, .object.sha] | @tsv'
+                  )"
+                  IFS=$'\t' read -r object_type object_sha <<< "$object_tsv"
+                  ;;
+                *)
+                  echo "Remote tag does not resolve to a commit: $object_type" >&2
+                  return 1
+                  ;;
+              esac
+            done
+
+            echo "Remote tag indirection exceeds the verification limit." >&2
+            return 1
+          }
+
+          source_sha="$(git rev-parse 'HEAD^{commit}')"
+          remote_source_sha="$(resolve_remote_tag_commit)"
+          if [[ "$remote_source_sha" != "$source_sha" ]]; then
+            echo "Remote tag moved from triggering commit $source_sha to $remote_source_sha." >&2
+            exit 1
+          fi
+
+          build_source_sha="$(
+            node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              const metadata = JSON.parse(readFileSync(process.argv[1], "utf8"));
+              if (typeof metadata.source_commit !== "string"
+                || typeof metadata.prerelease !== "boolean") {
+                throw new Error("Release build metadata is invalid");
+              }
+              process.stdout.write(metadata.source_commit);
+            ' release-assets/RELEASE_BUILD_INFO.json
+          )"
+          if [[ "$build_source_sha" != "$source_sha" ]]; then
+            echo "Release build metadata does not match triggering commit $source_sha." >&2
+            exit 1
+          fi
+
+          release_lookup_error="$(mktemp)"
+          trap 'rm -f "$release_lookup_error"' EXIT
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG_NAME}" \
+            --silent 2>"$release_lookup_error"; then
+            echo "Release ${RELEASE_TAG_NAME} already exists; refusing to attest replacement assets."
+            exit 1
+          fi
+          if ! grep -q 'HTTP 404' "$release_lookup_error"; then
+            cat "$release_lookup_error" >&2
+            echo "Unable to prove that release ${RELEASE_TAG_NAME} is absent." >&2
+            exit 1
+          fi
+
+      - name: Attest verified aggregate release assets
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: release-assets/*
+
+      - name: Create protected unsigned draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          resolve_remote_tag_commit() {
+            local object_tsv
+            local object_type
+            local object_sha
+            local depth
+
+            object_tsv="$(
+              gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG_NAME}" \
+                --jq '[.object.type, .object.sha] | @tsv'
+            )"
+            IFS=$'\t' read -r object_type object_sha <<< "$object_tsv"
+
+            for depth in {1..8}; do
+              case "$object_type" in
+                commit)
+                  if [[ ! "$object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+                    echo "Remote tag resolved to an invalid commit: $object_sha" >&2
+                    return 1
+                  fi
+                  printf '%s\n' "$object_sha"
+                  return 0
+                  ;;
+                tag)
+                  object_tsv="$(
+                    gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}" \
+                      --jq '[.object.type, .object.sha] | @tsv'
+                  )"
+                  IFS=$'\t' read -r object_type object_sha <<< "$object_tsv"
+                  ;;
+                *)
+                  echo "Remote tag does not resolve to a commit: $object_type" >&2
+                  return 1
+                  ;;
+              esac
+            done
+
+            echo "Remote tag indirection exceeds the verification limit." >&2
+            return 1
+          }
+
+          source_sha="$(git rev-parse 'HEAD^{commit}')"
+          remote_source_sha="$(resolve_remote_tag_commit)"
+          if [[ "$remote_source_sha" != "$source_sha" ]]; then
+            echo "Remote tag moved from triggering commit $source_sha to $remote_source_sha." >&2
+            exit 1
+          fi
+
+          release_metadata="$(
+            node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              const metadata = JSON.parse(readFileSync(process.argv[1], "utf8"));
+              if (typeof metadata.source_commit !== "string"
+                || typeof metadata.prerelease !== "boolean") {
+                throw new Error("Release build metadata is invalid");
+              }
+              process.stdout.write(metadata.source_commit + "\t" + String(metadata.prerelease));
+            ' release-assets/RELEASE_BUILD_INFO.json
+          )"
+          IFS=$'\t' read -r build_source_sha release_prerelease <<< "$release_metadata"
+          if [[ "$build_source_sha" != "$source_sha" ]]; then
+            echo "Release build metadata does not match triggering commit $source_sha." >&2
+            exit 1
+          fi
+
+          if gh release view "$RELEASE_TAG_NAME" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG_NAME} already exists; refusing to replace it."
+            exit 1
+          fi
+
+          prerelease=()
+          case "$release_prerelease" in
+            true)
+              prerelease+=(--prerelease)
+              ;;
+            false)
+              ;;
+            *)
+              echo "Release build metadata contains an invalid prerelease value." >&2
+              exit 1
+              ;;
+          esac
+
+          release_notes_file="$(mktemp)"
+          trap 'rm -f "$release_notes_file"' EXIT
+          {
+            cat .github/release-draft-notes.md
+            printf '\n'
+            cat release-assets/RELEASE_CHANGELOG.md
+            printf '\nSource commit: `%s`\n' "$source_sha"
+            printf 'Workflow run: https://github.com/%s/actions/runs/%s (attempt %s)\n' \
+              "$GITHUB_REPOSITORY" "$RELEASE_RUN_ID" "$RELEASE_RUN_ATTEMPT"
+          } > "$release_notes_file"
+
+          gh release create "$RELEASE_TAG_NAME" release-assets/* \
+            --verify-tag \
+            --draft \
+            --latest=false \
+            --generate-notes \
+            --notes-file "$release_notes_file" \
+            --title "Vofa-Ultra ${RELEASE_TAG_NAME} unsigned candidate" \
+            "${prerelease[@]}"
+
+          remote_source_sha="$(resolve_remote_tag_commit)"
+          if [[ "$remote_source_sha" != "$source_sha" ]]; then
+            echo "Remote tag moved after draft creation; do not publish this draft." >&2
+            exit 1
+          fi

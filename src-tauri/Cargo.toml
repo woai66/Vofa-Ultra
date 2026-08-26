@@ -1,0 +1,31 @@
+[package]
+name = "vofa-ultra"
+version = "0.1.0"
+description = "A modern serial workbench for embedded development"
+authors = ["Vofa-Ultra contributors"]
+edition = "2021"
+rust-version = "1.88.0"
+license = "MIT"
+repository = "https://github.com/woai66/Vofa-Ultra"
+homepage = "https://github.com/woai66/Vofa-Ultra"
+
+[lib]
+name = "vofa_ultra_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+semver = "=1.0.28"
+serialport = { version = "4.7", default-features = false }
+sha2 = "=0.10.9"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+wasmi = { version = "=0.50.0", default-features = false, features = ["std", "extra-checks"] }
+
+[dev-dependencies]
+wat = "=1.228.0"
