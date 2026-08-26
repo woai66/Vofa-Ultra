@@ -1126,7 +1126,7 @@ function protocolHealthLabel(status: ProtocolHealthStatus, droppedFrames: number
 
 function protocolConstraint(protocol: ProtocolKind): string {
   if (protocol === "firewater") {
-    return "FireWater：每行 1–16 个有限数值，标签不超过 64 字符";
+    return "FireWater：每行 1–16 个有限数值，命名字段使用 : 或 =";
   }
   if (protocol === "justfloat") {
     return "JustFloat：1–16 个小端 float32，帧尾 00 00 80 7F";
