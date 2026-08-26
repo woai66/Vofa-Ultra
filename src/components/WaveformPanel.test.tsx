@@ -23,7 +23,7 @@ interface UPlotMockOptions {
   height: number;
   scales?: Record<string, { auto?: boolean; time?: boolean }>;
   axes?: Array<{ scale?: string; stroke?: string }>;
-  series?: Array<{ label?: string; scale?: string; show?: boolean }>;
+  series?: Array<{ label?: string; scale?: string; show?: boolean; stroke?: string }>;
   hooks?: {
     setScale?: Array<(chart: unknown, scaleKey: string) => void>;
     setSelect?: Array<(chart: unknown) => void>;
@@ -149,6 +149,10 @@ describe("WaveformPanel 波形测量", () => {
       replayStatus: "idle",
       runtimeTransitionStatus: "idle",
       workspaceTransitionStatus: "idle",
+      protocol: "firewater",
+      replaySessionId: 0,
+      replayHeader: undefined,
+      channelPresentations: { firewater: {}, justfloat: {} },
     });
   });
 
@@ -161,6 +165,75 @@ describe("WaveformPanel 波形测量", () => {
     render(<WaveformPanel theme="dark" />);
 
     expect(screen.getByRole("button", { name: "开启波形测量" })).toBeDisabled();
+  });
+
+  it("在读数、触发和测量中应用别名、单位与颜色且保留原始序列标签", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState({
+      channelPresentations: {
+        firewater: {
+          "channel-0": {
+            alias: "母线电压",
+            unit: "V",
+            color: "#abcdef",
+          },
+        },
+        justfloat: {},
+      },
+    });
+    const { container } = render(<WaveformPanel theme="dark" />);
+
+    const firstReadout = container.querySelector(".channel-readout");
+    expect(firstReadout).toHaveTextContent("母线电压50.000V");
+    expect(firstReadout?.querySelector(":scope > span")).toHaveStyle({
+      backgroundColor: "#abcdef",
+    });
+    expect(latestUPlotMock().options.series?.[1]).toMatchObject({
+      label: "电压",
+      stroke: "#abcdef",
+    });
+    expect(useWorkbenchStore.getState().channels[0]).toMatchObject({
+      name: "电压",
+      color: "#46d89c",
+      lastValue: 50,
+    });
+
+    await user.click(screen.getByRole("button", { name: "打开触发设置" }));
+    expect(screen.getByRole("combobox", { name: "触发通道" })).toHaveTextContent(
+      "母线电压",
+    );
+    expect(screen.getByText("阈值 (V)")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭触发设置" }));
+
+    await user.click(screen.getByRole("button", { name: "开启波形测量" }));
+    expect(screen.getByRole("combobox", { name: "测量通道" })).toHaveTextContent(
+      "母线电压",
+    );
+    const yA = screen.getByText("yA").parentElement;
+    const yB = screen.getByText("yB").parentElement;
+    const deltaY = screen.getByText("Δy").parentElement;
+    expect(yA).toHaveTextContent(/V/);
+    expect(yB).toHaveTextContent(/V/);
+    expect(deltaY).toHaveTextContent(/V/);
+    expect(
+      container
+        .querySelector<HTMLElement>('.waveform-measurement-cursor[data-cursor="A"]')
+        ?.style.getPropertyValue("--measurement-channel-color"),
+    ).toBe("#abcdef");
+
+    const chartCount = uPlotMockInstances.length;
+    act(() => {
+      useWorkbenchStore.getState().setChannelPresentation("firewater", "channel-0", {
+        alias: "电源电压",
+        unit: "V",
+        color: "#abcdef",
+      });
+    });
+    expect(screen.getByRole("button", { name: "关闭波形测量" })).toBeEnabled();
+    expect(screen.getByRole("combobox", { name: "测量通道" })).toHaveTextContent(
+      "电源电压",
+    );
+    expect(uPlotMockInstances).toHaveLength(chartCount);
   });
 
   it("默认为共享量程并为独立量程分配通道 scale 与焦点轴", async () => {

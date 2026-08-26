@@ -1273,7 +1273,8 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   await ingestProtocolText(page, "1,2,3\n", 1_100);
   await expect(health).toContainText("解析正常");
   await expect(health).toContainText("成功 1");
-  await expect(page.getByLabel("数据通道列表").getByRole("button")).toHaveCount(3);
+  await expect(page.getByLabel("数据通道列表").locator(".channel-visibility-button"))
+    .toHaveCount(3);
   await expect(page.locator(".terminal-line").last()).toContainText("1,2,3");
 
   await page.setViewportSize({ width: 320, height: 700 });
@@ -1290,7 +1291,121 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   expect(layout.documentWidth).toBeLessThanOrEqual(320);
 });
 
-test("处理图转换节点生成派生通道并随 v9 工作区往返", async ({ page }, testInfo) => {
+test("通道展示配置按协议隔离并随 v10 工作区往返", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await ingestProtocolText(page, "voltage:12.5,current:2\n", 1_000);
+  await page.getByRole("button", { name: "通道", exact: true }).click();
+
+  await page.getByRole("button", { name: "编辑通道 voltage" }).click();
+  await page.getByRole("textbox", { name: "channel-0 通道别名" }).fill("母线电压");
+  await page.getByRole("textbox", { name: "channel-0 通道单位" }).fill("V");
+  await page.getByLabel("channel-0 通道颜色").fill("#abcdef");
+  await page.getByRole("button", { name: "保存 voltage 展示配置" }).click();
+
+  const firewaterRow = page.locator(".channel-row").filter({ hasText: "母线电压" });
+  await expect(firewaterRow).toContainText("voltage");
+  await expect(firewaterRow).toContainText("12.500");
+  await expect(firewaterRow).toContainText("V");
+  await expect(firewaterRow.locator(".channel-swatch")).toHaveCSS(
+    "background-color",
+    "rgb(171, 205, 239)",
+  );
+  await expect(page.locator(".channel-readout").first()).toContainText("母线电压");
+
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("radio", { name: /JustFloat/ }).click();
+  await ingestProtocolBytes(page, [0x00, 0x00, 0x48, 0x43, 0x00, 0x00, 0x80, 0x7f], 2_000);
+  await page.getByRole("button", { name: "通道", exact: true }).click();
+  await expect(page.getByText("母线电压", { exact: true })).toHaveCount(0);
+  await page.locator(".channel-edit-button").first().click();
+  await page.getByRole("textbox", { name: "channel-0 通道别名" }).fill("转速");
+  await page.getByRole("textbox", { name: "channel-0 通道单位" }).fill("rpm");
+  await page.getByRole("button", { name: /保存 .* 展示配置/ }).click();
+  await expect(page.locator(".channel-row").filter({ hasText: "转速" })).toContainText("rpm");
+
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("radio", { name: /FireWater/ }).click();
+  await ingestProtocolText(page, "voltage:13.5\n", 3_000);
+  await page.getByRole("button", { name: "通道", exact: true }).click();
+  await expect(page.locator(".channel-row").filter({ hasText: "母线电压" })).toBeVisible();
+
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  const nameInput = page.getByRole("textbox", { name: "工作区名称" });
+  await nameInput.fill("通道展示基准");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出当前" }).click();
+  const download = await downloadPromise;
+  const downloadPath = testInfo.outputPath("channel-presentation-workspace.json");
+  await download.saveAs(downloadPath);
+  const exported = JSON.parse(await readFile(downloadPath, "utf8")) as {
+    schemaVersion: number;
+    config: {
+      channelPresentations: {
+        firewater: Record<string, { alias: string; unit: string; color: string | null }>;
+        justfloat: Record<string, { alias: string; unit: string; color: string | null }>;
+      };
+    };
+  };
+  expect(exported).toMatchObject({
+    schemaVersion: 10,
+    config: {
+      channelPresentations: {
+        firewater: {
+          "channel-0": { alias: "母线电压", unit: "V", color: "#abcdef" },
+        },
+        justfloat: {
+          "channel-0": { alias: "转速", unit: "rpm", color: null },
+        },
+      },
+    },
+  });
+
+  await page.getByRole("button", { name: "通道", exact: true }).click();
+  await page.getByRole("button", { name: "编辑通道 母线电压" }).click();
+  await page.getByRole("button", { name: "恢复 voltage 默认展示" }).click();
+  await expect(page.getByText("母线电压", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  await page.getByLabel("导入工作区文件").setInputFiles(downloadPath);
+  await page.getByRole("button", { name: "通道展示基准 (2) 模拟器 · FireWater" }).click();
+  await expect(page.getByRole("heading", { name: "放弃未保存更改？" })).toBeVisible();
+  await page.getByRole("button", { name: "放弃并切换" }).click();
+  await ingestProtocolText(page, "voltage:14.5\n", 4_000);
+  await page.getByRole("button", { name: "通道", exact: true }).click();
+  await expect(page.locator(".channel-row").filter({ hasText: "母线电压" })).toBeVisible();
+
+  await page.getByRole("button", { name: "编辑通道 母线电压" }).click();
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-channel-presentation.png"),
+    fullPage: true,
+  });
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 700 });
+    const mobileLayout = await page.locator(".channel-editor").evaluate((editor) => {
+      const rect = editor.getBoundingClientRect();
+      const controls = [...editor.querySelectorAll<HTMLElement>("input, button")];
+      return {
+        left: rect.left,
+        right: rect.right,
+        overflow: editor.scrollWidth - editor.clientWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        controlHeights: controls.map((control) => control.getBoundingClientRect().height),
+      };
+    });
+    expect(mobileLayout.left).toBeGreaterThanOrEqual(0);
+    expect(mobileLayout.right).toBeLessThanOrEqual(width);
+    expect(mobileLayout.overflow).toBeLessThanOrEqual(1);
+    expect(mobileLayout.documentWidth).toBeLessThanOrEqual(width);
+    expect(mobileLayout.controlHeights.every((height) => height >= 44)).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`mobile-${width}-channel-presentation.png`),
+      fullPage: true,
+    });
+  }
+});
+
+test("处理图转换节点生成派生通道并随 v10 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -1331,7 +1446,7 @@ test("处理图转换节点生成派生通道并随 v9 工作区往返", async (
   await page.getByRole("button", { name: "通道" }).click();
   await expect(page.getByText(/基础 [1-9]\d*/)).toBeVisible();
   await expect(page.getByText("派生 1", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("数据通道列表").getByRole("button").filter({ hasText: "OUT 1" }))
+  await expect(page.getByLabel("数据通道列表").locator(".channel-row").filter({ hasText: "OUT 1" }))
     .toHaveCount(1);
 
   await page.getByRole("button", { name: "工作区" }).click();
@@ -1348,7 +1463,7 @@ test("处理图转换节点生成派生通道并随 v9 工作区往返", async (
     schemaVersion: number;
     config: { processingGraph: ProcessingGraphConfig };
   };
-  expect(exported.schemaVersion).toBe(9);
+  expect(exported.schemaVersion).toBe(10);
   expect(exported.config.processingGraph).toMatchObject({
     enabled: true,
     nodes: [
@@ -1373,7 +1488,7 @@ test("处理图转换节点生成派生通道并随 v9 工作区往返", async (
   expect(pageErrors).toEqual([]);
 });
 
-test("实时 RX 自动应答保持有界运行并随 v9 工作区往返", async ({ page }, testInfo) => {
+test("实时 RX 自动应答保持有界运行并随 v10 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -1426,7 +1541,7 @@ test("实时 RX 自动应答保持有界运行并随 v9 工作区往返", async 
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 9,
+    schemaVersion: 10,
     config: {
       autoResponderRules: [
         {
@@ -2255,7 +2370,7 @@ test("命名工作区可保存、切换、导出并重新导入", async ({ page 
   };
   expect(exported).toMatchObject({
     format: "vofa-ultra.workspace",
-    schemaVersion: 9,
+    schemaVersion: 10,
     name: "台架导出草稿",
     config: { protocol: "justfloat" },
   });
@@ -2357,7 +2472,7 @@ async function canvasScreenshotStats(locator: Locator): Promise<{
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({
-    version: 10,
+    version: 11,
     state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
   });
   await page.addInitScript((value) => {
@@ -2366,7 +2481,7 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("button", { name: "工作区" }).click();
-  await expect(page.getByRole("alert")).toContainText("版本 10 的较新配置");
+  await expect(page.getByRole("alert")).toContainText("版本 11 的较新配置");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();

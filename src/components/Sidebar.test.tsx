@@ -246,3 +246,130 @@ describe("Sidebar 协议解析健康度", () => {
     expect(health).toHaveTextContent("JustFloat：1–16 个小端 float32");
   });
 });
+
+describe("Sidebar 通道展示配置", () => {
+  const props = {
+    activePanel: "channels" as const,
+    theme: "dark" as const,
+    onClose: vi.fn(),
+    onThemeChange: vi.fn(),
+  };
+
+  beforeEach(() => {
+    useWorkbenchStore.setState({
+      protocol: "firewater",
+      replayStatus: "idle",
+      replaySessionId: 0,
+      replayHeader: undefined,
+      channels: [
+        {
+          id: "channel-0",
+          name: "voltage",
+          color: "#46d89c",
+          visible: true,
+          points: [],
+          lastValue: 12.5,
+        },
+      ],
+      processedChannels: [
+        {
+          id: "derived:filtered",
+          name: "Filtered",
+          color: "#55bde8",
+          visible: true,
+          points: [],
+          lastValue: 11.5,
+        },
+      ],
+      extensionChannels: [
+        {
+          id: "extension:test:output",
+          name: "Extension",
+          color: "#f0b35a",
+          visible: true,
+          points: [],
+          lastValue: 10.5,
+        },
+      ],
+      channelPresentations: { firewater: {}, justfloat: {} },
+      workspaceTransitionStatus: "idle",
+      workspaceStorageStatus: "writable",
+      protocolHealth: createEmptyProtocolHealth(),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("编辑、取消、保存并恢复基础通道展示", () => {
+    const { container } = render(<Sidebar {...props} />);
+
+    expect(screen.getByRole("button", { name: "隐藏通道 voltage" })).toBeEnabled();
+    expect(screen.getAllByRole("button", { name: /^编辑通道/ })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑通道 voltage" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "channel-0 通道别名" }), {
+      target: { value: "临时名称" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "取消编辑 voltage" }));
+    expect(useWorkbenchStore.getState().channelPresentations.firewater).toEqual({});
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑通道 voltage" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "channel-0 通道别名" }), {
+      target: { value: "  母线电压  " },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "channel-0 通道单位" }), {
+      target: { value: " V " },
+    });
+    fireEvent.change(screen.getByLabelText("channel-0 通道颜色"), {
+      target: { value: "#ABCDEF" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存 voltage 展示配置" }));
+
+    expect(useWorkbenchStore.getState().channelPresentations.firewater).toEqual({
+      "channel-0": { alias: "母线电压", unit: "V", color: "#abcdef" },
+    });
+    expect(screen.getByText("母线电压")).toBeInTheDocument();
+    expect(screen.getByTitle("原始标签：voltage")).toHaveTextContent("voltage");
+    expect(container.querySelector(".channel-row strong")).toHaveTextContent("12.500V");
+    expect(container.querySelector(".channel-swatch")).toHaveStyle({
+      backgroundColor: "#abcdef",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑通道 母线电压" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复 voltage 默认展示" }));
+    expect(useWorkbenchStore.getState().channelPresentations.firewater).toEqual({});
+    expect(screen.getByText("voltage")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑通道 voltage" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "channel-0 通道别名" }), {
+      target: { value: "仅别名" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存 voltage 展示配置" }));
+    expect(useWorkbenchStore.getState().channelPresentations.firewater).toEqual({
+      "channel-0": { alias: "仅别名", unit: "", color: null },
+    });
+  });
+
+  it("Raw Data、工作区切换和未来版本保护会禁用展示编辑", () => {
+    useWorkbenchStore.setState({ protocol: "raw" });
+    const { rerender } = render(<Sidebar {...props} />);
+    expect(screen.queryByRole("button", { name: /^编辑通道/ })).not.toBeInTheDocument();
+
+    useWorkbenchStore.setState({
+      protocol: "firewater",
+      workspaceTransitionStatus: "switching",
+    });
+    rerender(<Sidebar {...props} />);
+    expect(screen.getByRole("button", { name: "编辑通道 voltage" })).toBeDisabled();
+
+    useWorkbenchStore.setState({
+      workspaceTransitionStatus: "idle",
+      workspaceStorageStatus: "newer-version",
+      incompatibleStorageVersion: 11,
+    });
+    rerender(<Sidebar {...props} />);
+    expect(screen.getByRole("button", { name: "编辑通道 voltage" })).toBeDisabled();
+  });
+});

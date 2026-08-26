@@ -1,11 +1,16 @@
+import { useEffect, useMemo, useState } from "react";
 import {
   Cable,
+  Check,
   CircleCheck,
   CircleStop,
   Download,
   Eraser,
+  Eye,
+  EyeOff,
   Gauge,
   Moon,
+  Pencil,
   Play,
   RefreshCw,
   RotateCcw,
@@ -13,8 +18,14 @@ import {
   Sun,
   Trash2,
   TriangleAlert,
+  Undo2,
   X,
 } from "lucide-react";
+import {
+  getChannelPresentationOverride,
+  presentChannelSeries,
+  type PresentedChannelSeries,
+} from "../core/channelPresentation";
 import {
   BUILTIN_PROTOCOLS,
   PROTOCOL_DROP_REASON_LABELS,
@@ -32,8 +43,13 @@ import {
   selectActiveProtocolHealth,
   useWorkbenchStore,
 } from "../store/workbenchStore";
-import type { ChartWindowSeconds } from "../types/workspace";
-import type { ChannelSeries, ProtocolHealthSnapshot } from "../types/workbench";
+import type {
+  BaseChannelId,
+  ChannelPresentationOverride,
+  ChannelPresentationProtocol,
+  ChartWindowSeconds,
+} from "../types/workspace";
+import type { ProtocolHealthSnapshot } from "../types/workbench";
 import type { SidebarPanel } from "./ActivityRail";
 import { CapturePanel } from "./CapturePanel";
 import { AutomationPanel } from "./AutomationPanel";
@@ -446,14 +462,46 @@ function ChannelPanel() {
   const channels = useWorkbenchStore((state) => state.channels);
   const processedChannels = useWorkbenchStore((state) => state.processedChannels);
   const extensionChannels = useWorkbenchStore((state) => state.extensionChannels);
+  const channelPresentations = useWorkbenchStore((state) => state.channelPresentations);
   const activeProtocol = useWorkbenchStore(selectActiveProtocol);
   const protocolHealth = useWorkbenchStore(selectActiveProtocolHealth);
   const toggleChannel = useWorkbenchStore((state) => state.toggleChannel);
   const toggleExtensionChannel = useWorkbenchStore((state) => state.toggleExtensionChannel);
+  const setChannelPresentation = useWorkbenchStore(
+    (state) => state.setChannelPresentation,
+  );
   const clearChart = useWorkbenchStore((state) => state.clearChart);
   const clearProtocolHealth = useWorkbenchStore((state) => state.clearProtocolHealth);
   const isTransitioning = useWorkbenchStore(
     (state) => state.workspaceTransitionStatus !== "idle",
+  );
+  const presentationReadOnly = useWorkbenchStore(
+    (state) => state.workspaceStorageStatus === "newer-version",
+  );
+  const presentationProtocol: ChannelPresentationProtocol | null =
+    activeProtocol === "firewater" || activeProtocol === "justfloat"
+      ? activeProtocol
+      : null;
+  const presentedChannels = useMemo(
+    () =>
+      channels.map((channel) =>
+        presentChannelSeries(channel, activeProtocol, channelPresentations),
+      ),
+    [activeProtocol, channelPresentations, channels],
+  );
+  const presentedProcessedChannels = useMemo(
+    () =>
+      processedChannels.map((channel) =>
+        presentChannelSeries(channel, activeProtocol, channelPresentations),
+      ),
+    [activeProtocol, channelPresentations, processedChannels],
+  );
+  const presentedExtensionChannels = useMemo(
+    () =>
+      extensionChannels.map((channel) =>
+        presentChannelSeries(channel, activeProtocol, channelPresentations),
+      ),
+    [activeProtocol, channelPresentations, extensionChannels],
   );
 
   return (
@@ -486,18 +534,39 @@ function ChannelPanel() {
         ) : (
           <>
             {channels.length > 0 && <span className="channel-group-label">基础通道</span>}
-            {channels.map((channel) => (
+            {presentedChannels.map((channel, index) => (
               <ChannelRow
                 key={channel.id}
                 channel={channel}
                 disabled={isTransitioning}
                 onToggle={() => toggleChannel(channel.id)}
+                presentation={
+                  presentationProtocol
+                    ? getChannelPresentationOverride(
+                        channelPresentations,
+                        presentationProtocol,
+                        channel.id,
+                      )
+                    : null
+                }
+                presentationDisabled={isTransitioning || presentationReadOnly}
+                originalColor={channels[index]?.color ?? channel.color}
+                onPresentationChange={
+                  presentationProtocol
+                    ? (value) =>
+                        setChannelPresentation(
+                          presentationProtocol,
+                          channel.id as BaseChannelId,
+                          value,
+                        )
+                    : undefined
+                }
               />
             ))}
             {processedChannels.length > 0 && (
               <span className="channel-group-label">派生通道</span>
             )}
-            {processedChannels.map((channel) => (
+            {presentedProcessedChannels.map((channel) => (
               <ChannelRow
                 key={channel.id}
                 channel={channel}
@@ -508,7 +577,7 @@ function ChannelPanel() {
             {extensionChannels.length > 0 && (
               <span className="channel-group-label">扩展通道</span>
             )}
-            {extensionChannels.map((channel) => (
+            {presentedExtensionChannels.map((channel) => (
               <ChannelRow
                 key={channel.id}
                 channel={channel}
@@ -600,24 +669,213 @@ function ChannelRow({
   channel,
   disabled,
   onToggle,
+  presentation,
+  presentationDisabled = false,
+  originalColor = channel.color,
+  onPresentationChange,
 }: {
-  channel: ChannelSeries;
+  channel: PresentedChannelSeries;
   disabled: boolean;
   onToggle(): void;
+  presentation?: ChannelPresentationOverride | null;
+  presentationDisabled?: boolean;
+  originalColor?: string;
+  onPresentationChange?(value: ChannelPresentationOverride | null): void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [alias, setAlias] = useState(presentation?.alias ?? "");
+  const [unit, setUnit] = useState(presentation?.unit ?? "");
+  const [color, setColor] = useState(presentation?.color ?? originalColor);
+  const [customColor, setCustomColor] = useState(
+    presentation?.color !== null && presentation?.color !== undefined,
+  );
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setAlias(presentation?.alias ?? "");
+    setUnit(presentation?.unit ?? "");
+    setColor(presentation?.color ?? originalColor);
+    setCustomColor(
+      presentation?.color !== null && presentation?.color !== undefined,
+    );
+    setError("");
+  }, [originalColor, presentation]);
+
+  const savePresentation = () => {
+    if (!onPresentationChange) {
+      return;
+    }
+    try {
+      onPresentationChange({
+        alias,
+        unit,
+        color: customColor ? color : null,
+      });
+      setEditing(false);
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "通道展示配置无效");
+    }
+  };
+
+  const resetPresentation = () => {
+    if (!onPresentationChange) {
+      return;
+    }
+    try {
+      onPresentationChange(null);
+      setEditing(false);
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "无法恢复默认展示");
+    }
+  };
+
   return (
-    <button
-      className="channel-row"
-      type="button"
-      data-visible={channel.visible}
-      aria-pressed={channel.visible}
-      disabled={disabled}
-      onClick={onToggle}
-    >
-      <span className="channel-swatch" style={{ backgroundColor: channel.color }} />
-      <span className="channel-name">{channel.name}</span>
-      <strong>{formatChannelValue(channel.lastValue)}</strong>
-    </button>
+    <div className="channel-item" data-editing={editing}>
+      <div className="channel-row" data-visible={channel.visible}>
+        <button
+          className="channel-visibility-button"
+          type="button"
+          aria-label={`${channel.visible ? "隐藏" : "显示"}通道 ${channel.displayName}`}
+          aria-pressed={channel.visible}
+          disabled={disabled}
+          onClick={onToggle}
+        >
+          <span className="channel-swatch" style={{ backgroundColor: channel.color }} />
+          {channel.visible ? <Eye size={14} /> : <EyeOff size={14} />}
+        </button>
+        <span className="channel-labels">
+          <span className="channel-name" title={channel.displayName}>
+            {channel.displayName}
+          </span>
+          {channel.displayName !== channel.name && (
+            <small title={`原始标签：${channel.name}`}>{channel.name}</small>
+          )}
+        </span>
+        <strong>
+          {formatChannelValue(channel.lastValue)}
+          {channel.unit && <small>{channel.unit}</small>}
+        </strong>
+        {onPresentationChange && (
+          <button
+            className="icon-button compact channel-edit-button"
+            type="button"
+            aria-label={`编辑通道 ${channel.displayName}`}
+            title="编辑展示"
+            disabled={presentationDisabled}
+            aria-expanded={editing}
+            onClick={() => {
+              setEditing((current) => !current);
+              setError("");
+            }}
+          >
+            <Pencil size={13} />
+          </button>
+        )}
+      </div>
+      {editing && onPresentationChange && (
+        <form
+          className="channel-editor"
+          aria-label={`${channel.name} 展示配置`}
+          onSubmit={(event) => {
+            event.preventDefault();
+            savePresentation();
+          }}
+        >
+          <div className="channel-editor-grid">
+            <label>
+              <span>别名</span>
+              <input
+                aria-label={`${channel.id} 通道别名`}
+                maxLength={64}
+                value={alias}
+                disabled={presentationDisabled}
+                onChange={(event) => setAlias(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>单位</span>
+              <input
+                aria-label={`${channel.id} 通道单位`}
+                maxLength={24}
+                value={unit}
+                disabled={presentationDisabled}
+                onChange={(event) => setUnit(event.target.value)}
+              />
+            </label>
+            <label className="channel-color-field">
+              <span>颜色</span>
+              <span>
+                <input
+                  type="color"
+                  aria-label={`${channel.id} 通道颜色`}
+                  value={color}
+                  disabled={presentationDisabled}
+                  onChange={(event) => {
+                    setColor(event.target.value);
+                    setCustomColor(true);
+                  }}
+                />
+                <button
+                  className="icon-button compact"
+                  type="button"
+                  aria-label={`${channel.id} 使用默认颜色`}
+                  title="使用默认颜色"
+                  disabled={presentationDisabled || !customColor}
+                  onClick={() => {
+                    setColor(originalColor);
+                    setCustomColor(false);
+                  }}
+                >
+                  <Undo2 size={13} />
+                </button>
+              </span>
+            </label>
+          </div>
+          {error && <span className="inline-error channel-editor-error" role="alert">{error}</span>}
+          <div className="channel-editor-actions">
+            <button
+              className="icon-button compact"
+              type="button"
+              aria-label={`取消编辑 ${channel.name}`}
+              title="取消"
+              onClick={() => {
+                setAlias(presentation?.alias ?? "");
+                setUnit(presentation?.unit ?? "");
+                setColor(presentation?.color ?? originalColor);
+                setCustomColor(
+                  presentation?.color !== null && presentation?.color !== undefined,
+                );
+                setEditing(false);
+                setError("");
+              }}
+            >
+              <X size={14} />
+            </button>
+            <button
+              className="icon-button compact"
+              type="button"
+              aria-label={`恢复 ${channel.name} 默认展示`}
+              title="恢复默认"
+              disabled={presentationDisabled || !presentation}
+              onClick={resetPresentation}
+            >
+              <RotateCcw size={14} />
+            </button>
+            <button
+              className="icon-button compact primary-icon-button"
+              type="submit"
+              aria-label={`保存 ${channel.name} 展示配置`}
+              title="保存"
+              disabled={presentationDisabled}
+            >
+              <Check size={14} />
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
   );
 }
 

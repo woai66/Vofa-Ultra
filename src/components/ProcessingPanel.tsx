@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Plus, RotateCcw, Trash2, Workflow } from "lucide-react";
+import { getChannelPresentationOverride } from "../core/channelPresentation";
 import {
   MAX_PROCESSING_NODES,
   MAX_PROCESSING_OUTPUTS,
@@ -12,7 +13,10 @@ import {
   type DataConverterEndianness,
   type DataNumericType,
 } from "../core/dataConverter";
-import { useWorkbenchStore } from "../store/workbenchStore";
+import {
+  selectActiveProtocol,
+  useWorkbenchStore,
+} from "../store/workbenchStore";
 
 type NodeKind = ProcessingNode["kind"];
 
@@ -40,6 +44,9 @@ const OUTPUT_COLORS = [
 export function ProcessingPanel() {
   const graph = useWorkbenchStore((state) => state.processingGraph);
   const status = useWorkbenchStore((state) => state.processingStatus);
+  const channels = useWorkbenchStore((state) => state.channels);
+  const channelPresentations = useWorkbenchStore((state) => state.channelPresentations);
+  const activeProtocol = useWorkbenchStore(selectActiveProtocol);
   const setProcessingGraph = useWorkbenchStore((state) => state.setProcessingGraph);
   const retryProcessingGraph = useWorkbenchStore((state) => state.retryProcessingGraph);
   const isTransitioning = useWorkbenchStore(
@@ -49,6 +56,14 @@ export function ProcessingPanel() {
   const [editError, setEditError] = useState("");
   const outputCount = graph.nodes.filter((node) => node.kind === "output").length;
   const visibleError = editError || status.lastError || "";
+  const inputChannelLabels = Array.from({ length: 16 }, (_, index) => {
+    const id = `channel-${index}`;
+    const sourceName = channels.find((channel) => channel.id === id)?.name ?? `CH ${index + 1}`;
+    return (
+      getChannelPresentationOverride(channelPresentations, activeProtocol, id)?.alias ||
+      sourceName
+    );
+  });
   const addDisabled =
     isTransitioning ||
     graph.nodes.length >= MAX_PROCESSING_NODES ||
@@ -159,6 +174,7 @@ export function ProcessingPanel() {
               key={node.id}
               node={node}
               nodes={graph.nodes}
+              inputChannelLabels={inputChannelLabels}
               disabled={isTransitioning}
               onChange={updateNode}
               onRemove={() => removeNode(node.id)}
@@ -199,6 +215,7 @@ export function ProcessingPanel() {
 interface ProcessingNodeEditorProps {
   node: ProcessingNode;
   nodes: readonly ProcessingNode[];
+  inputChannelLabels: readonly string[];
   disabled: boolean;
   onChange(node: ProcessingNode): void;
   onRemove(): void;
@@ -207,6 +224,7 @@ interface ProcessingNodeEditorProps {
 function ProcessingNodeEditor({
   node,
   nodes,
+  inputChannelLabels,
   disabled,
   onChange,
   onRemove,
@@ -242,7 +260,7 @@ function ProcessingNodeEditor({
             >
               {Array.from({ length: 16 }, (_, index) => (
                 <option key={index} value={index}>
-                  CH {index + 1}
+                  {inputChannelLabels[index] ?? `CH ${index + 1}`}
                 </option>
               ))}
             </select>
