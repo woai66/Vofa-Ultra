@@ -34,7 +34,7 @@ import {
 
 export type ThemeMode = "dark" | "light";
 
-const WORKSPACE_VIEWS = ["waveform", "attitude"] as const;
+const WORKSPACE_VIEWS = ["waveform", "monitor", "attitude"] as const;
 type WorkspaceView = (typeof WORKSPACE_VIEWS)[number];
 type WorkspaceLayoutMode = "split" | "primary" | "terminal";
 
@@ -55,6 +55,10 @@ const loadAttitudePanel = () => import("./components/AttitudePanel");
 const AttitudePanel = lazy(async () => {
   const module = await loadAttitudePanel();
   return { default: module.AttitudePanel };
+});
+const ChannelMonitorPanel = lazy(async () => {
+  const module = await import("./components/ChannelMonitorPanel");
+  return { default: module.ChannelMonitorPanel };
 });
 
 export default function App() {
@@ -105,7 +109,7 @@ export default function App() {
   };
 
   const selectWorkspaceView = (view: WorkspaceView) => {
-    if (view === "attitude") {
+    if (view !== "waveform") {
       setWaveformMeasuring(false);
     }
     setWorkspaceView(view);
@@ -210,7 +214,7 @@ export default function App() {
     "--workspace-primary-share": `${workspaceSplit}fr`,
     "--workspace-terminal-share": `${1 - workspaceSplit}fr`,
   } as CSSProperties;
-  const primaryFocusLabel = workspaceView === "waveform" ? "专注波形视图" : "专注姿态视图";
+  const primaryFocusLabel = getPrimaryFocusLabel(workspaceView);
 
   return (
     <div className="app-shell" data-sidebar-open={sidebarOpen}>
@@ -265,6 +269,24 @@ export default function App() {
             >
               <ChartNoAxesCombined size={15} />
               <span>波形</span>
+            </button>
+            <button
+              id="workspace-monitor-tab"
+              type="button"
+              role="tab"
+              aria-controls="workspace-monitor-panel"
+              aria-selected={workspaceView === "monitor"}
+              tabIndex={workspaceView === "monitor" ? 0 : -1}
+              data-active={workspaceView === "monitor"}
+              title="监视视图"
+              ref={(element) => {
+                workspaceTabRefs.current.monitor = element ?? undefined;
+              }}
+              onKeyDown={(event) => handleWorkspaceTabKeyDown(event, "monitor")}
+              onClick={() => selectWorkspaceView("monitor")}
+            >
+              <Rows2 size={15} />
+              <span>监视</span>
             </button>
             <button
               id="workspace-attitude-tab"
@@ -336,6 +358,11 @@ export default function App() {
           <WorkspaceTabPanel view="waveform" activeView={workspaceView}>
             <WaveformPanel theme={theme} onMeasurementModeChange={setWaveformMeasuring} />
           </WorkspaceTabPanel>
+          <WorkspaceTabPanel view="monitor" activeView={workspaceView}>
+            <Suspense fallback={<ChannelMonitorPanelFallback />}>
+              <ChannelMonitorPanel />
+            </Suspense>
+          </WorkspaceTabPanel>
           <WorkspaceTabPanel view="attitude" activeView={workspaceView}>
             <Suspense fallback={<AttitudePanelFallback />}>
               <AttitudePanel theme={theme} />
@@ -387,6 +414,13 @@ function clampWorkspaceSplit(value: number): number {
   return Math.min(MAX_WORKSPACE_SPLIT, Math.max(MIN_WORKSPACE_SPLIT, value));
 }
 
+function getPrimaryFocusLabel(view: WorkspaceView): string {
+  if (view === "waveform") {
+    return "专注波形视图";
+  }
+  return view === "monitor" ? "专注监视视图" : "专注姿态视图";
+}
+
 function WorkspaceTabPanel({
   view,
   activeView,
@@ -427,5 +461,15 @@ function AttitudePanelFallback() {
         </div>
       </div>
     </section>
+  );
+}
+
+function ChannelMonitorPanelFallback() {
+  return (
+    <section
+      className="workspace-panel channel-monitor-panel"
+      aria-label="正在加载通道监视"
+      aria-busy="true"
+    />
   );
 }

@@ -233,13 +233,25 @@ test("标签组支持标准键盘导航", async ({ page }) => {
   await page.goto("/");
 
   const waveformTab = page.getByRole("tab", { name: "波形" });
+  const monitorTab = page.getByRole("tab", { name: "监视" });
   const attitudeTab = page.getByRole("tab", { name: "姿态" });
   const waveformPanel = page.locator("#workspace-waveform-panel");
+  const monitorPanel = page.locator("#workspace-monitor-panel");
   const attitudePanel = page.locator("#workspace-attitude-panel");
   await expectValidTabPanelReferences(page, "工作区视图");
   await expect(waveformPanel).toBeVisible();
+  await expect(monitorPanel).toBeHidden();
   await expect(attitudePanel).toBeHidden();
   await waveformTab.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(monitorTab).toBeFocused();
+  await expect(monitorTab).toHaveAttribute("aria-selected", "true");
+  await expect(monitorTab).toHaveAttribute("tabindex", "0");
+  await expect(waveformTab).toHaveAttribute("tabindex", "-1");
+  await expect(monitorPanel).toBeVisible();
+  await expect(waveformPanel).toBeHidden();
+  await expect(attitudePanel).toBeHidden();
+  await expect(monitorPanel.getByRole("heading", { name: "通道监视" })).toBeVisible();
   await page.keyboard.press("ArrowRight");
   await expect(attitudeTab).toBeFocused();
   await expect(attitudeTab).toHaveAttribute("aria-selected", "true");
@@ -247,10 +259,12 @@ test("标签组支持标准键盘导航", async ({ page }) => {
   await expect(waveformTab).toHaveAttribute("tabindex", "-1");
   await expect(attitudePanel).toBeVisible();
   await expect(waveformPanel).toBeHidden();
+  await expect(monitorPanel).toBeHidden();
   await expect(attitudePanel.getByRole("heading", { name: "3D 姿态" })).toBeVisible();
   await page.keyboard.press("Home");
   await expect(waveformTab).toBeFocused();
   await expect(waveformPanel).toBeVisible();
+  await expect(monitorPanel).toBeHidden();
   await expect(attitudePanel).toBeHidden();
 
   await page.getByRole("button", { name: "记录", exact: true }).click();
@@ -1871,6 +1885,95 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
 
   await page.screenshot({
     path: testInfo.outputPath("mobile-320-attitude.png"),
+    fullPage: true,
+  });
+  expect(pageErrors).toEqual([]);
+});
+
+test("通道监视显示有界统计并支持本地冻结与窄屏布局", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+
+  await page.setViewportSize({ width: 1_280, height: 800 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+  await page.getByRole("tab", { name: "监视" }).click();
+
+  const monitor = page.locator(".channel-monitor-panel");
+  const table = page.getByRole("table", { name: "通道实时统计" });
+  const firstRow = table
+    .getByRole("rowgroup", { name: "基础通道" })
+    .locator(".channel-monitor-data-row")
+    .first();
+  const currentValue = firstRow.locator(".channel-monitor-current-cell");
+  const sampleCount = firstRow.locator(".channel-monitor-samples-cell");
+  await expect(monitor.getByRole("heading", { name: "通道监视" })).toBeVisible();
+  await expect(table).toBeVisible();
+  await expect(firstRow).toBeVisible();
+  await expect
+    .poll(async () => Number.parseInt((await sampleCount.textContent()) ?? "0", 10))
+    .toBeGreaterThan(2);
+  await expect(table.getByRole("columnheader", { name: "当前" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "变化" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "均值" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "RMS" })).toBeVisible();
+
+  await page.getByRole("button", { name: "冻结通道监视" }).click();
+  await expect(monitor.locator(".live-state")).toContainText("HOLD");
+  const frozenValue = await currentValue.textContent();
+  const frozenSamples = await sampleCount.textContent();
+  await page.waitForTimeout(500);
+  await expect(currentValue).toHaveText(frozenValue ?? "");
+  await expect(sampleCount).toHaveText(frozenSamples ?? "");
+
+  await page.getByRole("button", { name: "继续通道监视" }).click();
+  await expect(monitor.locator(".live-state")).toContainText("LIVE");
+  await expect.poll(async () => currentValue.textContent()).not.toBe(frozenValue);
+  await expect
+    .poll(async () => Number.parseInt((await sampleCount.textContent()) ?? "0", 10))
+    .toBeGreaterThan(Number.parseInt(frozenSamples ?? "0", 10));
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-channel-monitor.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+  await expect(table.getByRole("columnheader", { name: "当前" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "变化" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "样本" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "最小" })).toBeHidden();
+  await expect(table.getByRole("columnheader", { name: "最大" })).toBeHidden();
+  await expect(table.getByRole("columnheader", { name: "均值" })).toBeHidden();
+  await expect(table.getByRole("columnheader", { name: "RMS" })).toBeHidden();
+  const mobileLayout = await monitor.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const targets = [...element.querySelectorAll<HTMLElement>("button")].map((target) => {
+      const targetRect = target.getBoundingClientRect();
+      return { width: targetRect.width, height: targetRect.height };
+    });
+    return {
+      left: rect.left,
+      right: rect.right,
+      documentWidth: document.documentElement.scrollWidth,
+      targets,
+    };
+  });
+  expect(mobileLayout.left).toBeGreaterThanOrEqual(0);
+  expect(mobileLayout.right).toBeLessThanOrEqual(390);
+  expect(mobileLayout.documentWidth).toBeLessThanOrEqual(390);
+  expect(mobileLayout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(
+    true,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-390-channel-monitor.png"),
     fullPage: true,
   });
   expect(pageErrors).toEqual([]);
