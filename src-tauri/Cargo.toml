@@ -28,4 +28,4 @@ tauri-plugin-dialog = "2"
 wasmi = { version = "=0.50.0", default-features = false, features = ["std", "extra-checks"] }
 
 [dev-dependencies]
-wat = "=1.228.0"
+wat = "=1.257.1"
