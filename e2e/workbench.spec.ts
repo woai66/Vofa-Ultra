@@ -782,6 +782,86 @@ test("独立量程让混合数量级通道保持可读并正确映射测量游�
   });
 });
 
+test("固定 Y 量程保持稳定映射并可恢复自动量程", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.goto("/");
+
+  const start = 1_800_000_100;
+  const color = "#00ff00";
+  const createChannel = (values: number[]) => ({
+    id: "range-test",
+    name: "量程测试",
+    color,
+    visible: true,
+    points: values.map((y, index) => ({ x: start + index, y })),
+    lastValue: values.at(-1) ?? 0,
+  });
+  await setWorkbenchState(page, {
+    channels: [createChannel([-1, -0.5, 0, 0.5, 1])],
+    processedChannels: [],
+    extensionChannels: [],
+    chartPaused: false,
+    chartWindowSeconds: 5,
+  });
+  await expect(page.locator(".waveform-chart canvas").first()).toBeVisible();
+  await expect
+    .poll(async () => (await readWaveformColorBounds(page, color)).span)
+    .toBeGreaterThan(80);
+  const automaticSpan = (await readWaveformColorBounds(page, color)).span;
+
+  await page.getByRole("button", { name: "设置 Y 轴量程" }).click();
+  const rangeForm = page.getByRole("form", { name: "Y 轴量程设置" });
+  await rangeForm.getByRole("spinbutton", { name: "Y 轴下限" }).fill("-10");
+  await rangeForm.getByRole("spinbutton", { name: "Y 轴上限" }).fill("10");
+  await rangeForm.getByRole("button", { name: "固定" }).click();
+
+  const waveformPanel = page.locator(".waveform-panel");
+  await expect(waveformPanel).toHaveAttribute("data-y-range-mode", "fixed");
+  await expect(waveformPanel).toHaveAttribute("data-y-range-min", "-10");
+  await expect(waveformPanel).toHaveAttribute("data-y-range-max", "10");
+  await expect
+    .poll(async () => (await readWaveformColorBounds(page, color)).span)
+    .toBeLessThan(automaticSpan * 0.3);
+  const narrowFixedSpan = (await readWaveformColorBounds(page, color)).span;
+
+  await setWorkbenchState(page, {
+    channels: [createChannel([-5, -2.5, 0, 2.5, 5])],
+  });
+  await expect
+    .poll(async () => (await readWaveformColorBounds(page, color)).span)
+    .toBeGreaterThan(narrowFixedSpan * 3);
+  const expandedFixedSpan = (await readWaveformColorBounds(page, color)).span;
+  await expect(waveformPanel).toHaveAttribute("data-y-range-mode", "fixed");
+
+  const plotBounds = await page.locator(".waveform-chart .u-over").boundingBox();
+  expect(plotBounds).not.toBeNull();
+  if (plotBounds) {
+    await page.mouse.move(plotBounds.x + plotBounds.width * 0.2, plotBounds.y + plotBounds.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+      plotBounds.x + plotBounds.width * 0.8,
+      plotBounds.y + plotBounds.height / 2,
+      { steps: 6 },
+    );
+    await page.mouse.up();
+  }
+  await expect(page.getByRole("button", { name: "回到实时波形" })).toBeVisible();
+  await expect(waveformPanel).toHaveAttribute("data-y-range-mode", "fixed");
+
+  await page.getByRole("button", { name: "设置 Y 轴量程" }).click();
+  await rangeForm.getByRole("button", { name: "自动", exact: true }).click();
+  await expect(waveformPanel).toHaveAttribute("data-y-range-mode", "auto");
+  await expect
+    .poll(async () => (await readWaveformColorBounds(page, color)).span)
+    .toBeGreaterThan(expandedFixedSpan * 1.4);
+  expect(pageErrors).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-fixed-waveform-range.png"),
+    fullPage: true,
+  });
+});
+
 test("终端时间基准按缓存和可见记录计算并跨刷新保留", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -2219,6 +2299,34 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
 
   await page.getByRole("button", { name: "启动模拟" }).click();
   await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await page.getByRole("button", { name: "设置 Y 轴量程" }).click();
+  const rangeForm = page.getByRole("form", { name: "Y 轴量程设置" });
+  await expect(rangeForm).toBeVisible();
+  const rangeLayout = await rangeForm.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const targets = [...element.querySelectorAll("button, input")].map((target) => {
+      const targetRect = target.getBoundingClientRect();
+      return { width: targetRect.width, height: targetRect.height };
+    });
+    return {
+      left: rect.left,
+      right: rect.right,
+      documentWidth: document.documentElement.scrollWidth,
+      targets,
+    };
+  });
+  expect(rangeLayout.left).toBeGreaterThanOrEqual(0);
+  expect(rangeLayout.right).toBeLessThanOrEqual(320);
+  expect(rangeLayout.documentWidth).toBeLessThanOrEqual(320);
+  expect(rangeLayout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(
+    true,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-320-waveform-range.png"),
+    fullPage: true,
+  });
+  await page.keyboard.press("Escape");
+  await expect(rangeForm).toBeHidden();
   const measurementButton = page.getByRole("button", { name: "开启波形测量" });
   await expect(measurementButton).toBeEnabled({ timeout: 5_000 });
   await measurementButton.click();

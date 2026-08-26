@@ -2895,6 +2895,128 @@ textarea:focus {
   font-size: 9px;
 }
 
+.waveform-range-button {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+}
+
+.waveform-range-strip {
+  display: grid;
+  min-width: 0;
+  min-height: 48px;
+  flex: 0 0 auto;
+  grid-template-columns:
+    minmax(100px, 1fr) repeat(2, minmax(92px, 118px))
+    minmax(92px, 0.8fr) auto;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-0);
+  gap: 8px;
+}
+
+.waveform-range-target {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 7px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+}
+
+.waveform-range-target[data-shared="true"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.waveform-range-target > span {
+  width: 7px;
+  height: 24px;
+  border-radius: 2px;
+  background: var(--text-subtle);
+}
+
+.waveform-range-target > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.waveform-range-target strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.waveform-range-target small {
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.waveform-range-target small[data-mode="fixed"] {
+  color: var(--accent);
+}
+
+.waveform-range-field {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  color: var(--text-subtle);
+  font-size: 9px;
+  gap: 6px;
+}
+
+.waveform-range-field input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-1);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+}
+
+.waveform-range-field input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.waveform-range-validation {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.waveform-range-validation[role="alert"] {
+  color: var(--danger);
+}
+
+.waveform-range-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.waveform-range-actions .primary-button,
+.waveform-range-actions .secondary-button {
+  min-width: 62px;
+  height: 32px;
+  padding: 0 9px;
+}
+
 .channel-readout {
   display: grid;
   min-width: 118px;
@@ -5734,6 +5856,14 @@ textarea:focus {
     display: none;
   }
 
+  .waveform-range-strip {
+    grid-template-columns: minmax(80px, 1fr) repeat(2, minmax(76px, 96px)) auto;
+  }
+
+  .waveform-range-validation {
+    display: none;
+  }
+
   .waveform-trigger-strip {
     grid-template-columns: minmax(120px, 1fr) 68px minmax(104px, 0.65fr) auto;
   }
@@ -5961,6 +6091,11 @@ textarea:focus {
     overflow-y: auto;
   }
 
+  .workspace-content:has(.waveform-panel[data-range-controls="true"]) {
+    grid-template-rows: minmax(414px, 1.35fr) minmax(440px, 0.85fr);
+    overflow-y: auto;
+  }
+
   .panel-toolbar {
     min-height: 52px;
     flex-basis: 52px;
@@ -5985,14 +6120,69 @@ textarea:focus {
   }
 
   .waveform-scale-mode button,
-  .waveform-focus-channel select {
+  .waveform-focus-channel select,
+  .waveform-range-button {
     height: 44px;
+  }
+
+  .waveform-range-button {
+    width: 44px;
+    flex-basis: 44px;
   }
 
   .waveform-panel .panel-title-group > svg,
   .waveform-panel[data-measuring="true"] .channel-strip,
   .waveform-panel[data-trigger-controls="true"] .channel-strip {
     display: none;
+  }
+
+  .waveform-range-strip {
+    min-height: 154px;
+    grid-template-areas:
+      "target target"
+      "minimum maximum"
+      "validation actions";
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: 38px 48px 48px;
+    padding: 4px 8px;
+    gap: 4px 6px;
+  }
+
+  .waveform-range-target {
+    grid-area: target;
+  }
+
+  .waveform-range-field[data-field="minimum"] {
+    grid-area: minimum;
+  }
+
+  .waveform-range-field[data-field="maximum"] {
+    grid-area: maximum;
+  }
+
+  .waveform-range-field input {
+    height: 44px;
+  }
+
+  .waveform-range-validation {
+    display: block;
+    grid-area: validation;
+  }
+
+  .waveform-range-actions {
+    grid-area: actions;
+    gap: 4px;
+  }
+
+  .waveform-range-actions .primary-button,
+  .waveform-range-actions .secondary-button,
+  .waveform-range-actions .icon-button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+    font-size: 0;
+    gap: 0;
   }
 
   .waveform-trigger-strip {
