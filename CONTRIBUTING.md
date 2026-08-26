@@ -92,9 +92,9 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 ## 候选安装包
 
-项目当前未启用 GitHub Actions；push、PR 和版本标签不会自动测试、打包或创建 Release。需要检查打包链路时，
-维护者应在对应目标系统使用 README 中的本地命令。候选包生成成功不能替代目标系统上的安装、启动、卸载和串口
-硬件冒烟记录。未来发布设计见[发布流程](docs/release-process.md)。
+项目当前未启用 GitHub Actions 或 Dependabot；push、PR 和版本标签不会自动测试、更新依赖、打包或创建
+Release。需要检查打包链路时，维护者应在对应目标系统使用 README 中的本地命令。候选包生成成功不能替代目标
+系统上的安装、启动、卸载和串口硬件冒烟记录。人工步骤见[发布流程](docs/release-process.md)。
 
 ## Pull Request
 

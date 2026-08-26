@@ -1,7 +1,7 @@
 # 供应链发布说明
 
-Vofa-Ultra 可在本地为每个桌面目标生成独立的软件物料清单和第三方许可证材料。项目当前未启用 GitHub Actions，
-因此不会生成 GitHub 构建环境记录、artifact attestation 或自动聚合资产。相关设计暂作为未来参考保留。
+Vofa-Ultra 可在本地为每个桌面目标生成独立的软件物料清单和第三方许可证材料。项目当前不使用线上构建或自动
+聚合资产，候选包及其校验材料由维护者在目标系统生成并人工核对。
 
 ## 输入与范围
 
@@ -19,8 +19,8 @@ Vofa-Ultra 可在本地为每个桌面目标生成独立的软件物料清单和
 未安装的真实 optional 包不会进入该目标的清单。
 
 宿主内置的 Wasmi 运行时及其锁定 Cargo 依赖属于上述闭包，会进入对应目标的 SBOM 和 NOTICE。用户运行时选择的
-`.vux` 文件不属于应用构建输入，因此不进入宿主 SBOM、`THIRD_PARTY_NOTICES`、`SHA256SUMS` 或 GitHub
-provenance；扩展源码、编译器、间接依赖、许可证正文和发布者身份均由扩展发布者负责。manifest 的 `license`
+`.vux` 文件不属于应用构建输入，因此不进入宿主 SBOM、`THIRD_PARTY_NOTICES` 或 `SHA256SUMS`；扩展源码、
+编译器、间接依赖、许可证正文和发布者身份均由扩展发布者负责。manifest 的 `license`
 只是作者声明，宿主门禁不会把它当作已审核 SPDX 证据。详见[实验性 Wasm 扩展](extensions.md)。
 
 ## 产物
@@ -31,11 +31,7 @@ provenance；扩展源码、编译器、间接依赖、许可证正文和发布�
 - `THIRD_PARTY_NOTICES-<target-triple>.txt`：组件、声明许可证、实际选择分支、上游地址及法律文本。
 - `SUPPLY_CHAIN_SHA256SUMS`：前两份文件的 SHA-256。
 
-未来如恢复 GitHub Actions，package job 可另外生成 `BUILD_ENVIRONMENT-<target-triple>.json`，记录源码 commit、
-平台、target、runner 镜像和工具链版本。当前本地 `package:collect` 不生成该文件，也不生成 GitHub provenance。
-
-环境记录使用固定字段顺序、LF 和末尾换行，不包含时间戳、UUID、用户名、workspace、临时目录或原始环境变量。
-本地 `package:collect` 保持可用，但本地产物仍需人工验证，不能视为正式 Release 已通过。
+本地 `package:collect` 收集安装包和配套材料，但本地产物仍需人工验证，不能视为正式 Release 已通过。
 
 SBOM 记录完整 Rust target，并绑定 `package.json`、`pnpm-lock.yaml`、`Cargo.toml`、`Cargo.lock` 和策略文件的
 SHA-256。NOTICE 原文按内容 SHA-256 去重，同时记录精确 purl。扫描范围包括顶层 `LICENSE`/`LICENCE`、
@@ -49,12 +45,11 @@ SHA-256。NOTICE 原文按内容 SHA-256 去重，同时记录精确 purl。扫�
 
 Tauri 在 `beforeBuildCommand` 中生成供应链文件，并把同一目录作为应用资源嵌入安装包。`package:collect` 随后验证
 CycloneDX Schema、完整 target、项目元数据、输入摘要、精确 NOTICE inventory 和供应链校验值，再从该 target
-专属 bundle 目录收集安装包。当前本地流程会验证供应链原文件和项目 `LICENSE`，但不会采集 GitHub runner
-环境记录或生成 GitHub attestation。
+专属 bundle 目录收集安装包。当前本地流程会验证供应链原文件和项目 `LICENSE`。
 
 `pnpm tauri build` 会在非 debug 构建中为 rustc 注入路径重映射，把项目目录和 Cargo Home 的解析路径及真实路径
 分别映射为稳定的 `/workspace` 和 `/cargo-home`。包装层保留调用方已有的 encoded rustflags；只有普通
-`RUSTFLAGS` 时才按 Cargo 的参数规则转换，开发服务器和 debug 构建不受影响。CI 与正式候选包必须经过该入口，
+`RUSTFLAGS` 时才按 Cargo 的参数规则转换，开发服务器和 debug 构建不受影响。正式候选包必须经过该入口，
 不能用裸 `tauri build` 或 `cargo build` 绕过。
 
 复制安装包前，`package:collect` 会扫描同一 release 目录中的裸主程序，拒绝项目目录或 Cargo Home 的解析路径、
@@ -62,8 +57,7 @@ CycloneDX Schema、完整 target、项目元数据、输入摘要、精确 NOTIC
 AppImage 的外层压缩视为脱敏；错误也不会回显命中的本机路径。这项检查防止 Rust panic/source-location 字符串泄露
 构建者目录，但不等同于任意隐私数据扫描，也不使安装包自动可复现。
 
-未来的线上发布方案可在三个平台分别生成 provenance，再复验并聚合当前版本的资产。该方案当前未实现，也不能
-替代签名、公证、安装或真实串口验收；设计草案见[发布流程](release-process.md)。
+候选包的人工检查不能替代签名、公证、安装或真实串口验收；步骤见[发布流程](release-process.md)。
 
 ## 许可证策略
 
@@ -80,13 +74,11 @@ MPL 组件均记录在 `reviewedComponents`；任何新增或升级组件都会�
 
 ## 可重复边界
 
-供应链和环境 JSON 不含当前时间、随机 UUID 或绝对路径，组件、依赖边、环境字段和文本使用稳定代码点排序。
-相同显式输入连续序列化应逐字节一致；工具测试覆盖图遍历、工具输出解析、环境 schema 和排序。实际环境记录会随
-runner 镜像、工具链和系统包版本变化，这种差异正是记录需要保留的事实。
+供应链 JSON 不含当前时间、随机 UUID 或绝对路径，组件、依赖边和文本使用稳定代码点排序。相同显式输入连续
+序列化应逐字节一致；工具测试覆盖图遍历、工具输出解析和排序。
 
 这不代表完整安装包已经可复现。开发者工具链、系统库、平台 WebView 和签名环境仍会漂移；Windows WebView2
-Runtime 和未显式安装的系统库也不属于本清单。未来即使加入 artifact attestation，它也只能证明 workflow、源码
-commit 与文件摘要之间的关系，不能证明源码无恶意、构建机绝对可信或两个安装包字节相同。
+Runtime 和未显式安装的系统库也不属于本清单。
 
 ## 本地命令
 

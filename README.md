@@ -7,7 +7,8 @@ Vofa-Ultra 学习 VOFA+ 与
 生命周期可靠、数据链路可诊断、内存边界明确，并在基础收发稳定之后再引入高级编排能力。
 
 > 当前代码是可运行的 v0.1.0 预发布候选，并已包含路线图中完成验收的 v0.2 / v0.3 能力。项目暂未启用
-> GitHub Actions；构建、测试和候选包生成均由维护者在本地手动执行。尚未发布经过签名和完整硬件验证的稳定版本。
+> GitHub Actions 或 Dependabot；构建、测试、依赖更新和候选包生成均由维护者在本地手动执行。尚未发布经过签名
+> 和完整硬件验证的稳定版本。
 
 ![Vofa-Ultra 实时串口工作台](docs/images/workbench.png)
 
@@ -84,7 +85,7 @@ pnpm tauri dev
 
 项目当前不会在 push、PR 或版本标签上自动构建和发布。需要候选包时，维护者在对应目标系统手动运行以下命令。
 这些产物未经代码签名、公证、跨平台安装和真实串口验证，不应作为稳定版本发布。供应链材料的生成范围见
-[供应链发布说明](docs/supply-chain.md)；未来发布方案仅作为[设计参考](docs/release-process.md)保留。
+[供应链发布说明](docs/supply-chain.md)；人工发布步骤见[发布流程](docs/release-process.md)。
 
 ```bash
 pnpm check:package
