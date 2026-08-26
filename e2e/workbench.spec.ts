@@ -1392,6 +1392,62 @@ test("终端按当前显示内容执行字面量搜索和方向过滤", async ({
   });
 });
 
+test("终端跨行原生选择只包含当前显示的 payload", async ({ page }) => {
+  await page.goto("/");
+  await replaceTerminalEntries(page, [
+    {
+      id: 951,
+      direction: "rx",
+      timestamp: 1_700_000_000_000,
+      text: "payload-alpha",
+      hex: "01 02 03",
+      byteCount: 3,
+    },
+    {
+      id: 952,
+      direction: "tx",
+      timestamp: 1_700_000_000_100,
+      text: "payload-beta",
+      hex: "04 05 06 07",
+      byteCount: 4,
+    },
+    {
+      id: 953,
+      direction: "system",
+      timestamp: 1_700_000_000_200,
+      text: "payload-gamma",
+      hex: "08 09 0A 0B 0C",
+      byteCount: 5,
+    },
+  ]);
+
+  const payloads = page.locator(".terminal-line code");
+  await expect(payloads).toHaveText(["payload-alpha", "payload-beta", "payload-gamma"]);
+  const selectedText = await payloads.evaluateAll((elements) => {
+    const first = elements[0];
+    const last = elements.at(-1);
+    const selection = window.getSelection();
+    if (!first || !last || !selection) {
+      throw new Error("终端 payload 尚未准备好原生文本选择");
+    }
+    const range = document.createRange();
+    range.setStart(first, 0);
+    range.setEnd(last, last.childNodes.length);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const value = selection.toString();
+    selection.removeAllRanges();
+    return value;
+  });
+
+  expect(selectedText).toContain("payload-alpha");
+  expect(selectedText).toContain("payload-beta");
+  expect(selectedText).toContain("payload-gamma");
+  expect(selectedText).not.toMatch(/\d{2}:\d{2}:\d{2}\.\d{3}/);
+  expect(selectedText).not.toMatch(/\b(?:RX|TX|SYSTEM)\b/);
+  expect(selectedText).not.toMatch(/\b\d+ B\b/);
+});
+
 test("终端 RX 行记录按所选编码显示并保持原始字节及窄屏布局", async ({ page }, testInfo) => {
   await page.goto("/");
   const recordMode = page.getByRole("group", { name: "接收记录方式" });

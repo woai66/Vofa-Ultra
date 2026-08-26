@@ -4407,6 +4407,12 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.terminal-line time,
+.terminal-line .direction-label,
+.terminal-line small {
+  user-select: none;
+}
+
 .terminal-line time {
   overflow: hidden;
   font-variant-numeric: tabular-nums;
