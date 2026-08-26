@@ -3034,6 +3034,38 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
 
   await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
   await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
+  const deviceInfo = page.getByRole("group", { name: "已选端口信息" });
+  await expect(deviceInfo).toContainText("Telemetry");
+  await expect(deviceInfo).toContainText("Acme Devices");
+  await expect(deviceInfo).toContainText("1234:5678");
+  await expect(deviceInfo).toContainText("唯一身份");
+  await expect(deviceInfo).not.toContainText("DEVICE-001");
+
+  const desktopViewport = page.viewportSize();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await deviceInfo.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: testInfo.outputPath("serial-discovery-mobile.png"),
+    fullPage: false,
+  });
+  if (desktopViewport) {
+    await page.setViewportSize(desktopViewport);
+  }
+
+  const portListCalls = await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { portListCalls: number };
+    };
+    return testWindow.__TAURI_TEST__.portListCalls;
+  });
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect.poll(async () => page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { portListCalls: number };
+    };
+    return testWindow.__TAURI_TEST__.portListCalls;
+  })).toBeGreaterThan(portListCalls);
+
   await page.getByRole("checkbox", { name: "自动重连" }).check();
   await page.getByRole("button", { name: "连接设备" }).click();
   await expect(page.getByText("自动重连已待命")).toBeVisible();
@@ -3058,6 +3090,7 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
   await expect(page.getByText("COM19", { exact: true })).toBeVisible();
   expect(pageErrors).toEqual([]);
 
+  await deviceInfo.scrollIntoViewIfNeeded();
   await page.screenshot({
     path: testInfo.outputPath("serial-recovery.png"),
     fullPage: true,
@@ -3584,10 +3617,12 @@ async function installTauriSerialMock(page: Page): Promise<void> {
     const callbacks = new Map<number, Callback>();
     const listeners = new Map<string, number[]>();
     let nextCallbackId = 1;
+    let portListCalls = 0;
     let ports = [
       {
         name: "COM3",
         kind: "usb",
+        manufacturer: "Acme Devices",
         product: "Telemetry",
         serialNumber: "DEVICE-001",
         vendorId: 0x1234,
@@ -3673,6 +3708,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         return undefined;
       }
       if (command === "list_serial_ports") {
+        portListCalls += 1;
         return ports.map((port) => ({ ...port }));
       }
       if (command === "get_serial_state") {
@@ -3931,6 +3967,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         }>;
         restoreDevice(): void;
         numericLogBatches: unknown[][];
+        portListCalls: number;
       };
     };
     testWindow.__TAURI_INTERNALS__ = {
@@ -3962,6 +3999,9 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         return destroyCount;
       },
       numericLogBatches,
+      get portListCalls() {
+        return portListCalls;
+      },
       get recordingDirectoryDialogCalls() {
         return recordingDirectoryDialogCalls;
       },
@@ -4001,6 +4041,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           {
             name: "COM19",
             kind: "usb",
+            manufacturer: "Acme Devices",
             product: "Telemetry",
             serialNumber: "DEVICE-001",
             vendorId: 0x1234,

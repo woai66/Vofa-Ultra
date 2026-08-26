@@ -31,6 +31,7 @@ import {
   PROTOCOL_DROP_REASON_LABELS,
 } from "../core/protocols";
 import { isRecoveryActivePhase } from "../core/serialRecovery";
+import { presentSerialPort, sortSerialPorts } from "../core/serialPorts";
 import type { ThemeMode } from "../App";
 import {
   BAUD_RATES,
@@ -150,6 +151,17 @@ function ConnectionPanel() {
     isRuntimeTransitioning ||
     isCaptureTransitioning;
   const configDisabled = isConnected || isBusy || isRecording || isReplayLoaded;
+  const sortedPorts = useMemo(() => sortSerialPorts(ports), [ports]);
+  const selectedPortPresentation = useMemo(() => {
+    const selectedPort = ports.find((port) => port.name === config.portName);
+    return selectedPort ? presentSerialPort(selectedPort) : null;
+  }, [config.portName, ports]);
+
+  useEffect(() => {
+    if (isNativeRuntime && source === "serial") {
+      void refreshPorts("background");
+    }
+  }, [isNativeRuntime, refreshPorts, source]);
 
   return (
     <div className="sidebar-panel">
@@ -211,13 +223,34 @@ function ConnectionPanel() {
             {config.portName && !ports.some((port) => port.name === config.portName) && (
               <option value={config.portName}>{config.portName} · 当前不可用</option>
             )}
-            {ports.map((port) => (
+            {sortedPorts.map((port) => (
               <option key={port.name} value={port.name}>
-                {port.name}
-                {port.product ? ` · ${port.product}` : ""}
+                {presentSerialPort(port).optionLabel}
               </option>
             ))}
           </select>
+          {selectedPortPresentation && (
+            <div className="serial-port-summary" role="group" aria-label="已选端口信息">
+              <div className="serial-port-summary-name">
+                <Cable size={14} aria-hidden="true" />
+                <strong title={selectedPortPresentation.primaryLabel}>
+                  {selectedPortPresentation.primaryLabel}
+                </strong>
+              </div>
+              {selectedPortPresentation.secondaryLabel && (
+                <span title={selectedPortPresentation.secondaryLabel}>
+                  {selectedPortPresentation.secondaryLabel}
+                </span>
+              )}
+              <div className="serial-port-summary-meta">
+                <span>{selectedPortPresentation.kindLabel}</span>
+                {selectedPortPresentation.usbIdentifier && (
+                  <code>{selectedPortPresentation.usbIdentifier}</code>
+                )}
+                {selectedPortPresentation.hasUniqueUsbIdentity && <span>唯一身份</span>}
+              </div>
+            </div>
+          )}
 
           <label className="field-label" htmlFor="baud-rate">
             波特率

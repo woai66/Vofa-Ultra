@@ -3959,6 +3959,91 @@ describe("workbenchStore", () => {
     });
   });
 
+  it("后台刷新自然排序并保留暂时离线的当前端口和状态消息", async () => {
+    listSerialPortsMock.mockResolvedValue([
+      { name: "COM10", kind: "usb", product: "Adapter B" },
+      { name: "COM2", kind: "usb", product: "Adapter A" },
+    ]);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      statusMessage: "等待连接",
+      serialConfig: { ...state.serialConfig, portName: "COM9" },
+    }));
+
+    await useWorkbenchStore.getState().refreshPorts("background");
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      ports: [{ name: "COM2" }, { name: "COM10" }],
+      serialConfig: { portName: "COM9" },
+      statusMessage: "等待连接",
+      connectionStatus: "disconnected",
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("后台枚举失败不覆盖连接状态和用户消息", async () => {
+    listSerialPortsMock.mockRejectedValue(new Error("驱动暂时不可用"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "error",
+      statusMessage: "COM7 打开失败",
+    });
+
+    await useWorkbenchStore.getState().refreshPorts("background");
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "error",
+      statusMessage: "COM7 打开失败",
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("后台枚举完成前生命周期变化时丢弃迟到结果", async () => {
+    let resolvePorts: ((ports: SerialPortInfo[]) => void) | undefined;
+    listSerialPortsMock.mockImplementation(
+      () => new Promise((resolve) => {
+        resolvePorts = resolve;
+      }),
+    );
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      statusMessage: "等待连接",
+      ports: [{ name: "COM7", kind: "usb" }],
+      serialConfig: { ...state.serialConfig, portName: "COM7" },
+    }));
+
+    const refresh = useWorkbenchStore.getState().refreshPorts("background");
+    useWorkbenchStore.setState({
+      connectionStatus: "connected",
+      statusMessage: "COM7 已连接",
+    });
+    resolvePorts?.([{ name: "COM8", kind: "usb" }]);
+    await refresh;
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      ports: [{ name: "COM7" }],
+      serialConfig: { portName: "COM7" },
+      connectionStatus: "connected",
+      statusMessage: "COM7 已连接",
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("后台刷新只在桌面串口空闲状态启动", async () => {
+    listSerialPortsMock.mockResolvedValue([{ name: "COM7", kind: "usb" }]);
+    useWorkbenchStore.setState({ isNativeRuntime: true, source: "simulator" });
+    await useWorkbenchStore.getState().refreshPorts("background");
+    useWorkbenchStore.setState({ source: "serial", connectionStatus: "connected" });
+    await useWorkbenchStore.getState().refreshPorts("background");
+
+    expect(listSerialPortsMock).not.toHaveBeenCalled();
+  });
+
   it("开始录制时冻结数据源、协议和串口参数", async () => {
     startCaptureMock.mockResolvedValue({
       status: "recording",

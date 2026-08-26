@@ -24,6 +24,7 @@ import {
   subscribeToNumericLogEvents,
 } from "../services/numericLogClient";
 import { startSimulator } from "../services/simulator";
+import { subscribeToSerialPortDiscoveryRefresh } from "../services/serialPortDiscovery";
 import {
   disposeWorkbenchRuntime,
   prepareWorkbenchForAppClose,
@@ -131,6 +132,15 @@ export function useWorkbenchRuntime(): void {
     refreshPorts,
     setRuntimeAvailability,
   ]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return undefined;
+    }
+    return subscribeToSerialPortDiscoveryRefresh(() => {
+      void refreshPorts("background");
+    });
+  }, [refreshPorts]);
 
   useEffect(() => {
     let cancelled = false;

@@ -1001,6 +1001,55 @@ textarea:focus {
   gap: 7px;
 }
 
+.serial-port-summary {
+  display: grid;
+  min-width: 0;
+  padding: 1px 1px 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  gap: 3px;
+}
+
+.serial-port-summary-name {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  color: var(--text);
+  gap: 6px;
+}
+
+.serial-port-summary-name svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.serial-port-summary-name strong,
+.serial-port-summary > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serial-port-summary-meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  color: var(--text-subtle);
+  gap: 5px;
+}
+
+.serial-port-summary-meta > * + *::before {
+  margin-right: 5px;
+  color: var(--border-strong);
+  content: "·";
+}
+
+.serial-port-summary-meta code {
+  color: inherit;
+  font-size: inherit;
+}
+
 .recovery-section {
   gap: 9px;
 }

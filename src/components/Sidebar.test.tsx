@@ -4,6 +4,8 @@ import { createEmptyProtocolHealth } from "../core/protocols";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { Sidebar } from "./Sidebar";
 
+const originalRefreshPorts = useWorkbenchStore.getState().refreshPorts;
+
 describe("Sidebar 串口恢复界面", () => {
   beforeEach(() => {
     useWorkbenchStore.setState({
@@ -15,6 +17,7 @@ describe("Sidebar 串口恢复界面", () => {
         {
           name: "COM3",
           kind: "usb",
+          manufacturer: "Acme Devices",
           product: "Telemetry",
           serialNumber: "DEVICE-001",
           vendorId: 0x1234,
@@ -46,6 +49,7 @@ describe("Sidebar 串口恢复界面", () => {
 
   afterEach(() => {
     cleanup();
+    useWorkbenchStore.setState({ refreshPorts: originalRefreshPorts });
   });
 
   it("提供侧栏关闭动作", () => {
@@ -136,6 +140,83 @@ describe("Sidebar 串口恢复界面", () => {
     );
 
     expect(screen.getByRole("button", { name: "正在取消" })).toBeDisabled();
+  });
+
+  it("显示 USB 摘要但不显示完整序列号", () => {
+    render(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    const summary = screen.getByRole("group", { name: "已选端口信息" });
+    expect(summary).toHaveTextContent("Telemetry");
+    expect(summary).toHaveTextContent("Acme Devices");
+    expect(summary).toHaveTextContent("USB");
+    expect(summary).toHaveTextContent("1234:5678");
+    expect(summary).toHaveTextContent("唯一身份");
+    expect(summary).not.toHaveTextContent("DEVICE-001");
+  });
+
+  it("端口选项按名称自然排序并包含设备摘要", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      ports: [
+        { name: "COM10", kind: "usb", product: "Adapter B" },
+        { name: "COM2", kind: "usb", product: "Adapter A" },
+      ],
+      serialConfig: { ...state.serialConfig, portName: "COM2" },
+      serialRecovery: {
+        ...state.serialRecovery,
+        phase: "armed",
+      },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    const select = screen.getByLabelText("串口设备") as HTMLSelectElement;
+    expect(Array.from(select.options, (option) => option.textContent)).toEqual([
+      "COM2 · Adapter A",
+      "COM10 · Adapter B",
+    ]);
+  });
+
+  it("打开桌面串口连接面板时请求后台刷新", () => {
+    const refreshPorts = vi.fn().mockResolvedValue(undefined);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      serialRecovery: {
+        enabled: false,
+        phase: "off",
+        attempt: 0,
+        maxAttempts: 10,
+        message: "自动重连未启用",
+        diagnosticEventCount: 0,
+        diagnosticDroppedEvents: 0,
+      },
+      refreshPorts,
+    });
+    render(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    expect(refreshPorts).toHaveBeenCalledWith("background");
   });
 });
 

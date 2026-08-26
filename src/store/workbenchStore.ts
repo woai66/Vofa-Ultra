@@ -71,6 +71,7 @@ import {
   processingOutputChannelId,
 } from "../core/processingGraph";
 import { RingBuffer } from "../core/ringBuffer";
+import { sortSerialPorts } from "../core/serialPorts";
 import {
   MAX_TERMINAL_LINE_ENDING_BYTES,
   MAX_TERMINAL_UNTERMINATED_LINE_BYTES,
@@ -477,7 +478,7 @@ export interface WorkbenchStore {
   setSource(source: DataSource): Promise<void>;
   setProtocol(protocol: ProtocolKind): void;
   updateSerialConfig<K extends keyof SerialConfig>(key: K, value: SerialConfig[K]): void;
-  refreshPorts(): Promise<void>;
+  refreshPorts(mode?: "manual" | "background"): Promise<void>;
   connect(): Promise<void>;
   disconnect(): Promise<boolean>;
   setSerialRecoveryEnabled(enabled: boolean): Promise<void>;
@@ -1138,24 +1139,34 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }));
       },
 
-      refreshPorts: async () => {
+      refreshPorts: async (mode = "manual") => {
+        const state = get();
         if (
-          get().workspaceTransitionStatus !== "idle" ||
-          get().runtimeTransitionStatus !== "idle" ||
-          get().isRefreshingPorts ||
-          isRecoveryActivePhase(get().serialRecovery.phase) ||
-          hasReplaySession(get())
+          state.workspaceTransitionStatus !== "idle" ||
+          state.runtimeTransitionStatus !== "idle" ||
+          state.isRefreshingPorts ||
+          isRecoveryActivePhase(state.serialRecovery.phase) ||
+          hasReplaySession(state)
         ) {
           return;
         }
-        if (!get().isNativeRuntime) {
-          set({ statusMessage: "浏览器预览无法枚举本机串口" });
+        if (mode === "background" && !isBackgroundPortRefreshContext(state)) {
+          return;
+        }
+        if (!state.isNativeRuntime) {
+          if (mode === "manual") {
+            set({ statusMessage: "浏览器预览无法枚举本机串口" });
+          }
           return;
         }
 
         set({ isRefreshingPorts: true });
         try {
-          const ports = await listSerialPorts();
+          const ports = sortSerialPorts(await listSerialPorts());
+          if (mode === "background" && !isBackgroundPortRefreshContext(get())) {
+            set({ isRefreshingPorts: false });
+            return;
+          }
           const currentPort = get().serialConfig.portName;
           const currentPortAvailable = ports.some((port) => port.name === currentPort);
           const selectedPort = currentPort || ports[0]?.name || "";
@@ -1164,19 +1175,25 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             isRefreshingPorts: false,
             serialConfig: { ...state.serialConfig, portName: selectedPort },
             statusMessage:
-              currentPort && !currentPortAvailable
-                ? `${currentPort} 当前不可用`
-                : ports.length > 0
-                  ? `发现 ${ports.length} 个串口设备`
-                  : "未发现串口设备",
+              mode === "background"
+                ? state.statusMessage
+                : currentPort && !currentPortAvailable
+                  ? `${currentPort} 当前不可用`
+                  : ports.length > 0
+                    ? `发现 ${ports.length} 个串口设备`
+                    : "未发现串口设备",
           }));
         } catch (error) {
-          set({
-            isRefreshingPorts: false,
-            connectionStatus: "error",
-            statusMessage: getErrorMessage(error),
-            waveformTrigger: createIdleWaveformTriggerState(),
-          });
+          if (mode === "background") {
+            set({ isRefreshingPorts: false });
+          } else {
+            set({
+              isRefreshingPorts: false,
+              connectionStatus: "error",
+              statusMessage: getErrorMessage(error),
+              waveformTrigger: createIdleWaveformTriggerState(),
+            });
+          }
         }
       },
 
@@ -3998,6 +4015,23 @@ function isNumericLogTransitioning(status: NumericLogUiStatus): boolean {
 
 function isNumericLogActive(status: NumericLogUiStatus): boolean {
   return status === "starting" || status === "recording" || status === "stopping";
+}
+
+function isBackgroundPortRefreshContext(state: WorkbenchStore): boolean {
+  return (
+    state.isNativeRuntime &&
+    state.source === "serial" &&
+    (state.connectionStatus === "disconnected" || state.connectionStatus === "error") &&
+    state.workspaceTransitionStatus === "idle" &&
+    state.runtimeTransitionStatus === "idle" &&
+    !state.isCancellingSerialConnection &&
+    !isRecoveryActivePhase(state.serialRecovery.phase) &&
+    !isCaptureActive(state.captureStatus) &&
+    !isNumericLogActive(state.numericLogStatus) &&
+    !isSerialFileSendActive(state.serialFileSend.status) &&
+    !isModbusTransactionActive(state.modbusTransaction) &&
+    !hasReplaySession(state)
+  );
 }
 
 function isCaptureExportBusy(status: CaptureExportUiStatus): boolean {
