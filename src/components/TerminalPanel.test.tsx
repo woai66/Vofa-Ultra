@@ -7,6 +7,7 @@ import {
   MAX_MODBUS_VALUE_TEXT_CHARACTERS,
   MAX_MODBUS_WRITE_COILS,
 } from "../core/modbusRtu";
+import { TERMINAL_TIME_MODE_STORAGE_KEY } from "../core/terminalTime";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { TerminalEntry } from "../types/workbench";
 import { TerminalPanel } from "./TerminalPanel";
@@ -40,6 +41,7 @@ const SEARCH_ENTRIES: TerminalEntry[] = [
 
 describe("TerminalPanel", () => {
   beforeEach(() => {
+    localStorage.removeItem(TERMINAL_TIME_MODE_STORAGE_KEY);
     useWorkbenchStore.getState().stopPeriodicSend();
     useWorkbenchStore.getState().clearTerminal();
     useWorkbenchStore.setState({
@@ -95,6 +97,69 @@ describe("TerminalPanel", () => {
     await user.type(screen.getByRole("searchbox", { name: "搜索终端记录" }), "not-found");
     expect(screen.queryByText("接收数据将在这里显示")).not.toBeInTheDocument();
     expect(screen.getByText("没有匹配的终端记录")).toBeVisible();
+  });
+
+  it("切换绝对、缓存相对和可见记录间隔时间并恢复独立偏好", async () => {
+    const viewportHeight = vi
+      .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+      .mockReturnValue(240);
+    useWorkbenchStore.setState({
+      terminalEntries: [
+        { id: 201, direction: "rx", timestamp: 1_000, text: "first", hex: "01", byteCount: 1 },
+        { id: 202, direction: "tx", timestamp: 1_100, text: "second", hex: "02", byteCount: 1 },
+        { id: 203, direction: "rx", timestamp: 900, text: "late line", hex: "03", byteCount: 1 },
+        { id: 204, direction: "tx", timestamp: 1_500, text: "fourth", hex: "04", byteCount: 1 },
+      ],
+    });
+    const user = userEvent.setup();
+    const firstRender = render(<TerminalPanel />);
+    const modeGroup = screen.getByRole("group", { name: "终端时间基准" });
+    const timeLabels = () =>
+      [...screen.getByRole("log", { name: "终端记录" }).querySelectorAll("time")].map(
+        (time) => time.textContent,
+      );
+
+    expect(within(modeGroup).getByRole("button", { name: "绝对时间" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await user.click(within(modeGroup).getByRole("button", { name: "相对缓存起点" }));
+    await waitFor(() => {
+      expect(timeLabels()).toEqual([
+        "+00:00:00.000",
+        "+00:00:00.100",
+        "-00:00:00.100",
+        "+00:00:00.500",
+      ]);
+    });
+    expect(localStorage.getItem(TERMINAL_TIME_MODE_STORAGE_KEY)).toBe("relative");
+
+    await user.click(within(modeGroup).getByRole("button", { name: "距上一条可见记录" }));
+    await waitFor(() => {
+      expect(timeLabels()).toEqual([
+        "--",
+        "+00:00:00.100",
+        "-00:00:00.200",
+        "+00:00:00.600",
+      ]);
+    });
+    await user.click(
+      within(screen.getByRole("group", { name: "终端方向筛选" })).getByRole("button", {
+        name: "TX",
+      }),
+    );
+    await waitFor(() => {
+      expect(timeLabels()).toEqual(["--", "+00:00:00.400"]);
+    });
+    expect(localStorage.getItem(TERMINAL_TIME_MODE_STORAGE_KEY)).toBe("interval");
+
+    firstRender.unmount();
+    render(<TerminalPanel />);
+    expect(screen.getByRole("button", { name: "距上一条可见记录" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    viewportHeight.mockRestore();
   });
 
   it("切换接收记录方式并独立选择 RX 行尾与文本编码", async () => {
