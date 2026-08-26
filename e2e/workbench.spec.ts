@@ -1300,6 +1300,125 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
   expect(pageErrors).toEqual([]);
 });
 
+test("频谱按帧顺序分析同时间戳数据并适配窄屏", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  await setWorkbenchState(page, {
+    isNativeRuntime: true,
+    source: "serial",
+    connectionStatus: "connected",
+  });
+  const signal = Array.from({ length: 256 }, (_, index) => {
+    const value = 3 + 2 * Math.sin((2 * Math.PI * 32 * index) / 256);
+    return value.toFixed(12);
+  }).join("\n");
+  await ingestProtocolText(page, `${signal}\n`, 1_000);
+  await expect(page.locator(".channel-readout")).toHaveCount(1);
+
+  const timestampCount = await page.evaluate(() => {
+    type WorkbenchStoreHandle = {
+      getState(): { channels: Array<{ points: Array<{ x: number }> }> };
+    };
+    const runtime = globalThis as typeof globalThis & {
+      __vofaUltraE2eStore?: WorkbenchStoreHandle;
+    };
+    const points = runtime.__vofaUltraE2eStore?.getState().channels[0]?.points ?? [];
+    return new Set(points.map((point) => point.x)).size;
+  });
+  expect(timestampCount).toBe(1);
+
+  await page.getByRole("button", { name: "频谱" }).click();
+  await page.getByRole("spinbutton", { name: "频谱采样率" }).fill("256");
+  const spectrumResults = page.getByLabel("频谱分析结果");
+  await expect(spectrumResults.getByText("Peak").locator("..")).toContainText("32.000 Hz");
+  await expect(spectrumResults.getByText("Amp").locator("..")).toContainText("2.000");
+
+  const spectrumCanvas = page.locator(".spectrum-chart canvas").first();
+  await expect(spectrumCanvas).toBeVisible();
+  const canvasStats = await readWaveformCanvasStats(page);
+  expect(canvasStats.width).toBeGreaterThan(400);
+  expect(canvasStats.height).toBeGreaterThan(180);
+  expect(canvasStats.opaquePixels).toBeGreaterThan(50);
+  expect(canvasStats.chromaticPixels).toBeGreaterThan(100);
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-spectrum.png"),
+    fullPage: true,
+  });
+
+  for (const viewport of [
+    { width: 390, height: 844 },
+    { width: 320, height: 568 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.waitForTimeout(200);
+    const appShell = page.locator(".app-shell");
+    if ((await appShell.getAttribute("data-sidebar-open")) === "true") {
+      await page.getByRole("button", { name: "关闭侧栏" }).click({ force: true });
+      await expect(appShell).toHaveAttribute("data-sidebar-open", "false");
+    }
+    const layout = await page.locator(".spectrum-control-strip").evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const targets = [...element.querySelectorAll<HTMLElement>("button, select, input")].map(
+        (target) => {
+          const targetRect = target.getBoundingClientRect();
+          return {
+            left: targetRect.left,
+            top: targetRect.top,
+            right: targetRect.right,
+            bottom: targetRect.bottom,
+            width: targetRect.width,
+            height: targetRect.height,
+          };
+        },
+      );
+      let overlapCount = 0;
+      for (let leftIndex = 0; leftIndex < targets.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < targets.length; rightIndex += 1) {
+          const left = targets[leftIndex];
+          const right = targets[rightIndex];
+          if (
+            left &&
+            right &&
+            Math.min(left.right, right.right) - Math.max(left.left, right.left) > 0.5 &&
+            Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 0.5
+          ) {
+            overlapCount += 1;
+          }
+        }
+      }
+      return {
+        left: rect.left,
+        right: rect.right,
+        overflow: element.scrollWidth - element.clientWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        overlapCount,
+        targets,
+      };
+    });
+    expect(layout.left).toBeGreaterThanOrEqual(0);
+    expect(layout.right).toBeLessThanOrEqual(viewport.width);
+    expect(layout.overflow).toBeLessThanOrEqual(1);
+    expect(layout.documentWidth).toBeLessThanOrEqual(viewport.width);
+    expect(layout.overlapCount).toBe(0);
+    expect(layout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(
+      true,
+    );
+    const canvasBounds = await spectrumCanvas.boundingBox();
+    expect(canvasBounds).not.toBeNull();
+    expect(canvasBounds?.height ?? 0).toBeGreaterThanOrEqual(180);
+    expect(canvasBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+    expect((canvasBounds?.x ?? 0) + (canvasBounds?.width ?? 0)).toBeLessThanOrEqual(
+      viewport.width,
+    );
+  }
+
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-320-spectrum.png"),
+    fullPage: true,
+  });
+});
+
 test("单次触发在后半窗结束时冻结且后台接收继续", async ({ page }) => {
   await page.goto("/");
   await setWorkbenchState(page, {

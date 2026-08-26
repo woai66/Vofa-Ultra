@@ -3181,6 +3181,15 @@ textarea:focus {
   font-size: 10px;
 }
 
+.waveform-view-control {
+  flex: 0 0 auto;
+  margin-right: 4px;
+}
+
+.waveform-view-control button {
+  min-width: 42px;
+}
+
 .time-window-control {
   display: flex;
   align-items: center;
@@ -3471,6 +3480,147 @@ textarea:focus {
   overflow: hidden;
   color: var(--text-subtle);
   font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spectrum-control-strip {
+  display: grid;
+  min-width: 0;
+  min-height: 52px;
+  flex: 0 0 auto;
+  grid-template-columns: minmax(140px, 0.9fr) 170px 184px minmax(280px, 1.4fr);
+  align-items: center;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-0);
+  gap: 8px;
+}
+
+.spectrum-channel-control {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+}
+
+.spectrum-channel-swatch {
+  width: 7px;
+  height: 20px;
+  border-radius: 2px;
+  background: var(--text-subtle);
+}
+
+.spectrum-channel-control select,
+.spectrum-sample-rate-control input {
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-1);
+  color: var(--text);
+  font-size: 10px;
+}
+
+.spectrum-channel-control select {
+  width: 100%;
+  padding: 0 24px 0 8px;
+}
+
+.spectrum-sample-rate-control {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(64px, 1fr) 18px;
+  align-items: center;
+  color: var(--text-subtle);
+  font-size: 9px;
+  gap: 6px;
+}
+
+.spectrum-sample-rate-control input {
+  width: 100%;
+  padding: 0 7px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.spectrum-sample-rate-control input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.spectrum-sample-rate-control small {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+}
+
+.spectrum-window-control {
+  display: grid;
+  min-width: 0;
+  height: 32px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-1);
+}
+
+.spectrum-window-control button {
+  min-width: 0;
+  padding: 0 5px;
+  border: 0;
+  background: transparent;
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.spectrum-window-control button + button {
+  border-left: 1px solid var(--border);
+}
+
+.spectrum-window-control button[data-active="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.spectrum-readouts {
+  display: grid;
+  min-width: 0;
+  min-height: 32px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-1);
+}
+
+.spectrum-readouts > div {
+  display: grid;
+  min-width: 0;
+  align-content: center;
+  padding: 3px 7px;
+  gap: 1px;
+}
+
+.spectrum-readouts > div + div {
+  border-left: 1px solid var(--border);
+}
+
+.spectrum-readouts dt {
+  color: var(--text-subtle);
+  font-size: 8px;
+}
+
+.spectrum-readouts dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6307,6 +6457,11 @@ textarea:focus {
     gap: 1px;
   }
 
+  .workspace-content:has(.waveform-panel[data-view-mode="spectrum"]) {
+    grid-template-rows: minmax(330px, 1.25fr) minmax(230px, 0.9fr);
+    overflow-y: auto;
+  }
+
   .workspace-content > .workspace-layout-separator {
     display: none;
   }
@@ -6358,6 +6513,33 @@ textarea:focus {
   .time-window-control button:nth-child(3),
   .time-window-control button:nth-child(4) {
     display: none;
+  }
+
+  .spectrum-control-strip {
+    min-height: 88px;
+    grid-template-areas:
+      "channel rate"
+      "window readouts";
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(2, 32px);
+    padding: 7px 8px;
+    gap: 6px 8px;
+  }
+
+  .spectrum-channel-control {
+    grid-area: channel;
+  }
+
+  .spectrum-sample-rate-control {
+    grid-area: rate;
+  }
+
+  .spectrum-window-control {
+    grid-area: window;
+  }
+
+  .spectrum-readouts {
+    grid-area: readouts;
   }
 
   .waveform-range-strip {
@@ -6594,6 +6776,10 @@ textarea:focus {
     overflow-y: auto;
   }
 
+  .workspace-content:has(.waveform-panel[data-view-mode="spectrum"]) {
+    grid-template-rows: minmax(420px, 1.4fr) minmax(230px, 0.8fr);
+  }
+
   .workspace-content:has(.waveform-panel[data-trigger-controls="true"]) {
     grid-template-rows: minmax(336px, 1.35fr) minmax(440px, 0.85fr);
     overflow-y: auto;
@@ -6640,7 +6826,8 @@ textarea:focus {
 
   .waveform-panel .panel-title-group > svg,
   .waveform-panel[data-measuring="true"] .channel-strip,
-  .waveform-panel[data-trigger-controls="true"] .channel-strip {
+  .waveform-panel[data-trigger-controls="true"] .channel-strip,
+  .waveform-panel[data-view-mode="spectrum"] .channel-strip {
     display: none;
   }
 
@@ -6691,6 +6878,49 @@ textarea:focus {
     padding: 0;
     font-size: 0;
     gap: 0;
+  }
+
+  .waveform-panel .panel-title-group {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .waveform-panel .panel-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .spectrum-control-strip {
+    min-height: 148px;
+    grid-template-areas:
+      "channel rate"
+      "window window"
+      "readouts readouts";
+    grid-template-rows: repeat(3, 44px);
+    padding: 4px 7px;
+    gap: 4px 6px;
+  }
+
+  .spectrum-channel-control select,
+  .spectrum-sample-rate-control input,
+  .spectrum-window-control,
+  .spectrum-readouts {
+    height: 44px;
+  }
+
+  .spectrum-window-control button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .spectrum-readouts > div {
+    padding-right: 5px;
+    padding-left: 5px;
   }
 
   .waveform-trigger-strip {

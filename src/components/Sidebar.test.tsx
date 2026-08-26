@@ -159,9 +159,9 @@ describe("Sidebar 串口恢复界面", () => {
     render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -178,9 +178,9 @@ describe("Sidebar 串口恢复界面", () => {
     const { rerender } = render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -191,9 +191,9 @@ describe("Sidebar 串口恢复界面", () => {
     rerender(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -217,9 +217,9 @@ describe("Sidebar 串口恢复界面", () => {
     render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -250,9 +250,9 @@ describe("Sidebar 串口恢复界面", () => {
     render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -271,9 +271,9 @@ describe("Sidebar 串口恢复界面", () => {
     const { rerender } = render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -290,9 +290,9 @@ describe("Sidebar 串口恢复界面", () => {
     rerender(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
     expect(screen.getByRole("checkbox", { name: "DTR" })).toBeEnabled();
@@ -318,9 +318,9 @@ describe("Sidebar 串口恢复界面", () => {
     }));
     const props = {
       activePanel: "connection" as const,
-      theme: "dark" as const,
+      themePreference: "dark" as const,
       onClose: vi.fn(),
-      onThemeChange: vi.fn(),
+      onThemePreferenceChange: vi.fn(),
     };
     const { rerender } = render(<Sidebar {...props} />);
 
@@ -351,9 +351,9 @@ describe("Sidebar 外观设置", () => {
     render(
       <Sidebar
         activePanel="settings"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
