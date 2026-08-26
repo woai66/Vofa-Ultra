@@ -3611,7 +3611,7 @@ textarea:focus {
 .waveform-measurement-strip {
   display: grid;
   min-width: 0;
-  min-height: 76px;
+  min-height: 88px;
   flex: 0 0 auto;
   grid-template-columns: minmax(220px, 0.65fr) minmax(0, 1.35fr);
   align-items: stretch;
@@ -3625,6 +3625,7 @@ textarea:focus {
   display: grid;
   min-width: 0;
   grid-template-rows: 28px 28px;
+  align-self: center;
   gap: 5px;
 }
 
@@ -3762,15 +3763,30 @@ textarea:focus {
   outline-offset: 1px;
 }
 
+.measurement-result-groups {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
 .measurement-readouts {
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
   margin: 0;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--surface-1);
+}
+
+.measurement-primary-readouts {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.measurement-statistics {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
 .measurement-readouts > div {
@@ -6379,7 +6395,7 @@ textarea:focus {
   }
 
   .waveform-measurement-strip {
-    min-height: 213px;
+    min-height: 188px;
     grid-template-columns: minmax(0, 1fr);
     padding: 6px 8px;
     gap: 6px;
@@ -6409,21 +6425,20 @@ textarea:focus {
     min-height: 44px;
   }
 
-  .measurement-readouts {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .measurement-primary-readouts,
+  .measurement-statistics {
+    grid-template-columns: none;
+    grid-auto-columns: minmax(86px, 32%);
+    grid-auto-flow: column;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scroll-snap-type: x proximity;
   }
 
   .measurement-readouts > div {
     min-height: 32px;
-  }
-
-  .measurement-readouts > div:nth-child(n + 4) {
-    border-top: 1px solid var(--border);
-  }
-
-  .measurement-readouts > div:nth-child(4),
-  .measurement-readouts > div:nth-child(7) {
-    border-left: 0;
+    scroll-snap-align: start;
   }
 
   .icon-button,

@@ -221,7 +221,7 @@ describe("WaveformPanel 波形测量", () => {
     await user.click(screen.getByRole("button", { name: "关闭触发设置" }));
 
     await user.click(screen.getByRole("button", { name: "开启波形测量" }));
-    expect(screen.getByRole("combobox", { name: "测量通道" })).toHaveTextContent(
+    expect(await screen.findByRole("combobox", { name: "测量通道" })).toHaveTextContent(
       "母线电压",
     );
     const yA = screen.getByText("yA").parentElement;
@@ -230,6 +230,13 @@ describe("WaveformPanel 波形测量", () => {
     expect(yA).toHaveTextContent(/V/);
     expect(yB).toHaveTextContent(/V/);
     expect(deltaY).toHaveTextContent(/V/);
+    const statistics = screen.getByLabelText("A/B 区间统计");
+    expect(within(statistics).getByText("样本数").parentElement).toHaveTextContent("3");
+    expect(within(statistics).getByText("最小值").parentElement).toHaveTextContent("20.000 V");
+    expect(within(statistics).getByText("最大值").parentElement).toHaveTextContent("40.000 V");
+    expect(within(statistics).getByText("均值").parentElement).toHaveTextContent("30.000 V");
+    expect(within(statistics).getByText("RMS").parentElement).toHaveTextContent("31.091 V");
+    expect(within(statistics).getByText("峰峰值").parentElement).toHaveTextContent("20.000 V");
     expect(
       container
         .querySelector<HTMLElement>('.waveform-measurement-cursor[data-cursor="A"]')
@@ -695,18 +702,25 @@ describe("WaveformPanel 波形测量", () => {
     await user.click(screen.getByRole("button", { name: "开启波形测量" }));
     expect(useWorkbenchStore.getState().chartPaused).toBe(true);
     expect(screen.getByText("HISTORY")).toBeVisible();
-    const results = screen.getByLabelText("波形测量结果");
+    const results = await screen.findByLabelText("波形测量结果");
     expect(within(results).getByText("yA").parentElement).toHaveTextContent("20.000");
     expect(within(results).getByText("yB").parentElement).toHaveTextContent("40.000");
+    const statistics = screen.getByLabelText("A/B 区间统计");
+    expect(within(statistics).getByText("样本数").parentElement).toHaveTextContent("3");
+    expect(within(statistics).getByText("均值").parentElement).toHaveTextContent("30.000");
 
     fireEvent.change(screen.getByRole("slider", { name: "游标 A 采样点" }), {
       target: { value: "2" },
     });
     expect(within(results).getByText("yA").parentElement).toHaveTextContent("30.000");
+    expect(within(statistics).getByText("样本数").parentElement).toHaveTextContent("2");
+    expect(within(statistics).getByText("均值").parentElement).toHaveTextContent("35.000");
 
     await user.selectOptions(screen.getByRole("combobox", { name: "测量通道" }), "channel-1");
     expect(within(results).getByText("yA").parentElement).toHaveTextContent("2.000");
     expect(within(results).getByText("yB").parentElement).toHaveTextContent("4.000");
+    expect(within(statistics).getByText("样本数").parentElement).toHaveTextContent("3");
+    expect(within(statistics).getByText("均值").parentElement).toHaveTextContent("3.000");
   });
 
   it("关闭测量时只恢复由测量触发的暂停", async () => {
