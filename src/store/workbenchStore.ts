@@ -12,6 +12,10 @@ import {
 } from "../core/autoResponder";
 import { decodeBase64, formatHex } from "../core/codec";
 import {
+  cloneChannelPresentations,
+  updateChannelPresentation,
+} from "../core/channelPresentation";
+import {
   extractLatestAttitudeSample,
   parseAttitudeConfig,
 } from "../core/attitude";
@@ -222,8 +226,12 @@ import type {
   ProcessingOutputSample,
 } from "../types/processingGraph";
 import type {
+  BaseChannelId,
+  ChannelPresentationOverride,
+  ChannelPresentationProtocol,
+  ChannelPresentations,
   ChartWindowSeconds,
-  WorkspaceExportV9,
+  WorkspaceExportV10,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AutoResponderRule, AutoResponderSnapshot } from "../types/automation";
@@ -241,8 +249,19 @@ const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY =
   MAX_TERMINAL_UNTERMINATED_LINE_BYTES + MAX_TERMINAL_LINE_ENDING_BYTES;
 export const WORKBENCH_STORAGE_KEY = "vofa-ultra-workbench";
-export const WORKBENCH_STORAGE_VERSION = 9;
-export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8] as const;
+export const WORKBENCH_STORAGE_VERSION = 10;
+export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+] as const;
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
   phase: "off",
@@ -340,6 +359,7 @@ export interface WorkbenchStore {
   channels: ChannelSeries[];
   processedChannels: ChannelSeries[];
   channelVisibility: Record<string, boolean>;
+  channelPresentations: ChannelPresentations;
   extensionChannels: ChannelSeries[];
   extensionChannelVisibility: Record<string, boolean>;
   extensionInspection: ExtensionInspectionPayload | null;
@@ -495,6 +515,11 @@ export interface WorkbenchStore {
   retryProcessingGraph(): void;
   setAttitudeConfig(config: AttitudeConfig): void;
   toggleChannel(channelId: string): void;
+  setChannelPresentation(
+    protocol: ChannelPresentationProtocol,
+    channelId: BaseChannelId,
+    value: ChannelPresentationOverride | null,
+  ): void;
   clearTerminal(): void;
   clearChart(): void;
   resetStats(): void;
@@ -537,7 +562,7 @@ export interface WorkbenchStore {
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
   deleteWorkspace(id: string): Promise<boolean>;
-  importWorkspace(workspace: WorkspaceExportV9): string;
+  importWorkspace(workspace: WorkspaceExportV10): string;
 }
 
 type PersistedWorkbenchState = Pick<
@@ -555,6 +580,7 @@ type PersistedWorkbenchState = Pick<
   | "terminalAutoScroll"
   | "chartWindowSeconds"
   | "channelVisibility"
+  | "channelPresentations"
   | "processingGraph"
   | "attitudeConfig"
   | "autoResponderRules"
@@ -580,6 +606,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       channels: [],
       processedChannels: [],
       channelVisibility: {},
+      channelPresentations: cloneChannelPresentations(
+        INITIAL_WORKSPACE_CONFIG.channelPresentations,
+      ),
       extensionChannels: [],
       extensionChannelVisibility: {},
       extensionInspection: null,
@@ -2097,6 +2126,22 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           };
         });
       },
+      setChannelPresentation: (protocol, channelId, value) => {
+        const state = get();
+        if (state.workspaceTransitionStatus !== "idle") {
+          return;
+        }
+        assertWorkspaceStorageWritable(state);
+        const channelPresentations = updateChannelPresentation(
+          state.channelPresentations,
+          protocol,
+          channelId,
+          value,
+        );
+        if (channelPresentations !== state.channelPresentations) {
+          set({ channelPresentations });
+        }
+      },
       clearTerminal: () => {
         resetTerminalPresentationState();
         set({ terminalEntries: [] });
@@ -3136,6 +3181,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         terminalAutoScroll: state.terminalAutoScroll,
         chartWindowSeconds: state.chartWindowSeconds,
         channelVisibility: state.channelVisibility,
+        channelPresentations: state.channelPresentations,
         processingGraph: state.processingGraph,
         attitudeConfig: state.attitudeConfig,
         autoResponderRules: state.autoResponderRules,
@@ -3152,16 +3198,17 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!WORKBENCH_MIGRATABLE_STORAGE_VERSIONS.some((candidate) => candidate === version)) {
           throw new Error(`不支持从持久化版本 ${version} 降级到 ${WORKBENCH_STORAGE_VERSION}`);
         }
+        const processingGraphSchema = version >= 9 ? "current" : "legacy";
         const config = restoreWorkspaceConfig(
           persistedState,
           INITIAL_WORKSPACE_CONFIG,
           version >= 6 ? LINE_ENDINGS : LEGACY_LINE_ENDINGS,
-          "legacy",
+          processingGraphSchema,
         );
         const restoredWorkspaces = restoreWorkspaceProfiles(
           isRecord(persistedState) ? persistedState.workspaces : undefined,
           version >= 6 ? LINE_ENDINGS : LEGACY_LINE_ENDINGS,
-          "legacy",
+          processingGraphSchema,
         );
         const workspaces =
           version >= 1 && restoredWorkspaces.length > 0
@@ -4298,6 +4345,7 @@ async function applyWorkspaceSnapshot(
     terminalAutoScroll: config.terminalAutoScroll,
     chartWindowSeconds: config.chartWindowSeconds,
     channelVisibility: config.channelVisibility,
+    channelPresentations: config.channelPresentations,
     processingGraph,
     processingStatus: liveProcessingRuntime.getSnapshot(),
     attitudeConfig: config.attitudeConfig,

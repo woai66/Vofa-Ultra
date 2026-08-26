@@ -29,6 +29,12 @@ import {
   parseQuickCommands,
 } from "./quickCommands";
 import {
+  areChannelPresentationsEqual,
+  cloneChannelPresentations,
+  createDefaultChannelPresentations,
+  parseChannelPresentations,
+} from "./channelPresentation";
+import {
   TERMINAL_RX_LINE_ENDINGS,
   TERMINAL_RX_RECORD_MODES,
   TERMINAL_RX_TEXT_ENCODINGS,
@@ -45,7 +51,8 @@ import type {
   WorkspaceConfigV7,
   WorkspaceConfigV8,
   WorkspaceConfigV9,
-  WorkspaceExportV9,
+  WorkspaceConfigV10,
+  WorkspaceExportV10,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AttitudeConfig } from "../types/attitude";
@@ -53,7 +60,7 @@ import type { ProcessingGraphConfig } from "../types/processingGraph";
 import type { LineEnding } from "../types/serial";
 
 export const WORKSPACE_FILE_FORMAT = "vofa-ultra.workspace";
-export const WORKSPACE_SCHEMA_VERSION = 9;
+export const WORKSPACE_SCHEMA_VERSION = 10;
 export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   1,
   2,
@@ -63,6 +70,7 @@ export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   6,
   7,
   8,
+  9,
   WORKSPACE_SCHEMA_VERSION,
 ] as const;
 export const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
@@ -101,6 +109,10 @@ const WORKSPACE_CONFIG_V8_KEYS = [
   "terminalRxTextEncoding",
 ] as const;
 const WORKSPACE_CONFIG_V9_KEYS = WORKSPACE_CONFIG_V8_KEYS;
+const WORKSPACE_CONFIG_V10_KEYS = [
+  ...WORKSPACE_CONFIG_V9_KEYS,
+  "channelPresentations",
+] as const;
 const SERIAL_CONFIG_KEYS = [
   "portName",
   "baudRate",
@@ -139,6 +151,7 @@ export function createDefaultWorkspaceConfig(source: WorkspaceConfig["source"]):
     attitudeConfig: createDefaultAttitudeConfig(),
     autoResponderRules: [],
     quickCommands: [],
+    channelPresentations: createDefaultChannelPresentations(),
   };
 }
 
@@ -164,6 +177,7 @@ export function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
     attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
     autoResponderRules: cloneAutoResponderRules(config.autoResponderRules),
     quickCommands: cloneQuickCommands(config.quickCommands),
+    channelPresentations: cloneChannelPresentations(config.channelPresentations),
   };
 }
 
@@ -201,7 +215,8 @@ export function areWorkspaceConfigsEqual(
     JSON.stringify(left.processingGraph) === JSON.stringify(right.processingGraph) &&
     areAttitudeConfigsEqual(left.attitudeConfig, right.attitudeConfig) &&
     areAutoResponderRulesEqual(left.autoResponderRules, right.autoResponderRules) &&
-    areQuickCommandsEqual(left.quickCommands, right.quickCommands)
+    areQuickCommandsEqual(left.quickCommands, right.quickCommands) &&
+    areChannelPresentationsEqual(left.channelPresentations, right.channelPresentations)
   );
 }
 
@@ -279,7 +294,7 @@ export function assertWorkspaceNameAvailable(
 }
 
 export function serializeWorkspace(profile: WorkspaceProfile): string {
-  const exported: WorkspaceExportV9 = {
+  const exported: WorkspaceExportV10 = {
     format: WORKSPACE_FILE_FORMAT,
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     name: profile.name,
@@ -290,7 +305,7 @@ export function serializeWorkspace(profile: WorkspaceProfile): string {
   return serialized;
 }
 
-export function parseWorkspaceExport(text: string): WorkspaceExportV9 {
+export function parseWorkspaceExport(text: string): WorkspaceExportV10 {
   assertWorkspaceFileSize(text);
 
   let parsed: unknown;
@@ -331,9 +346,28 @@ export function parseWorkspaceConfig(value: unknown): WorkspaceConfig {
 function parseWorkspaceConfigWithLineEndings(
   value: unknown,
   allowedLineEndings: readonly LineEnding[],
+): WorkspaceConfigV10 {
+  const record = requireRecord(value, "工作区配置");
+  assertExactKeys(record, WORKSPACE_CONFIG_V10_KEYS, "工作区配置");
+  return {
+    ...parseWorkspaceConfigV9Record(record, allowedLineEndings),
+    channelPresentations: parseChannelPresentations(record.channelPresentations),
+  };
+}
+
+function parseWorkspaceConfigV9(
+  value: unknown,
+  allowedLineEndings: readonly LineEnding[] = LINE_ENDINGS,
 ): WorkspaceConfigV9 {
   const record = requireRecord(value, "工作区配置");
   assertExactKeys(record, WORKSPACE_CONFIG_V9_KEYS, "工作区配置");
+  return parseWorkspaceConfigV9Record(record, allowedLineEndings);
+}
+
+function parseWorkspaceConfigV9Record(
+  record: Record<string, unknown>,
+  allowedLineEndings: readonly LineEnding[],
+): WorkspaceConfigV9 {
   const processingGraph = parseProcessingGraphConfig(record.processingGraph);
   const attitudeConfig = parseAttitudeConfig(record.attitudeConfig);
   assertAttitudeChannelsMatchGraph(attitudeConfig, processingGraph);
@@ -610,7 +644,27 @@ function migrateWorkspaceConfigV8(config: WorkspaceConfigV8): WorkspaceConfigV9 
   };
 }
 
+function migrateWorkspaceConfigV9(config: WorkspaceConfigV9): WorkspaceConfigV10 {
+  return {
+    ...config,
+    serialConfig: { ...config.serialConfig },
+    channelVisibility: { ...config.channelVisibility },
+    processingGraph: cloneProcessingGraph(config.processingGraph),
+    attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
+    autoResponderRules: cloneAutoResponderRules(config.autoResponderRules),
+    quickCommands: cloneQuickCommands(config.quickCommands),
+    channelPresentations: createDefaultChannelPresentations(),
+  };
+}
+
 function parseVersionedWorkspaceConfig(version: unknown, value: unknown): WorkspaceConfig {
+  if (version === WORKSPACE_SCHEMA_VERSION) {
+    return parseWorkspaceConfig(value);
+  }
+  return migrateWorkspaceConfigV9(parseVersionedWorkspaceConfigV9(version, value));
+}
+
+function parseVersionedWorkspaceConfigV9(version: unknown, value: unknown): WorkspaceConfigV9 {
   if (version === 1) {
     return migrateWorkspaceConfigV8(
       migrateWorkspaceConfigV7(
@@ -677,8 +731,8 @@ function parseVersionedWorkspaceConfig(version: unknown, value: unknown): Worksp
   if (version === 8) {
     return migrateWorkspaceConfigV8(parseWorkspaceConfigV8(value));
   }
-  if (version === WORKSPACE_SCHEMA_VERSION) {
-    return parseWorkspaceConfig(value);
+  if (version === 9) {
+    return parseWorkspaceConfigV9(value);
   }
   throw new Error(`不支持工作区 schema 版本：${String(version)}`);
 }
@@ -708,6 +762,9 @@ export function restoreWorkspaceConfig(
   const quickCommands =
     tryParseQuickCommands(record.quickCommands, allowedLineEndings) ??
     cloneQuickCommands(fallback.quickCommands);
+  const channelPresentations =
+    tryParseChannelPresentations(record.channelPresentations) ??
+    cloneChannelPresentations(fallback.channelPresentations);
   return {
     source: isEnum(record.source, ["serial", "simulator"]) ? record.source : fallback.source,
     protocol: isEnum(record.protocol, PROTOCOL_IDS)
@@ -765,6 +822,7 @@ export function restoreWorkspaceConfig(
     attitudeConfig,
     autoResponderRules,
     quickCommands,
+    channelPresentations,
   };
 }
 
@@ -833,56 +891,53 @@ function parseWorkspaceProfileConfig(
   allowedLineEndings: readonly LineEnding[],
   processingGraphSchema: ProcessingGraphSchemaMode,
 ): WorkspaceConfig {
+  if (Object.hasOwn(configRecord, "channelPresentations")) {
+    return parseWorkspaceConfigWithLineEndings(configRecord, allowedLineEndings);
+  }
   if (Object.hasOwn(configRecord, "terminalRxTextEncoding")) {
-    return processingGraphSchema === "legacy"
+    const config = processingGraphSchema === "legacy"
       ? migrateWorkspaceConfigV8(parseWorkspaceConfigV8(configRecord, allowedLineEndings))
-      : parseWorkspaceConfigWithLineEndings(configRecord, allowedLineEndings);
+      : parseWorkspaceConfigV9(configRecord, allowedLineEndings);
+    return migrateWorkspaceConfigV9(config);
   }
   if (Object.hasOwn(configRecord, "terminalRxRecordMode")) {
-    return migrateWorkspaceConfigV8(
-      migrateWorkspaceConfigV7(parseWorkspaceConfigV7(configRecord, allowedLineEndings)),
-    );
-  }
-  if (Object.hasOwn(configRecord, "quickCommands")) {
-    return migrateWorkspaceConfigV8(
-      migrateWorkspaceConfigV7(
-        migrateWorkspaceConfigV6(parseWorkspaceConfigV6(configRecord, allowedLineEndings)),
+    return migrateWorkspaceConfigV9(
+      migrateWorkspaceConfigV8(
+        migrateWorkspaceConfigV7(parseWorkspaceConfigV7(configRecord, allowedLineEndings)),
       ),
     );
   }
-  if (Object.hasOwn(configRecord, "autoResponderRules")) {
-    return migrateWorkspaceConfigV8(
-      migrateWorkspaceConfigV7(
-        migrateWorkspaceConfigV6(
-          migrateWorkspaceConfigV5(
-            migrateWorkspaceConfigV4(parseWorkspaceConfigV4(configRecord, allowedLineEndings)),
-          ),
+  if (Object.hasOwn(configRecord, "quickCommands")) {
+    return migrateWorkspaceConfigV9(
+      migrateWorkspaceConfigV8(
+        migrateWorkspaceConfigV7(
+          migrateWorkspaceConfigV6(parseWorkspaceConfigV6(configRecord, allowedLineEndings)),
         ),
       ),
     );
   }
-  if (Object.hasOwn(configRecord, "attitudeConfig")) {
-    return migrateWorkspaceConfigV8(
-      migrateWorkspaceConfigV7(
-        migrateWorkspaceConfigV6(
-          migrateWorkspaceConfigV5(
-            migrateWorkspaceConfigV4(
-              migrateWorkspaceConfigV3(parseWorkspaceConfigV3(configRecord, allowedLineEndings)),
+  if (Object.hasOwn(configRecord, "autoResponderRules")) {
+    return migrateWorkspaceConfigV9(
+      migrateWorkspaceConfigV8(
+        migrateWorkspaceConfigV7(
+          migrateWorkspaceConfigV6(
+            migrateWorkspaceConfigV5(
+              migrateWorkspaceConfigV4(parseWorkspaceConfigV4(configRecord, allowedLineEndings)),
             ),
           ),
         ),
       ),
     );
   }
-  if (Object.hasOwn(configRecord, "processingGraph")) {
-    return migrateWorkspaceConfigV8(
-      migrateWorkspaceConfigV7(
-        migrateWorkspaceConfigV6(
-          migrateWorkspaceConfigV5(
-            migrateWorkspaceConfigV4(
-              migrateWorkspaceConfigV3(
-                migrateWorkspaceConfigV2(
-                  parseWorkspaceConfigV2(configRecord, allowedLineEndings),
+  if (Object.hasOwn(configRecord, "attitudeConfig")) {
+    return migrateWorkspaceConfigV9(
+      migrateWorkspaceConfigV8(
+        migrateWorkspaceConfigV7(
+          migrateWorkspaceConfigV6(
+            migrateWorkspaceConfigV5(
+              migrateWorkspaceConfigV4(
+                migrateWorkspaceConfigV3(
+                  parseWorkspaceConfigV3(configRecord, allowedLineEndings),
                 ),
               ),
             ),
@@ -891,15 +946,36 @@ function parseWorkspaceProfileConfig(
       ),
     );
   }
-  return migrateWorkspaceConfigV8(
-    migrateWorkspaceConfigV7(
-      migrateWorkspaceConfigV6(
-        migrateWorkspaceConfigV5(
-          migrateWorkspaceConfigV4(
-            migrateWorkspaceConfigV3(
-              migrateWorkspaceConfigV2(
-                migrateWorkspaceConfigV1(
-                  parseWorkspaceConfigV1(configRecord, allowedLineEndings),
+  if (Object.hasOwn(configRecord, "processingGraph")) {
+    return migrateWorkspaceConfigV9(
+      migrateWorkspaceConfigV8(
+        migrateWorkspaceConfigV7(
+          migrateWorkspaceConfigV6(
+            migrateWorkspaceConfigV5(
+              migrateWorkspaceConfigV4(
+                migrateWorkspaceConfigV3(
+                  migrateWorkspaceConfigV2(
+                    parseWorkspaceConfigV2(configRecord, allowedLineEndings),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  return migrateWorkspaceConfigV9(
+    migrateWorkspaceConfigV8(
+      migrateWorkspaceConfigV7(
+        migrateWorkspaceConfigV6(
+          migrateWorkspaceConfigV5(
+            migrateWorkspaceConfigV4(
+              migrateWorkspaceConfigV3(
+                migrateWorkspaceConfigV2(
+                  migrateWorkspaceConfigV1(
+                    parseWorkspaceConfigV1(configRecord, allowedLineEndings),
+                  ),
                 ),
               ),
             ),
@@ -1009,6 +1085,14 @@ function tryParseAutoResponderRules(
 function tryParseQuickCommands(value: unknown, allowedLineEndings: readonly LineEnding[]) {
   try {
     return parseQuickCommands(value, allowedLineEndings);
+  } catch {
+    return null;
+  }
+}
+
+function tryParseChannelPresentations(value: unknown) {
+  try {
+    return parseChannelPresentations(value);
   } catch {
     return null;
   }

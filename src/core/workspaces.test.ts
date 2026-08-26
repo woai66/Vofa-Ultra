@@ -20,6 +20,7 @@ function removeCurrentTerminalRxFields(config: Record<string, unknown>): void {
   delete config.terminalRxRecordMode;
   delete config.terminalRxLineEnding;
   delete config.terminalRxTextEncoding;
+  delete config.channelPresentations;
 }
 
 describe("工作区文件", () => {
@@ -64,7 +65,7 @@ describe("工作区文件", () => {
     });
   });
 
-  it("以严格的 v9 格式往返转换节点、文本编码及完整工作区配置", () => {
+  it("以严格的 v10 格式往返转换节点、文本编码及完整工作区配置", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.serialConfig.portName = "COM7";
     config.protocol = "justfloat";
@@ -74,6 +75,16 @@ describe("工作区文件", () => {
     config.terminalRxLineEnding = "crlf";
     config.terminalRxTextEncoding = "gb18030";
     config.channelVisibility = { "channel-2": false };
+    config.channelPresentations.firewater["channel-0"] = {
+      alias: "温度",
+      unit: "degC",
+      color: "#123456",
+    };
+    config.channelPresentations.justfloat["channel-0"] = {
+      alias: "电压",
+      unit: "V",
+      color: null,
+    };
     config.processingGraph = {
       enabled: true,
       nodes: [
@@ -123,7 +134,7 @@ describe("工作区文件", () => {
 
     expect(parsed).toEqual({
       format: "vofa-ultra.workspace",
-      schemaVersion: 9,
+      schemaVersion: 10,
       name: "台架 A",
       config,
     });
@@ -135,6 +146,13 @@ describe("工作区文件", () => {
     expect(parsed.config.autoResponderRules).not.toBe(config.autoResponderRules);
     expect(parsed.config.quickCommands).not.toBe(config.quickCommands);
     expect(parsed.config.quickCommands[0]).not.toBe(config.quickCommands[0]);
+    expect(parsed.config.channelPresentations).not.toBe(config.channelPresentations);
+    expect(parsed.config.channelPresentations.firewater).not.toBe(
+      config.channelPresentations.firewater,
+    );
+    expect(parsed.config.channelPresentations.firewater["channel-0"]).not.toBe(
+      config.channelPresentations.firewater["channel-0"],
+    );
   });
 
   it("导入严格 v1 后规范化为禁用处理图和空姿态映射", () => {
@@ -155,7 +173,8 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(9);
+    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.channels).toEqual({
       roll: "",
@@ -187,7 +206,8 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(9);
+    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
     expect(parsed.config.autoResponderRules).toEqual([]);
@@ -210,7 +230,8 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(9);
+    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
     expect(parsed.config.autoResponderRules).toEqual([]);
     expect(parsed.config.quickCommands).toEqual([]);
@@ -229,12 +250,13 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(9);
+    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.autoResponderRules).toEqual(config.autoResponderRules);
     expect(parsed.config.quickCommands).toEqual([]);
   });
 
-  it("导入严格 v5 后无损迁移为 v9", () => {
+  it("导入严格 v5 后无损迁移为 v10", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.lineEnding = "crlf";
     config.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
@@ -256,7 +278,7 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(9);
+    expect(parsed.schemaVersion).toBe(10);
     expect(parsed.config).toEqual(config);
   });
 
@@ -270,7 +292,7 @@ describe("工作区文件", () => {
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(9);
+    expect(parsed.schemaVersion).toBe(10);
     expect(parsed.config).toMatchObject({
       terminalRxRecordMode: "chunk",
       terminalRxLineEnding: "lf",
@@ -283,16 +305,19 @@ describe("工作区文件", () => {
     const exported = JSON.parse(
       serializeWorkspace(createWorkspaceProfile("v7 工作区", config, "legacy-v7", 100)),
     ) as Record<string, unknown>;
-    delete (exported.config as Record<string, unknown>).terminalRxTextEncoding;
+    const exportedConfig = exported.config as Record<string, unknown>;
+    delete exportedConfig.terminalRxTextEncoding;
+    delete exportedConfig.channelPresentations;
     exported.schemaVersion = 7;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(9);
+    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.terminalRxTextEncoding).toBe("utf-8");
   });
 
-  it("导入合法 v8 处理图后无损迁移为 v9", () => {
+  it("导入合法 v8 处理图后无损迁移为 v10", () => {
     const config = createDefaultWorkspaceConfig("simulator");
     config.processingGraph = {
       enabled: true,
@@ -304,12 +329,62 @@ describe("工作区文件", () => {
     const exported = JSON.parse(
       serializeWorkspace(createWorkspaceProfile("v8 工作区", config, "legacy-v8", 100)),
     ) as Record<string, unknown>;
+    delete (exported.config as Record<string, unknown>).channelPresentations;
     exported.schemaVersion = 8;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(9);
+    expect(parsed.schemaVersion).toBe(10);
     expect(parsed.config.processingGraph).toEqual(config.processingGraph);
+    expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
+  });
+
+  it("导入 v9 当前处理图时保留转换节点并补充空展示配置", () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.processingGraph = {
+      enabled: true,
+      nodes: [
+        { id: "low", kind: "input", channelIndex: 0 },
+        { id: "high", kind: "input", channelIndex: 1 },
+        {
+          id: "decoded",
+          kind: "bytes_to_number",
+          inputs: ["low", "high"],
+          numericType: "u16",
+          endianness: "le",
+        },
+        {
+          id: "encoded",
+          kind: "number_to_byte",
+          input: "decoded",
+          numericType: "u16",
+          endianness: "be",
+          byteIndex: 0,
+        },
+      ],
+    };
+    const exported = JSON.parse(
+      serializeWorkspace(createWorkspaceProfile("v9 工作区", config, "legacy-v9", 100)),
+    ) as Record<string, unknown>;
+    delete (exported.config as Record<string, unknown>).channelPresentations;
+    exported.schemaVersion = 9;
+
+    const parsed = parseWorkspaceExport(JSON.stringify(exported));
+
+    expect(parsed.schemaVersion).toBe(10);
+    expect(parsed.config.processingGraph).toEqual(config.processingGraph);
+    expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
+  });
+
+  it("v9 继续严格拒绝提前出现的 v10 字段", () => {
+    const exported = JSON.parse(
+      serializeWorkspace(
+        createWorkspaceProfile("伪 v9", createDefaultWorkspaceConfig("simulator"), "invalid-v9", 100),
+      ),
+    ) as Record<string, unknown>;
+    exported.schemaVersion = 9;
+
+    expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/未知字段/);
   });
 
   it("拒绝伪装成 v8 的转换节点", () => {
@@ -331,6 +406,7 @@ describe("工作区文件", () => {
     const exported = JSON.parse(
       serializeWorkspace(createWorkspaceProfile("伪 v8", config, "invalid-v8", 100)),
     ) as Record<string, unknown>;
+    delete (exported.config as Record<string, unknown>).channelPresentations;
     exported.schemaVersion = 8;
 
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/kind/);
@@ -400,7 +476,7 @@ describe("工作区文件", () => {
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/行尾/);
   });
 
-  it("严格校验 v9 姿态字段、快捷命令、接收配置及派生通道引用", () => {
+  it("严格校验 v10 姿态字段、快捷命令、接收配置及派生通道引用", () => {
     const profile = createWorkspaceProfile(
       "姿态工作区",
       createDefaultWorkspaceConfig("simulator"),
@@ -483,9 +559,58 @@ describe("工作区文件", () => {
     ).toThrow(/未知字段/);
   });
 
+  it("严格校验 v10 通道展示字段", () => {
+    const exported = JSON.parse(
+      serializeWorkspace(
+        createWorkspaceProfile(
+          "展示工作区",
+          createDefaultWorkspaceConfig("simulator"),
+          "presentations",
+          100,
+        ),
+      ),
+    ) as Record<string, unknown>;
+    const config = exported.config as Record<string, unknown>;
+
+    const missing = { ...config };
+    delete missing.channelPresentations;
+    expect(() =>
+      parseWorkspaceExport(JSON.stringify({ ...exported, config: missing })),
+    ).toThrow(/缺少字段：channelPresentations/);
+
+    expect(() =>
+      parseWorkspaceExport(
+        JSON.stringify({
+          ...exported,
+          config: {
+            ...config,
+            channelPresentations: { firewater: {}, justfloat: {}, raw: {} },
+          },
+        }),
+      ),
+    ).toThrow(/未知字段/);
+
+    expect(() =>
+      parseWorkspaceExport(
+        JSON.stringify({
+          ...exported,
+          config: {
+            ...config,
+            channelPresentations: {
+              firewater: {
+                "channel-16": { alias: "越界", unit: "", color: null },
+              },
+              justfloat: {},
+            },
+          },
+        }),
+      ),
+    ).toThrow(/不支持通道/);
+  });
+
   it.each([
     ["错误格式", { format: "other", schemaVersion: 1 }],
-    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 10 }],
+    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 11 }],
   ])("拒绝%s", (_label, overrides) => {
     const profile = createWorkspaceProfile(
       "默认工作区",
@@ -699,6 +824,53 @@ describe("工作区本地恢复", () => {
     expect(restored.quickCommands[0]).not.toBe(fallback.quickCommands[0]);
   });
 
+  it("本地展示配置严格恢复，损坏时使用独立 fallback 副本", () => {
+    const fallback = createDefaultWorkspaceConfig("simulator");
+    fallback.channelPresentations.firewater["channel-0"] = {
+      alias: "温度",
+      unit: "degC",
+      color: "#123456",
+    };
+
+    const restored = restoreWorkspaceConfig(
+      {
+        channelPresentations: {
+          firewater: {
+            "channel-1": { alias: " 电压 ", unit: " V ", color: "#ABCDEF" },
+          },
+          justfloat: {},
+        },
+      },
+      fallback,
+    );
+    expect(restored.channelPresentations).toEqual({
+      firewater: {
+        "channel-1": { alias: "电压", unit: "V", color: "#abcdef" },
+      },
+      justfloat: {},
+    });
+
+    const fallbackRestored = restoreWorkspaceConfig(
+      {
+        channelPresentations: {
+          firewater: {
+            "channel-16": { alias: "越界", unit: "", color: null },
+          },
+          justfloat: {},
+        },
+      },
+      fallback,
+    );
+    expect(fallbackRestored.channelPresentations).toEqual(fallback.channelPresentations);
+    expect(fallbackRestored.channelPresentations).not.toBe(fallback.channelPresentations);
+    expect(fallbackRestored.channelPresentations.firewater).not.toBe(
+      fallback.channelPresentations.firewater,
+    );
+    expect(fallbackRestored.channelPresentations.firewater["channel-0"]).not.toBe(
+      fallback.channelPresentations.firewater["channel-0"],
+    );
+  });
+
   it("比较配置时忽略通道键顺序", () => {
     const left = createDefaultWorkspaceConfig("simulator");
     const right = createDefaultWorkspaceConfig("simulator");
@@ -721,6 +893,18 @@ describe("工作区本地恢复", () => {
     ];
     expect(areWorkspaceConfigsEqual(left, right)).toBe(false);
     left.quickCommands = [...right.quickCommands];
+    expect(areWorkspaceConfigsEqual(left, right)).toBe(true);
+    right.channelPresentations.justfloat["channel-0"] = {
+      alias: "电压",
+      unit: "V",
+      color: null,
+    };
+    expect(areWorkspaceConfigsEqual(left, right)).toBe(false);
+    left.channelPresentations.justfloat["channel-0"] = {
+      alias: "电压",
+      unit: "V",
+      color: null,
+    };
     expect(areWorkspaceConfigsEqual(left, right)).toBe(true);
     right.processingGraph.enabled = true;
     expect(areWorkspaceConfigsEqual(left, right)).toBe(false);

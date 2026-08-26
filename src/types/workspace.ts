@@ -20,6 +20,37 @@ import type {
 
 export type ChartWindowSeconds = 5 | 15 | 30 | 60;
 
+export type BaseChannelIndex =
+  | 0
+  | 1
+  | 2
+  | 3
+  | 4
+  | 5
+  | 6
+  | 7
+  | 8
+  | 9
+  | 10
+  | 11
+  | 12
+  | 13
+  | 14
+  | 15;
+export type BaseChannelId = `channel-${BaseChannelIndex}`;
+export type ChannelPresentationProtocol = "firewater" | "justfloat";
+
+export interface ChannelPresentationOverride {
+  alias: string;
+  unit: string;
+  color: string | null;
+}
+
+export type ChannelPresentations = Record<
+  ChannelPresentationProtocol,
+  Partial<Record<BaseChannelId, ChannelPresentationOverride>>
+>;
+
 export interface WorkspaceConfigV1 {
   source: DataSource;
   protocol: ProtocolKind;
@@ -63,7 +94,11 @@ export type WorkspaceConfigV9 = Omit<WorkspaceConfigV8, "processingGraph"> & {
   processingGraph: ProcessingGraphConfig;
 };
 
-export type WorkspaceConfig = WorkspaceConfigV9;
+export interface WorkspaceConfigV10 extends WorkspaceConfigV9 {
+  channelPresentations: ChannelPresentations;
+}
+
+export type WorkspaceConfig = WorkspaceConfigV10;
 
 export interface WorkspaceProfile {
   id: string;
@@ -134,4 +169,11 @@ export interface WorkspaceExportV9 {
   schemaVersion: 9;
   name: string;
   config: WorkspaceConfigV9;
+}
+
+export interface WorkspaceExportV10 {
+  format: "vofa-ultra.workspace";
+  schemaVersion: 10;
+  name: string;
+  config: WorkspaceConfigV10;
 }

@@ -20,6 +20,10 @@ import {
 import uPlot, { type AlignedData, type Options } from "uplot";
 import type { ThemeMode } from "../App";
 import {
+  presentChannelSeries,
+  type PresentedChannelSeries,
+} from "../core/channelPresentation";
+import {
   calculateWaveformMeasurement,
   createInitialMeasurementAnchors,
   getVisibleMeasurementPoints,
@@ -32,7 +36,10 @@ import type {
   WaveformTriggerEdge,
   WaveformTriggerPhase,
 } from "../core/waveformTrigger";
-import { useWorkbenchStore } from "../store/workbenchStore";
+import {
+  selectActiveProtocol,
+  useWorkbenchStore,
+} from "../store/workbenchStore";
 import type { ChannelSeries } from "../types/workbench";
 import type { ChartWindowSeconds } from "../types/workspace";
 
@@ -47,13 +54,40 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   const rawChannels = useWorkbenchStore((state) => state.channels);
   const processedChannels = useWorkbenchStore((state) => state.processedChannels);
   const extensionChannels = useWorkbenchStore((state) => state.extensionChannels);
+  const channelPresentations = useWorkbenchStore((state) => state.channelPresentations);
+  const activeProtocol = useWorkbenchStore(selectActiveProtocol);
+  const presentedRawChannels = useMemo(
+    () =>
+      rawChannels.map((channel) =>
+        presentChannelSeries(channel, activeProtocol, channelPresentations),
+      ),
+    [activeProtocol, channelPresentations, rawChannels],
+  );
+  const presentedProcessedChannels = useMemo(
+    () =>
+      processedChannels.map((channel) =>
+        presentChannelSeries(channel, activeProtocol, channelPresentations),
+      ),
+    [activeProtocol, channelPresentations, processedChannels],
+  );
+  const presentedExtensionChannels = useMemo(
+    () =>
+      extensionChannels.map((channel) =>
+        presentChannelSeries(channel, activeProtocol, channelPresentations),
+      ),
+    [activeProtocol, channelPresentations, extensionChannels],
+  );
   const channels = useMemo(
-    () => [...rawChannels, ...processedChannels, ...extensionChannels],
-    [extensionChannels, processedChannels, rawChannels],
+    () => [
+      ...presentedRawChannels,
+      ...presentedProcessedChannels,
+      ...presentedExtensionChannels,
+    ],
+    [presentedExtensionChannels, presentedProcessedChannels, presentedRawChannels],
   );
   const triggerChannels = useMemo(
-    () => [...rawChannels, ...processedChannels],
-    [processedChannels, rawChannels],
+    () => [...presentedRawChannels, ...presentedProcessedChannels],
+    [presentedProcessedChannels, presentedRawChannels],
   );
   const channelStructureSignature = channels
     .map((channel) => `${channel.id}:${channel.color}:${channel.visible}`)
@@ -536,7 +570,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
                   {visibleScaleChannels.length === 0 && <option value="">无可见通道</option>}
                   {visibleScaleChannels.map((channel) => (
                     <option key={channel.id} value={channel.id}>
-                      {channel.name}
+                      {channel.displayName}
                     </option>
                   ))}
                 </select>
@@ -554,8 +588,11 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
               }
             >
               <span style={{ backgroundColor: channel.color }} />
-              <small>{channel.name}</small>
-              <strong>{formatValue(channel.lastValue)}</strong>
+              <small>{channel.displayName}</small>
+              <strong>
+                {formatValue(channel.lastValue)}
+                {channel.unit && <span>{channel.unit}</span>}
+              </strong>
             </div>
           ))}
         </div>
@@ -582,7 +619,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
               {triggerChannels.length === 0 && <option value="">无通道</option>}
               {triggerChannels.map((channel) => (
                 <option key={channel.id} value={channel.id}>
-                  {channel.name}
+                  {channel.displayName}
                 </option>
               ))}
             </select>
@@ -612,7 +649,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
             </button>
           </div>
           <label className="trigger-threshold-control">
-            <span>阈值</span>
+            <span>{selectedTriggerChannel?.unit ? `阈值 (${selectedTriggerChannel.unit})` : "阈值"}</span>
             <input
               type="number"
               inputMode="decimal"
@@ -685,8 +722,8 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
 }
 
 interface MeasurementStripProps {
-  channels: ChannelSeries[];
-  selectedChannel: ChannelSeries;
+  channels: PresentedChannelSeries[];
+  selectedChannel: PresentedChannelSeries;
   activeCursor: WaveformMeasurementCursor;
   measurement: WaveformMeasurementResult;
   sampleCount: number;
@@ -725,7 +762,7 @@ function MeasurementStrip({
           >
             {channels.map((channel) => (
               <option key={channel.id} value={channel.id}>
-                {channel.name}
+                {channel.displayName}
               </option>
             ))}
           </select>
@@ -779,9 +816,18 @@ function MeasurementStrip({
         <MeasurementReadout label="tB" value={formatCursorTime(measurement.pointB.timestampSeconds)} />
         <MeasurementReadout label="Δt" value={formatDuration(measurement.deltaTimeSeconds)} />
         <MeasurementReadout label="1/Δt" value={formatFrequency(measurement.frequencyHz)} />
-        <MeasurementReadout label="yA" value={formatValue(measurement.pointA.value)} />
-        <MeasurementReadout label="yB" value={formatValue(measurement.pointB.value)} />
-        <MeasurementReadout label="Δy" value={formatValue(measurement.deltaY)} />
+        <MeasurementReadout
+          label="yA"
+          value={formatValueWithUnit(measurement.pointA.value, selectedChannel.unit)}
+        />
+        <MeasurementReadout
+          label="yB"
+          value={formatValueWithUnit(measurement.pointB.value, selectedChannel.unit)}
+        />
+        <MeasurementReadout
+          label="Δy"
+          value={formatValueWithUnit(measurement.deltaY, selectedChannel.unit)}
+        />
       </dl>
     </div>
   );
@@ -840,11 +886,14 @@ function WaveformChart({
   const chartRef = useRef<uPlot | null>(null);
   const overlayRef = useRef<WaveformOverlayElements | null>(null);
   const measurementScaleKey = waveformScaleKey(scaleMode, measurementChannelId);
+  const measurementChannelColor =
+    channels.find((channel) => channel.id === measurementChannelId)?.color ?? "#46d89c";
   const measurementRef = useRef({
     enabled: measurementEnabled,
     result: measurement,
     onSelect: onMeasurementSelect,
     scaleKey: measurementScaleKey,
+    color: measurementChannelColor,
   });
   const followInteractionRef = useRef({ canSuspendFollow, onFollowSuspend });
   const triggerTimestampRef = useRef(triggerTimestampSeconds);
@@ -868,6 +917,7 @@ function WaveformChart({
     result: measurement,
     onSelect: onMeasurementSelect,
     scaleKey: measurementScaleKey,
+    color: measurementChannelColor,
   };
   followInteractionRef.current = { canSuspendFollow, onFollowSuspend };
   triggerTimestampRef.current = triggerTimestampSeconds;
@@ -885,6 +935,7 @@ function WaveformChart({
         measurementRef.current.enabled,
         measurementRef.current.result,
         measurementRef.current.scaleKey,
+        measurementRef.current.color,
         triggerTimestampRef.current,
       );
     };
@@ -1078,10 +1129,17 @@ function WaveformChart({
         measurementEnabled,
         measurement,
         measurementScaleKey,
+        measurementChannelColor,
         triggerTimestampSeconds,
       );
     }
-  }, [measurement, measurementEnabled, measurementScaleKey, triggerTimestampSeconds]);
+  }, [
+    measurement,
+    measurementChannelColor,
+    measurementEnabled,
+    measurementScaleKey,
+    triggerTimestampSeconds,
+  ]);
 
   return (
     <div
@@ -1128,6 +1186,7 @@ function updateWaveformOverlay(
   enabled: boolean,
   measurement: WaveformMeasurementResult | null,
   measurementScaleKey: string,
+  measurementColor: string,
   triggerTimestampSeconds: number | null,
 ): void {
   if (!elements) {
@@ -1148,6 +1207,10 @@ function updateWaveformOverlay(
   if (!visible || !measurement) {
     return;
   }
+
+  elements.range.style.setProperty("--measurement-channel-color", measurementColor);
+  elements.cursorA.style.setProperty("--measurement-channel-color", measurementColor);
+  elements.cursorB.style.setProperty("--measurement-channel-color", measurementColor);
 
   const leftA = chart.valToPos(measurement.pointA.timestampSeconds, "x");
   const leftB = chart.valToPos(measurement.pointB.timestampSeconds, "x");
@@ -1253,4 +1316,9 @@ function formatValue(value: number): string {
     return value.toExponential(2);
   }
   return value.toFixed(3);
+}
+
+function formatValueWithUnit(value: number, unit: string): string {
+  const formatted = formatValue(value);
+  return unit ? `${formatted} ${unit}` : formatted;
 }

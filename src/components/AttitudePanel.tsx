@@ -18,7 +18,15 @@ import {
   quaternionInvert,
   quaternionMultiply,
 } from "../core/attitude";
-import { useWorkbenchStore } from "../store/workbenchStore";
+import {
+  getChannelPresentationOverride,
+  presentChannelSeries,
+  type PresentedChannelSeries,
+} from "../core/channelPresentation";
+import {
+  selectActiveProtocol,
+  useWorkbenchStore,
+} from "../store/workbenchStore";
 import type {
   AttitudeChannels,
   AttitudeConfig,
@@ -26,7 +34,8 @@ import type {
   AttitudeSample,
   Quaternion,
 } from "../types/attitude";
-import type { ChannelSeries } from "../types/workbench";
+import type { ProtocolKind } from "../types/serial";
+import type { ChannelPresentations } from "../types/workspace";
 import { AttitudeScene } from "./AttitudeScene";
 
 interface AttitudePanelProps {
@@ -46,6 +55,7 @@ interface ZeroReference {
 interface ChannelOption {
   id: string;
   name: string;
+  sourceName: string;
 }
 
 const EULER_CHANNELS = [
@@ -63,6 +73,8 @@ const QUATERNION_CHANNELS = [
 export function AttitudePanel({ theme }: AttitudePanelProps) {
   const channels = useWorkbenchStore((state) => state.channels);
   const processedChannels = useWorkbenchStore((state) => state.processedChannels);
+  const channelPresentations = useWorkbenchStore((state) => state.channelPresentations);
+  const activeProtocol = useWorkbenchStore(selectActiveProtocol);
   const processingGraph = useWorkbenchStore((state) => state.processingGraph);
   const attitudeConfig = useWorkbenchStore((state) => state.attitudeConfig);
   const attitudeSample = useWorkbenchStore((state) => state.attitudeSample);
@@ -82,9 +94,36 @@ export function AttitudePanel({ theme }: AttitudePanelProps) {
   const [cameraResetToken, setCameraResetToken] = useState(0);
   const [rendererError, setRendererError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
+  const presentedChannels = useMemo(
+    () =>
+      channels.map((channel) =>
+        presentChannelSeries(channel, activeProtocol, channelPresentations),
+      ),
+    [activeProtocol, channelPresentations, channels],
+  );
+  const presentedProcessedChannels = useMemo(
+    () =>
+      processedChannels.map((channel) =>
+        presentChannelSeries(channel, activeProtocol, channelPresentations),
+      ),
+    [activeProtocol, channelPresentations, processedChannels],
+  );
   const channelOptions = useMemo(
-    () => createChannelOptions(channels, processedChannels, processingGraph),
-    [channels, processedChannels, processingGraph],
+    () =>
+      createChannelOptions(
+        presentedChannels,
+        presentedProcessedChannels,
+        processingGraph,
+        activeProtocol,
+        channelPresentations,
+      ),
+    [
+      activeProtocol,
+      channelPresentations,
+      presentedChannels,
+      presentedProcessedChannels,
+      processingGraph,
+    ],
   );
   const runtimeKey = useMemo(
     () =>
@@ -468,23 +507,42 @@ function formatNumber(value: number): string {
 }
 
 function createChannelOptions(
-  channels: readonly ChannelSeries[],
-  processedChannels: readonly ChannelSeries[],
+  channels: readonly PresentedChannelSeries[],
+  processedChannels: readonly PresentedChannelSeries[],
   processingGraph: ReturnType<typeof useWorkbenchStore.getState>["processingGraph"],
+  activeProtocol: ProtocolKind,
+  channelPresentations: ChannelPresentations,
 ): ChannelOption[] {
   const runtimeChannels = new Map(
-    [...channels, ...processedChannels].map((channel) => [channel.id, channel.name]),
+    [...channels, ...processedChannels].map((channel) => [
+      channel.id,
+      { name: channel.displayName, sourceName: channel.name },
+    ]),
   );
   const options: ChannelOption[] = Array.from({ length: 16 }, (_, index) => {
     const id = `channel-${index}`;
-    return { id, name: runtimeChannels.get(id) ?? `CH ${index + 1}` };
+    const fallbackName = `CH ${index + 1}`;
+    const runtimeChannel = runtimeChannels.get(id);
+    const savedAlias =
+      getChannelPresentationOverride(channelPresentations, activeProtocol, id)?.alias ||
+      fallbackName;
+    return {
+      id,
+      name: runtimeChannel?.name ?? savedAlias,
+      sourceName: runtimeChannel?.sourceName ?? fallbackName,
+    };
   });
   for (const node of processingGraph.nodes) {
     if (node.kind !== "output") {
       continue;
     }
     const id = `derived:${node.id}`;
-    options.push({ id, name: runtimeChannels.get(id) ?? node.name });
+    const runtimeChannel = runtimeChannels.get(id);
+    options.push({
+      id,
+      name: runtimeChannel?.name ?? node.name,
+      sourceName: runtimeChannel?.sourceName ?? node.name,
+    });
   }
   return options;
 }
@@ -508,7 +566,11 @@ function findAutomaticMapping(
         };
   const mapping: Partial<AttitudeChannels> = {};
   for (const [key, names] of Object.entries(aliases)) {
-    const option = options.find((candidate) => names.includes(normalizeChannelName(candidate.name)));
+    const option =
+      options.find((candidate) =>
+        names.includes(normalizeChannelName(candidate.sourceName)),
+      ) ??
+      options.find((candidate) => names.includes(normalizeChannelName(candidate.name)));
     if (!option) {
       return null;
     }

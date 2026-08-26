@@ -1700,19 +1700,20 @@ textarea:focus {
 .channel-row {
   display: grid;
   width: 100%;
-  min-height: 42px;
+  min-height: 48px;
   align-items: center;
-  grid-template-columns: 9px minmax(0, 1fr) auto;
-  padding: 0 16px;
-  border: 0;
-  border-bottom: 1px solid var(--border);
+  grid-template-columns: 40px minmax(0, 1fr) auto 30px;
+  padding: 0 10px 0 8px;
   background: transparent;
   color: var(--text);
-  cursor: pointer;
-  gap: 9px;
+  gap: 7px;
 }
 
-.channel-row:hover {
+.channel-item {
+  border-bottom: 1px solid var(--border);
+}
+
+.channel-item:hover {
   background: var(--surface-hover);
 }
 
@@ -1720,13 +1721,40 @@ textarea:focus {
   opacity: 0.45;
 }
 
+.channel-visibility-button {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-subtle);
+  cursor: pointer;
+  gap: 5px;
+}
+
+.channel-visibility-button:hover:not(:disabled) {
+  color: var(--text);
+}
+
 .channel-swatch {
   width: 8px;
   height: 8px;
+  flex: 0 0 auto;
   border-radius: 2px;
 }
 
+.channel-labels {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .channel-name {
+  display: block;
   min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
@@ -1735,10 +1763,97 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.channel-labels small {
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .channel-row strong {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 11px;
   font-weight: 500;
+  gap: 4px;
+}
+
+.channel-row strong small {
+  max-width: 48px;
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-size: 9px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-edit-button {
+  grid-column: 4;
+}
+
+.channel-editor {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-1);
+  gap: 9px;
+}
+
+.channel-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px;
+  gap: 8px;
+}
+
+.channel-editor-grid > label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  color: var(--text-subtle);
+  font-size: 9px;
+  gap: 4px;
+}
+
+.channel-editor-grid input:not([type="color"]) {
+  width: 100%;
+  min-width: 0;
+}
+
+.channel-color-field {
+  grid-column: 1 / -1;
+}
+
+.channel-color-field > span:last-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.channel-color-field input[type="color"] {
+  width: 42px;
+  height: 30px;
+  padding: 2px;
+}
+
+.channel-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.channel-editor-error {
+  font-size: 10px;
+}
+
+.primary-icon-button {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  color: var(--accent);
 }
 
 .sidebar-empty {
@@ -2815,11 +2930,24 @@ textarea:focus {
 }
 
 .channel-readout strong {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 10px;
   font-weight: 500;
   text-align: right;
+  gap: 3px;
+}
+
+.channel-readout strong span {
+  max-width: 40px;
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .waveform-trigger-strip {
@@ -3525,20 +3653,20 @@ textarea:focus {
 }
 
 .waveform-measurement-range {
-  border-right: 1px solid rgb(70 216 156 / 18%);
-  border-left: 1px solid rgb(70 216 156 / 18%);
-  background: rgb(70 216 156 / 7%);
+  border-right: 1px solid color-mix(in srgb, var(--measurement-channel-color, var(--accent)) 22%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--measurement-channel-color, var(--accent)) 22%, transparent);
+  background: color-mix(in srgb, var(--measurement-channel-color, var(--accent)) 8%, transparent);
 }
 
 .waveform-measurement-cursor {
   width: 1px;
-  background: var(--accent);
-  color: var(--accent);
+  background: var(--measurement-channel-color, var(--accent));
+  color: var(--measurement-channel-color, var(--accent));
 }
 
 .waveform-measurement-cursor[data-cursor="B"] {
-  background: var(--amber);
-  color: var(--amber);
+  background: color-mix(in srgb, var(--measurement-channel-color, var(--accent)) 72%, var(--amber));
+  color: color-mix(in srgb, var(--measurement-channel-color, var(--accent)) 72%, var(--amber));
 }
 
 .waveform-measurement-label {
@@ -5776,6 +5904,20 @@ textarea:focus {
     bottom: 80px;
     left: 0;
     width: min(310px, calc(100% - 36px));
+  }
+
+  .channel-row {
+    grid-template-columns: 44px minmax(0, 1fr) auto 44px;
+  }
+
+  .channel-visibility-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .channel-color-field input[type="color"] {
+    width: 52px;
+    height: 44px;
   }
 
   .workspace-title span {
