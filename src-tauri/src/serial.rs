@@ -140,6 +140,38 @@ impl SharedSerialState {
         }
     }
 
+    fn control_line_sender(
+        &self,
+        expected_generation: u64,
+        line: SerialControlLine,
+    ) -> Result<mpsc::SyncSender<WorkerCommand>, String> {
+        if self.status != SerialStatus::Connected {
+            return Err("串口尚未连接".to_owned());
+        }
+        if self.generation != expected_generation {
+            return Err("串口连接已发生变化，请重试控制线操作".to_owned());
+        }
+        if self.active_modbus.is_some() {
+            return Err("Modbus RTU 事务进行中，暂不能设置控制线".to_owned());
+        }
+        if self.active_file_send.is_some() {
+            return Err("文件发送进行中，暂不能设置控制线".to_owned());
+        }
+        let worker = self
+            .worker
+            .as_ref()
+            .filter(|worker| worker.generation == expected_generation)
+            .ok_or_else(|| "串口工作线程未运行".to_owned())?;
+        if line == SerialControlLine::Rts && worker.hardware_flow_control {
+            return Err("硬件流控已接管 RTS，无法手动设置".to_owned());
+        }
+        worker
+            .command_tx
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "串口工作线程已停止".to_owned())
+    }
+
     fn file_send_payload(&self) -> SerialFileSendPayload {
         SerialFileSendPayload {
             job_id: self.file_send_snapshot.job_id,
@@ -425,6 +457,7 @@ impl SerialStatus {
 
 struct SerialWorker {
     generation: u64,
+    hardware_flow_control: bool,
     command_tx: Option<mpsc::SyncSender<WorkerCommand>>,
     cancel: Arc<AtomicBool>,
     join_handle: Option<JoinHandle<()>>,
@@ -464,8 +497,31 @@ impl SerialWorker {
 
 enum WorkerCommand {
     Write(Vec<u8>),
+    SetControlLine(ControlLineCommand),
     StartModbus(ModbusCommand),
     StartFileSend(FileSendCommand),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SerialControlLine {
+    Dtr,
+    Rts,
+}
+
+impl SerialControlLine {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "dtr" => Ok(Self::Dtr),
+            "rts" => Ok(Self::Rts),
+            _ => Err(format!("不支持的串口控制线: {value}")),
+        }
+    }
+}
+
+struct ControlLineCommand {
+    line: SerialControlLine,
+    asserted: bool,
+    reply: mpsc::SyncSender<Result<(), SerialFailure>>,
 }
 
 struct ModbusCommand {
@@ -1056,6 +1112,7 @@ fn connect_serial_blocking(
 
     let mut pending_worker = Some(SerialWorker {
         generation,
+        hardware_flow_control,
         command_tx: Some(command_tx),
         cancel,
         join_handle: Some(join_handle),
@@ -1207,6 +1264,50 @@ pub fn send_serial(state: State<'_, SerialState>, data: Vec<u8>) -> Result<(), S
             mpsc::TrySendError::Full(_) => "串口发送队列已满，请降低发送速率".to_owned(),
             mpsc::TrySendError::Disconnected(_) => "串口工作线程已停止".to_owned(),
         })
+}
+
+#[tauri::command]
+pub async fn set_serial_control_line(
+    state: State<'_, SerialState>,
+    generation: u64,
+    line: String,
+    asserted: bool,
+) -> Result<(), String> {
+    let shared_state = Arc::clone(&state.shared);
+    tauri::async_runtime::spawn_blocking(move || {
+        set_serial_control_line_blocking(shared_state, generation, &line, asserted)
+    })
+    .await
+    .map_err(|error| format!("串口控制线任务异常退出: {error}"))?
+}
+
+fn set_serial_control_line_blocking(
+    shared_state: Arc<Mutex<SharedSerialState>>,
+    generation: u64,
+    line: &str,
+    asserted: bool,
+) -> Result<(), String> {
+    let line = SerialControlLine::parse(line)?;
+    let command_tx = shared_state
+        .lock()
+        .map_err(|_| "串口状态锁已损坏".to_owned())?
+        .control_line_sender(generation, line)?;
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    command_tx
+        .try_send(WorkerCommand::SetControlLine(ControlLineCommand {
+            line,
+            asserted,
+            reply: reply_tx,
+        }))
+        .map_err(|error| match error {
+            mpsc::TrySendError::Full(_) => "串口发送队列已满，请稍后重试控制线操作".to_owned(),
+            mpsc::TrySendError::Disconnected(_) => "串口工作线程已停止".to_owned(),
+        })?;
+
+    reply_rx
+        .recv()
+        .map_err(|_| "串口连接已结束，控制线结果未知".to_owned())?
+        .map_err(|failure| failure.message)
 }
 
 #[tauri::command]
@@ -2192,6 +2293,28 @@ fn run_serial_worker(
                                 origin: PendingWriteOrigin::Normal,
                             });
                         }
+                        Ok(WorkerCommand::SetControlLine(command)) => {
+                            let result = match command.line {
+                                SerialControlLine::Dtr => port
+                                    .write_data_terminal_ready(command.asserted)
+                                    .map_err(|error| {
+                                        SerialFailure::new(
+                                            SerialErrorCode::DtrFailed,
+                                            format!("设置 DTR 失败: {error}"),
+                                        )
+                                    }),
+                                SerialControlLine::Rts => port
+                                    .write_request_to_send(command.asserted)
+                                    .map_err(|error| {
+                                        SerialFailure::new(
+                                            SerialErrorCode::RtsFailed,
+                                            format!("设置 RTS 失败: {error}"),
+                                        )
+                                    }),
+                            };
+                            let _ = command.reply.send(result);
+                            break;
+                        }
                         Ok(WorkerCommand::StartModbus(command)) => {
                             if command.cancel.load(Ordering::Acquire) {
                                 finish_modbus_transaction(
@@ -2939,6 +3062,46 @@ mod tests {
     }
 
     #[test]
+    fn parses_control_lines_and_rejects_unknown_values() {
+        assert_eq!(SerialControlLine::parse("dtr"), Ok(SerialControlLine::Dtr));
+        assert_eq!(SerialControlLine::parse("rts"), Ok(SerialControlLine::Rts));
+        assert!(SerialControlLine::parse("cts").is_err());
+    }
+
+    #[test]
+    fn control_line_admission_requires_current_connection_and_respects_hardware_flow() {
+        let mut shared = SharedSerialState::default();
+        assert!(shared
+            .control_line_sender(0, SerialControlLine::Dtr)
+            .is_err());
+
+        shared.generation = 7;
+        shared.status = SerialStatus::Connected;
+        shared.worker = Some(test_worker(7));
+        assert!(shared
+            .control_line_sender(6, SerialControlLine::Dtr)
+            .is_err());
+        assert!(shared
+            .control_line_sender(7, SerialControlLine::Dtr)
+            .is_ok());
+        assert!(shared
+            .control_line_sender(7, SerialControlLine::Rts)
+            .is_ok());
+
+        shared
+            .worker
+            .as_mut()
+            .expect("测试 worker 应存在")
+            .hardware_flow_control = true;
+        assert_eq!(
+            shared
+                .control_line_sender(7, SerialControlLine::Rts)
+                .expect_err("硬件流控必须拒绝手动 RTS"),
+            "硬件流控已接管 RTS，无法手动设置"
+        );
+    }
+
+    #[test]
     fn state_revision_is_monotonic() {
         let mut shared = SharedSerialState::default();
         let connecting = shared.transition(SerialStatus::Connecting, "COM3".to_owned(), None, None);
@@ -3511,6 +3674,7 @@ mod tests {
         let (command_tx, _command_rx) = mpsc::sync_channel(1);
         SerialWorker {
             generation,
+            hardware_flow_control: false,
             command_tx: Some(command_tx),
             cancel: Arc::new(AtomicBool::new(false)),
             join_handle: None,

@@ -102,13 +102,21 @@ function ConnectionPanel() {
   const ports = useWorkbenchStore((state) => state.ports);
   const isRefreshingPorts = useWorkbenchStore((state) => state.isRefreshingPorts);
   const config = useWorkbenchStore((state) => state.serialConfig);
+  const serialControlLineOperation = useWorkbenchStore(
+    (state) => state.serialControlLineOperation,
+  );
   const serialRecovery = useWorkbenchStore((state) => state.serialRecovery);
+  const serialFileSendStatus = useWorkbenchStore((state) => state.serialFileSend.status);
+  const modbusTransactionStatus = useWorkbenchStore(
+    (state) => state.modbusTransaction.status,
+  );
   const isCancellingSerialConnection = useWorkbenchStore(
     (state) => state.isCancellingSerialConnection,
   );
   const setSource = useWorkbenchStore((state) => state.setSource);
   const setProtocol = useWorkbenchStore((state) => state.setProtocol);
   const updateConfig = useWorkbenchStore((state) => state.updateSerialConfig);
+  const setSerialControlLine = useWorkbenchStore((state) => state.setSerialControlLine);
   const refreshPorts = useWorkbenchStore((state) => state.refreshPorts);
   const connect = useWorkbenchStore((state) => state.connect);
   const disconnect = useWorkbenchStore((state) => state.disconnect);
@@ -131,6 +139,7 @@ function ConnectionPanel() {
     (state) => state.runtimeTransitionStatus,
   );
   const captureStatus = useWorkbenchStore((state) => state.captureStatus);
+  const numericLogStatus = useWorkbenchStore((state) => state.numericLogStatus);
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
   const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
 
@@ -151,6 +160,19 @@ function ConnectionPanel() {
     isRuntimeTransitioning ||
     isCaptureTransitioning;
   const configDisabled = isConnected || isBusy || isRecording || isReplayLoaded;
+  const controlLineDisabled =
+    isCancellingSerialConnection ||
+    isBusy ||
+    isRecording ||
+    isReplayLoaded ||
+    serialControlLineOperation !== "idle" ||
+    numericLogStatus === "starting" ||
+    numericLogStatus === "recording" ||
+    numericLogStatus === "stopping" ||
+    serialFileSendStatus === "queued" ||
+    serialFileSendStatus === "sending" ||
+    serialFileSendStatus === "cancelling" ||
+    modbusTransactionStatus !== "idle";
   const sortedPorts = useMemo(() => sortSerialPorts(ports), [ports]);
   const selectedPortPresentation = useMemo(() => {
     const selectedPort = ports.find((port) => port.name === config.portName);
@@ -340,17 +362,34 @@ function ConnectionPanel() {
               <input
                 type="checkbox"
                 checked={config.dtr}
-                disabled={configDisabled}
-                onChange={(event) => updateConfig("dtr", event.target.checked)}
+                disabled={controlLineDisabled}
+                aria-busy={serialControlLineOperation === "dtr"}
+                onChange={(event) => {
+                  if (isConnected) {
+                    void setSerialControlLine("dtr", event.target.checked);
+                  } else {
+                    updateConfig("dtr", event.target.checked);
+                  }
+                }}
               />
             </label>
-            <label className="toggle-row">
+            <label
+              className="toggle-row"
+              title={config.flowControl === "hardware" ? "硬件流控已接管 RTS" : undefined}
+            >
               <span>RTS</span>
               <input
                 type="checkbox"
                 checked={config.rts}
-                disabled={configDisabled}
-                onChange={(event) => updateConfig("rts", event.target.checked)}
+                disabled={controlLineDisabled || config.flowControl === "hardware"}
+                aria-busy={serialControlLineOperation === "rts"}
+                onChange={(event) => {
+                  if (isConnected) {
+                    void setSerialControlLine("rts", event.target.checked);
+                  } else {
+                    updateConfig("rts", event.target.checked);
+                  }
+                }}
               />
             </label>
           </div>

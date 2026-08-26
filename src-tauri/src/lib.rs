@@ -30,7 +30,8 @@ use replay::{
 use serial::{
     cancel_modbus_transaction, cancel_serial_connect, cancel_serial_file_send, connect_serial,
     disconnect_serial, get_serial_file_send_state, get_serial_state, list_serial_ports,
-    send_serial, start_modbus_transaction, start_serial_file_send, SerialState,
+    send_serial, set_serial_control_line, start_modbus_transaction, start_serial_file_send,
+    SerialState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -50,6 +51,7 @@ pub fn run() {
             cancel_serial_connect,
             disconnect_serial,
             send_serial,
+            set_serial_control_line,
             get_serial_file_send_state,
             start_serial_file_send,
             cancel_serial_file_send,

@@ -169,6 +169,12 @@ export class SerialReconnectCoordinator {
     this.notify();
   }
 
+  updateConfig(config: SerialConfig): void {
+    if (this.config) {
+      this.config = { ...config };
+    }
+  }
+
   observeState(payload: SerialStatePayload, previousStatus: ConnectionStatus): boolean {
     if (payload.status === "disconnected") {
       this.bumpEpoch();

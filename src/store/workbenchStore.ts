@@ -140,6 +140,7 @@ import {
   isTauriRuntime,
   listSerialPorts,
   sendSerial,
+  setSerialControlLine as setSerialControlLineClient,
   startSerialFileSend as startSerialFileSendClient,
   startSerialModbusTransaction,
 } from "../services/serialClient";
@@ -197,6 +198,7 @@ import type {
   LineEnding,
   ProtocolKind,
   SerialConfig,
+  SerialControlLine,
   SerialDataPayload,
   SerialDiagnosticsReport,
   SerialFileSendPayload,
@@ -325,6 +327,7 @@ let captureStopPromise: Promise<boolean> | null = null;
 let numericLogStopPromise: Promise<boolean> | null = null;
 let serialRecoveryCoordinator: SerialReconnectCoordinator | null = null;
 let serialConnectOperation = 0;
+let serialControlLineOperation = 0;
 let serialRecoverySettingOperation = 0;
 let commandScheduler: CommandScheduler | null = null;
 let autoResponderRuntime: AutoResponderRuntime | null = null;
@@ -361,6 +364,7 @@ export interface WorkbenchStore {
   ports: SerialPortInfo[];
   isRefreshingPorts: boolean;
   serialConfig: SerialConfig;
+  serialControlLineOperation: "idle" | SerialControlLine;
   serialRecovery: SerialRecoverySnapshot;
   isCancellingSerialConnection: boolean;
   channels: ChannelSeries[];
@@ -478,6 +482,7 @@ export interface WorkbenchStore {
   setSource(source: DataSource): Promise<void>;
   setProtocol(protocol: ProtocolKind): void;
   updateSerialConfig<K extends keyof SerialConfig>(key: K, value: SerialConfig[K]): void;
+  setSerialControlLine(line: SerialControlLine, asserted: boolean): Promise<boolean>;
   refreshPorts(mode?: "manual" | "background"): Promise<void>;
   connect(): Promise<void>;
   disconnect(): Promise<boolean>;
@@ -616,6 +621,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       ports: [],
       isRefreshingPorts: false,
       serialConfig: { ...INITIAL_WORKSPACE_CONFIG.serialConfig },
+      serialControlLineOperation: "idle",
       serialRecovery: { ...INITIAL_SERIAL_RECOVERY },
       isCancellingSerialConnection: false,
       channels: [],
@@ -1137,6 +1143,58 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         set((state) => ({
           serialConfig: { ...state.serialConfig, [key]: value },
         }));
+      },
+
+      setSerialControlLine: async (line, asserted) => {
+        const state = get();
+        if (!isSerialControlLineContextAvailable(state)) {
+          return false;
+        }
+        if (line === "rts" && state.serialConfig.flowControl === "hardware") {
+          set({ statusMessage: "硬件流控已接管 RTS，无法手动设置" });
+          return false;
+        }
+
+        const operation = ++serialControlLineOperation;
+        const generation = state.serialGeneration;
+        const label = line.toUpperCase();
+        set({
+          serialControlLineOperation: line,
+          statusMessage: `正在设置 ${label}`,
+        });
+        try {
+          await setSerialControlLineClient(generation, line, asserted);
+          const latest = get();
+          if (
+            operation !== serialControlLineOperation ||
+            latest.source !== "serial" ||
+            latest.connectionStatus !== "connected" ||
+            latest.serialGeneration !== generation
+          ) {
+            return false;
+          }
+          const serialConfig = { ...latest.serialConfig, [line]: asserted };
+          set({
+            serialConfig,
+            statusMessage: `${label} 已设为${asserted ? "有效" : "无效"}`,
+          });
+          getSerialRecoveryCoordinator().updateConfig(serialConfig);
+          return true;
+        } catch (error) {
+          const latest = get();
+          if (
+            operation === serialControlLineOperation &&
+            latest.source === "serial" &&
+            latest.serialGeneration === generation
+          ) {
+            set({ statusMessage: `设置 ${label} 失败：${getErrorMessage(error)}` });
+          }
+          return false;
+        } finally {
+          if (operation === serialControlLineOperation) {
+            set({ serialControlLineOperation: "idle" });
+          }
+        }
       },
 
       refreshPorts: async (mode = "manual") => {
@@ -1788,6 +1846,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return;
         }
         if (payload.status !== "connected") {
+          serialControlLineOperation += 1;
           if (
             isModbusTransactionActive(state.modbusTransaction) &&
             state.modbusTransaction.generation === state.serialGeneration
@@ -1827,6 +1886,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             serialGeneration: payload.generation,
             serialStateRevision: payload.revision,
             statusMessage: payload.message ?? "串口发生未知错误",
+            serialControlLineOperation: "idle",
             waveformTrigger: createIdleWaveformTriggerState(),
             terminalEntries: terminalEntries ?? state.terminalEntries,
           });
@@ -1845,6 +1905,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           serialStateRevision: payload.revision,
           statusMessage:
             payload.message ?? serialStatusMessage(payload.status, payload.portName),
+          serialControlLineOperation:
+            payload.status === "connected" ? state.serialControlLineOperation : "idle",
           waveformTrigger:
             payload.status === state.connectionStatus &&
             payload.generation === state.serialGeneration
@@ -3338,6 +3400,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 );
 
 export function disposeWorkbenchRuntime(): void {
+  serialControlLineOperation += 1;
   stopCurrentCommandWorkflows("runtime-dispose");
   void useWorkbenchStore.getState().cancelFileSend();
   cancelModbusTransactionForRuntimeDispose();
@@ -3351,6 +3414,7 @@ export function disposeWorkbenchRuntime(): void {
   resetLiveStreamBoundary(state.protocol);
   useWorkbenchStore.setState({
     attitudeSample: null,
+    serialControlLineOperation: "idle",
     waveformTrigger: createIdleWaveformTriggerState(),
     processingStatus: liveProcessingRuntime.getSnapshot(),
     protocolHealth: protocolParser.getHealthSnapshot(),
@@ -4015,6 +4079,24 @@ function isNumericLogTransitioning(status: NumericLogUiStatus): boolean {
 
 function isNumericLogActive(status: NumericLogUiStatus): boolean {
   return status === "starting" || status === "recording" || status === "stopping";
+}
+
+function isSerialControlLineContextAvailable(state: WorkbenchStore): boolean {
+  return (
+    state.isNativeRuntime &&
+    state.source === "serial" &&
+    state.connectionStatus === "connected" &&
+    state.serialControlLineOperation === "idle" &&
+    state.workspaceTransitionStatus === "idle" &&
+    state.runtimeTransitionStatus === "idle" &&
+    !state.isCancellingSerialConnection &&
+    !isRecoveryActivePhase(state.serialRecovery.phase) &&
+    !isCaptureActive(state.captureStatus) &&
+    !isNumericLogActive(state.numericLogStatus) &&
+    !isSerialFileSendActive(state.serialFileSend.status) &&
+    !isModbusTransactionActive(state.modbusTransaction) &&
+    !hasReplaySession(state)
+  );
 }
 
 function isBackgroundPortRefreshContext(state: WorkbenchStore): boolean {

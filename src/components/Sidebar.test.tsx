@@ -5,6 +5,7 @@ import { useWorkbenchStore } from "../store/workbenchStore";
 import { Sidebar } from "./Sidebar";
 
 const originalRefreshPorts = useWorkbenchStore.getState().refreshPorts;
+const originalSetSerialControlLine = useWorkbenchStore.getState().setSerialControlLine;
 
 describe("Sidebar 串口恢复界面", () => {
   beforeEach(() => {
@@ -28,6 +29,7 @@ describe("Sidebar 串口恢复界面", () => {
         ...useWorkbenchStore.getState().serialConfig,
         portName: "COM3",
       },
+      serialControlLineOperation: "idle",
       serialRecovery: {
         enabled: true,
         phase: "waiting",
@@ -49,7 +51,10 @@ describe("Sidebar 串口恢复界面", () => {
 
   afterEach(() => {
     cleanup();
-    useWorkbenchStore.setState({ refreshPorts: originalRefreshPorts });
+    useWorkbenchStore.setState({
+      refreshPorts: originalRefreshPorts,
+      setSerialControlLine: originalSetSerialControlLine,
+    });
   });
 
   it("提供侧栏关闭动作", () => {
@@ -217,6 +222,45 @@ describe("Sidebar 串口恢复界面", () => {
     );
 
     expect(refreshPorts).toHaveBeenCalledWith("background");
+  });
+
+  it("连接后允许动态设置控制线并在硬件流控时锁定 RTS", () => {
+    const setSerialControlLine = vi.fn().mockResolvedValue(true);
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      serialRecovery: { ...state.serialRecovery, phase: "armed" },
+      serialConfig: { ...state.serialConfig, dtr: true, rts: true, flowControl: "none" },
+      setSerialControlLine,
+    }));
+    const { rerender } = render(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    const dtr = screen.getByRole("checkbox", { name: "DTR" });
+    const rts = screen.getByRole("checkbox", { name: "RTS" });
+    expect(dtr).toBeEnabled();
+    expect(rts).toBeEnabled();
+    fireEvent.click(dtr);
+    expect(setSerialControlLine).toHaveBeenCalledWith("dtr", false);
+
+    useWorkbenchStore.setState((state) => ({
+      serialConfig: { ...state.serialConfig, flowControl: "hardware" },
+    }));
+    rerender(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("checkbox", { name: "DTR" })).toBeEnabled();
+    expect(screen.getByRole("checkbox", { name: "RTS" })).toBeDisabled();
   });
 });
 

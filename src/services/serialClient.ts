@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
   SerialConfig,
+  SerialControlLine,
   SerialDataPayload,
   SerialFileSendPayload,
   SerialModbusTransactionPayload,
@@ -51,6 +52,15 @@ export async function disconnectSerial(): Promise<SerialStatePayload> {
 export async function sendSerial(data: Uint8Array): Promise<void> {
   requireTauriRuntime();
   await invoke("send_serial", { data: Array.from(data) });
+}
+
+export async function setSerialControlLine(
+  generation: number,
+  line: SerialControlLine,
+  asserted: boolean,
+): Promise<void> {
+  requireTauriRuntime();
+  await invoke("set_serial_control_line", { generation, line, asserted });
 }
 
 export async function selectSerialFilePath(): Promise<string | null> {

@@ -3,6 +3,7 @@ export type DataSource = "serial" | "simulator";
 export const PROTOCOL_IDS = ["firewater", "justfloat", "raw"] as const;
 export type ProtocolKind = (typeof PROTOCOL_IDS)[number];
 export type DisplayMode = "text" | "hex";
+export type SerialControlLine = "dtr" | "rts";
 export const LINE_ENDINGS = ["none", "lf", "cr", "crlf"] as const;
 export const LEGACY_LINE_ENDINGS = ["none", "lf", "crlf"] as const;
 export type LineEnding = (typeof LINE_ENDINGS)[number];

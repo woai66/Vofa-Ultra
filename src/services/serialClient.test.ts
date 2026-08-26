@@ -4,6 +4,7 @@ import {
   cancelSerialModbusTransaction,
   getSerialFileSendState,
   selectSerialFilePath,
+  setSerialControlLine,
   startSerialFileSend,
   startSerialModbusTransaction,
   subscribeToSerialEvents,
@@ -77,6 +78,18 @@ describe("serialClient", () => {
         { transactionId: 17, request: Array.from(request), timeoutMs: 1_000 },
       ],
       ["cancel_modbus_transaction", { transactionId: 17 }],
+    ]);
+  });
+
+  it("控制线命令携带连接代次且等待后端完成", async () => {
+    invokeMock.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined);
+
+    await setSerialControlLine(7, "dtr", false);
+    await setSerialControlLine(7, "rts", true);
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["set_serial_control_line", { generation: 7, line: "dtr", asserted: false }],
+      ["set_serial_control_line", { generation: 7, line: "rts", asserted: true }],
     ]);
   });
 

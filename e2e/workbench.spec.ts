@@ -3070,6 +3070,28 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
   await page.getByRole("button", { name: "连接设备" }).click();
   await expect(page.getByText("自动重连已待命")).toBeVisible();
 
+  await page.getByRole("checkbox", { name: "DTR" }).uncheck();
+  await page.getByRole("checkbox", { name: "RTS" }).uncheck();
+  await expect(page.getByRole("checkbox", { name: "DTR" })).not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "RTS" })).not.toBeChecked();
+  expect(
+    await page.evaluate(() => {
+      const testWindow = window as unknown as {
+        __TAURI_TEST__: {
+          controlLineCalls: Array<{
+            generation: number;
+            line: "dtr" | "rts";
+            asserted: boolean;
+          }>;
+        };
+      };
+      return testWindow.__TAURI_TEST__.controlLineCalls;
+    }),
+  ).toEqual([
+    { generation: 1, line: "dtr", asserted: false },
+    { generation: 1, line: "rts", asserted: false },
+  ]);
+
   await page.evaluate(() => {
     const testWindow = window as unknown as {
       __TAURI_TEST__: { loseDevice(): void };
@@ -3674,6 +3696,11 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       command: string;
       request: Record<string, unknown>;
     }> = [];
+    const controlLineCalls: Array<{
+      generation: number;
+      line: "dtr" | "rts";
+      asserted: boolean;
+    }> = [];
     let recordingDirectoryDialogCalls = 0;
     const closeOperations: string[] = [];
     let destroyCount = 0;
@@ -3767,6 +3794,22 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         };
         emitSerialState();
         return { ...serialState };
+      }
+      if (command === "set_serial_control_line") {
+        const generation = Number(args?.generation);
+        const line = String(args?.line);
+        const asserted = args?.asserted;
+        if (serialState.status !== "connected") {
+          throw new Error("串口尚未连接");
+        }
+        if (generation !== serialState.generation) {
+          throw new Error("串口连接已发生变化");
+        }
+        if ((line !== "dtr" && line !== "rts") || typeof asserted !== "boolean") {
+          throw new Error("串口控制线参数无效");
+        }
+        controlLineCalls.push({ generation, line, asserted });
+        return undefined;
       }
       if (command === "start_serial_file_send") {
         fileSendState = {
@@ -3956,6 +3999,11 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       __TAURI_EVENT_PLUGIN_INTERNALS__: Record<string, unknown>;
       __TAURI_TEST__: {
         closeOperations: string[];
+        controlLineCalls: Array<{
+          generation: number;
+          line: "dtr" | "rts";
+          asserted: boolean;
+        }>;
         destroyCount: number;
         emitNumericData(): void;
         loseDevice(): void;
@@ -3995,6 +4043,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
     };
     testWindow.__TAURI_TEST__ = {
       closeOperations,
+      controlLineCalls,
       get destroyCount() {
         return destroyCount;
       },
