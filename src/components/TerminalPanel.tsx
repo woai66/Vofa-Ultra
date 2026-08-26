@@ -397,7 +397,6 @@ export function TerminalPanel() {
   const workflowVisible = workflowOpen || taskActive;
   const canStartPeriodic =
     connectionStatus === "connected" &&
-    message.length > 0 &&
     !templatePreview.error &&
     templatePreview.byteCount > 0 &&
     !isWorkspaceTransitioning &&

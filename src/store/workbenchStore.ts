@@ -1395,9 +1395,6 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       startPeriodicSend: (value, mode, lineEnding, intervalMs, repeatCount) => {
-        if (value.length === 0) {
-          throw new Error("发送内容不能为空");
-        }
         const template = compileCommandTemplate(value, mode);
         assertCommandCanStart(get());
         getCommandScheduler().start({

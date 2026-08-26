@@ -1147,6 +1147,17 @@ test("有界命令历史与可取消周期发送形成完整工作流", async ({
   const stoppedStatus = await taskStatus.textContent();
   await page.waitForTimeout(120);
   await expect(taskStatus).toHaveText(stoppedStatus ?? "");
+
+  await input.fill("");
+  await page.getByRole("combobox", { name: "行尾", exact: true }).selectOption("cr");
+  await page.getByRole("group", { name: "发送次数模式" }).getByRole("button", {
+    name: "次数",
+  }).click();
+  await page.getByRole("spinbutton", { name: "发送次数" }).fill("1");
+  await page.getByRole("button", { name: "启动" }).click();
+  await expect(taskStatus).toContainText("已完成 1 次发送", { timeout: 5_000 });
+  await page.getByRole("button", { name: "命令历史，2 条" }).click();
+  await expect(page.getByRole("dialog", { name: "命令历史" })).toContainText("<CR>");
 });
 
 test("Modbus RTU 构帧和单事务主站经统一链路工作且窄屏可操作", async ({ page }, testInfo) => {
