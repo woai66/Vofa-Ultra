@@ -2770,11 +2770,22 @@ test("浏览器预览显示会话状态但不开放文件操作", async ({ page 
   await expect(page.getByRole("button", { name: "开始录制" })).toBeDisabled();
   await expect(page.getByText("仅桌面应用支持文件录制")).toBeVisible();
   await expect(page.getByLabel("录制状态")).toContainText("未录制");
+  const recordingDirectory = page.getByRole("region", { name: "记录目录" });
+  await expect(recordingDirectory).toContainText("系统默认");
+  await expect(
+    recordingDirectory.getByRole("button", { name: "选择记录目录" }),
+  ).toBeDisabled();
+  await expect(
+    recordingDirectory.getByRole("button", { name: "恢复默认记录目录" }),
+  ).toBeDisabled();
 
   await page.getByRole("tab", { name: "数值" }).click();
   await expect(page.getByRole("button", { name: "开始数值记录" })).toBeDisabled();
   await expect(page.getByText("仅桌面应用支持数值文件记录")).toBeVisible();
   await expect(page.getByLabel("数值记录状态")).toContainText("未记录数值");
+  await expect(page.getByRole("region", { name: "记录目录" })).toContainText(
+    "系统默认",
+  );
 
   await page.getByRole("tab", { name: "回放" }).click();
   await expect(page.getByRole("button", { name: "打开捕获文件" })).toBeDisabled();
@@ -2965,6 +2976,87 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
     path: testInfo.outputPath("serial-recovery.png"),
     fullPage: true,
   });
+});
+
+test("桌面原始捕获与数值记录共用所选会话目录", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await installTauriSerialMock(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "连接设备" }).click();
+  await expect(page.getByText("COM3 已连接")).toBeVisible();
+  await page.getByRole("button", { name: "记录", exact: true }).click();
+
+  let directory = page.getByRole("region", { name: "记录目录" });
+  let selectDirectory = directory.getByRole("button", { name: "选择记录目录" });
+  await selectDirectory.click();
+  await expect(directory.getByRole("status")).toContainText("系统默认");
+  await expect(selectDirectory).toBeEnabled();
+  expect(
+    await page.evaluate(() => {
+      const testWindow = window as unknown as {
+        __TAURI_TEST__: {
+          recordingDirectoryDialogCalls: number;
+          recordingStartRequests: unknown[];
+        };
+      };
+      return {
+        dialogCalls: testWindow.__TAURI_TEST__.recordingDirectoryDialogCalls,
+        startRequests: testWindow.__TAURI_TEST__.recordingStartRequests.length,
+      };
+    }),
+  ).toEqual({ dialogCalls: 1, startRequests: 0 });
+
+  await selectDirectory.click();
+  await expect(directory.getByRole("status")).toContainText("D:\\sessions");
+  await page.getByRole("button", { name: "开始录制" }).click();
+  await expect(page.getByLabel("录制状态")).toContainText("正在录制");
+
+  await page.getByRole("tab", { name: "数值" }).click();
+  directory = page.getByRole("region", { name: "记录目录" });
+  selectDirectory = directory.getByRole("button", { name: "选择记录目录" });
+  await expect(directory.getByRole("status")).toContainText("D:\\sessions");
+  await expect(selectDirectory).toBeDisabled();
+  await page.getByRole("button", { name: "开始数值记录" }).click();
+  await expect(page.getByLabel("数值记录状态")).toContainText("正在记录数值");
+
+  const requests = await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: {
+        recordingStartRequests: Array<{
+          command: string;
+          request: Record<string, unknown>;
+        }>;
+      };
+    };
+    return testWindow.__TAURI_TEST__.recordingStartRequests;
+  });
+  expect(requests).toHaveLength(2);
+  expect(requests).toEqual([
+    {
+      command: "start_capture",
+      request: expect.objectContaining({
+        source: "serial",
+        protocol: "firewater",
+        destinationDirectory: "D:\\sessions",
+      }),
+    },
+    {
+      command: "start_numeric_log",
+      request: {
+        source: "serial",
+        protocol: "firewater",
+        destinationDirectory: "D:\\sessions",
+      },
+    },
+  ]);
+  expect(pageErrors).toEqual([]);
 });
 
 test("桌面实时链路批量记录解析后的数值 CSV", async ({ page }) => {
@@ -3436,6 +3528,17 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       errorCode: undefined as string | undefined,
       message: "",
     };
+    let captureState = {
+      status: "idle",
+      sessionId: 0,
+      revision: 0,
+      formatVersion: 2,
+      path: "",
+      dataBytes: 0,
+      recordCount: 0,
+      markerCount: 0,
+      message: "",
+    };
     let numericLogState = {
       status: "idle",
       sessionId: 0,
@@ -3446,6 +3549,11 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       message: "",
     };
     const numericLogBatches: unknown[][] = [];
+    const recordingStartRequests: Array<{
+      command: string;
+      request: Record<string, unknown>;
+    }> = [];
+    let recordingDirectoryDialogCalls = 0;
     const closeOperations: string[] = [];
     let destroyCount = 0;
 
@@ -3488,6 +3596,11 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         return { ...fileSendState };
       }
       if (command === "plugin:dialog|open") {
+        const options = args?.options as { directory?: boolean } | undefined;
+        if (options?.directory) {
+          recordingDirectoryDialogCalls += 1;
+          return recordingDirectoryDialogCalls === 1 ? null : "D:\\sessions";
+        }
         return "C:\\firmware\\firmware.bin";
       }
       if (command === "connect_serial") {
@@ -3597,26 +3710,38 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         return true;
       }
       if (command === "get_capture_state") {
-        return {
-          status: "idle",
-          sessionId: 0,
-          revision: 0,
+        return { ...captureState };
+      }
+      if (command === "start_capture") {
+        const request = (args?.request as Record<string, unknown>) ?? {};
+        recordingStartRequests.push({ command, request: { ...request } });
+        const directory = String(request.destinationDirectory ?? "C:\\captures");
+        captureState = {
+          status: "recording",
+          sessionId: 7,
+          revision: captureState.revision + 1,
           formatVersion: 2,
-          path: "",
+          path: `${directory}\\capture.vucap`,
           dataBytes: 0,
           recordCount: 0,
           markerCount: 0,
+          message: "",
         };
+        emit("capture://state", { ...captureState });
+        return { ...captureState };
       }
       if (command === "get_numeric_log_state") {
         return { ...numericLogState };
       }
       if (command === "start_numeric_log") {
+        const request = (args?.request as Record<string, unknown>) ?? {};
+        recordingStartRequests.push({ command, request: { ...request } });
+        const directory = String(request.destinationDirectory ?? "C:\\captures");
         numericLogState = {
           status: "recording",
           sessionId: 17,
           revision: numericLogState.revision + 1,
-          path: "C:\\captures\\numeric.csv",
+          path: `${directory}\\numeric.csv.part`,
           outputBytes: 116,
           sampleCount: 0,
           message: "",
@@ -3643,6 +3768,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           ...numericLogState,
           status: "idle",
           revision: numericLogState.revision + 1,
+          path: numericLogState.path.replace(/\.part$/, ""),
           message: "",
         };
         emit("numeric-log://state", { ...numericLogState });
@@ -3712,6 +3838,11 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         emitNumericData(): void;
         loseDevice(): void;
         requestClose(): Promise<void>;
+        recordingDirectoryDialogCalls: number;
+        recordingStartRequests: Array<{
+          command: string;
+          request: Record<string, unknown>;
+        }>;
         restoreDevice(): void;
         numericLogBatches: unknown[][];
       };
@@ -3745,6 +3876,10 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         return destroyCount;
       },
       numericLogBatches,
+      get recordingDirectoryDialogCalls() {
+        return recordingDirectoryDialogCalls;
+      },
+      recordingStartRequests,
       emitNumericData: () => {
         emit("serial://data", {
           data: "MSwyCg==",

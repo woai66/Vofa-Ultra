@@ -7,6 +7,7 @@ export type NumericLogChannelKind = "base" | "derived";
 export interface NumericLogStartRequest {
   source: DataSource;
   protocol: ProtocolKind;
+  destinationDirectory?: string;
 }
 
 export interface NumericLogSample {

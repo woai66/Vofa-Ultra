@@ -28,6 +28,7 @@ import {
   startNumericLog,
   stopNumericLog,
 } from "../services/numericLogClient";
+import { selectRecordingDirectoryPath } from "../services/recordingDirectoryClient";
 import {
   cancelCaptureExport,
   clearCaptureExport,
@@ -125,6 +126,10 @@ vi.mock("../services/numericLogClient", () => ({
   stopNumericLog: vi.fn(),
 }));
 
+vi.mock("../services/recordingDirectoryClient", () => ({
+  selectRecordingDirectoryPath: vi.fn(),
+}));
+
 vi.mock("../services/replayClient", () => ({
   ackReplayBatch: vi.fn(),
   closeReplay: vi.fn(),
@@ -156,6 +161,7 @@ const enqueueNumericLogSamplesMock = vi.mocked(enqueueNumericLogSamples);
 const resetNumericLogQueueMock = vi.mocked(resetNumericLogQueue);
 const startNumericLogMock = vi.mocked(startNumericLog);
 const stopNumericLogMock = vi.mocked(stopNumericLog);
+const selectRecordingDirectoryPathMock = vi.mocked(selectRecordingDirectoryPath);
 const cancelCaptureExportMock = vi.mocked(cancelCaptureExport);
 const clearCaptureExportMock = vi.mocked(clearCaptureExport);
 const selectCaptureExportDestinationPathMock = vi.mocked(
@@ -356,6 +362,7 @@ describe("workbenchStore", () => {
     resetNumericLogQueueMock.mockReset();
     startNumericLogMock.mockReset();
     stopNumericLogMock.mockReset();
+    selectRecordingDirectoryPathMock.mockReset();
     cancelCaptureExportMock.mockReset();
     clearCaptureExportMock.mockReset();
     selectCaptureExportDestinationPathMock.mockReset();
@@ -417,6 +424,9 @@ describe("workbenchStore", () => {
       activeWorkspaceId: workspace.id,
       workspaceTransitionStatus: "idle",
       runtimeTransitionStatus: "idle",
+      recordingDirectoryStatus: "idle",
+      recordingDirectory: "",
+      recordingDirectoryMessage: "",
       workspaceStorageStatus: "writable",
       incompatibleStorageVersion: null,
       captureStatus: "idle",
@@ -3849,6 +3859,115 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(921_600);
   });
 
+  it("目录选择取消不改状态，成功后可恢复系统默认", async () => {
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      recordingDirectory: "C:\\captures\\existing",
+      recordingDirectoryMessage: "保留消息",
+    });
+    selectRecordingDirectoryPathMock.mockResolvedValueOnce(null);
+
+    await expect(useWorkbenchStore.getState().selectRecordingDirectory()).resolves.toBe(
+      false,
+    );
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      recordingDirectoryStatus: "idle",
+      recordingDirectory: "C:\\captures\\existing",
+      recordingDirectoryMessage: "保留消息",
+    });
+
+    selectRecordingDirectoryPathMock.mockResolvedValueOnce("D:\\sessions");
+    await expect(useWorkbenchStore.getState().selectRecordingDirectory()).resolves.toBe(
+      true,
+    );
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      recordingDirectory: "D:\\sessions",
+      recordingDirectoryMessage: "",
+    });
+    expect(useWorkbenchStore.getState().resetRecordingDirectory()).toBe(true);
+    expect(useWorkbenchStore.getState().recordingDirectory).toBe("");
+  });
+
+  it("目录选择期间只锁住记录启动且不打断周期发送", async () => {
+    vi.useFakeTimers();
+    const selection = deferred<string | null>();
+    selectRecordingDirectoryPathMock.mockReturnValueOnce(selection.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "simulator",
+      connectionStatus: "connected",
+      recordingDirectory: "C:\\captures\\stable",
+    });
+    useWorkbenchStore.getState().startPeriodicSend("PING", "text", "none", 20, 3);
+    await flushPromises();
+
+    const selectPromise = useWorkbenchStore.getState().selectRecordingDirectory();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      runtimeTransitionStatus: "idle",
+      recordingDirectoryStatus: "selecting",
+    });
+    await expect(useWorkbenchStore.getState().startCapture()).resolves.toBe(false);
+    expect(startCaptureMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(40);
+    expect(useWorkbenchStore.getState().commandTask).toMatchObject({
+      status: "completed",
+      sentCount: 3,
+    });
+
+    selection.reject(new Error("dialog failed"));
+    await expect(selectPromise).resolves.toBe(false);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      runtimeTransitionStatus: "idle",
+      recordingDirectoryStatus: "idle",
+      recordingDirectory: "C:\\captures\\stable",
+      recordingDirectoryMessage: "dialog failed",
+    });
+  });
+
+  it("自定义目录同时传入原始捕获和数值记录且活动期间不能重置", async () => {
+    startCaptureMock.mockResolvedValue({
+      status: "recording",
+      sessionId: 7,
+      revision: 3,
+      formatVersion: 2,
+      path: "D:\\sessions\\capture.vucap",
+      startedAtUnixMs: 1_000,
+      dataBytes: 0,
+      recordCount: 0,
+      markerCount: 0,
+    });
+    startNumericLogMock.mockResolvedValue(
+      numericLogState("recording", {
+        sessionId: 17,
+        revision: 3,
+        path: "D:\\sessions\\numeric.csv.part",
+        startedAtUnixMs: 1_000,
+      }),
+    );
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      connectionStatus: "connected",
+      protocol: "firewater",
+      recordingDirectory: "D:\\sessions",
+    });
+
+    await expect(useWorkbenchStore.getState().startCapture()).resolves.toBe(true);
+    await expect(useWorkbenchStore.getState().startNumericLog()).resolves.toBe(true);
+    expect(startCaptureMock).toHaveBeenCalledWith({
+      source: "simulator",
+      protocol: "firewater",
+      serialConfig: expect.any(Object),
+      destinationDirectory: "D:\\sessions",
+    });
+    expect(startNumericLogMock).toHaveBeenCalledWith({
+      source: "simulator",
+      protocol: "firewater",
+      destinationDirectory: "D:\\sessions",
+    });
+    expect(useWorkbenchStore.getState().resetRecordingDirectory()).toBe(false);
+    expect(useWorkbenchStore.getState().recordingDirectory).toBe("D:\\sessions");
+  });
+
   it("数值记录可与原始捕获并行并冻结数据源协议", async () => {
     startNumericLogMock.mockResolvedValue(
       numericLogState("recording", {
@@ -5662,6 +5781,26 @@ describe("workbenchStore", () => {
     useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("1,2\n"), 1_000);
 
     expect(storageWrite).not.toHaveBeenCalled();
+    storageWrite.mockRestore();
+  });
+
+  it("记录目录只保留在当前会话且不进入串口诊断", async () => {
+    useWorkbenchStore.setState({ isNativeRuntime: true });
+    selectRecordingDirectoryPathMock.mockResolvedValue("C:\\private\\captures");
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    storageWrite.mockClear();
+
+    await expect(useWorkbenchStore.getState().selectRecordingDirectory()).resolves.toBe(
+      true,
+    );
+
+    expect(useWorkbenchStore.getState().recordingDirectory).toBe(
+      "C:\\private\\captures",
+    );
+    expect(storageWrite).not.toHaveBeenCalled();
+    expect(JSON.stringify(useWorkbenchStore.getState().getSerialDiagnostics())).not.toContain(
+      "private",
+    );
     storageWrite.mockRestore();
   });
 

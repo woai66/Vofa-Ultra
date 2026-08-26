@@ -21,6 +21,7 @@ export interface CaptureStartRequest {
   source: DataSource;
   protocol: ProtocolKind;
   serialConfig: SerialConfig;
+  destinationDirectory?: string;
 }
 
 export interface CaptureStatePayload {
