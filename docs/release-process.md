@@ -1,9 +1,12 @@
 # 发布流程
 
-本流程把 GitHub draft Release 视为候选包暂存区，而不是发布成功证明。自动化只负责从同一次 tag workflow 聚合、
-复验和上传产物；签名、公证、安装与真实串口验证必须由发布者在 draft 阶段完成并留下证据。
+> 状态：未来设计参考，当前未启用。仓库没有 GitHub Actions 工作流；push、PR 和版本标签不会自动构建候选包或
+> 创建 GitHub draft Release。现阶段只执行本地检查与人工发布准备。
 
-## GitHub 仓库配置
+以下内容记录未来可能采用的严格发布方案，不代表当前仓库已经配置或运行这些自动化。签名、公证、安装与真实
+串口验证始终必须由发布者人工完成并留下证据。
+
+## 未来启用前的 GitHub 仓库配置
 
 首次推送标签前，维护者需要完成以下仓库设置：
 
@@ -54,7 +57,7 @@ git push origin v0.1.0
 
 标签必须严格等于 `v<package.json version>`。不要移动或复用已经产生 draft 的标签。
 
-## 自动聚合
+## 自动聚合（未来设计）
 
 版本标签触发 `CI` workflow 后，三平台 package matrix 分别生成 Linux x64、Windows x64 和 macOS x64 候选包。
 每个平台 artifact 都包含安装包、项目许可证、目标 CycloneDX、第三方 NOTICE、供应链清单、构建环境记录和平台

@@ -6,8 +6,8 @@ Vofa-Ultra 学习 VOFA+ 与
 [vofa-NEXT](https://github.com/Horldsence/vofa-NEXT) 的产品思路，但采用独立实现。项目优先保证串口
 生命周期可靠、数据链路可诊断、内存边界明确，并在基础收发稳定之后再引入高级编排能力。
 
-> 当前代码是可运行的 v0.1.0 预发布候选，并已包含路线图中完成验收的 v0.2 / v0.3 能力。CI 可生成无签名候选
-> 安装包，但尚未发布经过签名和完整硬件验证的稳定版本。真实串口仍需在具备 Rust 工具链和串口硬件的环境中验证。
+> 当前代码是可运行的 v0.1.0 预发布候选，并已包含路线图中完成验收的 v0.2 / v0.3 能力。项目暂未启用
+> GitHub Actions；构建、测试和候选包生成均由维护者在本地手动执行。尚未发布经过签名和完整硬件验证的稳定版本。
 
 ![Vofa-Ultra 实时串口工作台](docs/images/workbench.png)
 
@@ -50,7 +50,7 @@ Vofa-Ultra 学习 VOFA+ 与
 - `.vucap` 流式导出为 CSV、JSONL 或单向原始二进制，支持方向过滤、进度、取消和失败恢复。
 - 可取消的串口自动重连：用 VID、PID 与非空 USB 序列号识别原设备，跨端口名恢复且不猜测歧义设备。
 - 256 条有界恢复事件与 128 KiB 脱敏诊断导出，不包含端口名、序列号、原始错误或收发载荷。
-- Vitest 单元 / 组件测试、Playwright 浏览器验收、三平台桌面集成构建和按需无签名候选包。
+- Vitest 单元 / 组件测试、Playwright 浏览器验收、桌面构建检查和按目标生成无签名候选包的本地命令。
 - 每目标 CycloneDX 1.6、许可证允许策略、第三方 notices、应用内嵌资源和完整发布文件校验。
 - 机器可读的配置、VUCAP 与协议 wire ID 兼容矩阵，以及前端/Rust 双侧防漂移门禁。
 
@@ -80,31 +80,11 @@ pnpm tauri dev
 仓库已提交 `src-tauri/Cargo.lock`，桌面构建应使用锁定依赖。正式发布前仍需在目标平台完成真实串口连接、
 收发、拔插和重连验证。
 
-### 无签名候选包
+### 本地无签名候选包
 
-GitHub Actions 的普通 push 和 PR 会在 Windows、macOS、Linux 执行最终桌面二进制构建，但跳过安装包生成。
-手动运行 `CI` workflow，或推送与项目版本完全一致的标签（例如 `v0.1.0`），才会额外生成以下候选产物。
-当前自动化只覆盖 x86_64；ARM64 与 Apple Silicon 原生包尚未进入构建和验收范围。
-
-- Windows x64：MSI 与 NSIS 安装程序。
-- macOS Intel x64：DMG 磁盘映像。
-- Linux x64：DEB 与 AppImage。
-- 每个完整 Rust target 独立的 CycloneDX 1.6 SBOM、第三方许可证/NOTICE 原文、项目 `LICENSE` 和供应链校验清单。
-- GitHub runner image、实际 Node/pnpm/Tauri CLI/Cargo/rustc/LLVM，以及 Linux 明确安装系统包的 canonical 环境记录。
-- 绑定版本、触发 commit、workflow run 与预发布通道的构建信息，以及对应版本的 CHANGELOG 摘要。
-- 覆盖安装包与上述发布材料的 `SHA256SUMS`。
-
-候选构建首先运行 `pnpm check:release`，要求当前版本只有一个已分类的发布章节，且 `Unreleased` 已清空。
-手动 workflow 的产物只保留在对应 Actions run 中 14 天。版本标签还会在独立性能预算与三平台全部成功后复验并
-聚合当前 run 的产物，并在创建前后确认远端标签仍指向触发 commit，再通过受保护的 `release-draft` Environment
-创建无签名 draft Release。标签构建会分别为实际三平台 package 输出和复验后的聚合 assets 生成 GitHub provenance；v0.x 和带
-SemVer 预发布后缀的版本同时标记为 prerelease，自动化不会 Publish 或标记 Latest。
-候选包明确不含代码签名或 macOS 公证，操作系统可能显示安全警告；正式发布前仍需在目标系统完成安装、启动、
-卸载和真实串口冒烟测试。Provenance 只绑定 workflow/commit 与文件摘要，不等于代码签名或可复现构建证明。
-第三方 notices 与 SBOM 也会嵌入应用资源，下载 sidecar 和安装内容来自同一次生成。
-生成范围、许可证策略和可复现边界见[供应链发布说明](docs/supply-chain.md)，人工放行要求见
-[发布流程](docs/release-process.md)。
-本地生成当前平台的无签名包可运行：
+项目当前不会在 push、PR 或版本标签上自动构建和发布。需要候选包时，维护者在对应目标系统手动运行以下命令。
+这些产物未经代码签名、公证、跨平台安装和真实串口验证，不应作为稳定版本发布。供应链材料的生成范围见
+[供应链发布说明](docs/supply-chain.md)；未来发布方案仅作为[设计参考](docs/release-process.md)保留。
 
 ```bash
 pnpm check:package
@@ -414,7 +394,7 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 保持动态加载、Three.js 不进入首屏静态依赖图；首屏上限为 650 KiB / gzip 200 KiB，姿态模块上限为
 650 KiB / gzip 180 KiB。
 `pnpm benchmark` 以单 worker 运行固定工作量的协议、处理图、扩展同步分批复制和 2000 点饱和 Store 场景，再严格核对场景集合、
-中位数和最少样本数。Linux CI 是绝对预算的权威环境，本地结果用于诊断；原始报告和摘要写入
+中位数和最少样本数。当前只执行本地基准，结果用于发现明显回退；原始报告和摘要写入
 `artifacts/performance/`。方法与预算维护规则见[性能基准](docs/performance.md)。
 `package.json` 是界面和诊断报告的版本来源；`pnpm check:package` 使用 `cargo metadata` 核对 npm、Tauri、Cargo
 版本、许可证、公开仓库坐标、应用标识与 bundle 元数据。`pnpm supply-chain:check` 按当前 Rust target 验证

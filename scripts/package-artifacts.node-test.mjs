@@ -1,9 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
-import { parse as parse_yaml } from "yaml";
 import {
   BUILD_ENVIRONMENT_MAX_BYTES,
   BUILD_PLATFORMS,
@@ -21,12 +17,9 @@ import {
   validate_repository_metadata,
 } from "./package-artifacts.mjs";
 
-const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE_COMMIT = "a".repeat(40);
 const CARGO_COMMIT = "b".repeat(40);
 const RUSTC_COMMIT = "c".repeat(40);
-const ATTESTATION_ACTION =
-  "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a";
 
 const CARGO_VERBOSE = [
   "cargo 1.98.0 (bbbbbbbbb 2026-08-05)",
@@ -438,92 +431,4 @@ test("rejects non-canonical, duplicate, reordered, and extended JSON", () => {
     ),
     /canonical JSON with LF/,
   );
-});
-
-test("runs feature branches once through pull requests", () => {
-  const workflow = parse_yaml(
-    readFileSync(path.join(PROJECT_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
-  );
-  assert.deepEqual(workflow.on.push, {
-    branches: ["main"],
-    tags: ["v*"],
-  });
-  assert.equal(workflow.on.pull_request, null);
-  assert.equal(workflow.on.workflow_dispatch, null);
-});
-
-test("generates bundled resources before Rust compilation checks", () => {
-  const workflow = parse_yaml(
-    readFileSync(path.join(PROJECT_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
-  );
-
-  for (const job_name of ["rust", "rust-msrv"]) {
-    const steps = workflow.jobs[job_name].steps;
-    const install_index = steps.findIndex(
-      (step) => step.run?.trim() === "pnpm install --frozen-lockfile",
-    );
-    const generate_index = steps.findIndex(
-      (step) => step.run?.trim() === "pnpm supply-chain:bundle",
-    );
-    const cargo_index = steps.findIndex(
-      (step) => step.run?.trim().startsWith("cargo "),
-    );
-
-    assert.equal(install_index >= 0, true, `${job_name} must install frontend dependencies`);
-    assert.equal(generate_index > install_index, true, `${job_name} must generate after install`);
-    assert.equal(cargo_index > generate_index, true, `${job_name} must generate before Cargo`);
-  }
-});
-
-test("pins tag-only provenance for platform builds and aggregate release assets", () => {
-  const workflow = parse_yaml(
-    readFileSync(path.join(PROJECT_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
-  );
-  const package_job = workflow.jobs.package;
-  assert.deepEqual(package_job.permissions, {
-    attestations: "write",
-    contents: "read",
-    "id-token": "write",
-  });
-  const tauri_build_steps = package_job.steps.filter(
-    (step) => step.run?.trim().startsWith("pnpm tauri build"),
-  );
-  assert.equal(tauri_build_steps.length, 1);
-  const collect_index = package_job.steps.findIndex((step) => step.run?.includes("package:collect"));
-  const attest_index = package_job.steps.findIndex((step) => step.uses === ATTESTATION_ACTION);
-  const upload_index = package_job.steps.findIndex(
-    (step) => step.uses?.startsWith("actions/upload-artifact@"),
-  );
-  assert.equal(collect_index < attest_index && attest_index < upload_index, true);
-  assert.equal(package_job.steps[attest_index].if, "startsWith(github.ref, 'refs/tags/v')");
-  assert.equal(
-    package_job.steps[attest_index].with["subject-path"],
-    "artifacts/${{ matrix.platform }}/*",
-  );
-
-  const release_job = workflow.jobs["release-draft"];
-  assert.deepEqual(release_job.needs, ["package", "performance"]);
-  assert.equal(release_job.if, "startsWith(github.ref, 'refs/tags/v')");
-  assert.deepEqual(release_job.permissions, {
-    actions: "read",
-    attestations: "write",
-    contents: "write",
-    "id-token": "write",
-  });
-  const stage_index = release_job.steps.findIndex((step) => step.run?.includes("release:stage"));
-  const preflight_index = release_job.steps.findIndex(
-    (step) => step.name === "Preflight aggregate provenance",
-  );
-  const release_attest_index = release_job.steps.findIndex((step) => step.uses === ATTESTATION_ACTION);
-  const create_index = release_job.steps.findIndex((step) => step.run?.includes("gh release create"));
-  assert.equal(
-    stage_index < preflight_index
-      && preflight_index < release_attest_index
-      && release_attest_index < create_index,
-    true,
-  );
-  assert.match(release_job.steps[preflight_index].run, /resolve_remote_tag_commit/);
-  assert.match(release_job.steps[preflight_index].run, /releases\/tags/);
-  assert.match(release_job.steps[preflight_index].run, /HTTP 404/);
-  assert.equal(release_job.steps[release_attest_index].with["subject-path"], "release-assets/*");
 });
