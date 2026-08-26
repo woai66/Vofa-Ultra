@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useEffect,
   useMemo,
   useRef,
@@ -86,6 +88,8 @@ import type {
 } from "../types/workbench";
 import { ModbusRtuBuilder } from "./ModbusRtuBuilder";
 import { QuickCommandPopover } from "./QuickCommandPopover";
+
+const TerminalExportMenu = lazy(() => import("./TerminalExportMenu"));
 
 type RepeatMode = "count" | "continuous";
 const COMMAND_REFERENCE_VIEWS = ["variables", "ascii", "converter", "checksum"] as const;
@@ -326,6 +330,8 @@ export function TerminalPanel() {
   const quickCommandTriggerRef = useRef<HTMLButtonElement>(null);
   const variableTriggerRef = useRef<HTMLButtonElement>(null);
   const variableListRef = useRef<HTMLDivElement>(null);
+  const exportControlRef = useRef<HTMLDivElement>(null);
+  const exportTriggerRef = useRef<HTMLButtonElement>(null);
   const asciiSearchRef = useRef<HTMLInputElement>(null);
   const converterInputRef = useRef<HTMLTextAreaElement>(null);
   const checksumInputRef = useRef<HTMLTextAreaElement>(null);
@@ -366,6 +372,7 @@ export function TerminalPanel() {
   const [repeatCountText, setRepeatCountText] = useState("10");
   const [searchQuery, setSearchQuery] = useState("");
   const [directionFilter, setDirectionFilter] = useState<TerminalDirectionFilter>("all");
+  const [exportOpen, setExportOpen] = useState(false);
   const [terminalTimeMode, setTerminalTimeMode] = useState<TerminalTimeMode>(() =>
     parseTerminalTimeMode(localStorage.getItem(TERMINAL_TIME_MODE_STORAGE_KEY)),
   );
@@ -469,7 +476,6 @@ export function TerminalPanel() {
   const recordSummary = filtersActive
     ? `${visibleEntries.length} / ${entries.length} 条记录`
     : `${entries.length} 条记录`;
-  const exportTerminalLabel = filtersActive ? "导出全部终端记录" : "导出终端记录";
   const clearTerminalLabel = filtersActive ? "清空全部终端记录" : "清空终端";
   const lastVisibleEntryId = visibleEntries.at(-1)?.id;
   const terminalTimeOrigin = entries.at(0)?.timestamp;
@@ -508,8 +514,22 @@ export function TerminalPanel() {
   useEffect(() => {
     if (entries.length === 0) {
       setTerminalFollowSuspended(false);
+      setExportOpen(false);
     }
   }, [entries.length]);
+
+  useEffect(() => {
+    if (!exportOpen) {
+      return undefined;
+    }
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!exportControlRef.current?.contains(event.target as Node)) {
+        setExportOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [exportOpen]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -841,6 +861,13 @@ export function TerminalPanel() {
     viewportRef.current?.focus({ preventScroll: true });
   };
 
+  const closeExportMenu = (returnFocus: boolean) => {
+    setExportOpen(false);
+    if (returnFocus) {
+      exportTriggerRef.current?.focus({ preventScroll: true });
+    }
+  };
+
   return (
     <section
       id="workspace-terminal-panel"
@@ -883,16 +910,42 @@ export function TerminalPanel() {
           >
             {terminalPaused ? <Play size={16} /> : <CirclePause size={16} />}
           </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={exportTerminalLabel}
-            title={exportTerminalLabel}
-            disabled={!entries.length}
-            onClick={() => exportTerminalEntries(entries, displayMode)}
+          <div
+            className="terminal-export-control"
+            ref={exportControlRef}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setExportOpen(false);
+              }
+            }}
           >
-            <Download size={16} />
-          </button>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="导出终端记录"
+              title="导出终端记录"
+              aria-haspopup="menu"
+              aria-controls="terminal-export-menu"
+              aria-expanded={exportOpen}
+              data-active={exportOpen}
+              disabled={!entries.length}
+              ref={exportTriggerRef}
+              onClick={() => setExportOpen((open) => !open)}
+            >
+              <Download size={16} />
+            </button>
+            {exportOpen && (
+              <Suspense fallback={null}>
+                <TerminalExportMenu
+                  allEntries={entries}
+                  currentViewEntries={visibleEntries}
+                  displayMode={displayMode}
+                  filtersActive={filtersActive}
+                  onClose={() => closeExportMenu(true)}
+                />
+              </Suspense>
+            )}
+          </div>
           <button
             className="icon-button"
             type="button"
@@ -2359,21 +2412,4 @@ function terminalRxBoundaryLabel(boundary: NonNullable<TerminalEntry["rxBoundary
   return boundary === "overflow"
     ? "未遇接收行尾，已按 2048 字节分段"
     : "记录已在边界处结束，未包含配置的接收行尾";
-}
-
-function exportTerminalEntries(entries: TerminalEntry[], displayMode: DisplayMode): void {
-  const content = entries
-    .map((entry) => {
-      const timestamp = new Date(entry.timestamp).toISOString();
-      const payload = displayMode === "text" ? entry.text : entry.hex;
-      return `${timestamp}\t${entry.direction.toUpperCase()}\t${entry.byteCount}\t${payload}`;
-    })
-    .join("\n");
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `vofa-ultra-${new Date().toISOString().replace(/[:.]/g, "-")}.log`;
-  anchor.click();
-  URL.revokeObjectURL(url);
 }

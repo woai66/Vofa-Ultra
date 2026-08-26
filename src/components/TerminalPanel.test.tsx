@@ -343,7 +343,31 @@ describe("TerminalPanel", () => {
     expect(screen.getByText("3 条记录")).toBeVisible();
     await user.type(search, ".*");
     expect(screen.getByText("1 / 3 条记录")).toBeVisible();
-    expect(screen.getByRole("button", { name: "导出全部终端记录" })).toBeEnabled();
+    const exportTrigger = screen.getByRole("button", { name: "导出终端记录" });
+    await user.click(exportTrigger);
+    const exportMenu = await screen.findByRole("menu", { name: "终端导出范围" });
+    const exportAll = within(exportMenu).getByRole("menuitem", { name: "全部缓存 3 条" });
+    const exportView = within(exportMenu).getByRole("menuitem", { name: "当前视图 1 条" });
+    expect(exportAll).toBeEnabled();
+    expect(exportAll).toHaveFocus();
+    expect(exportView).toBeEnabled();
+    await user.keyboard("{ArrowDown}");
+    expect(exportView).toHaveFocus();
+    await user.keyboard("{Home}");
+    expect(exportAll).toHaveFocus();
+    await user.keyboard("{End}");
+    expect(exportView).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(exportAll).toHaveFocus();
+    await user.keyboard("{ArrowUp}");
+    expect(exportView).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu", { name: "终端导出范围" })).not.toBeInTheDocument();
+    expect(exportTrigger).toHaveFocus();
+    await user.click(exportTrigger);
+    await user.click(search);
+    expect(screen.queryByRole("menu", { name: "终端导出范围" })).not.toBeInTheDocument();
+    expect(search).toHaveFocus();
     expect(screen.getByRole("button", { name: "清空全部终端记录" })).toBeEnabled();
 
     await user.click(within(direction).getByRole("button", { name: "TX" }));
@@ -355,11 +379,30 @@ describe("TerminalPanel", () => {
     expect(screen.getByText("没有匹配的终端记录")).toBeVisible();
     expect(useWorkbenchStore.getState().terminalEntries).toEqual(SEARCH_ENTRIES);
 
+    await user.click(exportTrigger);
+    expect(
+      within(screen.getByRole("menu", { name: "终端导出范围" })).getByRole("menuitem", {
+        name: "全部缓存 3 条",
+      }),
+    ).toBeEnabled();
+    expect(
+      within(screen.getByRole("menu", { name: "终端导出范围" })).getByRole("menuitem", {
+        name: "当前视图 0 条",
+      }),
+    ).toBeDisabled();
+    await user.click(exportTrigger);
+
     await user.click(screen.getByRole("button", { name: "清空终端搜索" }));
     expect(search).toHaveValue("");
     expect(screen.getByText("1 / 3 条记录")).toBeVisible();
     await user.click(within(direction).getByRole("button", { name: "全部" }));
     expect(screen.getByText("3 条记录")).toBeVisible();
+    await user.click(exportTrigger);
+    expect(
+      within(screen.getByRole("menu", { name: "终端导出范围" })).getByRole("menuitem", {
+        name: "当前视图 3 条",
+      }),
+    ).toBeDisabled();
   });
 
   it("搜索当前显示格式并在 TEXT 与 HEX 间重新计算结果", async () => {

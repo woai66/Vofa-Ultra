@@ -1016,6 +1016,126 @@ test("终端时间基准按缓存和可见记录计算并跨刷新保留", async
   expect(pageErrors).toEqual([]);
 });
 
+test("终端按全部缓存或当前筛选视图导出", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await page.goto("/");
+  const entries: TerminalEntry[] = [
+    {
+      id: 44_001,
+      direction: "rx",
+      timestamp: 1_700_000_200_000,
+      text: "ready",
+      hex: "72 65 61 64 79",
+      byteCount: 5,
+    },
+    {
+      id: 44_002,
+      direction: "tx",
+      timestamp: 1_700_000_200_100,
+      text: "set rate",
+      hex: "73 65 74 20 72 61 74 65",
+      byteCount: 8,
+    },
+    {
+      id: 44_003,
+      direction: "rx",
+      timestamp: 1_700_000_200_250,
+      text: "fault sensor",
+      hex: "66 61 75 6C 74 20 73 65 6E 73 6F 72",
+      byteCount: 12,
+    },
+  ];
+  await replaceTerminalEntries(page, entries);
+
+  await page
+    .getByRole("group", { name: "终端时间基准" })
+    .getByRole("button", { name: "相对缓存起点" })
+    .click();
+  const search = page.getByRole("searchbox", { name: "搜索终端记录" });
+  await search.fill("fault");
+  await page
+    .getByRole("group", { name: "终端方向筛选" })
+    .getByRole("button", { name: "RX" })
+    .click();
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 3 条记录");
+
+  const exportTrigger = page.getByRole("button", { name: "导出终端记录" });
+  const viewDownloadPromise = page.waitForEvent("download");
+  await exportTrigger.click();
+  const exportMenu = page.getByRole("menu", { name: "终端导出范围" });
+  await expect(exportMenu.getByRole("menuitem", { name: "全部缓存 3 条" })).toBeEnabled();
+  await exportMenu.getByRole("menuitem", { name: "当前视图 1 条" }).click();
+  const viewDownload = await viewDownloadPromise;
+  expect(viewDownload.suggestedFilename()).toMatch(
+    /^vofa-ultra-terminal-view-.+\.log$/,
+  );
+  const viewPath = testInfo.outputPath("terminal-view.log");
+  await viewDownload.saveAs(viewPath);
+  expect(await readFile(viewPath, "utf8")).toBe(
+    `${new Date(entries[2].timestamp).toISOString()}\tRX\t12\tfault sensor`,
+  );
+
+  await page
+    .getByRole("group", { name: "接收显示格式" })
+    .getByRole("button", { name: "HEX" })
+    .click();
+  await search.fill("66 61");
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 3 条记录");
+  const allDownloadPromise = page.waitForEvent("download");
+  await exportTrigger.click();
+  await exportMenu.getByRole("menuitem", { name: "全部缓存 3 条" }).click();
+  const allDownload = await allDownloadPromise;
+  expect(allDownload.suggestedFilename()).toMatch(/^vofa-ultra-terminal-all-.+\.log$/);
+  const allPath = testInfo.outputPath("terminal-all.log");
+  await allDownload.saveAs(allPath);
+  expect(await readFile(allPath, "utf8")).toBe(
+    entries
+      .map(
+        (entry) =>
+          `${new Date(entry.timestamp).toISOString()}\t${entry.direction.toUpperCase()}` +
+          `\t${entry.byteCount}\t${entry.hex}`,
+      )
+      .join("\n"),
+  );
+
+  await search.fill("FF FF");
+  await exportTrigger.click();
+  await expect(exportMenu.getByRole("menuitem", { name: "当前视图 0 条" })).toBeDisabled();
+  await expect(exportMenu.getByRole("menuitem", { name: "全部缓存 3 条" })).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(exportTrigger).toBeFocused();
+
+  await search.fill("66 61");
+  await page.setViewportSize({ width: 320, height: 568 });
+  const appShell = page.locator(".app-shell");
+  const sidebar = page.locator(".sidebar");
+  if ((await appShell.getAttribute("data-sidebar-open")) === "true") {
+    await page.getByRole("button", { name: "关闭侧栏" }).click();
+  }
+  await expect(appShell).toHaveAttribute("data-sidebar-open", "false");
+  await expect(sidebar).toBeHidden();
+  await exportTrigger.click();
+  const mobileMenuBounds = await exportMenu.boundingBox();
+  expect(mobileMenuBounds).not.toBeNull();
+  expect(mobileMenuBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((mobileMenuBounds?.x ?? 0) + (mobileMenuBounds?.width ?? 321)).toBeLessThanOrEqual(320);
+  for (const menuItem of await exportMenu.getByRole("menuitem").all()) {
+    expect(await menuItem.evaluate((item) => item.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await page.screenshot({
+    path: testInfo.outputPath("terminal-export-mobile.png"),
+    fullPage: true,
+  });
+  expect(pageErrors).toEqual([]);
+});
+
 test("单次触发在后半窗结束时冻结且后台接收继续", async ({ page }) => {
   await page.goto("/");
   await setWorkbenchState(page, {
