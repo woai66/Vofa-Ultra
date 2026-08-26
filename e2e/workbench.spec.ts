@@ -650,6 +650,8 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   await expect(page.getByText("HISTORY")).toBeVisible();
   const measurementResults = page.getByLabel("波形测量结果");
   await expect(measurementResults).toBeVisible();
+  const intervalStatistics = page.getByLabel("A/B 区间统计");
+  await expect(intervalStatistics).toBeVisible();
   await expect(page.locator(".waveform-measurement-cursor")).toHaveCount(2);
   await expect
     .poll(terminalCount)
@@ -679,6 +681,7 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   await cursorB.focus();
   await page.keyboard.press("End");
   await expect(measurementResults).not.toContainText(/NaN|Infinity/);
+  await expect(intervalStatistics).not.toContainText(/NaN|Infinity/);
   await page.screenshot({
     path: testInfo.outputPath("desktop-measurement.png"),
     fullPage: true,
@@ -763,6 +766,25 @@ test("独立量程让混合数量级通道保持可读并正确映射测量游�
   await expect(focusChannel).toHaveValue("current");
   await page.getByRole("button", { name: "开启波形测量" }).click();
   await page.getByRole("combobox", { name: "测量通道" }).selectOption("current");
+  const intervalStatistics = page.getByLabel("A/B 区间统计");
+  await expect(intervalStatistics.getByText("样本数", { exact: true }).locator("..")).toContainText(
+    "4",
+  );
+  await expect(intervalStatistics.getByText("最小值", { exact: true }).locator("..")).toContainText(
+    "0.120",
+  );
+  await expect(intervalStatistics.getByText("最大值", { exact: true }).locator("..")).toContainText(
+    "0.200",
+  );
+  await expect(intervalStatistics.getByText("均值", { exact: true }).locator("..")).toContainText(
+    "0.160",
+  );
+  await expect(intervalStatistics.getByText("RMS", { exact: true }).locator("..")).toContainText(
+    "0.163",
+  );
+  await expect(intervalStatistics.getByText("峰峰值", { exact: true }).locator("..")).toContainText(
+    "0.080",
+  );
   const plotHeight = await page.locator(".waveform-chart .u-over").evaluate(
     (element) => element.getBoundingClientRect().height,
   );
@@ -2189,6 +2211,7 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   await expect(measurementButton).toBeEnabled({ timeout: 5_000 });
   await measurementButton.click();
   await expect(page.getByLabel("波形测量结果")).toBeVisible();
+  await expect(page.getByLabel("A/B 区间统计")).toBeVisible();
   const measurementBounds = await page.locator(".waveform-measurement-strip").boundingBox();
   expect(measurementBounds).not.toBeNull();
   expect(measurementBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
@@ -2453,6 +2476,7 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
   const measurementStrip = page.locator(".waveform-measurement-strip");
   await expect(measurementStrip).toBeVisible();
   await expect(page.getByLabel("波形测量结果")).not.toContainText(/NaN|Infinity/);
+  await expect(page.getByLabel("A/B 区间统计")).not.toContainText(/NaN|Infinity/);
 
   const measurementLayout = await measurementStrip.evaluate((element) => {
     const rect = element.getBoundingClientRect();
@@ -2480,6 +2504,23 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
     path: testInfo.outputPath("mobile-320-measurement.png"),
     fullPage: true,
   });
+  const intervalStatistics = page.getByLabel("A/B 区间统计");
+  const statisticsOverflow = await intervalStatistics.evaluate(
+    (element) => element.scrollWidth - element.clientWidth,
+  );
+  expect(statisticsOverflow).toBeGreaterThan(0);
+  await intervalStatistics.evaluate((element) => element.scrollTo({ left: element.scrollWidth }));
+  const scrolledStatistics = await intervalStatistics.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const lastItemBounds = element.lastElementChild?.getBoundingClientRect();
+    return {
+      scrollLeft: element.scrollLeft,
+      lastItemVisible:
+        lastItemBounds !== undefined && lastItemBounds.right <= bounds.right + 1,
+    };
+  });
+  expect(scrolledStatistics.scrollLeft).toBeGreaterThan(0);
+  expect(scrolledStatistics.lastItemVisible).toBe(true);
 });
 
 test("390 px 扩展授权控件保持触控尺寸和长文本省略", async ({ page }) => {

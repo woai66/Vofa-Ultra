@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -23,10 +25,7 @@ import {
 } from "lucide-react";
 import uPlot, { type AlignedData, type Options } from "uplot";
 import type { ThemeMode } from "../App";
-import {
-  presentChannelSeries,
-  type PresentedChannelSeries,
-} from "../core/channelPresentation";
+import { presentChannelSeries } from "../core/channelPresentation";
 import {
   calculateWaveformMeasurement,
   createInitialMeasurementAnchors,
@@ -46,6 +45,8 @@ import {
 } from "../store/workbenchStore";
 import type { ChannelSeries } from "../types/workbench";
 import type { ChartWindowSeconds } from "../types/workspace";
+
+const MeasurementStrip = lazy(() => import("./WaveformMeasurementStrip"));
 
 interface WaveformPanelProps {
   theme: ThemeMode;
@@ -917,16 +918,26 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       )}
 
       {measurementEnabled && selectedChannel && measurementResult && (
-        <MeasurementStrip
-          channels={measurementChannels}
-          selectedChannel={selectedChannel}
-          activeCursor={activeCursor}
-          measurement={measurementResult}
-          sampleCount={visibleMeasurementPoints.length}
-          onChannelChange={handleMeasurementChannelChange}
-          onActiveCursorChange={setActiveCursor}
-          onCursorIndexChange={handleCursorIndexChange}
-        />
+        <Suspense
+          fallback={
+            <div
+              className="waveform-measurement-strip"
+              aria-label="波形测量加载中"
+              aria-busy="true"
+            />
+          }
+        >
+          <MeasurementStrip
+            channels={measurementChannels}
+            selectedChannel={selectedChannel}
+            activeCursor={activeCursor}
+            measurement={measurementResult}
+            visiblePoints={visibleMeasurementPoints}
+            onChannelChange={handleMeasurementChannelChange}
+            onActiveCursorChange={setActiveCursor}
+            onCursorIndexChange={handleCursorIndexChange}
+          />
+        </Suspense>
       )}
 
       <div className="waveform-canvas-wrap">
@@ -962,127 +973,6 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
         )}
       </div>
     </section>
-  );
-}
-
-interface MeasurementStripProps {
-  channels: PresentedChannelSeries[];
-  selectedChannel: PresentedChannelSeries;
-  activeCursor: WaveformMeasurementCursor;
-  measurement: WaveformMeasurementResult;
-  sampleCount: number;
-  onChannelChange(channelId: string): void;
-  onActiveCursorChange(cursor: WaveformMeasurementCursor): void;
-  onCursorIndexChange(cursor: WaveformMeasurementCursor, index: number): void;
-}
-
-function MeasurementStrip({
-  channels,
-  selectedChannel,
-  activeCursor,
-  measurement,
-  sampleCount,
-  onChannelChange,
-  onActiveCursorChange,
-  onCursorIndexChange,
-}: MeasurementStripProps) {
-  const lastIndex = Math.max(0, sampleCount - 1);
-
-  return (
-    <div className="waveform-measurement-strip">
-      <div className="measurement-controls">
-        <div className="measurement-primary-controls">
-          <span
-            className="measurement-channel-swatch"
-            style={{ backgroundColor: selectedChannel.color }}
-            aria-hidden="true"
-          />
-          <select
-            id="waveform-measurement-channel"
-            name="waveform-measurement-channel"
-            aria-label="测量通道"
-            value={selectedChannel.id}
-            onChange={(event) => onChannelChange(event.target.value)}
-          >
-            {channels.map((channel) => (
-              <option key={channel.id} value={channel.id}>
-                {channel.displayName}
-              </option>
-            ))}
-          </select>
-          <div className="measurement-cursor-selector" role="group" aria-label="当前测量游标">
-            {(["A", "B"] as const).map((cursor) => (
-              <button
-                key={cursor}
-                type="button"
-                aria-pressed={activeCursor === cursor}
-                data-active={activeCursor === cursor}
-                onClick={() => onActiveCursorChange(cursor)}
-              >
-                {cursor}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="measurement-range-controls">
-          <label data-cursor="A">
-            <span>A</span>
-            <input
-              id="waveform-cursor-a"
-              name="waveform-cursor-a"
-              type="range"
-              aria-label="游标 A 采样点"
-              min={0}
-              max={measurement.pointB.index}
-              step={1}
-              value={measurement.pointA.index}
-              onChange={(event) => onCursorIndexChange("A", Number(event.target.value))}
-            />
-          </label>
-          <label data-cursor="B">
-            <span>B</span>
-            <input
-              id="waveform-cursor-b"
-              name="waveform-cursor-b"
-              type="range"
-              aria-label="游标 B 采样点"
-              min={measurement.pointA.index}
-              max={lastIndex}
-              step={1}
-              value={measurement.pointB.index}
-              onChange={(event) => onCursorIndexChange("B", Number(event.target.value))}
-            />
-          </label>
-        </div>
-      </div>
-      <dl className="measurement-readouts" aria-label="波形测量结果" aria-live="polite">
-        <MeasurementReadout label="tA" value={formatCursorTime(measurement.pointA.timestampSeconds)} />
-        <MeasurementReadout label="tB" value={formatCursorTime(measurement.pointB.timestampSeconds)} />
-        <MeasurementReadout label="Δt" value={formatDuration(measurement.deltaTimeSeconds)} />
-        <MeasurementReadout label="1/Δt" value={formatFrequency(measurement.frequencyHz)} />
-        <MeasurementReadout
-          label="yA"
-          value={formatValueWithUnit(measurement.pointA.value, selectedChannel.unit)}
-        />
-        <MeasurementReadout
-          label="yB"
-          value={formatValueWithUnit(measurement.pointB.value, selectedChannel.unit)}
-        />
-        <MeasurementReadout
-          label="Δy"
-          value={formatValueWithUnit(measurement.deltaY, selectedChannel.unit)}
-        />
-      </dl>
-    </div>
-  );
-}
-
-function MeasurementReadout({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd>{value}</dd>
-    </div>
   );
 }
 
@@ -1615,50 +1505,10 @@ function createAlignedData(channels: ChannelSeries[], windowSeconds: number): Al
   return [timestamps, ...values] as AlignedData;
 }
 
-function formatCursorTime(timestampSeconds: number): string {
-  const date = new Date(timestampSeconds * 1_000);
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  const seconds = String(date.getSeconds()).padStart(2, "0");
-  const milliseconds = String(date.getMilliseconds()).padStart(3, "0");
-  return `${hours}:${minutes}:${seconds}.${milliseconds}`;
-}
-
-function formatDuration(seconds: number): string {
-  if (seconds >= 1) {
-    return `${seconds.toFixed(3)} s`;
-  }
-  if (seconds >= 0.001) {
-    return `${(seconds * 1_000).toFixed(3)} ms`;
-  }
-  if (seconds >= 0.000_001) {
-    return `${(seconds * 1_000_000).toFixed(3)} us`;
-  }
-  return `${(seconds * 1_000_000_000).toFixed(3)} ns`;
-}
-
-function formatFrequency(frequencyHz: number | null): string {
-  if (frequencyHz === null) {
-    return "--";
-  }
-  if (frequencyHz >= 1_000_000) {
-    return `${(frequencyHz / 1_000_000).toFixed(3)} MHz`;
-  }
-  if (frequencyHz >= 1_000) {
-    return `${(frequencyHz / 1_000).toFixed(3)} kHz`;
-  }
-  return `${frequencyHz.toFixed(3)} Hz`;
-}
-
 function formatValue(value: number): string {
   const absolute = Math.abs(value);
   if (absolute >= 10_000 || (absolute > 0 && absolute < 0.001)) {
     return value.toExponential(2);
   }
   return value.toFixed(3);
-}
-
-function formatValueWithUnit(value: number, unit: string): string {
-  const formatted = formatValue(value);
-  return unit ? `${formatted} ${unit}` : formatted;
 }
