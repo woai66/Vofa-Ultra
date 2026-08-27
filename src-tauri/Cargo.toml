@@ -1,6 +1,6 @@
 [package]
 name = "vofa-ultra"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 description = "A modern serial workbench for embedded development"
 authors = ["Vofa-Ultra contributors"]
 edition = "2021"
