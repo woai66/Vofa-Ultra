@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyProtocolHealth } from "../core/protocols";
 import { useWorkbenchStore } from "../store/workbenchStore";
@@ -30,6 +30,14 @@ describe("Sidebar 串口恢复界面", () => {
         portName: "COM3",
       },
       serialControlLineOperation: "idle",
+      serialModemStatus: {
+        generation: 0,
+        revision: 0,
+        cts: null,
+        dsr: null,
+        ri: null,
+        dcd: null,
+      },
       serialRecovery: {
         enabled: true,
         phase: "waiting",
@@ -266,11 +274,50 @@ describe("Sidebar 串口恢复界面", () => {
     expect(lockedRts).toHaveAccessibleDescription("硬件流控已接管 RTS，无法手动设置");
     expect(screen.getByRole("status")).toHaveTextContent("DTR 已设为有效");
   });
+
+  it("连接时显示四路输入握手线三态，断开后隐藏", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialRecovery: { ...state.serialRecovery, phase: "armed" },
+      serialModemStatus: {
+        generation: 7,
+        revision: 2,
+        cts: true,
+        dsr: false,
+        ri: null,
+        dcd: true,
+      },
+    }));
+    const props = {
+      activePanel: "connection" as const,
+      theme: "dark" as const,
+      onClose: vi.fn(),
+      onThemeChange: vi.fn(),
+    };
+    const { rerender } = render(<Sidebar {...props} />);
+
+    const status = screen.getByLabelText("串口输入握手线状态");
+    expect(within(status).getByText("CTS").parentElement).toHaveTextContent("CTS有效");
+    expect(within(status).getByText("DSR").parentElement).toHaveTextContent("DSR无效");
+    expect(within(status).getByText("RI").parentElement).toHaveTextContent("RI不可用");
+    expect(within(status).getByText("DCD").parentElement).toHaveTextContent("DCD有效");
+    expect(
+      Array.from(
+        status.querySelectorAll<HTMLElement>(".modem-status-item"),
+        (item) => item.dataset.state,
+      ),
+    ).toEqual(["asserted", "deasserted", "unavailable", "asserted"]);
+
+    useWorkbenchStore.setState({ connectionStatus: "disconnected" });
+    rerender(<Sidebar {...props} />);
+    expect(screen.queryByLabelText("串口输入握手线状态")).not.toBeInTheDocument();
+  });
 });
 
 describe("Sidebar 协议解析健康度", () => {
   beforeEach(() => {
-    useWorkbenchStore.setState({
+    useWorkbenchStore.setState((state) => ({
       protocol: "firewater",
       replayStatus: "idle",
       replaySessionId: 0,
@@ -280,7 +327,12 @@ describe("Sidebar 协议解析健康度", () => {
       channels: [],
       processedChannels: [],
       workspaceTransitionStatus: "idle",
-    });
+      serialRecovery: {
+        ...state.serialRecovery,
+        enabled: false,
+        phase: "off",
+      },
+    }));
     useWorkbenchStore.getState().setProtocol("firewater");
   });
 

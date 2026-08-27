@@ -293,6 +293,81 @@ test("标签组支持标准键盘导航", async ({ page }) => {
   await expect(exportPanel).toBeHidden();
 });
 
+test("串口输入握手线状态在桌面与窄屏保持可读", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await page.setViewportSize({ width: 1_280, height: 800 });
+  await page.goto("/");
+  await setWorkbenchState(page, {
+    isNativeRuntime: true,
+    source: "serial",
+    connectionStatus: "connected",
+    serialGeneration: 7,
+    serialModemStatus: {
+      generation: 7,
+      revision: 2,
+      cts: true,
+      dsr: false,
+      ri: null,
+      dcd: true,
+    },
+  });
+
+  const status = page.locator('dl[aria-label="串口输入握手线状态"]');
+  const items = status.locator(".modem-status-item");
+  await expect(status).toBeVisible();
+  await expect(items).toHaveText(["CTS有效", "DSR无效", "RI不可用", "DCD有效"]);
+  await expect
+    .poll(() => items.evaluateAll((elements) => elements.map((element) => element.dataset.state)))
+    .toEqual(["asserted", "deasserted", "unavailable", "asserted"]);
+
+  const desktopLayout = await items.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }),
+  );
+  expect(desktopLayout).toHaveLength(4);
+  expect(desktopLayout.every(({ height }) => height >= 44)).toBe(true);
+  expect(desktopLayout[0]?.y).toBe(desktopLayout[1]?.y);
+  expect(desktopLayout[2]?.y).toBe(desktopLayout[3]?.y);
+  expect(desktopLayout[0]?.x).toBe(desktopLayout[2]?.x);
+  expect(desktopLayout[1]?.x).toBe(desktopLayout[3]?.x);
+  await page.screenshot({
+    path: testInfo.outputPath("serial-modem-status-desktop.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(status).toBeVisible();
+  const mobileBounds = await status.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      viewportWidth: document.documentElement.clientWidth,
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    };
+  });
+  expect(mobileBounds.left).toBeGreaterThanOrEqual(0);
+  expect(mobileBounds.right).toBeLessThanOrEqual(mobileBounds.viewportWidth);
+  expect(mobileBounds.scrollWidth).toBeLessThanOrEqual(mobileBounds.clientWidth);
+  await page.screenshot({
+    path: testInfo.outputPath("serial-modem-status-mobile.png"),
+    fullPage: true,
+  });
+
+  await setWorkbenchState(page, { connectionStatus: "disconnected" });
+  await expect(status).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
 test("工作台分栏支持拖拽、键盘、持久化、专注模式和窄屏回退", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));

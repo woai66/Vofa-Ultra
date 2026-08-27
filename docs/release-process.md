@@ -103,7 +103,7 @@ gh attestation verify <asset-file> --repo <owner>/Vofa-Ultra
 | macOS | DMG 完成安装、首次启动和卸载；正式版记录签名与 notarization 结果 |
 | Linux | DEB 与 AppImage 各完成启动和卸载/清理；记录发行版、桌面与 WebKit 版本 |
 | 串口芯片 | 关联硬件报告 Issue；至少两种 USB 串口芯片完成枚举、连接、双向收发、拔插和自动重连 |
-| 控制线 | 在硬件报告中分别验证无流控、软件流控、硬件流控、DTR 与 RTS；记录设备和完整参数 |
+| 控制线 | 在硬件报告中分别验证无流控、软件流控、硬件流控、DTR、RTS、CTS、DSR、RI 与 DCD（CD）；记录设备和完整参数 |
 | 数据链路 | FireWater、JustFloat、Raw、录制、回放、导出、处理图与姿态视图完成冒烟 |
 | 安全与法律 | 核对 capability、CSP、SBOM、NOTICE、许可证选择和依赖变更 |
 | 签名 | v1.0 稳定版的 Windows/macOS/Linux 发布策略均有可验证签名或明确平台说明 |
