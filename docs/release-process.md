@@ -28,7 +28,7 @@ GitHub 不支持按 step 缩小 job 权限，因此手动 `workflow_dispatch` �
 
 ## 准备版本
 
-1. 从已 review 且 CI 通过的发布分支开始，确保工作区干净。
+1. 从已 review 的发布分支开始，确保工作区干净。
 2. 同步 `package.json`、`src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 的版本。
 3. 把 `CHANGELOG.md` 的待发布条目整理为唯一的 `## [<version>]` 章节，包含分类标题和至少一条变更；缺少该章节
    或 `Unreleased` 仍有内容会使本地与聚合校验失败。对照 `compatibility-policy.json` 和
@@ -97,13 +97,12 @@ gh attestation verify <asset-file> --repo <owner>/Vofa-Ultra
 
 | 门禁 | 最低证据 |
 | --- | --- |
-| Actions | tag workflow URL，所有必需 job 成功，构建信息、draft 正文、commit 与 tag 一致 |
 | 完整性 | 在独立下载目录验证聚合 `SHA256SUMS`，记录命令和结果 |
 | Windows | MSI 与 NSIS 各完成安装、启动、升级覆盖和卸载；记录系统版本 |
 | macOS | DMG 完成安装、首次启动和卸载；正式版记录签名与 notarization 结果 |
 | Linux | DEB 与 AppImage 各完成启动和卸载/清理；记录发行版、桌面与 WebKit 版本 |
 | 串口芯片 | 关联硬件报告 Issue；至少两种 USB 串口芯片完成枚举、连接、双向收发、拔插和自动重连 |
-| 控制线 | 在硬件报告中分别验证无流控、软件流控、硬件流控、DTR 与 RTS；记录设备和完整参数 |
+| 控制线 | 在硬件报告中分别验证无流控、软件流控、硬件流控、DTR、RTS、CTS、DSR、RI 与 DCD（CD）；记录设备和完整参数 |
 | 数据链路 | FireWater、JustFloat、Raw、录制、回放、导出、处理图与姿态视图完成冒烟 |
 | 安全与法律 | 核对 capability、CSP、SBOM、NOTICE、许可证选择和依赖变更 |
 | 签名 | v1.0 稳定版的 Windows/macOS/Linux 发布策略均有可验证签名或明确平台说明 |

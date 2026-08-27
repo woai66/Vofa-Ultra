@@ -396,6 +396,14 @@ describe("workbenchStore", () => {
       ports: [],
       isRefreshingPorts: false,
       serialControlLineOperation: "idle",
+      serialModemStatus: {
+        generation: 0,
+        revision: 0,
+        cts: null,
+        dsr: null,
+        ri: null,
+        dcd: null,
+      },
       serialRecovery: {
         enabled: false,
         phase: "off",
@@ -1909,6 +1917,104 @@ describe("workbenchStore", () => {
       connectionStatus: "error",
       serialStateRevision: 11,
       statusMessage: "设备已移除",
+    });
+  });
+
+  it("输入握手线只接受当前连接递增修订，并在换代时重新开始", () => {
+    useWorkbenchStore.setState({
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialStateRevision: 2,
+      serialModemStatus: {
+        generation: 7,
+        revision: 0,
+        cts: null,
+        dsr: null,
+        ri: null,
+        dcd: null,
+      },
+    });
+
+    useWorkbenchStore.getState().handleSerialModemStatus({
+      generation: 6,
+      revision: 8,
+      cts: true,
+      dsr: true,
+      ri: true,
+      dcd: true,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus.revision).toBe(0);
+
+    const first = {
+      generation: 7,
+      revision: 1,
+      cts: true,
+      dsr: false,
+      ri: null,
+      dcd: true,
+    } as const;
+    useWorkbenchStore.getState().handleSerialModemStatus(first);
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual(first);
+
+    useWorkbenchStore.getState().handleSerialModemStatus({
+      ...first,
+      cts: false,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual(first);
+
+    const second = { ...first, revision: 2, cts: false };
+    useWorkbenchStore.getState().handleSerialModemStatus(second);
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual(second);
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "disconnected",
+      portName: "COM3",
+      generation: 7,
+      revision: 3,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual({
+      generation: 7,
+      revision: 0,
+      cts: null,
+      dsr: null,
+      ri: null,
+      dcd: null,
+    });
+
+    useWorkbenchStore.getState().handleSerialModemStatus({ ...second, revision: 3 });
+    expect(useWorkbenchStore.getState().serialModemStatus.revision).toBe(0);
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connected",
+      portName: "COM3",
+      generation: 8,
+      revision: 4,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus).toMatchObject({
+      generation: 8,
+      revision: 0,
+    });
+
+    const reconnected = { ...first, generation: 8, revision: 1, dcd: false };
+    useWorkbenchStore.getState().handleSerialModemStatus(reconnected);
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual(reconnected);
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "error",
+      portName: "COM3",
+      message: "设备已移除",
+      errorCode: "read-failed",
+      generation: 8,
+      revision: 5,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual({
+      generation: 8,
+      revision: 0,
+      cts: null,
+      dsr: null,
+      ri: null,
+      dcd: null,
     });
   });
 

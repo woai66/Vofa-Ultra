@@ -20,6 +20,7 @@ use crate::modbus_rtu::{
 
 const READ_BUFFER_SIZE: usize = 16 * 1024;
 const SERIAL_TIMEOUT_MS: u64 = 20;
+const MODEM_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const WRITE_QUEUE_CAPACITY: usize = 256;
 const MAX_WRITE_SIZE: usize = 64 * 1024;
 const WRITE_CHUNK_SIZE: usize = 4 * 1024;
@@ -61,6 +62,8 @@ struct SharedSerialState {
     port_name: String,
     message: Option<String>,
     error_code: Option<SerialErrorCode>,
+    modem_status_revision: u64,
+    modem_status_snapshot: Option<ModemLineSnapshot>,
     worker: Option<SerialWorker>,
     control_line_sequence: u64,
     active_control_line: Option<ActiveControlLine>,
@@ -82,6 +85,8 @@ impl Default for SharedSerialState {
             port_name: String::new(),
             message: None,
             error_code: None,
+            modem_status_revision: 0,
+            modem_status_snapshot: None,
             worker: None,
             control_line_sequence: 0,
             active_control_line: None,
@@ -107,6 +112,9 @@ impl SharedSerialState {
         self.port_name = port_name;
         self.message = message;
         self.error_code = error_code;
+        if status != SerialStatus::Connected {
+            self.reset_modem_status();
+        }
         self.snapshot()
     }
 
@@ -142,6 +150,39 @@ impl SharedSerialState {
             generation: self.generation,
             revision: self.revision,
         }
+    }
+
+    fn modem_status_payload(&self) -> SerialModemStatusPayload {
+        let snapshot = self.modem_status_snapshot.unwrap_or_default();
+        SerialModemStatusPayload {
+            generation: self.generation,
+            revision: self.modem_status_revision,
+            cts: snapshot.cts,
+            dsr: snapshot.dsr,
+            ri: snapshot.ri,
+            dcd: snapshot.dcd,
+        }
+    }
+
+    fn update_modem_status(
+        &mut self,
+        generation: u64,
+        snapshot: ModemLineSnapshot,
+    ) -> Option<SerialModemStatusPayload> {
+        if self.status != SerialStatus::Connected
+            || self.generation != generation
+            || self.modem_status_snapshot == Some(snapshot)
+        {
+            return None;
+        }
+        self.modem_status_revision = self.modem_status_revision.saturating_add(1);
+        self.modem_status_snapshot = Some(snapshot);
+        Some(self.modem_status_payload())
+    }
+
+    fn reset_modem_status(&mut self) {
+        self.modem_status_revision = 0;
+        self.modem_status_snapshot = None;
     }
 
     fn begin_control_line_operation(
@@ -496,6 +537,62 @@ impl Default for SerialFileSendSnapshot {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ModemLineSnapshot {
+    cts: Option<bool>,
+    dsr: Option<bool>,
+    ri: Option<bool>,
+    dcd: Option<bool>,
+}
+
+trait ModemLineReader {
+    fn read_cts(&mut self) -> serialport::Result<bool>;
+    fn read_dsr(&mut self) -> serialport::Result<bool>;
+    fn read_ri(&mut self) -> serialport::Result<bool>;
+    fn read_dcd(&mut self) -> serialport::Result<bool>;
+}
+
+impl<T> ModemLineReader for T
+where
+    T: serialport::SerialPort + ?Sized,
+{
+    fn read_cts(&mut self) -> serialport::Result<bool> {
+        self.read_clear_to_send()
+    }
+
+    fn read_dsr(&mut self) -> serialport::Result<bool> {
+        self.read_data_set_ready()
+    }
+
+    fn read_ri(&mut self) -> serialport::Result<bool> {
+        self.read_ring_indicator()
+    }
+
+    fn read_dcd(&mut self) -> serialport::Result<bool> {
+        self.read_carrier_detect()
+    }
+}
+
+fn read_modem_line_snapshot<R>(reader: &mut R) -> ModemLineSnapshot
+where
+    R: ModemLineReader + ?Sized,
+{
+    ModemLineSnapshot {
+        cts: reader.read_cts().ok(),
+        dsr: reader.read_dsr().ok(),
+        ri: reader.read_ri().ok(),
+        dcd: reader.read_dcd().ok(),
+    }
+}
+
+fn modem_status_poll_due(now: Instant, next_poll: &mut Instant) -> bool {
+    if now < *next_poll {
+        return false;
+    }
+    *next_poll = now + MODEM_STATUS_POLL_INTERVAL;
+    true
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SerialStatus {
     Disconnected,
@@ -848,6 +945,17 @@ pub struct SerialStatePayload {
     revision: u64,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialModemStatusPayload {
+    generation: u64,
+    revision: u64,
+    cts: Option<bool>,
+    dsr: Option<bool>,
+    ri: Option<bool>,
+    dcd: Option<bool>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SerialFileSendPayload {
@@ -913,6 +1021,17 @@ pub fn get_serial_state(state: State<'_, SerialState>) -> Result<SerialStatePayl
         .lock()
         .map_err(|_| "串口状态锁已损坏".to_owned())
         .map(|shared| shared.snapshot())
+}
+
+#[tauri::command]
+pub fn get_serial_modem_status(
+    state: State<'_, SerialState>,
+) -> Result<SerialModemStatusPayload, String> {
+    state
+        .shared
+        .lock()
+        .map_err(|_| "串口状态锁已损坏".to_owned())
+        .map(|shared| shared.modem_status_payload())
 }
 
 #[tauri::command]
@@ -2254,8 +2373,14 @@ fn run_serial_worker(
     let mut terminal_error: Option<SerialFailure> = None;
     let mut last_bus_activity = Instant::now();
     let mut output_needs_drain = false;
+    let mut next_modem_status_poll = Instant::now();
 
     'worker: while !cancel.load(Ordering::Acquire) {
+        let now = Instant::now();
+        if modem_status_poll_due(now, &mut next_modem_status_poll) {
+            let snapshot = read_modem_line_snapshot(&mut *port);
+            publish_modem_status(&app, &shared_state, generation, snapshot);
+        }
         if settle_cancelled_file_send(&app, &shared_state, &mut pending_write, &mut file_runtime) {
             continue;
         }
@@ -3182,6 +3307,21 @@ fn emit_state(app: &AppHandle, payload: SerialStatePayload) {
     let _ = app.emit("serial://state", payload);
 }
 
+fn publish_modem_status(
+    app: &AppHandle,
+    shared_state: &Arc<Mutex<SharedSerialState>>,
+    generation: u64,
+    snapshot: ModemLineSnapshot,
+) {
+    let payload = shared_state
+        .lock()
+        .ok()
+        .and_then(|mut shared| shared.update_modem_status(generation, snapshot));
+    if let Some(payload) = payload {
+        let _ = app.emit("serial://modem-status", payload);
+    }
+}
+
 fn emit_file_send_state(app: &AppHandle, payload: SerialFileSendPayload) {
     let _ = app.emit("serial://file-send", payload);
 }
@@ -3245,6 +3385,43 @@ fn parse_flow_control(value: &str) -> Result<FlowControl, String> {
 mod tests {
     use super::*;
 
+    struct TestModemLineReader {
+        cts: serialport::Result<bool>,
+        dsr: serialport::Result<bool>,
+        ri: serialport::Result<bool>,
+        dcd: serialport::Result<bool>,
+        calls: Vec<&'static str>,
+    }
+
+    impl ModemLineReader for TestModemLineReader {
+        fn read_cts(&mut self) -> serialport::Result<bool> {
+            self.calls.push("cts");
+            self.cts.clone()
+        }
+
+        fn read_dsr(&mut self) -> serialport::Result<bool> {
+            self.calls.push("dsr");
+            self.dsr.clone()
+        }
+
+        fn read_ri(&mut self) -> serialport::Result<bool> {
+            self.calls.push("ri");
+            self.ri.clone()
+        }
+
+        fn read_dcd(&mut self) -> serialport::Result<bool> {
+            self.calls.push("dcd");
+            self.dcd.clone()
+        }
+    }
+
+    fn unsupported_modem_line() -> serialport::Result<bool> {
+        Err(serialport::Error::new(
+            serialport::ErrorKind::Unknown,
+            "控制线不可读",
+        ))
+    }
+
     #[test]
     fn parses_supported_serial_options() {
         assert!(matches!(parse_data_bits(8), Ok(DataBits::Eight)));
@@ -3262,6 +3439,149 @@ mod tests {
         assert!(parse_parity("mark").is_err());
         assert!(parse_stop_bits(3).is_err());
         assert!(parse_flow_control("magic").is_err());
+    }
+
+    #[test]
+    fn modem_line_reads_preserve_partial_driver_failures() {
+        let mut reader = TestModemLineReader {
+            cts: Ok(true),
+            dsr: unsupported_modem_line(),
+            ri: Ok(false),
+            dcd: Ok(true),
+            calls: Vec::new(),
+        };
+
+        assert_eq!(
+            read_modem_line_snapshot(&mut reader),
+            ModemLineSnapshot {
+                cts: Some(true),
+                dsr: None,
+                ri: Some(false),
+                dcd: Some(true),
+            }
+        );
+        assert_eq!(reader.calls, ["cts", "dsr", "ri", "dcd"]);
+    }
+
+    #[test]
+    fn modem_status_only_advances_for_changed_current_connection() {
+        let initial = ModemLineSnapshot {
+            cts: Some(true),
+            dsr: Some(false),
+            ri: None,
+            dcd: Some(true),
+        };
+        let mut shared = SharedSerialState {
+            generation: 7,
+            status: SerialStatus::Connected,
+            ..SharedSerialState::default()
+        };
+
+        let first = shared.update_modem_status(7, initial).unwrap();
+        assert_eq!(first.revision, 1);
+        assert!(shared.update_modem_status(7, initial).is_none());
+        assert!(shared
+            .update_modem_status(
+                6,
+                ModemLineSnapshot {
+                    cts: Some(false),
+                    ..initial
+                },
+            )
+            .is_none());
+
+        let second = shared
+            .update_modem_status(
+                7,
+                ModemLineSnapshot {
+                    cts: Some(false),
+                    ..initial
+                },
+            )
+            .unwrap();
+        assert_eq!(second.revision, 2);
+        assert_eq!(second.cts, Some(false));
+
+        shared.transition(SerialStatus::Disconnected, "COM3".to_owned(), None, None);
+        assert_eq!(
+            shared.modem_status_payload(),
+            SerialModemStatusPayload {
+                generation: 7,
+                revision: 0,
+                cts: None,
+                dsr: None,
+                ri: None,
+                dcd: None,
+            }
+        );
+    }
+
+    #[test]
+    fn first_all_unavailable_modem_sample_is_published_once() {
+        let mut shared = SharedSerialState {
+            generation: 5,
+            status: SerialStatus::Connected,
+            ..SharedSerialState::default()
+        };
+
+        let first = shared
+            .update_modem_status(5, ModemLineSnapshot::default())
+            .unwrap();
+        assert_eq!(
+            first,
+            SerialModemStatusPayload {
+                generation: 5,
+                revision: 1,
+                cts: None,
+                dsr: None,
+                ri: None,
+                dcd: None,
+            }
+        );
+        assert!(shared
+            .update_modem_status(5, ModemLineSnapshot::default())
+            .is_none());
+    }
+
+    #[test]
+    fn modem_status_payload_keeps_null_fields_and_camel_case() {
+        let payload = SerialModemStatusPayload {
+            generation: 3,
+            revision: 4,
+            cts: Some(true),
+            dsr: None,
+            ri: Some(false),
+            dcd: None,
+        };
+        let json = serde_json::to_value(payload).unwrap();
+
+        assert_eq!(json["generation"], 3);
+        assert_eq!(json["revision"], 4);
+        assert_eq!(json["cts"], true);
+        assert!(json["dsr"].is_null());
+        assert_eq!(json["ri"], false);
+        assert!(json["dcd"].is_null());
+    }
+
+    #[test]
+    fn modem_status_poll_reanchors_after_delayed_ticks() {
+        let start = Instant::now();
+        let mut next_poll = start + MODEM_STATUS_POLL_INTERVAL;
+        assert!(!modem_status_poll_due(
+            start + Duration::from_millis(199),
+            &mut next_poll,
+        ));
+        assert!(modem_status_poll_due(
+            start + Duration::from_millis(200),
+            &mut next_poll,
+        ));
+        assert_eq!(next_poll, start + Duration::from_millis(400));
+
+        assert!(modem_status_poll_due(
+            start + Duration::from_millis(650),
+            &mut next_poll,
+        ));
+        assert_eq!(next_poll, start + Duration::from_millis(850));
     }
 
     #[test]
