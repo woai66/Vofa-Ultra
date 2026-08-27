@@ -40,6 +40,18 @@ const SEARCH_ENTRIES: TerminalEntry[] = [
   },
 ];
 
+const DEFAULT_SEND = useWorkbenchStore.getState().send;
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, reject, resolve };
+}
+
 describe("TerminalPanel", () => {
   beforeEach(() => {
     localStorage.removeItem(TERMINAL_TIME_MODE_STORAGE_KEY);
@@ -85,6 +97,7 @@ describe("TerminalPanel", () => {
       terminalTxTextEncoding: "utf-8",
       terminalPaused: false,
       terminalAutoScroll: true,
+      send: DEFAULT_SEND,
     });
   });
 
@@ -583,6 +596,100 @@ describe("TerminalPanel", () => {
     await waitFor(() => {
       expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.hex).toBe("01 FF 0D");
     });
+  });
+
+  it("发送完成前编辑新草稿时保留新内容", async () => {
+    const deferred = createDeferred<void>();
+    const send = vi.fn(() => deferred.promise);
+    useWorkbenchStore.setState({ send });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const input = screen.getByRole("textbox", { name: "发送内容" });
+
+    await user.type(input, "FIRST");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(send).toHaveBeenCalledWith("FIRST", "text", "none");
+    await user.clear(input);
+    await user.type(input, "SECOND");
+    deferred.resolve();
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+    });
+    expect(input).toHaveValue("SECOND");
+  });
+
+  it("旧发送失败时不把错误显示到新草稿", async () => {
+    const deferred = createDeferred<void>();
+    useWorkbenchStore.setState({ send: vi.fn(() => deferred.promise) });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const input = screen.getByRole("textbox", { name: "发送内容" });
+
+    await user.type(input, "FIRST");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.clear(input);
+    await user.type(input, "SECOND");
+    deferred.reject(new Error("串口写入失败"));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+    });
+    expect(input).toHaveValue("SECOND");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("发送期间草稿未变化时仍在成功后清空", async () => {
+    const deferred = createDeferred<void>();
+    useWorkbenchStore.setState({ send: vi.fn(() => deferred.promise) });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const input = screen.getByRole("textbox", { name: "发送内容" });
+
+    await user.type(input, "PING");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.click(
+      within(screen.getByRole("group", { name: "发送格式" })).getByRole("button", {
+        name: "文本",
+      }),
+    );
+    deferred.resolve();
+
+    await waitFor(() => {
+      expect(input).toHaveValue("");
+    });
+  });
+
+  it("发送完成前外部切换行尾时保留原 payload", async () => {
+    const deferred = createDeferred<void>();
+    useWorkbenchStore.setState({ send: vi.fn(() => deferred.promise) });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const input = screen.getByRole("textbox", { name: "发送内容" });
+
+    await user.type(input, "PING");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    useWorkbenchStore.getState().setLineEnding("cr");
+    deferred.resolve();
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+    });
+    expect(input).toHaveValue("PING");
+    expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("cr");
+  });
+
+  it("草稿未变化且发送失败时显示对应错误", async () => {
+    const deferred = createDeferred<void>();
+    useWorkbenchStore.setState({ send: vi.fn(() => deferred.promise) });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.type(screen.getByRole("textbox", { name: "发送内容" }), "PING");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    deferred.reject(new Error("串口写入失败"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("串口写入失败");
   });
 
   it("选择 GB18030 后按实际字节预览、发送并从历史恢复编码", async () => {
