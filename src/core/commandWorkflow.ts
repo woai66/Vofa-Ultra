@@ -293,9 +293,6 @@ export class CommandScheduler {
 }
 
 function validateCommandTaskRequest(request: CommandTaskRequest): void {
-  if (request.template.source.length === 0) {
-    throw new Error("发送内容不能为空");
-  }
   if (
     !Number.isInteger(request.intervalMs) ||
     request.intervalMs < MIN_COMMAND_INTERVAL_MS ||

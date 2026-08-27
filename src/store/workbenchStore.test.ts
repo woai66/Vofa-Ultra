@@ -1599,12 +1599,36 @@ describe("workbenchStore", () => {
     ).toEqual([]);
   });
 
-  it("周期任务拒绝空草稿，即使配置了行尾", () => {
-    useWorkbenchStore.setState({ connectionStatus: "connected" });
+  it("周期任务允许仅发送行尾并继续拒绝零字节草稿", async () => {
+    vi.useFakeTimers();
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
 
     expect(() =>
-      useWorkbenchStore.getState().startPeriodicSend("", "text", "lf", 1_000, 1),
+      useWorkbenchStore.getState().startPeriodicSend("", "text", "none", 1_000, 1),
     ).toThrow("不能为空");
+
+    useWorkbenchStore.getState().startPeriodicSend("", "text", "cr", 20, 2);
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(useWorkbenchStore.getState().commandTask).toMatchObject({
+      status: "completed",
+      sentCount: 2,
+    });
+    const txEntries = useWorkbenchStore
+      .getState()
+      .terminalEntries.filter((entry) => entry.direction === "tx");
+    expect(txEntries.map((entry) => entry.hex)).toEqual(["0D", "0D"]);
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([
+      expect.objectContaining({
+        value: "",
+        lineEnding: "cr",
+        encodedBytes: 1,
+        repeatCount: 2,
+      }),
+    ]);
   });
 
   it("切换数据源时清空上一数据源的通道", async () => {

@@ -190,6 +190,27 @@ describe("CommandScheduler", () => {
     expect(send).toHaveBeenCalledTimes(3);
   });
 
+  it.each([
+    { lineEnding: "lf", bytes: [0x0a] },
+    { lineEnding: "cr", bytes: [0x0d] },
+    { lineEnding: "crlf", bytes: [0x0d, 0x0a] },
+  ] as const)("空模板搭配 $lineEnding 时按实际行尾字节完成任务", async ({ lineEnding, bytes }) => {
+    const send = vi.fn<(command: PreparedCommand) => Promise<void>>().mockResolvedValue(undefined);
+    const { scheduler } = schedulerHarness(send);
+
+    scheduler.start(
+      task({
+        template: compileCommandTemplate("", "text"),
+        lineEnding,
+        repeatCount: 1,
+      }),
+    );
+    await flushPromises();
+
+    expect(Array.from(send.mock.calls[0]?.[0].bytes ?? [])).toEqual(bytes);
+    expect(scheduler.getSnapshot()).toMatchObject({ status: "completed", sentCount: 1 });
+  });
+
   it("逐次渲染发送序号和当前时间，同时冻结任务起始时间", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
@@ -319,7 +340,12 @@ describe("CommandScheduler", () => {
     const { scheduler } = schedulerHarness(async () => undefined);
 
     expect(() =>
-      scheduler.start(task({ template: compileCommandTemplate("", "text") })),
+      scheduler.start(
+        task({
+          template: compileCommandTemplate("", "text"),
+          lineEnding: "none",
+        }),
+      ),
     ).toThrow("不能为空");
     expect(() => scheduler.start(task({ intervalMs: 19 }))).toThrow("发送间隔");
     expect(() => scheduler.start(task({ repeatCount: 100_001 }))).toThrow("发送次数");

@@ -1082,6 +1082,34 @@ describe("TerminalPanel", () => {
     ).toEqual([]);
   });
 
+  it("空输入选择 CR 后允许启动仅行尾的周期任务", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.click(screen.getByRole("button", { name: "展开周期发送设置" }));
+    const startButton = screen.getByRole("button", { name: "启动" });
+    expect(startButton).toBeDisabled();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "cr");
+    await user.clear(screen.getByRole("spinbutton", { name: "发送次数" }));
+    await user.type(screen.getByRole("spinbutton", { name: "发送次数" }), "1");
+    expect(startButton).toBeEnabled();
+    await user.click(startButton);
+
+    await waitFor(() => {
+      expect(useWorkbenchStore.getState().commandTask).toMatchObject({
+        status: "completed",
+        sentCount: 1,
+      });
+    });
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.filter((entry) => entry.direction === "tx")
+        .map((entry) => entry.hex),
+    ).toEqual(["0D"]);
+  });
+
   it("周期任务运行时冻结输入副本并保留可达的停止按钮", async () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
