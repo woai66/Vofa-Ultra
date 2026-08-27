@@ -3920,6 +3920,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "wasmi",
+ "wasmparser",
  "wat",
  "windows-sys 0.61.2",
 ]
@@ -4058,9 +4059,9 @@ dependencies = [
 
 [[package]]
 name = "wasmi"
-version = "0.50.0"
+version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26d7792a4864380620cde2b918cc8c3c1e95c864838fa30d89c6eb6973c50fd1"
+checksum = "0d8d971db10c3eaecde2ef652ab5a1d6a6d5c520b49fae33effca742f5577aa1"
 dependencies = [
  "spin",
  "wasmi_collections",
@@ -4071,27 +4072,27 @@ dependencies = [
 
 [[package]]
 name = "wasmi_collections"
-version = "0.50.0"
+version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "664e9b6298d799372dfbb56c94542526a03c1031bba3234f5d6191067685225c"
+checksum = "b6e1fc1d725706e57894c5cd3f0d6541d04a33330492db282fc44242869d0af2"
 dependencies = [
  "string-interner",
 ]
 
 [[package]]
 name = "wasmi_core"
-version = "0.50.0"
+version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "446be206a0da898de86cbb96555896f49d5e75b69a2a347d1e0ee6103585d28e"
+checksum = "5efcd5a6e84272f1a353ff30206389d8e8cd02709a256dc4b63e25f90dd10a4f"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "wasmi_ir"
-version = "0.50.0"
+version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f12ac8605ece78bf7682a0607d43f5a4aacd866fde362beb1f0695437887a2f9"
+checksum = "1108651abe43bdbf9b28c2c7178d4b8cf376cfcf30141451a619bcf241d26eaa"
 dependencies = [
  "wasmi_core",
 ]

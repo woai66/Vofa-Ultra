@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::State;
 use wasmi::{
-    CompilationMode, Config, EnforcedLimits, Engine, Instance, Linker, Memory, Module, StackLimits,
-    Store, StoreLimits, StoreLimitsBuilder, TrapCode, TypedFunc,
+    CompilationMode, Config, EnforcedLimits, Engine, Instance, Linker, Memory, Module, Store,
+    StoreLimits, StoreLimitsBuilder, TrapCode, TypedFunc,
 };
 
 const EXTENSION_FORMAT: &str = "vofa-ultra-extension";
@@ -570,7 +570,7 @@ pub async fn inspect_extension(
         let _compilation_permit = compilation_permit;
         guard_untrusted(|| {
             let prepared = load_prepared_extension(&path)?;
-            let _instance = instantiate_extension(&prepared.engine, &prepared.module)?;
+            let _instance = instantiate_extension(&prepared)?;
             Ok(ExtensionInspectionPayload {
                 format: EXTENSION_FORMAT.to_owned(),
                 schema_version: EXTENSION_SCHEMA_VERSION,
@@ -614,7 +614,7 @@ pub async fn activate_extension(
             if prepared.package_sha256 != expected_package_sha256 {
                 return Err("扩展包自检查后已发生变化，请重新选择并检查".to_owned());
             }
-            let instance = instantiate_extension(&prepared.engine, &prepared.module)?;
+            let instance = instantiate_extension(&prepared)?;
             let runtime = ExtensionRuntime::new(instance).map_err(format_runtime_fault)?;
             Ok((prepared, runtime))
         })?;
@@ -870,8 +870,6 @@ fn prepare_extension(package_bytes: &[u8]) -> Result<PreparedExtension, String> 
 }
 
 fn create_wasm_engine() -> Result<Engine, String> {
-    let stack_limits = StackLimits::new(128, 8192, 256)
-        .map_err(|error| format!("配置扩展执行栈限制失败: {error}"))?;
     let mut config = Config::default();
     config
         .consume_fuel(true)
@@ -884,16 +882,15 @@ fn create_wasm_engine() -> Result<Engine, String> {
         .wasm_wide_arithmetic(false)
         .ignore_custom_sections(true)
         .enforced_limits(EnforcedLimits::strict())
-        .set_stack_limits(stack_limits)
-        .set_cached_stacks(0);
+        .set_min_stack_height(128)
+        .set_max_stack_height(8192)
+        .set_max_recursion_depth(256)
+        .set_max_cached_stacks(0);
     Ok(Engine::new(&config))
 }
 
-#[allow(deprecated)]
-fn instantiate_extension(
-    engine: &Engine,
-    module: &Module,
-) -> Result<InstantiatedExtension, String> {
+fn instantiate_extension(prepared: &PreparedExtension) -> Result<InstantiatedExtension, String> {
+    ensure_no_start_function(&prepared.module_bytes)?;
     let limits = StoreLimitsBuilder::new()
         .memory_size(MAX_MEMORY_BYTES)
         .memories(1)
@@ -902,15 +899,13 @@ fn instantiate_extension(
         .table_elements(MAX_WASM_TABLE_ELEMENTS)
         .trap_on_grow_failure(true)
         .build();
-    let mut store = Store::new(engine, WasmStoreState { limits });
+    let mut store = Store::new(&prepared.engine, WasmStoreState { limits });
     store.limiter(|state| &mut state.limits);
-    let linker = Linker::<WasmStoreState>::new(engine);
+    let linker = Linker::<WasmStoreState>::new(&prepared.engine);
     let instance = linker
-        .instantiate(&mut store, module)
-        .map_err(|error| format!("实例化扩展失败: {error}"))?
-        .ensure_no_start(&mut store)
-        .map_err(|error| format!("扩展不得声明 start 函数: {error}"))?;
-    validate_memory_export(module, &instance, &store)?;
+        .instantiate_and_start(&mut store, &prepared.module)
+        .map_err(|error| format!("实例化扩展失败: {error}"))?;
+    validate_memory_export(&prepared.module, &instance, &store)?;
 
     let memory = instance
         .get_memory(&store, "memory")
@@ -927,6 +922,16 @@ fn instantiate_extension(
         reset,
         push,
     })
+}
+
+fn ensure_no_start_function(module_bytes: &[u8]) -> Result<(), String> {
+    for payload in wasmparser::Parser::new(0).parse_all(module_bytes) {
+        let payload = payload.map_err(|_| "扩展 Wasm 模块无效或超过编译限制".to_owned())?;
+        if matches!(payload, wasmparser::Payload::StartSection { .. }) {
+            return Err("扩展不得声明 start 函数".to_owned());
+        }
+    }
+    Ok(())
 }
 
 fn validate_memory_export(
@@ -1336,7 +1341,7 @@ mod tests {
 
     fn prepared_runtime(module_bytes: &[u8]) -> Result<ExtensionRuntime, String> {
         let prepared = prepare_extension(&package_bytes(module_bytes))?;
-        let instance = instantiate_extension(&prepared.engine, &prepared.module)?;
+        let instance = instantiate_extension(&prepared)?;
         ExtensionRuntime::new(instance).map_err(format_runtime_fault)
     }
 
@@ -1389,7 +1394,7 @@ mod tests {
         let prepared = prepare_extension(&package).unwrap();
 
         assert_eq!(prepared.manifest.id, "io.vofa.constant-parser");
-        let instance = instantiate_extension(&prepared.engine, &prepared.module).unwrap();
+        let instance = instantiate_extension(&prepared).unwrap();
         let mut runtime = ExtensionRuntime::new(instance).unwrap();
         assert_eq!(
             runtime.push(b"ignored", 1_000).unwrap(),
@@ -1513,7 +1518,7 @@ mod tests {
         )
         .unwrap();
         let prepared = prepare_extension(&package_bytes(&with_start)).unwrap();
-        let error = expect_string_error(instantiate_extension(&prepared.engine, &prepared.module));
+        let error = expect_string_error(instantiate_extension(&prepared));
         assert!(error.contains("不得声明 start"));
 
         let wrong_abi = wat::parse_str(
@@ -1527,7 +1532,7 @@ mod tests {
         )
         .unwrap();
         let prepared = prepare_extension(&package_bytes(&wrong_abi)).unwrap();
-        let error = expect_string_error(instantiate_extension(&prepared.engine, &prepared.module));
+        let error = expect_string_error(instantiate_extension(&prepared));
         assert!(error.contains("ABI 签名不匹配"));
     }
 
@@ -1545,7 +1550,7 @@ mod tests {
         .unwrap();
         let prepared = prepare_extension(&package_bytes(&trapping_exports)).unwrap();
 
-        assert!(instantiate_extension(&prepared.engine, &prepared.module).is_ok());
+        assert!(instantiate_extension(&prepared).is_ok());
     }
 
     #[test]
@@ -1561,7 +1566,7 @@ mod tests {
         )
         .unwrap();
         let prepared = prepare_extension(&package_bytes(&oversized_memory)).unwrap();
-        let error = expect_string_error(instantiate_extension(&prepared.engine, &prepared.module));
+        let error = expect_string_error(instantiate_extension(&prepared));
         assert!(error.contains("实例化扩展失败") || error.contains("初始内存"));
 
         let short_input = wat::parse_str(
@@ -1670,7 +1675,7 @@ mod tests {
     fn reset_and_deactivate_advance_generation_and_clear_authority() {
         let module_bytes = module_with_output(valid_output());
         let prepared = prepare_extension(&package_bytes(&module_bytes)).unwrap();
-        let instance = instantiate_extension(&prepared.engine, &prepared.module).unwrap();
+        let instance = instantiate_extension(&prepared).unwrap();
         let runtime = ExtensionRuntime::new(instance).unwrap();
         let mut shared = SharedExtensionState::default();
         let active = shared.activate(prepared, runtime);
