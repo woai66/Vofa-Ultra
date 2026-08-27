@@ -2053,9 +2053,18 @@ test("有界命令历史与可取消周期发送形成完整工作流", async ({
   const taskStatus = page.getByRole("status", { name: "周期发送状态" });
   await expect(taskStatus).toContainText("已完成 3 次发送", { timeout: 5_000 });
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(3);
-  await page.getByRole("button", { name: "命令历史，1 条" }).click();
-  await expect(page.getByRole("dialog", { name: "命令历史" })).toContainText("×3");
-  await page.getByRole("button", { name: "命令历史，1 条" }).click();
+  const historyTrigger = page.getByRole("button", { name: "命令历史，1 条" });
+  await historyTrigger.click();
+  const historyDialog = page.getByRole("dialog", { name: "命令历史" });
+  const historyEntry = historyDialog.getByRole("button", { name: /PING/ });
+  await expect(historyDialog).toContainText("×3");
+  await expect(historyEntry).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(historyDialog).toHaveCount(0);
+  await expect(historyTrigger).toBeFocused();
+  await historyTrigger.click();
+  await expect(historyDialog.getByRole("button", { name: /PING/ })).toBeFocused();
+  await historyTrigger.click();
 
   await page.getByRole("button", { name: "持续" }).click();
   await page.getByRole("button", { name: "启动" }).click();
