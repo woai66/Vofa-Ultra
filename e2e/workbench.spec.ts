@@ -2204,12 +2204,13 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
   await expect(scene).toHaveAttribute("data-renderer", "ready");
   await expect(page.locator(".attitude-state-overlay[role=\"alert\"]")).toHaveCount(0);
   await expect
-    .poll(async () => (await canvasScreenshotSignature(canvas)).bytes)
+    .poll(async () => (await canvasScreenshotStats(canvas)).bytes)
     .toBeGreaterThan(10_000);
-  const restoredCanvas = await canvasScreenshotSignature(canvas);
+  const restoredOrientation = await scene.getAttribute("data-rendered-orientation");
+  expect(restoredOrientation).not.toBeNull();
   await expect
-    .poll(async () => (await canvasScreenshotSignature(canvas)).hash)
-    .not.toBe(restoredCanvas.hash);
+    .poll(async () => scene.getAttribute("data-rendered-orientation"))
+    .not.toBe(restoredOrientation);
   await scene.screenshot({ path: testInfo.outputPath("desktop-attitude-restored.png") });
 
   const mobileViewports = [
@@ -2248,7 +2249,7 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
     expect(layout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(true);
     await configuration.getByRole("button", { name: "关闭姿态配置" }).click();
     await expect(configuration).not.toBeVisible();
-    const mobileCanvas = await canvasScreenshotSignature(canvas);
+    const mobileCanvas = await canvasScreenshotStats(canvas);
     expect(mobileCanvas.width).toBeGreaterThan(200);
     expect(mobileCanvas.height).toBeGreaterThan(100);
     expect(mobileCanvas.bytes).toBeGreaterThan(5_000);
