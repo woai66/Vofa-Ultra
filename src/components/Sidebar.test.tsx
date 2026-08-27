@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { APP_DISPLAY_VERSION } from "../core/appMetadata";
 import { createInitialModbusPollSnapshot } from "../core/modbusPoller";
 import { createEmptyProtocolHealth } from "../core/protocols";
 import { useWorkbenchStore } from "../store/workbenchStore";
@@ -789,6 +790,10 @@ describe("Sidebar 通道展示配置", () => {
 });
 
 describe("Sidebar 主题偏好", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   it("显示三种主题模式并提交用户选择", () => {
     const on_theme_preference_change = vi.fn();
     const { rerender } = render(
@@ -819,5 +824,21 @@ describe("Sidebar 主题偏好", () => {
       />,
     );
     expect(light_button).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("显示当前版本、Windows 支持范围和许可证", () => {
+    render(
+      <Sidebar
+        activePanel="settings"
+        themePreference="system"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const about = screen.getByRole("region", { name: "Vofa-Ultra" });
+    expect(about).toHaveTextContent(APP_DISPLAY_VERSION);
+    expect(about).toHaveTextContent("Windows 10/11 x64");
+    expect(about).toHaveTextContent("MIT");
   });
 });
