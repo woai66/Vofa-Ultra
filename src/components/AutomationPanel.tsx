@@ -22,6 +22,9 @@ export function AutomationPanel() {
   const rules = useWorkbenchStore((state) => state.autoResponderRules);
   const runtime = useWorkbenchStore((state) => state.autoResponder);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
+  const serialControlLineOperation = useWorkbenchStore(
+    (state) => state.serialControlLineOperation,
+  );
   const commandTask = useWorkbenchStore((state) => state.commandTask);
   const isSendingCommand = useWorkbenchStore((state) => state.isSendingCommand);
   const workspaceTransitionStatus = useWorkbenchStore(
@@ -53,6 +56,7 @@ export function AutomationPanel() {
   const canStart =
     connectionStatus === "connected" &&
     enabledRuleCount > 0 &&
+    serialControlLineOperation === "idle" &&
     !taskActive &&
     !isSendingCommand &&
     !isTransitioning;

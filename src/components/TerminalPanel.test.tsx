@@ -69,6 +69,7 @@ describe("TerminalPanel", () => {
         transmittedBytes: 0,
         message: "",
       },
+      serialControlLineOperation: "idle",
       commandTask: createInitialCommandTaskSnapshot(),
       isSendingCommand: false,
       displayMode: "text",
@@ -1000,6 +1001,20 @@ describe("TerminalPanel", () => {
     expect(within(details).getByText("01 03 00 00 00 01 84 0A")).toBeVisible();
     expect(within(details).getByText("01 03 02 00 00 B8 44")).toBeVisible();
     expect(screen.getByRole("button", { name: "命令历史，0 条" })).toBeDisabled();
+  });
+
+  it("控制线操作期间禁用手动、周期和 Modbus RTU 发送", async () => {
+    useWorkbenchStore.setState({ serialControlLineOperation: "dtr" });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.type(screen.getByRole("textbox", { name: "发送内容" }), "PING");
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "展开周期发送设置" }));
+    expect(screen.getByRole("button", { name: "启动" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
+    const builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+    expect(within(builder).getByRole("button", { name: "执行事务" })).toBeDisabled();
   });
 
   it("工作区切换期间关闭并禁用 Modbus RTU 构帧器", async () => {

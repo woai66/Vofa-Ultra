@@ -2331,6 +2331,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           state.workspaceTransitionStatus !== "idle" ||
           state.runtimeTransitionStatus !== "idle" ||
           state.recordingDirectoryStatus !== "idle" ||
+          state.serialControlLineOperation !== "idle" ||
           isCaptureActive(state.captureStatus) ||
           hasReplaySession(state)
         ) {
@@ -2443,6 +2444,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           state.workspaceTransitionStatus !== "idle" ||
           state.runtimeTransitionStatus !== "idle" ||
           state.recordingDirectoryStatus !== "idle" ||
+          state.serialControlLineOperation !== "idle" ||
           isNumericLogActive(state.numericLogStatus) ||
           hasReplaySession(state)
         ) {
@@ -3978,6 +3980,9 @@ function assertCommandCanSend(state: WorkbenchStore): void {
   }
   if (state.connectionStatus !== "connected") {
     throw new Error("请先连接数据源");
+  }
+  if (state.serialControlLineOperation !== "idle") {
+    throw new Error("串口控制线操作进行中，请稍后重试");
   }
   if (isModbusTransactionActive(state.modbusTransaction)) {
     throw new Error("Modbus RTU 事务进行中，暂不能发送其他数据");
