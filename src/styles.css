@@ -6403,6 +6403,7 @@ textarea:focus {
   flex: 1;
 }
 
+.transfer-rate,
 .transfer-stats {
   gap: 9px;
 }
@@ -6643,6 +6644,7 @@ textarea:focus {
 
   .status-item:nth-of-type(3),
   .status-item:nth-of-type(5),
+  .transfer-rate span:last-child,
   .transfer-stats span:last-child {
     display: none;
   }

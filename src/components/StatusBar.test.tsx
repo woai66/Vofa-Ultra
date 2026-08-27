@@ -1,0 +1,107 @@
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useWorkbenchStore } from "../store/workbenchStore";
+import { StatusBar } from "./StatusBar";
+
+describe("StatusBar", () => {
+  let monotonicNow: number;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    monotonicNow = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
+    useWorkbenchStore.setState({
+      source: "simulator",
+      protocol: "firewater",
+      connectionStatus: "connected",
+      replayStatus: "idle",
+      replaySessionId: 0,
+      captureStatus: "idle",
+      channels: [],
+      processedChannels: [],
+      extensionChannels: [],
+      stats: { rxBytes: 0, txBytes: 0, rxFrames: 0, startedAt: 100 },
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("按实际间隔显示双向速率并在空闲后归零", () => {
+    render(<StatusBar />);
+    const rate = screen.getByLabelText(/实时传输速率/);
+    expect(rate).toHaveTextContent("RX 0 B/s");
+    expect(rate).toHaveTextContent("TX 0 B/s");
+
+    act(() => {
+      useWorkbenchStore.setState({
+        stats: { rxBytes: 2_048, txBytes: 1_024, rxFrames: 1, startedAt: 100 },
+      });
+    });
+    act(() => {
+      monotonicNow = 1_000;
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(rate).toHaveTextContent("RX 2.0 KB/s");
+    expect(rate).toHaveTextContent("TX 1.0 KB/s");
+    expect(rate).toHaveAccessibleName(
+      "实时传输速率：RX 2.0 KB/s，TX 1.0 KB/s",
+    );
+
+    act(() => {
+      monotonicNow = 2_500;
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(rate).toHaveTextContent("RX 0 B/s");
+    expect(rate).toHaveTextContent("TX 0 B/s");
+  });
+
+  it("统计重置后立即清零并从新基线继续采样", () => {
+    render(<StatusBar />);
+    const rate = screen.getByLabelText(/实时传输速率/);
+    act(() => {
+      useWorkbenchStore.setState({
+        stats: { rxBytes: 2_048, txBytes: 1_024, rxFrames: 1, startedAt: 100 },
+      });
+    });
+    act(() => {
+      monotonicNow = 1_000;
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(rate).toHaveTextContent("RX 2.0 KB/s");
+
+    act(() => {
+      monotonicNow = 1_100;
+      useWorkbenchStore.setState({
+        stats: { rxBytes: 0, txBytes: 0, rxFrames: 0, startedAt: 200 },
+      });
+    });
+    expect(rate).toHaveTextContent("RX 0 B/s");
+    expect(rate).toHaveTextContent("TX 0 B/s");
+
+    act(() => {
+      useWorkbenchStore.setState({
+        stats: { rxBytes: 1_024, txBytes: 512, rxFrames: 1, startedAt: 200 },
+      });
+    });
+    act(() => {
+      monotonicNow = 2_100;
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(rate).toHaveTextContent("RX 1.0 KB/s");
+    expect(rate).toHaveTextContent("TX 512 B/s");
+  });
+
+  it("卸载时清理采样定时器", () => {
+    const { unmount } = render(<StatusBar />);
+    expect(vi.getTimerCount()).toBe(1);
+
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
