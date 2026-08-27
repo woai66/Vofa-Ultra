@@ -90,6 +90,37 @@ describe("Sidebar 串口恢复界面", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it("为串口配置字段提供稳定表单标识", () => {
+    const { container } = render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const fields = [...container.querySelectorAll("input, select")];
+    expect(fields.length).toBeGreaterThan(0);
+    expect(fields.every((field) => Boolean(field.id && field.getAttribute("name")))).toBe(true);
+  });
+
+  it("为模拟器配置字段提供稳定表单标识", () => {
+    useWorkbenchStore.setState({ source: "simulator", connectionStatus: "disconnected" });
+    const { container } = render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const fields = [...container.querySelectorAll("input, select")];
+    expect(fields.length).toBeGreaterThan(0);
+    expect(fields.every((field) => Boolean(field.id && field.getAttribute("name")))).toBe(true);
+  });
+
   it("Modbus 轮询期间禁用串口控制线", () => {
     useWorkbenchStore.setState({
       connectionStatus: "connected",
@@ -751,6 +782,18 @@ describe("Sidebar 通道展示配置", () => {
     expect(screen.getAllByRole("button", { name: /^编辑通道/ })).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "编辑通道 voltage" }));
+    expect(screen.getByRole("textbox", { name: "channel-0 通道别名" })).toHaveAttribute(
+      "name",
+      "channel-channel-0-alias",
+    );
+    expect(screen.getByRole("textbox", { name: "channel-0 通道单位" })).toHaveAttribute(
+      "name",
+      "channel-channel-0-unit",
+    );
+    expect(screen.getByLabelText("channel-0 通道颜色")).toHaveAttribute(
+      "name",
+      "channel-channel-0-color",
+    );
     fireEvent.change(screen.getByRole("textbox", { name: "channel-0 通道别名" }), {
       target: { value: "临时名称" },
     });
@@ -867,5 +910,25 @@ describe("Sidebar 主题偏好", () => {
     expect(about).toHaveTextContent(APP_DISPLAY_VERSION);
     expect(about).toHaveTextContent("Windows 10/11 x64");
     expect(about).toHaveTextContent("MIT");
+  });
+
+  it("为设置字段提供稳定表单标识", () => {
+    render(
+      <Sidebar
+        activePanel="settings"
+        themePreference="system"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("波形时间窗")).toHaveAttribute(
+      "name",
+      "chart-window-setting",
+    );
+    expect(screen.getByRole("checkbox", { name: "终端自动滚动" })).toHaveAttribute(
+      "name",
+      "terminal-auto-scroll",
+    );
   });
 });

@@ -240,6 +240,7 @@ export function WorkspacePanel() {
         </label>
         <input
           id="workspace-name"
+          name="workspace-name"
           value={nameDraft}
           maxLength={64}
           disabled={!activeWorkspace || isBusy || isStorageReadOnly}
@@ -322,6 +323,8 @@ export function WorkspacePanel() {
       <div className="workspace-footer-actions">
         <input
           ref={fileInputRef}
+          id="workspace-import-file"
+          name="workspace-import-file"
           hidden
           type="file"
           accept="application/json,.json"
