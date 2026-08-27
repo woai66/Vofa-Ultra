@@ -30,7 +30,6 @@ import {
   TerminalSquare,
   Timer,
   TriangleAlert,
-  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -84,7 +83,6 @@ import { selectSerialFilePath } from "../services/serialClient";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { DisplayMode, LineEnding, SerialFileSendStatus } from "../types/serial";
 import type {
-  CommandHistoryEntry,
   CommandTaskSnapshot,
   QuickCommand,
   TerminalEntry,
@@ -93,6 +91,7 @@ import { ModbusRtuBuilder } from "./ModbusRtuBuilder";
 import { QuickCommandPopover } from "./QuickCommandPopover";
 
 const TerminalExportMenu = lazy(() => import("./TerminalExportMenu"));
+const CommandHistoryPopover = lazy(() => import("./CommandHistoryPopover"));
 
 type RepeatMode = "count" | "continuous";
 const COMMAND_REFERENCE_VIEWS = ["variables", "ascii", "converter", "checksum"] as const;
@@ -1792,62 +1791,22 @@ export function TerminalPanel() {
         )}
 
         {historyOpen && (
-          <div
-            className="command-history-popover"
-            role="dialog"
-            aria-label="命令历史"
-          >
-            <div className="command-history-header">
-              <div>
-                <History size={14} />
-                <strong>命令历史</strong>
-                <span>{commandHistory.length}/100</span>
-              </div>
-              <button
-                className="icon-button compact"
-                type="button"
-                aria-label="清空命令历史"
-                title="清空命令历史"
-                onClick={() => {
-                  clearCommandHistory();
-                  resetHistoryNavigation();
-                  setHistoryOpen(false);
-                  textareaRef.current?.focus();
-                }}
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-            <div className="command-history-list">
-              {commandHistory
-                .map((entry, index) => ({ entry, index }))
-                .reverse()
-                .map(({ entry, index }) => (
-                  <button
-                    key={`${entry.sentAt}-${index}`}
-                    type="button"
-                    autoFocus={index === commandHistory.length - 1}
-                    onClick={() => {
-                      recallHistory(index);
-                      setHistoryOpen(false);
-                      textareaRef.current?.focus();
-                    }}
-                  >
-                    <code>{historyPreview(entry)}</code>
-                    <span>
-                      {entry.mode.toUpperCase()} · {lineEndingLabel(entry.lineEnding)} ·{" "}
-                      {entry.checksumMode === "none"
-                        ? "无校验"
-                        : entry.checksumMode.toUpperCase()} ·{" "}
-                      {entry.variableCount > 0
-                        ? `最近 ${entry.encodedBytes} B`
-                        : `${entry.encodedBytes} B`}
-                      {entry.repeatCount > 1 ? ` · ×${entry.repeatCount}` : ""}
-                    </span>
-                  </button>
-                ))}
-            </div>
-          </div>
+          <Suspense fallback={null}>
+            <CommandHistoryPopover
+              entries={commandHistory}
+              onRecall={(index) => {
+                recallHistory(index);
+                setHistoryOpen(false);
+                textareaRef.current?.focus();
+              }}
+              onClear={() => {
+                clearCommandHistory();
+                resetHistoryNavigation();
+                setHistoryOpen(false);
+                textareaRef.current?.focus();
+              }}
+            />
+          </Suspense>
         )}
 
         {variablesOpen && (
@@ -2466,24 +2425,6 @@ function formatTaskSummary(task: CommandTaskSnapshot): string {
     return `停止中 · ${progress}`;
   }
   return `${task.message} · ${progress}`;
-}
-
-function historyPreview(entry: CommandHistoryEntry): string {
-  const value = entry.value.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
-  return value || `<${lineEndingLabel(entry.lineEnding)}>`;
-}
-
-function lineEndingLabel(lineEnding: LineEnding): string {
-  switch (lineEnding) {
-    case "lf":
-      return "LF";
-    case "cr":
-      return "CR";
-    case "crlf":
-      return "CRLF";
-    default:
-      return "无行尾";
-  }
 }
 
 function terminalTimeDescription(mode: TerminalTimeMode, label: string): string {

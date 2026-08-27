@@ -528,7 +528,7 @@ describe("TerminalPanel", () => {
 
     const historyTrigger = screen.getByRole("button", { name: "命令历史，1 条" });
     await user.click(historyTrigger);
-    let historyDialog = screen.getByRole("dialog", { name: "命令历史" });
+    let historyDialog = await screen.findByRole("dialog", { name: "命令历史" });
     expect(historyDialog).toHaveTextContent("CRC32-LE");
     expect(within(historyDialog).getByRole("button", { name: /PING/ })).toHaveFocus();
     await user.keyboard("{Escape}");
@@ -536,7 +536,7 @@ describe("TerminalPanel", () => {
     expect(historyTrigger).toHaveFocus();
 
     await user.click(historyTrigger);
-    historyDialog = screen.getByRole("dialog", { name: "命令历史" });
+    historyDialog = await screen.findByRole("dialog", { name: "命令历史" });
     await user.click(within(historyDialog).getByRole("button", { name: /PING/ }));
     expect(screen.getByRole("textbox", { name: "发送内容" })).toHaveValue("PING");
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("crlf");
@@ -746,7 +746,7 @@ describe("TerminalPanel", () => {
       });
     });
     await user.click(screen.getByRole("button", { name: "命令历史，1 条" }));
-    expect(screen.getByRole("dialog", { name: "命令历史" })).toHaveTextContent("最近 3 B");
+    expect(await screen.findByRole("dialog", { name: "命令历史" })).toHaveTextContent("最近 3 B");
   });
 
   it("HEX 变量菜单只提供定宽格式并发送原始字节", async () => {
