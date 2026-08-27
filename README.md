@@ -11,6 +11,16 @@ Vofa-Ultra 学习 VOFA+ 与
 
 ![Vofa-Ultra 实时串口工作台](docs/images/workbench.png)
 
+## 界面预览
+
+### 实时通道监视
+
+![Vofa-Ultra 实时通道监视](docs/images/channel-monitor.png)
+
+### 3D 姿态
+
+![Vofa-Ultra 3D 姿态视图](docs/images/attitude.png)
+
 ## 文档入口
 
 - [用户手册](docs/user-guide.md)：从模拟器和真实串口连接，到处理、录制、回放、导出与工作区。
