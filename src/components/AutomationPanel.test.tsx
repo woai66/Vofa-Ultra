@@ -25,6 +25,7 @@ describe("AutomationPanel", () => {
       connectionStatus: "disconnected",
       autoResponderRules: [],
       autoResponder: createInitialAutoResponderSnapshot(),
+      serialControlLineOperation: "idle",
       commandTask: createInitialCommandTaskSnapshot(),
       isSendingCommand: false,
       commandSendOrigin: null,
@@ -116,6 +117,18 @@ describe("AutomationPanel", () => {
     expect(screen.getByLabelText("规则名称")).toBeEnabled();
   });
 
+  it("控制线操作期间禁用自动应答启动", () => {
+    useWorkbenchStore.setState({
+      connectionStatus: "connected",
+      serialControlLineOperation: "dtr",
+      autoResponderRules: [createDefaultAutoResponderRule("line-ready", "行结束")],
+    });
+
+    render(<AutomationPanel />);
+
+    expect(screen.getByRole("checkbox", { name: "启用自动应答" })).toBeDisabled();
+  });
+
   it("支持独立停用和删除规则", async () => {
     const user = userEvent.setup();
     useWorkbenchStore.setState({
@@ -134,5 +147,43 @@ describe("AutomationPanel", () => {
       expect.objectContaining({ id: "rule-2", name: "规则二" }),
     ]);
     expect(screen.getByLabelText("规则名称")).toHaveValue("规则二");
+  });
+
+  it("未保存编辑存在时阻止会覆盖当前草稿的规则操作", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState({
+      autoResponderRules: [
+        createDefaultAutoResponderRule("rule-1", "规则一"),
+        createDefaultAutoResponderRule("rule-2", "规则二"),
+      ],
+    });
+    render(<AutomationPanel />);
+
+    const name_input = screen.getByLabelText("规则名称");
+    await user.clear(name_input);
+    await user.type(name_input, "尚未保存");
+    await user.click(screen.getByRole("button", { name: /^规则二HEX/ }));
+
+    expect(name_input).toHaveValue("尚未保存");
+    expect(screen.getByText("请先保存或还原当前规则修改")).toBeVisible();
+    expect(screen.getByRole("button", { name: /^规则一HEX/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+
+    await user.click(screen.getByRole("button", { name: "添加自动应答规则" }));
+    await user.click(screen.getByRole("checkbox", { name: "启用规则 规则一" }));
+    await user.click(screen.getByRole("button", { name: "删除规则 规则一" }));
+    expect(useWorkbenchStore.getState().autoResponderRules).toHaveLength(2);
+    expect(useWorkbenchStore.getState().autoResponderRules[0]).toMatchObject({
+      id: "rule-1",
+      name: "规则一",
+      enabled: true,
+    });
+    expect(name_input).toHaveValue("尚未保存");
+
+    await user.click(screen.getByRole("button", { name: "还原规则修改" }));
+    await user.click(screen.getByRole("button", { name: /^规则二HEX/ }));
+    expect(name_input).toHaveValue("规则二");
   });
 });

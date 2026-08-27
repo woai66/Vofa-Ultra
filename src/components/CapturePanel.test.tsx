@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkbenchStore } from "../store/workbenchStore";
@@ -39,6 +39,8 @@ const clearCaptureExportMock = vi.fn(async () => true);
 const startNumericLogMock = vi.fn(async () => true);
 const stopNumericLogMock = vi.fn(async () => true);
 const addCaptureMarkerMock = vi.fn(() => true);
+const selectRecordingDirectoryMock = vi.fn(async () => true);
+const resetRecordingDirectoryMock = vi.fn(() => true);
 
 function loadReplay(
   status: ReplayUiStatus,
@@ -156,9 +158,84 @@ describe("CapturePanel replay controls", () => {
     startNumericLogMock.mockClear();
     stopNumericLogMock.mockClear();
     addCaptureMarkerMock.mockClear();
+    selectRecordingDirectoryMock.mockClear();
+    resetRecordingDirectoryMock.mockClear();
   });
 
   afterEach(() => cleanup());
+
+  it("在原始录制与数值记录标签共享会话记录目录", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "simulator",
+      protocol: "firewater",
+      connectionStatus: "connected",
+      workspaceTransitionStatus: "idle",
+      runtimeTransitionStatus: "idle",
+      recordingDirectory: "D:\\sessions\\bench",
+      recordingDirectoryMessage: "",
+      selectRecordingDirectory: selectRecordingDirectoryMock,
+      resetRecordingDirectory: resetRecordingDirectoryMock,
+    });
+
+    render(<CapturePanel />);
+
+    let control = screen.getByRole("region", { name: "记录目录" });
+    expect(control).toHaveTextContent("bench");
+    expect(control).toHaveTextContent("D:\\sessions\\bench");
+    expect(within(control).getByRole("status")).toHaveAttribute(
+      "aria-live",
+      "polite",
+    );
+    await user.click(within(control).getByRole("button", { name: "选择记录目录" }));
+    await user.click(
+      within(control).getByRole("button", { name: "恢复默认记录目录" }),
+    );
+    expect(selectRecordingDirectoryMock).toHaveBeenCalledOnce();
+    expect(resetRecordingDirectoryMock).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("tab", { name: "数值" }));
+    control = screen.getByRole("region", { name: "记录目录" });
+    expect(control).toHaveTextContent("D:\\sessions\\bench");
+  });
+
+  it("浏览器预览和任一活动记录都会锁住目录切换", async () => {
+    const user = userEvent.setup();
+    render(<CapturePanel />);
+
+    let control = screen.getByRole("region", { name: "记录目录" });
+    expect(control).toHaveTextContent("系统默认");
+    expect(
+      within(control).getByRole("button", { name: "选择记录目录" }),
+    ).toBeDisabled();
+    expect(
+      within(control).getByRole("button", { name: "恢复默认记录目录" }),
+    ).toBeDisabled();
+
+    act(() =>
+      useWorkbenchStore.setState({
+        isNativeRuntime: true,
+        recordingDirectory: "D:\\sessions",
+        numericLogStatus: "recording",
+        numericLogSessionId: 17,
+        selectRecordingDirectory: selectRecordingDirectoryMock,
+        resetRecordingDirectory: resetRecordingDirectoryMock,
+      }),
+    );
+    control = screen.getByRole("region", { name: "记录目录" });
+    expect(
+      within(control).getByRole("button", { name: "选择记录目录" }),
+    ).toBeDisabled();
+    expect(
+      within(control).getByRole("button", { name: "恢复默认记录目录" }),
+    ).toBeDisabled();
+
+    await user.click(screen.getByRole("tab", { name: "数值" }));
+    expect(screen.getByRole("region", { name: "记录目录" })).toHaveTextContent(
+      "D:\\sessions",
+    );
+  });
 
   it("呈现已加载完整回放的文件、进度和基础控制", () => {
     loadReplay("ready");
@@ -260,6 +337,15 @@ describe("CapturePanel replay controls", () => {
     expect(startNumericLogMock).toHaveBeenCalledOnce();
   });
 
+  it("控制线操作期间禁用原始录制和数值记录启动", async () => {
+    loadNumericLog("idle", { serialControlLineOperation: "dtr" });
+    render(<CapturePanel />);
+
+    expect(screen.getByRole("button", { name: "开始录制" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("tab", { name: "数值" }));
+    expect(screen.getByRole("button", { name: "开始数值记录" })).toBeDisabled();
+  });
+
   it("录制中可选择颜色并添加命名时间线标记", async () => {
     const user = userEvent.setup();
     useWorkbenchStore.setState({
@@ -327,7 +413,7 @@ describe("CapturePanel replay controls", () => {
     expect(screen.getByText("2.0 KiB")).toBeInTheDocument();
     expect(screen.getByText("128")).toBeInTheDocument();
     expect(screen.getByText("numeric.csv.part")).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("正在流式写入数值");
+    expect(screen.getByText("正在流式写入数值")).toHaveAttribute("role", "status");
     await user.click(screen.getByRole("button", { name: "停止数值记录" }));
     expect(stopNumericLogMock).toHaveBeenCalledOnce();
   });

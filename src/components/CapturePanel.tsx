@@ -76,6 +76,9 @@ function clampCaptureMarkerLabel(value: string): string {
 export function CapturePanel() {
   const isNativeRuntime = useWorkbenchStore((state) => state.isNativeRuntime);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
+  const serialControlLineOperation = useWorkbenchStore(
+    (state) => state.serialControlLineOperation,
+  );
   const protocol = useWorkbenchStore((state) => state.protocol);
   const captureStatus = useWorkbenchStore((state) => state.captureStatus);
   const capturePath = useWorkbenchStore((state) => state.capturePath);
@@ -147,6 +150,19 @@ export function CapturePanel() {
   const runtimeTransitionStatus = useWorkbenchStore(
     (state) => state.runtimeTransitionStatus,
   );
+  const recordingDirectory = useWorkbenchStore((state) => state.recordingDirectory);
+  const recordingDirectoryStatus = useWorkbenchStore(
+    (state) => state.recordingDirectoryStatus,
+  );
+  const recordingDirectoryMessage = useWorkbenchStore(
+    (state) => state.recordingDirectoryMessage,
+  );
+  const selectRecordingDirectory = useWorkbenchStore(
+    (state) => state.selectRecordingDirectory,
+  );
+  const resetRecordingDirectory = useWorkbenchStore(
+    (state) => state.resetRecordingDirectory,
+  );
   const startCapture = useWorkbenchStore((state) => state.startCapture);
   const stopCapture = useWorkbenchStore((state) => state.stopCapture);
   const addCaptureMarker = useWorkbenchStore((state) => state.addCaptureMarker);
@@ -212,6 +228,15 @@ export function CapturePanel() {
     numericLogStatus === "starting" || numericLogStatus === "stopping";
   const isNumericLogging = numericLogStatus === "recording";
   const runtimeBusy = runtimeTransitionStatus !== "idle";
+  const recordingDirectoryLocked =
+    !isNativeRuntime ||
+    workspaceTransitionStatus !== "idle" ||
+    runtimeBusy ||
+    recordingDirectoryStatus !== "idle" ||
+    isRecording ||
+    captureBusy ||
+    isNumericLogging ||
+    numericLogBusy;
   const captureMarkerLimitReached = captureMarkerCount >= MAX_CAPTURE_MARKERS;
   const replayLoaded = replaySessionId > 0 && replayStatus !== "idle";
   const replayRunning = [
@@ -258,16 +283,20 @@ export function CapturePanel() {
   const canStartCapture =
     isNativeRuntime &&
     connectionStatus === "connected" &&
+    serialControlLineOperation === "idle" &&
     workspaceTransitionStatus === "idle" &&
     !runtimeBusy &&
+    recordingDirectoryStatus === "idle" &&
     !captureBusy &&
     !replayLoaded;
   const canStartNumericLog =
     isNativeRuntime &&
     connectionStatus === "connected" &&
+    serialControlLineOperation === "idle" &&
     protocol !== "raw" &&
     workspaceTransitionStatus === "idle" &&
     !runtimeBusy &&
+    recordingDirectoryStatus === "idle" &&
     !numericLogBusy &&
     !replayLoaded;
   const canOpenReplay =
@@ -439,6 +468,14 @@ export function CapturePanel() {
             />
           </section>
 
+          <RecordingDirectoryControl
+            path={recordingDirectory}
+            message={recordingDirectoryMessage}
+            disabled={recordingDirectoryLocked}
+            onSelect={selectRecordingDirectory}
+            onReset={resetRecordingDirectory}
+          />
+
           {isRecording && (
             <section className="sidebar-section capture-marker-section">
               <label className="field-label" htmlFor="capture-marker-label">
@@ -555,6 +592,14 @@ export function CapturePanel() {
               countLabel="样本"
             />
           </section>
+
+          <RecordingDirectoryControl
+            path={recordingDirectory}
+            message={recordingDirectoryMessage}
+            disabled={recordingDirectoryLocked}
+            onSelect={selectRecordingDirectory}
+            onReset={resetRecordingDirectory}
+          />
 
           <section className="sidebar-section capture-action-section">
             {isNumericLogging || numericLogStatus === "stopping" ? (
@@ -1122,6 +1167,63 @@ function SessionFile({ path, label = "捕获文件" }: { path: string; label?: s
       <strong title={path}>{fileName(path)}</strong>
       <code title={path}>{path}</code>
     </section>
+  );
+}
+
+function RecordingDirectoryControl({
+  path,
+  message,
+  disabled,
+  onSelect,
+  onReset,
+}: {
+  path: string;
+  message: string;
+  disabled: boolean;
+  onSelect(): Promise<boolean>;
+  onReset(): boolean;
+}) {
+  const displayPath = path || "系统下载目录/Vofa-Ultra";
+  return (
+    <>
+      <section className="sidebar-section recording-directory-section" aria-label="记录目录">
+        <div className="field-row-heading">
+          <span className="field-label">记录目录</span>
+          <div className="recording-directory-actions">
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="恢复默认记录目录"
+              title="恢复默认记录目录"
+              disabled={disabled || !path}
+              onClick={onReset}
+            >
+              <RotateCcw size={15} />
+            </button>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="选择记录目录"
+              title="选择记录目录"
+              disabled={disabled}
+              onClick={() => void onSelect()}
+            >
+              <FolderOpen size={15} />
+            </button>
+          </div>
+        </div>
+        <div
+          className="recording-directory-value"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <strong title={displayPath}>{path ? fileName(path) : "系统默认"}</strong>
+          <code title={displayPath}>{displayPath}</code>
+        </div>
+      </section>
+      {message && <SessionFeedback message={message} isError />}
+    </>
   );
 }
 

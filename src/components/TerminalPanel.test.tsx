@@ -7,6 +7,7 @@ import {
   MAX_MODBUS_VALUE_TEXT_CHARACTERS,
   MAX_MODBUS_WRITE_COILS,
 } from "../core/modbusRtu";
+import { TERMINAL_TIME_MODE_STORAGE_KEY } from "../core/terminalTime";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { TerminalEntry } from "../types/workbench";
 import { TerminalPanel } from "./TerminalPanel";
@@ -40,6 +41,7 @@ const SEARCH_ENTRIES: TerminalEntry[] = [
 
 describe("TerminalPanel", () => {
   beforeEach(() => {
+    localStorage.removeItem(TERMINAL_TIME_MODE_STORAGE_KEY);
     useWorkbenchStore.getState().stopPeriodicSend();
     useWorkbenchStore.getState().clearTerminal();
     useWorkbenchStore.setState({
@@ -67,11 +69,13 @@ describe("TerminalPanel", () => {
         transmittedBytes: 0,
         message: "",
       },
+      serialControlLineOperation: "idle",
       commandTask: createInitialCommandTaskSnapshot(),
       isSendingCommand: false,
       displayMode: "text",
       sendMode: "text",
       lineEnding: "none",
+      commandChecksum: "none",
       terminalRxRecordMode: "chunk",
       terminalRxLineEnding: "lf",
       terminalRxTextEncoding: "utf-8",
@@ -95,6 +99,69 @@ describe("TerminalPanel", () => {
     await user.type(screen.getByRole("searchbox", { name: "搜索终端记录" }), "not-found");
     expect(screen.queryByText("接收数据将在这里显示")).not.toBeInTheDocument();
     expect(screen.getByText("没有匹配的终端记录")).toBeVisible();
+  });
+
+  it("切换绝对、缓存相对和可见记录间隔时间并恢复独立偏好", async () => {
+    const viewportHeight = vi
+      .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+      .mockReturnValue(240);
+    useWorkbenchStore.setState({
+      terminalEntries: [
+        { id: 201, direction: "rx", timestamp: 1_000, text: "first", hex: "01", byteCount: 1 },
+        { id: 202, direction: "tx", timestamp: 1_100, text: "second", hex: "02", byteCount: 1 },
+        { id: 203, direction: "rx", timestamp: 900, text: "late line", hex: "03", byteCount: 1 },
+        { id: 204, direction: "tx", timestamp: 1_500, text: "fourth", hex: "04", byteCount: 1 },
+      ],
+    });
+    const user = userEvent.setup();
+    const firstRender = render(<TerminalPanel />);
+    const modeGroup = screen.getByRole("group", { name: "终端时间基准" });
+    const timeLabels = () =>
+      [...screen.getByRole("log", { name: "终端记录" }).querySelectorAll("time")].map(
+        (time) => time.textContent,
+      );
+
+    expect(within(modeGroup).getByRole("button", { name: "ABS，绝对时间" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await user.click(within(modeGroup).getByRole("button", { name: "REL，相对缓存起点" }));
+    await waitFor(() => {
+      expect(timeLabels()).toEqual([
+        "+00:00:00.000",
+        "+00:00:00.100",
+        "-00:00:00.100",
+        "+00:00:00.500",
+      ]);
+    });
+    expect(localStorage.getItem(TERMINAL_TIME_MODE_STORAGE_KEY)).toBe("relative");
+
+    await user.click(within(modeGroup).getByRole("button", { name: "ΔT，距上一条可见记录" }));
+    await waitFor(() => {
+      expect(timeLabels()).toEqual([
+        "--",
+        "+00:00:00.100",
+        "-00:00:00.200",
+        "+00:00:00.600",
+      ]);
+    });
+    await user.click(
+      within(screen.getByRole("group", { name: "终端方向筛选" })).getByRole("button", {
+        name: "TX",
+      }),
+    );
+    await waitFor(() => {
+      expect(timeLabels()).toEqual(["--", "+00:00:00.400"]);
+    });
+    expect(localStorage.getItem(TERMINAL_TIME_MODE_STORAGE_KEY)).toBe("interval");
+
+    firstRender.unmount();
+    render(<TerminalPanel />);
+    expect(screen.getByRole("button", { name: "ΔT，距上一条可见记录" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    viewportHeight.mockRestore();
   });
 
   it("切换接收记录方式并独立选择 RX 行尾与文本编码", async () => {
@@ -278,7 +345,31 @@ describe("TerminalPanel", () => {
     expect(screen.getByText("3 条记录")).toBeVisible();
     await user.type(search, ".*");
     expect(screen.getByText("1 / 3 条记录")).toBeVisible();
-    expect(screen.getByRole("button", { name: "导出全部终端记录" })).toBeEnabled();
+    const exportTrigger = screen.getByRole("button", { name: "导出终端记录" });
+    await user.click(exportTrigger);
+    const exportMenu = await screen.findByRole("menu", { name: "终端导出范围" });
+    const exportAll = within(exportMenu).getByRole("menuitem", { name: "全部缓存 3 条" });
+    const exportView = within(exportMenu).getByRole("menuitem", { name: "当前视图 1 条" });
+    expect(exportAll).toBeEnabled();
+    expect(exportAll).toHaveFocus();
+    expect(exportView).toBeEnabled();
+    await user.keyboard("{ArrowDown}");
+    expect(exportView).toHaveFocus();
+    await user.keyboard("{Home}");
+    expect(exportAll).toHaveFocus();
+    await user.keyboard("{End}");
+    expect(exportView).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(exportAll).toHaveFocus();
+    await user.keyboard("{ArrowUp}");
+    expect(exportView).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu", { name: "终端导出范围" })).not.toBeInTheDocument();
+    expect(exportTrigger).toHaveFocus();
+    await user.click(exportTrigger);
+    await user.click(search);
+    expect(screen.queryByRole("menu", { name: "终端导出范围" })).not.toBeInTheDocument();
+    expect(search).toHaveFocus();
     expect(screen.getByRole("button", { name: "清空全部终端记录" })).toBeEnabled();
 
     await user.click(within(direction).getByRole("button", { name: "TX" }));
@@ -290,11 +381,30 @@ describe("TerminalPanel", () => {
     expect(screen.getByText("没有匹配的终端记录")).toBeVisible();
     expect(useWorkbenchStore.getState().terminalEntries).toEqual(SEARCH_ENTRIES);
 
+    await user.click(exportTrigger);
+    expect(
+      within(screen.getByRole("menu", { name: "终端导出范围" })).getByRole("menuitem", {
+        name: "全部缓存 3 条",
+      }),
+    ).toBeEnabled();
+    expect(
+      within(screen.getByRole("menu", { name: "终端导出范围" })).getByRole("menuitem", {
+        name: "当前视图 0 条",
+      }),
+    ).toBeDisabled();
+    await user.click(exportTrigger);
+
     await user.click(screen.getByRole("button", { name: "清空终端搜索" }));
     expect(search).toHaveValue("");
     expect(screen.getByText("1 / 3 条记录")).toBeVisible();
     await user.click(within(direction).getByRole("button", { name: "全部" }));
     expect(screen.getByText("3 条记录")).toBeVisible();
+    await user.click(exportTrigger);
+    expect(
+      within(screen.getByRole("menu", { name: "终端导出范围" })).getByRole("menuitem", {
+        name: "当前视图 3 条",
+      }),
+    ).toBeDisabled();
   });
 
   it("搜索当前显示格式并在 TEXT 与 HEX 间重新计算结果", async () => {
@@ -302,29 +412,55 @@ describe("TerminalPanel", () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
     const search = screen.getByRole("searchbox", { name: "搜索终端记录" });
+    const displayFormat = screen.getByRole("group", { name: "接收显示格式" });
+
+    expect(within(displayFormat).getByRole("button", { name: "TEXT" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(within(displayFormat).getByRole("button", { name: "HEX" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
 
     await user.type(search, "54 65");
     expect(screen.getByText("0 / 3 条记录")).toBeVisible();
-    await user.click(
-      within(screen.getByRole("group", { name: "接收显示格式" })).getByRole("button", {
-        name: "HEX",
-      }),
+    await user.click(within(displayFormat).getByRole("button", { name: "HEX" }));
+    expect(within(displayFormat).getByRole("button", { name: "TEXT" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(within(displayFormat).getByRole("button", { name: "HEX" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
     );
     expect(search).toHaveAttribute("placeholder", "搜索 HEX 内容");
     expect(screen.getByText("1 / 3 条记录")).toBeVisible();
   });
 
   it("用上下键恢复命令格式并在末尾返回原草稿", async () => {
+    useWorkbenchStore.getState().setCommandChecksum("sum8");
     await useWorkbenchStore.getState().send("FIRST", "text", "lf");
+    useWorkbenchStore.getState().setCommandChecksum("xor8");
     await useWorkbenchStore.getState().send("AA", "hex", "none");
     useWorkbenchStore.getState().setSendMode("hex");
     useWorkbenchStore.getState().setLineEnding("none");
+    useWorkbenchStore.getState().setCommandChecksum("crc32-be");
     const user = userEvent.setup();
     render(<TerminalPanel />);
     const input = screen.getByRole("textbox", {
       name: "发送内容",
     }) as HTMLTextAreaElement;
     const sendFormat = screen.getByRole("group", { name: "发送格式" });
+
+    expect(within(sendFormat).getByRole("button", { name: "文本" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(within(sendFormat).getByRole("button", { name: "HEX" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
 
     await user.type(input, "draft");
     await user.keyboard("{ArrowUp}");
@@ -333,6 +469,11 @@ describe("TerminalPanel", () => {
       "data-active",
       "true",
     );
+    expect(within(sendFormat).getByRole("button", { name: "HEX" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("xor8");
 
     await user.keyboard("{ArrowUp}");
     expect(input).toHaveValue("FIRST");
@@ -340,7 +481,12 @@ describe("TerminalPanel", () => {
       "data-active",
       "true",
     );
+    expect(within(sendFormat).getByRole("button", { name: "文本" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("lf");
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("sum8");
 
     await user.keyboard("{ArrowDown}{ArrowDown}");
     expect(input).toHaveValue("draft");
@@ -348,7 +494,12 @@ describe("TerminalPanel", () => {
       "data-active",
       "true",
     );
+    expect(within(sendFormat).getByRole("button", { name: "HEX" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("none");
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("crc32-be");
   });
 
   it("组合输入或文本选区存在时保留原生方向键行为", async () => {
@@ -369,17 +520,29 @@ describe("TerminalPanel", () => {
   });
 
   it("从历史菜单恢复命令并清空会话历史", async () => {
+    useWorkbenchStore.getState().setCommandChecksum("crc32-le");
     await useWorkbenchStore.getState().send("PING", "text", "crlf");
+    useWorkbenchStore.getState().setCommandChecksum("none");
     const user = userEvent.setup();
     render(<TerminalPanel />);
 
-    await user.click(screen.getByRole("button", { name: "命令历史，1 条" }));
-    const historyDialog = screen.getByRole("dialog", { name: "命令历史" });
+    const historyTrigger = screen.getByRole("button", { name: "命令历史，1 条" });
+    await user.click(historyTrigger);
+    let historyDialog = await screen.findByRole("dialog", { name: "命令历史" });
+    expect(historyDialog).toHaveTextContent("CRC32-LE");
+    expect(within(historyDialog).getByRole("button", { name: /PING/ })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "命令历史" })).not.toBeInTheDocument();
+    expect(historyTrigger).toHaveFocus();
+
+    await user.click(historyTrigger);
+    historyDialog = await screen.findByRole("dialog", { name: "命令历史" });
     await user.click(within(historyDialog).getByRole("button", { name: /PING/ }));
     expect(screen.getByRole("textbox", { name: "发送内容" })).toHaveValue("PING");
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("crlf");
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("crc32-le");
 
-    await user.click(screen.getByRole("button", { name: "命令历史，1 条" }));
+    await user.click(historyTrigger);
     await user.click(screen.getByRole("button", { name: "清空命令历史" }));
     expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
     expect(screen.getByRole("button", { name: "命令历史，0 条" })).toBeDisabled();
@@ -408,6 +571,60 @@ describe("TerminalPanel", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => {
       expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.hex).toBe("01 FF 0D");
+    });
+  });
+
+  it("自动附加所选校验尾并在预览中展示最终帧", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const checksum = screen.getByRole("combobox", { name: "校验" });
+    const input = screen.getByRole("textbox", { name: "发送内容" });
+
+    expect(within(checksum).getAllByRole("option")).toHaveLength(7);
+    await user.click(
+      within(screen.getByRole("group", { name: "发送格式" })).getByRole("button", {
+        name: "HEX",
+      }),
+    );
+    await user.selectOptions(checksum, "crc16-modbus-le");
+    await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "cr");
+    await user.type(input, "31 32 33 34 35 36 37 38 39");
+
+    expect(
+      screen.getByLabelText("命令模板包含 0 个变量，最终 12 字节，校验尾 37 4B"),
+    ).toHaveTextContent("0 个变量 · 12 B · 校验 37 4B");
+
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.hex).toBe(
+        "31 32 33 34 35 36 37 38 39 37 4B 0D",
+      );
+    });
+    expect(useWorkbenchStore.getState().commandHistory[0]).toMatchObject({
+      checksumMode: "crc16-modbus-le",
+      encodedBytes: 12,
+    });
+  });
+
+  it("允许空 payload 仅发送校验尾", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "校验" }), "sum8");
+    expect(
+      screen.getByLabelText("命令模板包含 0 个变量，最终 1 字节，校验尾 00"),
+    ).toHaveTextContent("0 个变量 · 1 B · 校验 00");
+    expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.hex).toBe("00");
+    });
+    expect(useWorkbenchStore.getState().commandHistory[0]).toMatchObject({
+      value: "",
+      lineEnding: "none",
+      checksumMode: "sum8",
+      encodedBytes: 1,
     });
   });
 
@@ -529,7 +746,7 @@ describe("TerminalPanel", () => {
       });
     });
     await user.click(screen.getByRole("button", { name: "命令历史，1 条" }));
-    expect(screen.getByRole("dialog", { name: "命令历史" })).toHaveTextContent("最近 3 B");
+    expect(await screen.findByRole("dialog", { name: "命令历史" })).toHaveTextContent("最近 3 B");
   });
 
   it("HEX 变量菜单只提供定宽格式并发送原始字节", async () => {
@@ -741,6 +958,7 @@ describe("TerminalPanel", () => {
   });
 
   it("将 Modbus RTU 帧填入 HEX 草稿但只通过原发送入口产生 TX", async () => {
+    useWorkbenchStore.getState().setCommandChecksum("crc16-modbus-le");
     const user = userEvent.setup();
     render(<TerminalPanel />);
 
@@ -770,6 +988,7 @@ describe("TerminalPanel", () => {
       }),
     ).toHaveAttribute("data-active", "true");
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("none");
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("none");
     expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
     expect(
       useWorkbenchStore
@@ -825,6 +1044,20 @@ describe("TerminalPanel", () => {
     expect(within(details).getByText("01 03 00 00 00 01 84 0A")).toBeVisible();
     expect(within(details).getByText("01 03 02 00 00 B8 44")).toBeVisible();
     expect(screen.getByRole("button", { name: "命令历史，0 条" })).toBeDisabled();
+  });
+
+  it("控制线操作期间禁用手动、周期和 Modbus RTU 发送", async () => {
+    useWorkbenchStore.setState({ serialControlLineOperation: "dtr" });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.type(screen.getByRole("textbox", { name: "发送内容" }), "PING");
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "展开周期发送设置" }));
+    expect(screen.getByRole("button", { name: "启动" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
+    const builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+    expect(within(builder).getByRole("button", { name: "执行事务" })).toBeDisabled();
   });
 
   it("工作区切换期间关闭并禁用 Modbus RTU 构帧器", async () => {
@@ -883,6 +1116,7 @@ describe("TerminalPanel", () => {
       }),
     );
     await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "none");
+    await user.selectOptions(screen.getByRole("combobox", { name: "校验" }), "sum8");
     await user.click(screen.getByRole("button", { name: "打开快捷命令" }));
     await user.click(screen.getByRole("button", { name: "载入快捷命令 启动采样" }));
 
@@ -893,6 +1127,7 @@ describe("TerminalPanel", () => {
       }),
     ).toHaveAttribute("data-active", "true");
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("cr");
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("sum8");
     expect(input).toHaveFocus();
     expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
     expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
@@ -1080,6 +1315,34 @@ describe("TerminalPanel", () => {
         .getState()
         .terminalEntries.filter((entry) => entry.direction === "tx"),
     ).toEqual([]);
+  });
+
+  it("空输入选择 CR 后允许启动仅行尾的周期任务", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.click(screen.getByRole("button", { name: "展开周期发送设置" }));
+    const startButton = screen.getByRole("button", { name: "启动" });
+    expect(startButton).toBeDisabled();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "cr");
+    await user.clear(screen.getByRole("spinbutton", { name: "发送次数" }));
+    await user.type(screen.getByRole("spinbutton", { name: "发送次数" }), "1");
+    expect(startButton).toBeEnabled();
+    await user.click(startButton);
+
+    await waitFor(() => {
+      expect(useWorkbenchStore.getState().commandTask).toMatchObject({
+        status: "completed",
+        sentCount: 1,
+      });
+    });
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.filter((entry) => entry.direction === "tx")
+        .map((entry) => entry.hex),
+    ).toEqual(["0D"]);
   });
 
   it("周期任务运行时冻结输入副本并保留可达的停止按钮", async () => {

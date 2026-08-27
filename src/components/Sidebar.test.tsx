@@ -1,8 +1,11 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyProtocolHealth } from "../core/protocols";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { Sidebar } from "./Sidebar";
+
+const originalRefreshPorts = useWorkbenchStore.getState().refreshPorts;
+const originalSetSerialControlLine = useWorkbenchStore.getState().setSerialControlLine;
 
 describe("Sidebar 串口恢复界面", () => {
   beforeEach(() => {
@@ -15,6 +18,7 @@ describe("Sidebar 串口恢复界面", () => {
         {
           name: "COM3",
           kind: "usb",
+          manufacturer: "Acme Devices",
           product: "Telemetry",
           serialNumber: "DEVICE-001",
           vendorId: 0x1234,
@@ -24,6 +28,15 @@ describe("Sidebar 串口恢复界面", () => {
       serialConfig: {
         ...useWorkbenchStore.getState().serialConfig,
         portName: "COM3",
+      },
+      serialControlLineOperation: "idle",
+      serialModemStatus: {
+        generation: 0,
+        revision: 0,
+        cts: null,
+        dsr: null,
+        ri: null,
+        dcd: null,
       },
       serialRecovery: {
         enabled: true,
@@ -46,6 +59,10 @@ describe("Sidebar 串口恢复界面", () => {
 
   afterEach(() => {
     cleanup();
+    useWorkbenchStore.setState({
+      refreshPorts: originalRefreshPorts,
+      setSerialControlLine: originalSetSerialControlLine,
+    });
   });
 
   it("提供侧栏关闭动作", () => {
@@ -53,9 +70,9 @@ describe("Sidebar 串口恢复界面", () => {
     render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={onClose}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -67,9 +84,9 @@ describe("Sidebar 串口恢复界面", () => {
     render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -102,9 +119,9 @@ describe("Sidebar 串口恢复界面", () => {
     render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -129,19 +146,225 @@ describe("Sidebar 串口恢复界面", () => {
     render(
       <Sidebar
         activePanel="connection"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
     expect(screen.getByRole("button", { name: "正在取消" })).toBeDisabled();
   });
+
+  it("显示 USB 摘要但不显示完整序列号", () => {
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const summary = screen.getByRole("group", { name: "已选端口信息" });
+    expect(summary).toHaveTextContent("Telemetry");
+    expect(summary).toHaveTextContent("Acme Devices");
+    expect(summary).toHaveTextContent("USB");
+    expect(summary).toHaveTextContent("1234:5678");
+    expect(summary).toHaveTextContent("唯一身份");
+    expect(summary).not.toHaveTextContent("DEVICE-001");
+  });
+
+  it("向辅助技术暴露当前数据源选项", () => {
+    const { rerender } = render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "串口" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "模拟器" })).toHaveAttribute("aria-pressed", "false");
+
+    useWorkbenchStore.setState({ source: "simulator" });
+    rerender(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "串口" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "模拟器" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("端口选项按名称自然排序并包含设备摘要", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      ports: [
+        { name: "COM10", kind: "usb", product: "Adapter B" },
+        { name: "COM2", kind: "usb", product: "Adapter A" },
+      ],
+      serialConfig: { ...state.serialConfig, portName: "COM2" },
+      serialRecovery: {
+        ...state.serialRecovery,
+        phase: "armed",
+      },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const select = screen.getByLabelText("串口设备") as HTMLSelectElement;
+    expect(Array.from(select.options, (option) => option.textContent)).toEqual([
+      "COM2 · Adapter A",
+      "COM10 · Adapter B",
+    ]);
+  });
+
+  it("打开桌面串口连接面板时请求后台刷新", () => {
+    const refreshPorts = vi.fn().mockResolvedValue(undefined);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      serialRecovery: {
+        enabled: false,
+        phase: "off",
+        attempt: 0,
+        maxAttempts: 10,
+        message: "自动重连未启用",
+        diagnosticEventCount: 0,
+        diagnosticDroppedEvents: 0,
+      },
+      refreshPorts,
+    });
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(refreshPorts).toHaveBeenCalledWith("background");
+  });
+
+  it("连接后设置控制线并播报异步结果和 RTS 锁定原因", () => {
+    const setSerialControlLine = vi.fn().mockResolvedValue(true);
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      statusMessage: "DTR 已设为有效",
+      serialRecovery: { ...state.serialRecovery, phase: "armed" },
+      serialConfig: { ...state.serialConfig, dtr: true, rts: true, flowControl: "none" },
+      setSerialControlLine,
+    }));
+    const { rerender } = render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const dtr = screen.getByRole("checkbox", { name: "DTR" });
+    const rts = screen.getByRole("checkbox", { name: "RTS" });
+    expect(dtr).toBeEnabled();
+    expect(rts).toBeEnabled();
+    fireEvent.click(dtr);
+    expect(setSerialControlLine).toHaveBeenCalledWith("dtr", false);
+
+    useWorkbenchStore.setState((state) => ({
+      serialConfig: { ...state.serialConfig, flowControl: "hardware" },
+    }));
+    rerender(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("checkbox", { name: "DTR" })).toBeEnabled();
+    const lockedRts = screen.getByRole("checkbox", { name: "RTS" });
+    expect(lockedRts).toBeDisabled();
+    expect(lockedRts).toHaveAccessibleDescription("硬件流控已接管 RTS，无法手动设置");
+    expect(screen.getByRole("status")).toHaveTextContent("DTR 已设为有效");
+  });
+
+  it("连接时显示四路输入握手线三态，断开后隐藏", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialRecovery: { ...state.serialRecovery, phase: "armed" },
+      serialModemStatus: {
+        generation: 7,
+        revision: 2,
+        cts: true,
+        dsr: false,
+        ri: null,
+        dcd: true,
+      },
+    }));
+    const props = {
+      activePanel: "connection" as const,
+      themePreference: "dark" as const,
+      onClose: vi.fn(),
+      onThemePreferenceChange: vi.fn(),
+    };
+    const { rerender } = render(<Sidebar {...props} />);
+
+    const status = screen.getByLabelText("串口输入握手线状态");
+    expect(within(status).getByText("CTS").parentElement).toHaveTextContent("CTS有效");
+    expect(within(status).getByText("DSR").parentElement).toHaveTextContent("DSR无效");
+    expect(within(status).getByText("RI").parentElement).toHaveTextContent("RI不可用");
+    expect(within(status).getByText("DCD").parentElement).toHaveTextContent("DCD有效");
+    expect(
+      Array.from(
+        status.querySelectorAll<HTMLElement>(".modem-status-item"),
+        (item) => item.dataset.state,
+      ),
+    ).toEqual(["asserted", "deasserted", "unavailable", "asserted"]);
+
+    useWorkbenchStore.setState({ connectionStatus: "disconnected" });
+    rerender(<Sidebar {...props} />);
+    expect(screen.queryByLabelText("串口输入握手线状态")).not.toBeInTheDocument();
+  });
+});
+
+describe("Sidebar 外观设置", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("向辅助技术暴露当前主题选项", () => {
+    render(
+      <Sidebar
+        activePanel="settings"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /深色/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /浅色/ })).toHaveAttribute("aria-pressed", "false");
+  });
 });
 
 describe("Sidebar 协议解析健康度", () => {
   beforeEach(() => {
-    useWorkbenchStore.setState({
+    useWorkbenchStore.setState((state) => ({
       protocol: "firewater",
       replayStatus: "idle",
       replaySessionId: 0,
@@ -151,7 +374,12 @@ describe("Sidebar 协议解析健康度", () => {
       channels: [],
       processedChannels: [],
       workspaceTransitionStatus: "idle",
-    });
+      serialRecovery: {
+        ...state.serialRecovery,
+        enabled: false,
+        phase: "off",
+      },
+    }));
     useWorkbenchStore.getState().setProtocol("firewater");
   });
 
@@ -162,9 +390,9 @@ describe("Sidebar 协议解析健康度", () => {
   it("区分等待、健康与丢帧状态并提供可操作原因", () => {
     const props = {
       activePanel: "channels" as const,
-      theme: "dark" as const,
+      themePreference: "dark" as const,
       onClose: vi.fn(),
-      onThemeChange: vi.fn(),
+      onThemePreferenceChange: vi.fn(),
     };
     const { rerender } = render(<Sidebar {...props} />);
 
@@ -180,7 +408,7 @@ describe("Sidebar 协议解析健康度", () => {
     rerender(<Sidebar {...props} />);
     expect(health).toHaveTextContent("已丢弃 1 帧");
     expect(health).toHaveTextContent("最近：包含非有限数值");
-    expect(health).toHaveTextContent("FireWater：每行 1–16 个有限数值");
+    expect(health).toHaveTextContent("FireWater：每行 1–16 个有限数值，命名字段使用 : 或 =");
     expect(screen.getByRole("button", { name: "清空解析统计" })).toBeEnabled();
 
     fireEvent.click(screen.getByRole("button", { name: "清空解析统计" }));
@@ -192,9 +420,9 @@ describe("Sidebar 协议解析健康度", () => {
     render(
       <Sidebar
         activePanel="channels"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -234,9 +462,9 @@ describe("Sidebar 协议解析健康度", () => {
     render(
       <Sidebar
         activePanel="channels"
-        theme="dark"
+        themePreference="dark"
         onClose={vi.fn()}
-        onThemeChange={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
       />,
     );
 
@@ -244,5 +472,166 @@ describe("Sidebar 协议解析健康度", () => {
     expect(health).toHaveTextContent("已丢弃 2 帧");
     expect(health).toHaveTextContent("浮点帧长度未按 4 字节对齐");
     expect(health).toHaveTextContent("JustFloat：1–16 个小端 float32");
+  });
+});
+
+describe("Sidebar 通道展示配置", () => {
+  const props = {
+    activePanel: "channels" as const,
+    themePreference: "dark" as const,
+    onClose: vi.fn(),
+    onThemePreferenceChange: vi.fn(),
+  };
+
+  beforeEach(() => {
+    useWorkbenchStore.setState({
+      protocol: "firewater",
+      replayStatus: "idle",
+      replaySessionId: 0,
+      replayHeader: undefined,
+      channels: [
+        {
+          id: "channel-0",
+          name: "voltage",
+          color: "#46d89c",
+          visible: true,
+          points: [],
+          lastValue: 12.5,
+        },
+      ],
+      processedChannels: [
+        {
+          id: "derived:filtered",
+          name: "Filtered",
+          color: "#55bde8",
+          visible: true,
+          points: [],
+          lastValue: 11.5,
+        },
+      ],
+      extensionChannels: [
+        {
+          id: "extension:test:output",
+          name: "Extension",
+          color: "#f0b35a",
+          visible: true,
+          points: [],
+          lastValue: 10.5,
+        },
+      ],
+      channelPresentations: { firewater: {}, justfloat: {} },
+      workspaceTransitionStatus: "idle",
+      workspaceStorageStatus: "writable",
+      protocolHealth: createEmptyProtocolHealth(),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("编辑、取消、保存并恢复基础通道展示", () => {
+    const { container } = render(<Sidebar {...props} />);
+
+    expect(screen.getByRole("button", { name: "隐藏通道 voltage" })).toBeEnabled();
+    expect(screen.getAllByRole("button", { name: /^编辑通道/ })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑通道 voltage" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "channel-0 通道别名" }), {
+      target: { value: "临时名称" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "取消编辑 voltage" }));
+    expect(useWorkbenchStore.getState().channelPresentations.firewater).toEqual({});
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑通道 voltage" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "channel-0 通道别名" }), {
+      target: { value: "  母线电压  " },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "channel-0 通道单位" }), {
+      target: { value: " V " },
+    });
+    fireEvent.change(screen.getByLabelText("channel-0 通道颜色"), {
+      target: { value: "#ABCDEF" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存 voltage 展示配置" }));
+
+    expect(useWorkbenchStore.getState().channelPresentations.firewater).toEqual({
+      "channel-0": { alias: "母线电压", unit: "V", color: "#abcdef" },
+    });
+    expect(screen.getByText("母线电压")).toBeInTheDocument();
+    expect(screen.getByTitle("原始标签：voltage")).toHaveTextContent("voltage");
+    expect(container.querySelector(".channel-row strong")).toHaveTextContent("12.500V");
+    expect(container.querySelector(".channel-swatch")).toHaveStyle({
+      backgroundColor: "#abcdef",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑通道 母线电压" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复 voltage 默认展示" }));
+    expect(useWorkbenchStore.getState().channelPresentations.firewater).toEqual({});
+    expect(screen.getByText("voltage")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑通道 voltage" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "channel-0 通道别名" }), {
+      target: { value: "仅别名" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存 voltage 展示配置" }));
+    expect(useWorkbenchStore.getState().channelPresentations.firewater).toEqual({
+      "channel-0": { alias: "仅别名", unit: "", color: null },
+    });
+  });
+
+  it("Raw Data、工作区切换和未来版本保护会禁用展示编辑", () => {
+    useWorkbenchStore.setState({ protocol: "raw" });
+    const { rerender } = render(<Sidebar {...props} />);
+    expect(screen.queryByRole("button", { name: /^编辑通道/ })).not.toBeInTheDocument();
+
+    useWorkbenchStore.setState({
+      protocol: "firewater",
+      workspaceTransitionStatus: "switching",
+    });
+    rerender(<Sidebar {...props} />);
+    expect(screen.getByRole("button", { name: "编辑通道 voltage" })).toBeDisabled();
+
+    useWorkbenchStore.setState({
+      workspaceTransitionStatus: "idle",
+      workspaceStorageStatus: "newer-version",
+      incompatibleStorageVersion: 11,
+    });
+    rerender(<Sidebar {...props} />);
+    expect(screen.getByRole("button", { name: "编辑通道 voltage" })).toBeDisabled();
+  });
+});
+
+describe("Sidebar 主题偏好", () => {
+  it("显示三种主题模式并提交用户选择", () => {
+    const on_theme_preference_change = vi.fn();
+    const { rerender } = render(
+      <Sidebar
+        activePanel="settings"
+        themePreference="system"
+        onClose={vi.fn()}
+        onThemePreferenceChange={on_theme_preference_change}
+      />,
+    );
+    const appearance = screen.getByRole("group", { name: "外观" });
+    const system_button = within(appearance).getByRole("button", { name: "系统" });
+    const dark_button = within(appearance).getByRole("button", { name: "深色" });
+    const light_button = within(appearance).getByRole("button", { name: "浅色" });
+
+    expect(system_button).toHaveAttribute("aria-pressed", "true");
+    expect(dark_button).toHaveAttribute("aria-pressed", "false");
+    expect(light_button).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(light_button);
+    expect(on_theme_preference_change).toHaveBeenCalledWith("light");
+
+    rerender(
+      <Sidebar
+        activePanel="settings"
+        themePreference="light"
+        onClose={vi.fn()}
+        onThemePreferenceChange={on_theme_preference_change}
+      />,
+    );
+    expect(light_button).toHaveAttribute("aria-pressed", "true");
   });
 });

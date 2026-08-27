@@ -10,6 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::recording_directory::resolve_custom_recording_directory;
 use crate::serial::SerialConfig;
 
 pub const CAPTURE_MAGIC: [u8; 8] = *b"VUCAP\0\r\n";
@@ -522,6 +523,7 @@ pub struct CaptureStartRequest {
     source: String,
     protocol: String,
     serial_config: SerialConfig,
+    destination_directory: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -1499,26 +1501,37 @@ fn start_capture_blocking(
             .map_err(|_| "录制状态锁已损坏".to_owned())?;
         shared.session_id.wrapping_add(1).max(1)
     };
+    let CaptureStartRequest {
+        source,
+        protocol,
+        serial_config,
+        destination_directory,
+    } = request;
     let header = CaptureHeader {
-        source: request.source,
-        protocol: request.protocol,
-        serial_config: request.serial_config,
+        source,
+        protocol,
+        serial_config,
         started_at_unix_ms,
         time_unit: "microseconds".to_owned(),
     };
     header.validate()?;
     let header_bytes = encode_header(&header)?;
-    let (file, path) =
-        create_capture_file(&app, started_at_unix_ms, session_id).inspect_err(|message| {
-            publish_start_error(
-                &app,
-                &state.core,
-                session_id,
-                started_at_unix_ms,
-                String::new(),
-                message.clone(),
-            );
-        })?;
+    let (file, path) = create_capture_file(
+        &app,
+        destination_directory.as_deref(),
+        started_at_unix_ms,
+        session_id,
+    )
+    .inspect_err(|message| {
+        publish_start_error(
+            &app,
+            &state.core,
+            session_id,
+            started_at_unix_ms,
+            String::new(),
+            message.clone(),
+        );
+    })?;
     let path_text = path.to_string_lossy().into_owned();
 
     let (sender, receiver) = mpsc::sync_channel(WRITER_QUEUE_RECORDS);
@@ -1876,16 +1889,23 @@ fn run_capture_writer(
             }
         }
 
-        if progress_dirty && last_progress.elapsed() >= PROGRESS_INTERVAL {
-            core.publish_progress(
+        match flush_progress_if_due(
+            &mut writer,
+            &mut progress_dirty,
+            &mut last_progress,
+            Instant::now(),
+        ) {
+            Ok(true) => core.publish_progress(
                 &app,
                 session_id,
                 stats.data_bytes(),
                 stats.record_count(),
                 stats.marker_count(),
-            );
-            progress_dirty = false;
-            last_progress = Instant::now();
+            ),
+            Ok(false) => {}
+            Err(error) => {
+                outcome = Some(WriterOutcome::Failed(format!("刷新录制文件失败: {error}")));
+            }
         }
     }
 
@@ -1906,6 +1926,22 @@ fn run_capture_writer(
         stats.record_count(),
         stats.marker_count(),
     );
+}
+
+fn flush_progress_if_due<W: Write>(
+    writer: &mut W,
+    progress_dirty: &mut bool,
+    last_progress: &mut Instant,
+    now: Instant,
+) -> io::Result<bool> {
+    if !*progress_dirty || now.saturating_duration_since(*last_progress) < PROGRESS_INTERVAL {
+        return Ok(false);
+    }
+
+    writer.flush()?;
+    *progress_dirty = false;
+    *last_progress = now;
+    Ok(true)
 }
 
 fn write_file_header<W: Write>(writer: &mut W, header_bytes: &[u8]) -> io::Result<()> {
@@ -2003,9 +2039,15 @@ fn encode_header(header: &CaptureHeader) -> Result<Vec<u8>, String> {
 
 fn create_capture_file(
     app: &AppHandle,
+    destination_directory: Option<&str>,
     started_at_unix_ms: u64,
     session_id: u64,
 ) -> Result<(File, PathBuf), String> {
+    if let Some(directory) = resolve_custom_recording_directory(destination_directory)? {
+        return create_file_in_existing_directory(&directory, started_at_unix_ms, session_id)
+            .map_err(|error| format!("自定义记录目录不可用: {error}"));
+    }
+
     let mut errors = Vec::new();
 
     match app.path().download_dir() {
@@ -2040,6 +2082,21 @@ fn create_file_in_directory(
 ) -> Result<(File, PathBuf), String> {
     fs::create_dir_all(directory)
         .map_err(|error| format!("创建目录 {} 失败: {error}", directory.display()))?;
+
+    create_file_in_existing_directory(directory, started_at_unix_ms, session_id)
+}
+
+fn create_file_in_existing_directory(
+    directory: &Path,
+    started_at_unix_ms: u64,
+    session_id: u64,
+) -> Result<(File, PathBuf), String> {
+    if !directory.is_dir() {
+        return Err(format!(
+            "记录目录不存在或不是文件夹: {}",
+            directory.display()
+        ));
+    }
 
     for suffix in 0..100_u16 {
         let filename = if suffix == 0 {
@@ -2168,6 +2225,35 @@ mod tests {
 
     use super::*;
 
+    struct TestDirectory {
+        path: PathBuf,
+    }
+
+    impl TestDirectory {
+        fn new(name: &str) -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "vofa-ultra-capture-{name}-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn join(&self, name: &str) -> PathBuf {
+            self.path.join(name)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct CompatibilityPolicy {
@@ -2192,6 +2278,26 @@ mod tests {
         wire_id_evolution: String,
     }
 
+    #[derive(Default)]
+    struct FlushProbe {
+        flush_count: usize,
+        fail_flush: bool,
+    }
+
+    impl Write for FlushProbe {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flush_count += 1;
+            if self.fail_flush {
+                return Err(io::Error::other("forced flush failure"));
+            }
+            Ok(())
+        }
+    }
+
     fn sample_header() -> CaptureHeader {
         CaptureHeader {
             source: "serial".to_owned(),
@@ -2211,6 +2317,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn start_request_reads_optional_camel_case_directory() {
+        let request: CaptureStartRequest = serde_json::from_str(
+            r#"{
+                "source":"serial",
+                "protocol":"raw",
+                "serialConfig":{
+                    "portName":"COM3",
+                    "baudRate":115200,
+                    "dataBits":8,
+                    "parity":"none",
+                    "stopBits":1,
+                    "flowControl":"none",
+                    "dtr":true,
+                    "rts":true
+                },
+                "destinationDirectory":"/captures"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(request.destination_directory.as_deref(), Some("/captures"));
+    }
+
+    #[test]
+    fn capture_file_creation_never_overwrites_existing_file() {
+        let directory = TestDirectory::new("collision");
+        let existing = directory.join("capture-1000-7.vucap");
+        fs::write(&existing, b"existing").unwrap();
+
+        let (file, path) = create_file_in_directory(&directory.path, 1000, 7).unwrap();
+        drop(file);
+
+        assert_eq!(path, directory.join("capture-1000-7-1.vucap"));
+        assert_eq!(fs::read(existing).unwrap(), b"existing");
+    }
+
+    #[test]
+    fn explicit_capture_directory_is_not_recreated_after_validation() {
+        let directory = TestDirectory::new("removed");
+        let resolved = resolve_custom_recording_directory(directory.path.to_str())
+            .unwrap()
+            .unwrap();
+        fs::remove_dir_all(&directory.path).unwrap();
+
+        assert!(create_file_in_existing_directory(&resolved, 1000, 7).is_err());
+        assert!(!resolved.exists());
+    }
+
     fn file_with_header() -> Vec<u8> {
         let mut bytes = Vec::new();
         write_file_header(&mut bytes, &encode_header(&sample_header()).unwrap()).unwrap();
@@ -2226,6 +2381,58 @@ mod tests {
         bytes.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&header_bytes);
         bytes
+    }
+
+    #[test]
+    fn progress_flush_clears_dirty_state_only_after_success() {
+        let mut writer = FlushProbe {
+            fail_flush: true,
+            ..FlushProbe::default()
+        };
+        let mut progress_dirty = true;
+        let mut last_progress = Instant::now();
+        let progress_now = last_progress + PROGRESS_INTERVAL;
+
+        let error = flush_progress_if_due(
+            &mut writer,
+            &mut progress_dirty,
+            &mut last_progress,
+            progress_now,
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "forced flush failure");
+        assert!(progress_dirty);
+        assert_eq!(writer.flush_count, 1);
+
+        writer.fail_flush = false;
+        assert!(flush_progress_if_due(
+            &mut writer,
+            &mut progress_dirty,
+            &mut last_progress,
+            progress_now,
+        )
+        .unwrap());
+        assert!(!progress_dirty);
+        assert_eq!(last_progress, progress_now);
+        assert_eq!(writer.flush_count, 2);
+    }
+
+    #[test]
+    fn progress_flush_waits_for_dirty_interval() {
+        let mut writer = FlushProbe::default();
+        let mut progress_dirty = true;
+        let mut last_progress = Instant::now();
+        let progress_now = last_progress + PROGRESS_INTERVAL / 2;
+
+        assert!(!flush_progress_if_due(
+            &mut writer,
+            &mut progress_dirty,
+            &mut last_progress,
+            progress_now,
+        )
+        .unwrap());
+        assert!(progress_dirty);
+        assert_eq!(writer.flush_count, 0);
     }
 
     fn write_v1_footer<W: Write>(

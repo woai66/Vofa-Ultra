@@ -28,6 +28,7 @@ import {
   startNumericLog,
   stopNumericLog,
 } from "../services/numericLogClient";
+import { selectRecordingDirectoryPath } from "../services/recordingDirectoryClient";
 import {
   cancelCaptureExport,
   clearCaptureExport,
@@ -54,6 +55,7 @@ import {
   disconnectSerial,
   listSerialPorts,
   sendSerial,
+  setSerialControlLine,
   startSerialFileSend,
   startSerialModbusTransaction,
 } from "../services/serialClient";
@@ -95,6 +97,7 @@ vi.mock("../services/serialClient", async (importOriginal) => {
     disconnectSerial: vi.fn(),
     listSerialPorts: vi.fn(),
     sendSerial: vi.fn(),
+    setSerialControlLine: vi.fn(),
     startSerialFileSend: vi.fn(),
     startSerialModbusTransaction: vi.fn(),
   };
@@ -125,6 +128,10 @@ vi.mock("../services/numericLogClient", () => ({
   stopNumericLog: vi.fn(),
 }));
 
+vi.mock("../services/recordingDirectoryClient", () => ({
+  selectRecordingDirectoryPath: vi.fn(),
+}));
+
 vi.mock("../services/replayClient", () => ({
   ackReplayBatch: vi.fn(),
   closeReplay: vi.fn(),
@@ -144,6 +151,7 @@ const connectSerialMock = vi.mocked(connectSerial);
 const disconnectSerialMock = vi.mocked(disconnectSerial);
 const listSerialPortsMock = vi.mocked(listSerialPorts);
 const sendSerialMock = vi.mocked(sendSerial);
+const setSerialControlLineMock = vi.mocked(setSerialControlLine);
 const startSerialFileSendMock = vi.mocked(startSerialFileSend);
 const startSerialModbusTransactionMock = vi.mocked(startSerialModbusTransaction);
 const enqueueSimulatorCaptureMock = vi.mocked(enqueueSimulatorCapture);
@@ -156,6 +164,7 @@ const enqueueNumericLogSamplesMock = vi.mocked(enqueueNumericLogSamples);
 const resetNumericLogQueueMock = vi.mocked(resetNumericLogQueue);
 const startNumericLogMock = vi.mocked(startNumericLog);
 const stopNumericLogMock = vi.mocked(stopNumericLog);
+const selectRecordingDirectoryPathMock = vi.mocked(selectRecordingDirectoryPath);
 const cancelCaptureExportMock = vi.mocked(cancelCaptureExport);
 const clearCaptureExportMock = vi.mocked(clearCaptureExport);
 const selectCaptureExportDestinationPathMock = vi.mocked(
@@ -344,6 +353,7 @@ describe("workbenchStore", () => {
     });
     listSerialPortsMock.mockReset();
     sendSerialMock.mockReset().mockResolvedValue(undefined);
+    setSerialControlLineMock.mockReset().mockResolvedValue(undefined);
     startSerialFileSendMock.mockReset();
     startSerialModbusTransactionMock.mockReset().mockResolvedValue(undefined);
     enqueueSimulatorCaptureMock.mockReset().mockReturnValue(true);
@@ -356,6 +366,7 @@ describe("workbenchStore", () => {
     resetNumericLogQueueMock.mockReset();
     startNumericLogMock.mockReset();
     stopNumericLogMock.mockReset();
+    selectRecordingDirectoryPathMock.mockReset();
     cancelCaptureExportMock.mockReset();
     clearCaptureExportMock.mockReset();
     selectCaptureExportDestinationPathMock.mockReset();
@@ -384,6 +395,15 @@ describe("workbenchStore", () => {
       statusMessage: "等待连接",
       ports: [],
       isRefreshingPorts: false,
+      serialControlLineOperation: "idle",
+      serialModemStatus: {
+        generation: 0,
+        revision: 0,
+        cts: null,
+        dsr: null,
+        ri: null,
+        dcd: null,
+      },
       serialRecovery: {
         enabled: false,
         phase: "off",
@@ -417,6 +437,9 @@ describe("workbenchStore", () => {
       activeWorkspaceId: workspace.id,
       workspaceTransitionStatus: "idle",
       runtimeTransitionStatus: "idle",
+      recordingDirectoryStatus: "idle",
+      recordingDirectory: "",
+      recordingDirectoryMessage: "",
       workspaceStorageStatus: "writable",
       incompatibleStorageVersion: null,
       captureStatus: "idle",
@@ -712,6 +735,38 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().commandHistory).toHaveLength(2);
   });
 
+  it("手动发送在 payload 与行尾之间附加校验字节并按模式区分历史", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    useWorkbenchStore.getState().setCommandChecksum("crc16-modbus-le");
+
+    await useWorkbenchStore
+      .getState()
+      .send("31 32 33 34 35 36 37 38 39", "hex", "lf");
+
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.find((entry) => entry.direction === "tx")?.hex,
+    ).toBe("31 32 33 34 35 36 37 38 39 37 4B 0A");
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([
+      expect.objectContaining({
+        checksumMode: "crc16-modbus-le",
+        encodedBytes: 12,
+        repeatCount: 1,
+      }),
+    ]);
+
+    useWorkbenchStore.getState().setCommandChecksum("none");
+    await useWorkbenchStore
+      .getState()
+      .send("31 32 33 34 35 36 37 38 39", "hex", "lf");
+    expect(useWorkbenchStore.getState().commandHistory).toHaveLength(2);
+    expect(useWorkbenchStore.getState().commandHistory[1]?.checksumMode).toBe("none");
+  });
+
   it("手动发送以序号 1 展开变量并在历史中保留原始模板", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_700_000_123_456);
@@ -888,6 +943,7 @@ describe("workbenchStore", () => {
     useWorkbenchStore.setState({
       source: "simulator",
       connectionStatus: "connected",
+      commandChecksum: "crc32-be",
     });
     const request = {
       operation: "read-holding-registers" as const,
@@ -1292,6 +1348,37 @@ describe("workbenchStore", () => {
     ).toHaveLength(3);
   });
 
+  it("周期发送逐轮展开变量并冻结启动时的校验模式", async () => {
+    vi.useFakeTimers();
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    useWorkbenchStore.getState().setCommandChecksum("xor8");
+
+    useWorkbenchStore
+      .getState()
+      .startPeriodicSend("AA ${seq:u8}", "hex", "lf", 20, 3);
+    useWorkbenchStore.getState().setCommandChecksum("sum8");
+    await vi.advanceTimersByTimeAsync(40);
+
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.filter((entry) => entry.direction === "tx")
+        .map((entry) => entry.hex),
+    ).toEqual(["AA 01 AB 0A", "AA 02 A8 0A", "AA 03 A9 0A"]);
+    expect(useWorkbenchStore.getState().commandChecksum).toBe("sum8");
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([
+      expect.objectContaining({
+        value: "AA ${seq:u8}",
+        checksumMode: "xor8",
+        variableCount: 1,
+        repeatCount: 3,
+      }),
+    ]);
+  });
+
   it("周期发送逐次展开序号和当前时间并冻结任务起始时间", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
@@ -1428,6 +1515,7 @@ describe("workbenchStore", () => {
     useWorkbenchStore.setState({
       source: "simulator",
       connectionStatus: "connected",
+      commandChecksum: "xor8",
     });
     useWorkbenchStore.getState().setAutoResponderRules([
       {
@@ -1599,12 +1687,36 @@ describe("workbenchStore", () => {
     ).toEqual([]);
   });
 
-  it("周期任务拒绝空草稿，即使配置了行尾", () => {
-    useWorkbenchStore.setState({ connectionStatus: "connected" });
+  it("周期任务允许仅发送行尾并继续拒绝零字节草稿", async () => {
+    vi.useFakeTimers();
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
 
     expect(() =>
-      useWorkbenchStore.getState().startPeriodicSend("", "text", "lf", 1_000, 1),
+      useWorkbenchStore.getState().startPeriodicSend("", "text", "none", 1_000, 1),
     ).toThrow("不能为空");
+
+    useWorkbenchStore.getState().startPeriodicSend("", "text", "cr", 20, 2);
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(useWorkbenchStore.getState().commandTask).toMatchObject({
+      status: "completed",
+      sentCount: 2,
+    });
+    const txEntries = useWorkbenchStore
+      .getState()
+      .terminalEntries.filter((entry) => entry.direction === "tx");
+    expect(txEntries.map((entry) => entry.hex)).toEqual(["0D", "0D"]);
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([
+      expect.objectContaining({
+        value: "",
+        lineEnding: "cr",
+        encodedBytes: 1,
+        repeatCount: 2,
+      }),
+    ]);
   });
 
   it("切换数据源时清空上一数据源的通道", async () => {
@@ -1829,6 +1941,104 @@ describe("workbenchStore", () => {
       connectionStatus: "error",
       serialStateRevision: 11,
       statusMessage: "设备已移除",
+    });
+  });
+
+  it("输入握手线只接受当前连接递增修订，并在换代时重新开始", () => {
+    useWorkbenchStore.setState({
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialStateRevision: 2,
+      serialModemStatus: {
+        generation: 7,
+        revision: 0,
+        cts: null,
+        dsr: null,
+        ri: null,
+        dcd: null,
+      },
+    });
+
+    useWorkbenchStore.getState().handleSerialModemStatus({
+      generation: 6,
+      revision: 8,
+      cts: true,
+      dsr: true,
+      ri: true,
+      dcd: true,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus.revision).toBe(0);
+
+    const first = {
+      generation: 7,
+      revision: 1,
+      cts: true,
+      dsr: false,
+      ri: null,
+      dcd: true,
+    } as const;
+    useWorkbenchStore.getState().handleSerialModemStatus(first);
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual(first);
+
+    useWorkbenchStore.getState().handleSerialModemStatus({
+      ...first,
+      cts: false,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual(first);
+
+    const second = { ...first, revision: 2, cts: false };
+    useWorkbenchStore.getState().handleSerialModemStatus(second);
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual(second);
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "disconnected",
+      portName: "COM3",
+      generation: 7,
+      revision: 3,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual({
+      generation: 7,
+      revision: 0,
+      cts: null,
+      dsr: null,
+      ri: null,
+      dcd: null,
+    });
+
+    useWorkbenchStore.getState().handleSerialModemStatus({ ...second, revision: 3 });
+    expect(useWorkbenchStore.getState().serialModemStatus.revision).toBe(0);
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connected",
+      portName: "COM3",
+      generation: 8,
+      revision: 4,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus).toMatchObject({
+      generation: 8,
+      revision: 0,
+    });
+
+    const reconnected = { ...first, generation: 8, revision: 1, dcd: false };
+    useWorkbenchStore.getState().handleSerialModemStatus(reconnected);
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual(reconnected);
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "error",
+      portName: "COM3",
+      message: "设备已移除",
+      errorCode: "read-failed",
+      generation: 8,
+      revision: 5,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual({
+      generation: 8,
+      revision: 0,
+      cts: null,
+      dsr: null,
+      ri: null,
+      dcd: null,
     });
   });
 
@@ -2353,6 +2563,109 @@ describe("workbenchStore", () => {
     });
     expect(useWorkbenchStore.getState().workspaces).toHaveLength(2);
     expect(() => useWorkbenchStore.getState().saveWorkspaceAs("原始数据")).toThrow(/已存在/);
+  });
+
+  it("命令校验模式参与 dirty、保存并随工作区切换恢复", async () => {
+    useWorkbenchStore.getState().setCommandChecksum("crc32-be");
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(true);
+
+    useWorkbenchStore.getState().saveActiveWorkspace("默认工作区");
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+    expect(useWorkbenchStore.getState().workspaces[0]?.config.commandChecksum).toBe(
+      "crc32-be",
+    );
+
+    const targetConfig = createDefaultWorkspaceConfig("simulator");
+    targetConfig.commandChecksum = "xor8";
+    const target = createWorkspaceProfile("异或校验", targetConfig, "checksum-xor", 200);
+    useWorkbenchStore.setState((state) => ({ workspaces: [...state.workspaces, target] }));
+
+    expect(await useWorkbenchStore.getState().switchWorkspace(target.id)).toBe(true);
+    expect(useWorkbenchStore.getState().commandChecksum).toBe("xor8");
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+    expect(await useWorkbenchStore.getState().switchWorkspace("default")).toBe(true);
+    expect(useWorkbenchStore.getState().commandChecksum).toBe("crc32-be");
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+  });
+
+  it("按协议隔离通道展示配置并随工作区保存切换", async () => {
+    useWorkbenchStore.getState().setChannelPresentation("firewater", "channel-0", {
+      alias: "  电压  ",
+      unit: " V ",
+      color: "#ABCDEF",
+    });
+    useWorkbenchStore.getState().setChannelPresentation("justfloat", "channel-0", {
+      alias: "转速",
+      unit: "rpm",
+      color: null,
+    });
+
+    expect(useWorkbenchStore.getState().channelPresentations).toEqual({
+      firewater: {
+        "channel-0": { alias: "电压", unit: "V", color: "#abcdef" },
+      },
+      justfloat: {
+        "channel-0": { alias: "转速", unit: "rpm", color: null },
+      },
+    });
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(true);
+
+    useWorkbenchStore.getState().ingestBytes(
+      new TextEncoder().encode("source_voltage:12.5\n"),
+      1_000,
+    );
+    expect(useWorkbenchStore.getState().channels[0]?.name).toBe("source_voltage");
+
+    useWorkbenchStore.getState().saveActiveWorkspace("默认工作区");
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+    const savedPresentations =
+      useWorkbenchStore.getState().workspaces[0]?.config.channelPresentations;
+    expect(savedPresentations).toEqual(useWorkbenchStore.getState().channelPresentations);
+    expect(savedPresentations).not.toBe(useWorkbenchStore.getState().channelPresentations);
+
+    const targetConfig = createDefaultWorkspaceConfig("simulator");
+    targetConfig.channelPresentations.firewater["channel-1"] = {
+      alias: "温度",
+      unit: "degC",
+      color: "#123456",
+    };
+    const target = createWorkspaceProfile(
+      "目标展示",
+      targetConfig,
+      "target-presentation",
+      200,
+    );
+    useWorkbenchStore.setState((state) => ({
+      workspaces: [...state.workspaces, target],
+    }));
+
+    expect(await useWorkbenchStore.getState().switchWorkspace(target.id)).toBe(true);
+    expect(useWorkbenchStore.getState().channelPresentations).toEqual(
+      targetConfig.channelPresentations,
+    );
+    expect(useWorkbenchStore.getState().channelPresentations).not.toBe(
+      target.config.channelPresentations,
+    );
+  });
+
+  it("通道展示配置更新严格且原子", () => {
+    const before = useWorkbenchStore.getState().channelPresentations;
+
+    expect(() =>
+      useWorkbenchStore.getState().setChannelPresentation("firewater", "channel-0", {
+        alias: "bad\u0000name",
+        unit: "V",
+        color: null,
+      }),
+    ).toThrow(/控制字符/);
+    expect(useWorkbenchStore.getState().channelPresentations).toBe(before);
+
+    useWorkbenchStore.getState().setChannelPresentation("firewater", "channel-0", {
+      alias: "",
+      unit: "",
+      color: null,
+    });
+    expect(useWorkbenchStore.getState().channelPresentations).toBe(before);
   });
 
   it("导出当前工作副本且不修改已保存快照与 dirty 状态", () => {
@@ -3132,7 +3445,7 @@ describe("workbenchStore", () => {
     const beforeActiveId = useWorkbenchStore.getState().activeWorkspaceId;
     const importedId = useWorkbenchStore.getState().importWorkspace({
       format: "vofa-ultra.workspace",
-      schemaVersion: 9,
+      schemaVersion: 11,
       name: "默认工作区",
       config: createDefaultWorkspaceConfig("serial"),
     });
@@ -3203,6 +3516,7 @@ describe("workbenchStore", () => {
             displayMode: "hex",
             sendMode: "text",
             lineEnding: "none",
+            commandChecksum: "none",
             chartWindowSeconds: 30,
             processingGraph: { enabled: false, nodes: [] },
             attitudeConfig: {
@@ -3216,10 +3530,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 9 });
+    ).toMatchObject({ version: 11 });
   });
 
-  it("通过 rehydrate 把 v1 工作区写回 v9 且保留快照", async () => {
+  it("通过 rehydrate 把 v1 工作区写回 v11 且保留快照", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.processingGraph;
@@ -3229,6 +3543,8 @@ describe("workbenchStore", () => {
     delete legacyConfig.terminalRxRecordMode;
     delete legacyConfig.terminalRxLineEnding;
     delete legacyConfig.terminalRxTextEncoding;
+    delete legacyConfig.channelPresentations;
+    delete legacyConfig.commandChecksum;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -3265,16 +3581,17 @@ describe("workbenchStore", () => {
               angleUnit: "degrees",
               coordinateFrame: "enu-flu",
             },
+            commandChecksum: "none",
           },
         },
       ],
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 9 });
+    ).toMatchObject({ version: 11 });
   });
 
-  it("通过 rehydrate 把 v3 工作区补充默认配置并写回 v9", async () => {
+  it("通过 rehydrate 把 v3 工作区补充默认配置并写回 v11", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.autoResponderRules;
@@ -3282,6 +3599,8 @@ describe("workbenchStore", () => {
     delete legacyConfig.terminalRxRecordMode;
     delete legacyConfig.terminalRxLineEnding;
     delete legacyConfig.terminalRxTextEncoding;
+    delete legacyConfig.channelPresentations;
+    delete legacyConfig.commandChecksum;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -3308,13 +3627,14 @@ describe("workbenchStore", () => {
       activeWorkspaceId: "legacy-v3",
       autoResponderRules: [],
       quickCommands: [],
+      commandChecksum: "none",
       workspaces: [
         { id: "legacy-v3", config: { autoResponderRules: [], quickCommands: [] } },
       ],
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 9 });
+    ).toMatchObject({ version: 11 });
   });
 
   it("通过 rehydrate 从 v4 补充空快捷命令并保留全部工作区", async () => {
@@ -3328,9 +3648,13 @@ describe("workbenchStore", () => {
     delete legacyFirst.terminalRxRecordMode;
     delete legacyFirst.terminalRxLineEnding;
     delete legacyFirst.terminalRxTextEncoding;
+    delete legacyFirst.channelPresentations;
+    delete legacyFirst.commandChecksum;
     delete legacySecond.terminalRxRecordMode;
     delete legacySecond.terminalRxLineEnding;
     delete legacySecond.terminalRxTextEncoding;
+    delete legacySecond.channelPresentations;
+    delete legacySecond.commandChecksum;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -3363,6 +3687,7 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState()).toMatchObject({
       activeWorkspaceId: "legacy-v4-b",
       quickCommands: [],
+      commandChecksum: "none",
       workspaces: [
         {
           id: "legacy-v4-a",
@@ -3373,10 +3698,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 9 });
+    ).toMatchObject({ version: 11 });
   });
 
-  it("通过 rehydrate 把 v5 的全部工作区无损迁移并写回 v9", async () => {
+  it("通过 rehydrate 把 v5 的全部工作区无损迁移并写回 v11", async () => {
     const firstConfig = createDefaultWorkspaceConfig("simulator");
     firstConfig.lineEnding = "crlf";
     firstConfig.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
@@ -3389,13 +3714,19 @@ describe("workbenchStore", () => {
     delete (first.config as Partial<typeof first.config>).terminalRxRecordMode;
     delete (first.config as Partial<typeof first.config>).terminalRxLineEnding;
     delete (first.config as Partial<typeof first.config>).terminalRxTextEncoding;
+    delete (first.config as Partial<typeof first.config>).channelPresentations;
+    delete (first.config as Partial<typeof first.config>).commandChecksum;
     delete (second.config as Partial<typeof second.config>).terminalRxRecordMode;
     delete (second.config as Partial<typeof second.config>).terminalRxLineEnding;
     delete (second.config as Partial<typeof second.config>).terminalRxTextEncoding;
+    delete (second.config as Partial<typeof second.config>).channelPresentations;
+    delete (second.config as Partial<typeof second.config>).commandChecksum;
     const legacySecondConfig = JSON.parse(JSON.stringify(secondConfig)) as Record<string, unknown>;
     delete legacySecondConfig.terminalRxRecordMode;
     delete legacySecondConfig.terminalRxLineEnding;
     delete legacySecondConfig.terminalRxTextEncoding;
+    delete legacySecondConfig.channelPresentations;
+    delete legacySecondConfig.commandChecksum;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -3413,6 +3744,7 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState()).toMatchObject({
       activeWorkspaceId: second.id,
       lineEnding: "lf",
+      commandChecksum: "none",
       workspaces: [
         {
           id: first.id,
@@ -3427,7 +3759,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 9 });
+    ).toMatchObject({ version: 11 });
   });
 
   it("迁移 v6 本地状态并保留工作区内的 CR 发送行尾", async () => {
@@ -3440,10 +3772,14 @@ describe("workbenchStore", () => {
     delete (workspace.config as Partial<typeof workspace.config>).terminalRxRecordMode;
     delete (workspace.config as Partial<typeof workspace.config>).terminalRxLineEnding;
     delete (workspace.config as Partial<typeof workspace.config>).terminalRxTextEncoding;
+    delete (workspace.config as Partial<typeof workspace.config>).channelPresentations;
+    delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.terminalRxRecordMode;
     delete legacyConfig.terminalRxLineEnding;
     delete legacyConfig.terminalRxTextEncoding;
+    delete legacyConfig.channelPresentations;
+    delete legacyConfig.commandChecksum;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -3466,6 +3802,7 @@ describe("workbenchStore", () => {
       terminalRxRecordMode: "chunk",
       terminalRxLineEnding: "lf",
       terminalRxTextEncoding: "utf-8",
+      commandChecksum: "none",
       workspaces: [
         {
           id: workspace.id,
@@ -3486,8 +3823,12 @@ describe("workbenchStore", () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const workspace = createWorkspaceProfile("v7 工作区", config, "legacy-v7", 100);
     delete (workspace.config as Partial<typeof workspace.config>).terminalRxTextEncoding;
+    delete (workspace.config as Partial<typeof workspace.config>).channelPresentations;
+    delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.terminalRxTextEncoding;
+    delete legacyConfig.channelPresentations;
+    delete legacyConfig.commandChecksum;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -3505,13 +3846,14 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState()).toMatchObject({
       activeWorkspaceId: workspace.id,
       terminalRxTextEncoding: "utf-8",
+      commandChecksum: "none",
       workspaces: [
         { id: workspace.id, config: { terminalRxTextEncoding: "utf-8" } },
       ],
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 9 });
+    ).toMatchObject({ version: 11 });
   });
 
   it("迁移 v8 本地状态并保留活动处理图与工作区快照", async () => {
@@ -3524,12 +3866,17 @@ describe("workbenchStore", () => {
       ],
     };
     const workspace = createWorkspaceProfile("v8 工作区", config, "legacy-v8", 100);
+    delete (workspace.config as Partial<typeof workspace.config>).channelPresentations;
+    delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
+    const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+    delete legacyConfig.channelPresentations;
+    delete legacyConfig.commandChecksum;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
         version: 8,
         state: {
-          ...config,
+          ...legacyConfig,
           workspaces: [workspace],
           activeWorkspaceId: workspace.id,
         },
@@ -3541,14 +3888,15 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState()).toMatchObject({
       activeWorkspaceId: workspace.id,
       processingGraph: config.processingGraph,
+      commandChecksum: "none",
       workspaces: [{ id: workspace.id, config: { processingGraph: config.processingGraph } }],
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 9 });
+    ).toMatchObject({ version: 11 });
   });
 
-  it("直接恢复 v9 转换节点", async () => {
+  it("迁移 v9 转换节点并补充空通道展示配置", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     config.processingGraph = {
       enabled: true,
@@ -3565,12 +3913,17 @@ describe("workbenchStore", () => {
       ],
     };
     const workspace = createWorkspaceProfile("v9 工作区", config, "current-v9", 100);
+    delete (workspace.config as Partial<typeof workspace.config>).channelPresentations;
+    delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
+    const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+    delete legacyConfig.channelPresentations;
+    delete legacyConfig.commandChecksum;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
         version: 9,
         state: {
-          ...config,
+          ...legacyConfig,
           workspaces: [workspace],
           activeWorkspaceId: workspace.id,
         },
@@ -3588,11 +3941,48 @@ describe("workbenchStore", () => {
       kind: "bytes_to_number",
       inputs: ["first", "second"],
     });
+    expect(restored.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
+    expect(restored.commandChecksum).toBe("none");
+    expect(restored.workspaces[0]?.config.channelPresentations).toEqual({
+      firewater: {},
+      justfloat: {},
+    });
+    expect(restored.workspaces[0]?.config.commandChecksum).toBe("none");
+  });
+
+  it("迁移 v10 本地状态并为活动配置与工作区补充默认校验模式", async () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    const workspace = createWorkspaceProfile("v10 工作区", config, "legacy-v10", 100);
+    delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
+    const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+    delete legacyConfig.commandChecksum;
+    localStorage.setItem(
+      "vofa-ultra-workbench",
+      JSON.stringify({
+        version: 10,
+        state: {
+          ...legacyConfig,
+          workspaces: [workspace],
+          activeWorkspaceId: workspace.id,
+        },
+      }),
+    );
+
+    await useWorkbenchStore.persist.rehydrate();
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      activeWorkspaceId: workspace.id,
+      commandChecksum: "none",
+      workspaces: [{ id: workspace.id, config: { commandChecksum: "none" } }],
+    });
+    expect(
+      JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
+    ).toMatchObject({ version: 11 });
   });
 
   it("拒绝并保留更高版本的持久化数据", async () => {
     const futureValue = JSON.stringify({
-      version: 10,
+      version: 12,
       state: {
         futureWorkspaceFormat: true,
         workspaces: [{ id: "future-only" }],
@@ -3605,14 +3995,21 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState()).toMatchObject({
       workspaceStorageStatus: "newer-version",
-      incompatibleStorageVersion: 10,
+      incompatibleStorageVersion: 12,
     });
     expect(() => useWorkbenchStore.getState().saveActiveWorkspace("不会保存")).toThrow(
-      /版本 10.*不能保存/,
+      /版本 12.*不能保存/,
     );
     expect(() => useWorkbenchStore.getState().setQuickCommands([quickCommand()])).toThrow(
-      /版本 10.*不能保存/,
+      /版本 12.*不能保存/,
     );
+    expect(() =>
+      useWorkbenchStore.getState().setChannelPresentation("firewater", "channel-0", {
+        alias: "只读",
+        unit: "",
+        color: null,
+      }),
+    ).toThrow(/版本 12.*不能保存/);
     const beforeExport = useWorkbenchStore.getState();
     expect(beforeExport.createActiveWorkspaceExport("只读工作副本")).toMatchObject({
       name: "只读工作副本",
@@ -3697,6 +4094,282 @@ describe("workbenchStore", () => {
     });
   });
 
+  it("后台刷新自然排序并保留暂时离线的当前端口和状态消息", async () => {
+    listSerialPortsMock.mockResolvedValue([
+      { name: "COM10", kind: "usb", product: "Adapter B" },
+      { name: "COM2", kind: "usb", product: "Adapter A" },
+    ]);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      statusMessage: "等待连接",
+      serialConfig: { ...state.serialConfig, portName: "COM9" },
+    }));
+
+    await useWorkbenchStore.getState().refreshPorts("background");
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      ports: [{ name: "COM2" }, { name: "COM10" }],
+      serialConfig: { portName: "COM9" },
+      statusMessage: "等待连接",
+      connectionStatus: "disconnected",
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("后台枚举失败不覆盖连接状态和用户消息", async () => {
+    listSerialPortsMock.mockRejectedValue(new Error("驱动暂时不可用"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "error",
+      statusMessage: "COM7 打开失败",
+    });
+
+    await useWorkbenchStore.getState().refreshPorts("background");
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "error",
+      statusMessage: "COM7 打开失败",
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("后台枚举完成前生命周期变化后即使回到空闲也丢弃迟到结果", async () => {
+    let resolvePorts: ((ports: SerialPortInfo[]) => void) | undefined;
+    listSerialPortsMock.mockImplementation(
+      () => new Promise((resolve) => {
+        resolvePorts = resolve;
+      }),
+    );
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      serialStateRevision: 5,
+      statusMessage: "等待连接",
+      ports: [{ name: "COM7", kind: "usb" }],
+      serialConfig: { ...state.serialConfig, portName: "COM7" },
+    }));
+
+    const refresh = useWorkbenchStore.getState().refreshPorts("background");
+    useWorkbenchStore.setState({
+      connectionStatus: "connecting",
+      serialStateRevision: 6,
+      statusMessage: "正在连接 COM7",
+    });
+    useWorkbenchStore.setState({
+      connectionStatus: "disconnected",
+      serialStateRevision: 7,
+      statusMessage: "连接已取消",
+    });
+    resolvePorts?.([{ name: "COM8", kind: "usb" }]);
+    await refresh;
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      ports: [{ name: "COM7" }],
+      serialConfig: { portName: "COM7" },
+      connectionStatus: "disconnected",
+      serialStateRevision: 7,
+      statusMessage: "连接已取消",
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("后台刷新只在桌面串口空闲状态启动", async () => {
+    listSerialPortsMock.mockResolvedValue([{ name: "COM7", kind: "usb" }]);
+    useWorkbenchStore.setState({ isNativeRuntime: true, source: "simulator" });
+    await useWorkbenchStore.getState().refreshPorts("background");
+    useWorkbenchStore.setState({ source: "serial", connectionStatus: "connected" });
+    await useWorkbenchStore.getState().refreshPorts("background");
+
+    expect(listSerialPortsMock).not.toHaveBeenCalled();
+  });
+
+  it("驱动确认后更新运行时 DTR 并结束忙碌状态", async () => {
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      statusMessage: "COM7 已连接",
+      serialConfig: { ...state.serialConfig, portName: "COM7", dtr: true },
+    }));
+
+    await expect(useWorkbenchStore.getState().setSerialControlLine("dtr", false)).resolves.toBe(
+      true,
+    );
+
+    expect(setSerialControlLineMock).toHaveBeenCalledWith(7, "dtr", false);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      serialConfig: { dtr: false },
+      serialControlLineOperation: "idle",
+      statusMessage: "DTR 已设为无效",
+      connectionStatus: "connected",
+    });
+  });
+
+  it("控制线失败时保留原值并只记录有界错误码", async () => {
+    setSerialControlLineMock.mockRejectedValue({
+      errorCode: "rts-failed",
+      message: "驱动拒绝请求",
+    });
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialConfig: { ...state.serialConfig, rts: false },
+    }));
+
+    await expect(useWorkbenchStore.getState().setSerialControlLine("rts", true)).resolves.toBe(
+      false,
+    );
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      serialConfig: { rts: false },
+      serialControlLineOperation: "idle",
+      statusMessage: "设置 RTS 失败：驱动拒绝请求",
+      connectionStatus: "connected",
+    });
+    const events = useWorkbenchStore.getState().getSerialDiagnostics().events;
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: "control_line_failed",
+        generation: 7,
+        errorCode: "rts-failed",
+        outcome: "rts",
+      }),
+    );
+
+    setSerialControlLineMock.mockRejectedValueOnce({
+      errorCode: "path:C:\\private",
+      message: "另一次失败",
+    });
+    await expect(useWorkbenchStore.getState().setSerialControlLine("dtr", false)).resolves.toBe(
+      false,
+    );
+    const sanitizedEvents = useWorkbenchStore.getState().getSerialDiagnostics().events;
+    expect(sanitizedEvents).toContainEqual(
+      expect.objectContaining({
+        kind: "control_line_failed",
+        errorCode: "unknown",
+        outcome: "dtr",
+      }),
+    );
+    expect(JSON.stringify(sanitizedEvents)).not.toContain("private");
+    expect(JSON.stringify(sanitizedEvents)).not.toContain("另一次失败");
+  });
+
+  it("控制线请求在连接代次变化后丢弃迟到成功", async () => {
+    const control = deferred<void>();
+    setSerialControlLineMock.mockReturnValue(control.promise);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialConfig: { ...state.serialConfig, dtr: true },
+    }));
+
+    const pending = useWorkbenchStore.getState().setSerialControlLine("dtr", false);
+    expect(useWorkbenchStore.getState().serialControlLineOperation).toBe("dtr");
+    useWorkbenchStore.setState({ serialGeneration: 8, statusMessage: "新连接已建立" });
+    control.resolve(undefined);
+
+    await expect(pending).resolves.toBe(false);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      serialConfig: { dtr: true },
+      serialControlLineOperation: "idle",
+      statusMessage: "新连接已建立",
+    });
+  });
+
+  it("硬件流控和在途操作阻止并发控制线请求", async () => {
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialConfig: { ...state.serialConfig, flowControl: "hardware" },
+    }));
+
+    await expect(useWorkbenchStore.getState().setSerialControlLine("rts", false)).resolves.toBe(
+      false,
+    );
+    expect(setSerialControlLineMock).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState().statusMessage).toBe(
+      "硬件流控已接管 RTS，无法手动设置",
+    );
+
+    const control = deferred<void>();
+    setSerialControlLineMock.mockReturnValue(control.promise);
+    useWorkbenchStore.setState((state) => ({
+      serialConfig: { ...state.serialConfig, flowControl: "none" },
+    }));
+    const first = useWorkbenchStore.getState().setSerialControlLine("dtr", false);
+    await expect(useWorkbenchStore.getState().setSerialControlLine("rts", false)).resolves.toBe(
+      false,
+    );
+    expect(setSerialControlLineMock).toHaveBeenCalledTimes(1);
+    control.resolve(undefined);
+    await expect(first).resolves.toBe(true);
+  });
+
+  it("控制线操作完成前不启动依赖稳定串口状态的任务", async () => {
+    startCaptureMock.mockResolvedValue({
+      status: "recording",
+      sessionId: 7,
+      revision: 1,
+      formatVersion: 2,
+      path: "C:\\captures\\session.vucap",
+      startedAtUnixMs: 1_000,
+      dataBytes: 0,
+      recordCount: 0,
+      markerCount: 0,
+    });
+    startNumericLogMock.mockResolvedValue(numericLogState("recording"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      protocol: "firewater",
+      serialControlLineOperation: "dtr",
+    });
+
+    await expect(useWorkbenchStore.getState().startCapture()).resolves.toBe(false);
+    await expect(useWorkbenchStore.getState().startNumericLog()).resolves.toBe(false);
+    await expect(
+      useWorkbenchStore.getState().send("PING", "text", "none"),
+    ).rejects.toThrow("串口控制线操作进行中");
+    expect(() =>
+      useWorkbenchStore.getState().startPeriodicSend("PING", "text", "none", 100, 1),
+    ).toThrow("串口控制线操作进行中");
+    expect(() => useWorkbenchStore.getState().startAutoResponder()).toThrow(
+      "串口控制线操作进行中",
+    );
+    await expect(useWorkbenchStore.getState().startFileSend("C:\\firmware.bin")).rejects.toThrow(
+      "串口控制线操作进行中",
+    );
+    await expect(
+      useWorkbenchStore.getState().startModbusTransaction(
+        {
+          operation: "read-holding-registers",
+          unitId: 1,
+          address: 0,
+          quantity: 1,
+        },
+        500,
+      ),
+    ).rejects.toThrow("串口控制线操作进行中");
+    expect(startCaptureMock).not.toHaveBeenCalled();
+    expect(startNumericLogMock).not.toHaveBeenCalled();
+    expect(sendSerialMock).not.toHaveBeenCalled();
+    expect(startSerialFileSendMock).not.toHaveBeenCalled();
+    expect(startSerialModbusTransactionMock).not.toHaveBeenCalled();
+  });
+
   it("开始录制时冻结数据源、协议和串口参数", async () => {
     startCaptureMock.mockResolvedValue({
       status: "recording",
@@ -3738,6 +4411,115 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().protocol).toBe("justfloat");
     expect(useWorkbenchStore.getState().source).toBe("simulator");
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(921_600);
+  });
+
+  it("目录选择取消不改状态，成功后可恢复系统默认", async () => {
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      recordingDirectory: "C:\\captures\\existing",
+      recordingDirectoryMessage: "保留消息",
+    });
+    selectRecordingDirectoryPathMock.mockResolvedValueOnce(null);
+
+    await expect(useWorkbenchStore.getState().selectRecordingDirectory()).resolves.toBe(
+      false,
+    );
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      recordingDirectoryStatus: "idle",
+      recordingDirectory: "C:\\captures\\existing",
+      recordingDirectoryMessage: "保留消息",
+    });
+
+    selectRecordingDirectoryPathMock.mockResolvedValueOnce("D:\\sessions");
+    await expect(useWorkbenchStore.getState().selectRecordingDirectory()).resolves.toBe(
+      true,
+    );
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      recordingDirectory: "D:\\sessions",
+      recordingDirectoryMessage: "",
+    });
+    expect(useWorkbenchStore.getState().resetRecordingDirectory()).toBe(true);
+    expect(useWorkbenchStore.getState().recordingDirectory).toBe("");
+  });
+
+  it("目录选择期间只锁住记录启动且不打断周期发送", async () => {
+    vi.useFakeTimers();
+    const selection = deferred<string | null>();
+    selectRecordingDirectoryPathMock.mockReturnValueOnce(selection.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "simulator",
+      connectionStatus: "connected",
+      recordingDirectory: "C:\\captures\\stable",
+    });
+    useWorkbenchStore.getState().startPeriodicSend("PING", "text", "none", 20, 3);
+    await flushPromises();
+
+    const selectPromise = useWorkbenchStore.getState().selectRecordingDirectory();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      runtimeTransitionStatus: "idle",
+      recordingDirectoryStatus: "selecting",
+    });
+    await expect(useWorkbenchStore.getState().startCapture()).resolves.toBe(false);
+    expect(startCaptureMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(40);
+    expect(useWorkbenchStore.getState().commandTask).toMatchObject({
+      status: "completed",
+      sentCount: 3,
+    });
+
+    selection.reject(new Error("dialog failed"));
+    await expect(selectPromise).resolves.toBe(false);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      runtimeTransitionStatus: "idle",
+      recordingDirectoryStatus: "idle",
+      recordingDirectory: "C:\\captures\\stable",
+      recordingDirectoryMessage: "dialog failed",
+    });
+  });
+
+  it("自定义目录同时传入原始捕获和数值记录且活动期间不能重置", async () => {
+    startCaptureMock.mockResolvedValue({
+      status: "recording",
+      sessionId: 7,
+      revision: 3,
+      formatVersion: 2,
+      path: "D:\\sessions\\capture.vucap",
+      startedAtUnixMs: 1_000,
+      dataBytes: 0,
+      recordCount: 0,
+      markerCount: 0,
+    });
+    startNumericLogMock.mockResolvedValue(
+      numericLogState("recording", {
+        sessionId: 17,
+        revision: 3,
+        path: "D:\\sessions\\numeric.csv.part",
+        startedAtUnixMs: 1_000,
+      }),
+    );
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      connectionStatus: "connected",
+      protocol: "firewater",
+      recordingDirectory: "D:\\sessions",
+    });
+
+    await expect(useWorkbenchStore.getState().startCapture()).resolves.toBe(true);
+    await expect(useWorkbenchStore.getState().startNumericLog()).resolves.toBe(true);
+    expect(startCaptureMock).toHaveBeenCalledWith({
+      source: "simulator",
+      protocol: "firewater",
+      serialConfig: expect.any(Object),
+      destinationDirectory: "D:\\sessions",
+    });
+    expect(startNumericLogMock).toHaveBeenCalledWith({
+      source: "simulator",
+      protocol: "firewater",
+      destinationDirectory: "D:\\sessions",
+    });
+    expect(useWorkbenchStore.getState().resetRecordingDirectory()).toBe(false);
+    expect(useWorkbenchStore.getState().recordingDirectory).toBe("D:\\sessions");
   });
 
   it("数值记录可与原始捕获并行并冻结数据源协议", async () => {
@@ -3874,6 +4656,11 @@ describe("workbenchStore", () => {
 
   it("波形暂停时仍记录基础与派生数值样本", () => {
     useWorkbenchStore.getState().setProtocol("firewater");
+    useWorkbenchStore.getState().setChannelPresentation("firewater", "channel-0", {
+      alias: "温度展示",
+      unit: "degC",
+      color: "#abcdef",
+    });
     useWorkbenchStore.getState().setProcessingGraph({
       enabled: true,
       nodes: [
@@ -5548,6 +6335,26 @@ describe("workbenchStore", () => {
     useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("1,2\n"), 1_000);
 
     expect(storageWrite).not.toHaveBeenCalled();
+    storageWrite.mockRestore();
+  });
+
+  it("记录目录只保留在当前会话且不进入串口诊断", async () => {
+    useWorkbenchStore.setState({ isNativeRuntime: true });
+    selectRecordingDirectoryPathMock.mockResolvedValue("C:\\private\\captures");
+    const storageWrite = vi.spyOn(Storage.prototype, "setItem");
+    storageWrite.mockClear();
+
+    await expect(useWorkbenchStore.getState().selectRecordingDirectory()).resolves.toBe(
+      true,
+    );
+
+    expect(useWorkbenchStore.getState().recordingDirectory).toBe(
+      "C:\\private\\captures",
+    );
+    expect(storageWrite).not.toHaveBeenCalled();
+    expect(JSON.stringify(useWorkbenchStore.getState().getSerialDiagnostics())).not.toContain(
+      "private",
+    );
     storageWrite.mockRestore();
   });
 

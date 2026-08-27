@@ -23,7 +23,15 @@ const GRAPH_WITH_BRANCH: ProcessingGraphConfig = {
 
 describe("ProcessingPanel", () => {
   beforeEach(() => {
-    useWorkbenchStore.setState({ workspaceTransitionStatus: "idle" });
+    useWorkbenchStore.setState({
+      workspaceTransitionStatus: "idle",
+      protocol: "firewater",
+      replayStatus: "idle",
+      replaySessionId: 0,
+      replayHeader: undefined,
+      channels: [],
+      channelPresentations: { firewater: {}, justfloat: {} },
+    });
     useWorkbenchStore.getState().setProcessingGraph({ enabled: false, nodes: [] });
   });
 
@@ -54,6 +62,29 @@ describe("ProcessingPanel", () => {
     });
     expect(screen.getByText("运行中")).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "node-2 增益" })).toBeInTheDocument();
+  });
+
+  it("尚无实时样本时也在输入节点显示保存的协议别名", () => {
+    useWorkbenchStore.setState({
+      channelPresentations: {
+        firewater: {
+          "channel-0": { alias: "母线电压", unit: "V", color: null },
+        },
+        justfloat: {
+          "channel-0": { alias: "转速", unit: "rpm", color: null },
+        },
+      },
+    });
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: false,
+      nodes: [{ id: "node-1", kind: "input", channelIndex: 0 }],
+    });
+    render(<ProcessingPanel />);
+
+    expect(screen.getByRole("combobox", { name: "node-1 原始通道" })).toHaveTextContent(
+      "母线电压",
+    );
+    expect(screen.queryByText("转速")).not.toBeInTheDocument();
   });
 
   it("允许字段中间态，仅在失焦时提交并拒绝越界值", async () => {

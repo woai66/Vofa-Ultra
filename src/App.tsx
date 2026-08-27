@@ -4,10 +4,20 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { ChartNoAxesCombined, LoaderCircle, Menu, Orbit } from "lucide-react";
+import {
+  ChartNoAxesCombined,
+  LoaderCircle,
+  Menu,
+  Orbit,
+  PanelBottom,
+  PanelTop,
+  Rows2,
+} from "lucide-react";
 import { APP_DISPLAY_VERSION } from "./core/appMetadata";
 import { getHorizontalTabTarget } from "./core/tabNavigation";
 import { ActivityRail, type SidebarPanel } from "./components/ActivityRail";
@@ -23,43 +33,107 @@ import {
 } from "./store/workbenchStore";
 
 export type ThemeMode = "dark" | "light";
+export type ThemePreference = "system" | ThemeMode;
 
-const WORKSPACE_VIEWS = ["waveform", "attitude"] as const;
-type WorkspaceView = (typeof WORKSPACE_VIEWS)[number];
+const WORKSPACE_VIEW_TABS = [
+  ["waveform", "波形", ChartNoAxesCombined],
+  ["monitor", "监视", Rows2],
+  ["attitude", "姿态", Orbit],
+] as const;
+type WorkspaceView = (typeof WORKSPACE_VIEW_TABS)[number][0];
+const WORKSPACE_VIEWS: readonly WorkspaceView[] = WORKSPACE_VIEW_TABS.map(([view]) => view);
+type WorkspaceLayoutMode = "split" | "primary" | "terminal";
+
+const WORKSPACE_SPLIT_STORAGE_KEY = "vofa-ultra-workspace-split";
+const DEFAULT_WORKSPACE_SPLIT = 1.35 / (1.35 + 0.85);
+const MIN_WORKSPACE_SPLIT = 0.4;
+const MAX_WORKSPACE_SPLIT = 0.66;
+const WORKSPACE_SPLIT_STEP = 0.02;
+
+interface WorkspaceResizeState {
+  pointerId: number;
+  contentTop: number;
+  separatorHeight: number;
+  usableHeight: number;
+}
+
+const THEME_STORAGE_KEY = "vofa-ultra-theme";
+const SYSTEM_THEME_QUERY = "(prefers-color-scheme: light)";
+
+function readThemePreference(): ThemePreference {
+  const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+  return savedTheme === "dark" || savedTheme === "light" || savedTheme === "system"
+    ? savedTheme
+    : "system";
+}
+
+function readSystemTheme(): ThemeMode {
+  return window.matchMedia(SYSTEM_THEME_QUERY).matches ? "light" : "dark";
+}
 
 const loadAttitudePanel = () => import("./components/AttitudePanel");
-const AttitudePanel = lazy(async () => {
-  const module = await loadAttitudePanel();
-  return { default: module.AttitudePanel };
-});
+const preloadAttitudePanel = () => void loadAttitudePanel();
+const AttitudePanel = lazy(() =>
+  loadAttitudePanel().then(({ AttitudePanel }) => ({ default: AttitudePanel })),
+);
+const ChannelMonitorPanel = lazy(() =>
+  import("./components/ChannelMonitorPanel").then(({ ChannelMonitorPanel }) => ({
+    default: ChannelMonitorPanel,
+  })),
+);
 
 export default function App() {
   const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>("connection");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [waveformMeasuring, setWaveformMeasuring] = useState(false);
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("waveform");
+  const [workspaceLayoutMode, setWorkspaceLayoutMode] =
+    useState<WorkspaceLayoutMode>("split");
+  const [workspaceSplit, setWorkspaceSplit] = useState(readWorkspaceSplit);
+  const [workspaceResizing, setWorkspaceResizing] = useState(false);
   const workspaceTabRefs = useRef<Partial<Record<WorkspaceView, HTMLButtonElement>>>({});
+  const workspaceContentRef = useRef<HTMLDivElement>(null);
+  const workspaceResizeRef = useRef<WorkspaceResizeState | null>(null);
   const activeWorkspace = useWorkbenchStore(selectActiveWorkspace);
   const workspaceDirty = useWorkbenchStore(selectIsWorkspaceDirty);
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
   const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
   const replayPath = useWorkbenchStore((state) => state.replayPath);
-  const [theme, setTheme] = useState<ThemeMode>(() => {
-    const savedTheme = localStorage.getItem("vofa-ultra-theme");
-    if (savedTheme === "dark" || savedTheme === "light") {
-      return savedTheme;
-    }
-    return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-  });
+  const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
+  const [systemTheme, setSystemTheme] = useState<ThemeMode>(readSystemTheme);
+  const theme = themePreference === "system" ? systemTheme : themePreference;
 
   useWorkbenchRuntime();
 
   const replayLoaded = replaySessionId > 0 && replayStatus !== "idle";
 
   useEffect(() => {
+    const media_query = window.matchMedia(SYSTEM_THEME_QUERY);
+    const handle_change = (event: MediaQueryListEvent) => {
+      setSystemTheme(event.matches ? "light" : "dark");
+    };
+
+    setSystemTheme(media_query.matches ? "light" : "dark");
+    if (typeof media_query.addEventListener === "function") {
+      media_query.addEventListener("change", handle_change);
+      return () => media_query.removeEventListener("change", handle_change);
+    }
+
+    media_query.addListener(handle_change);
+    return () => media_query.removeListener(handle_change);
+  }, []);
+
+  useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem("vofa-ultra-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem(WORKSPACE_SPLIT_STORAGE_KEY, workspaceSplit.toFixed(4));
+  }, [workspaceSplit]);
+
+  useEffect(() => {
+    localStorage.setItem(THEME_STORAGE_KEY, themePreference);
+  }, [themePreference]);
 
   const selectSidebarPanel = (panel: SidebarPanel) => {
     if (panel === sidebarPanel) {
@@ -71,7 +145,7 @@ export default function App() {
   };
 
   const selectWorkspaceView = (view: WorkspaceView) => {
-    if (view === "attitude") {
+    if (view !== "waveform") {
       setWaveformMeasuring(false);
     }
     setWorkspaceView(view);
@@ -90,14 +164,104 @@ export default function App() {
     workspaceTabRefs.current[target]?.focus();
   };
 
+  const resizeWorkspaceFromPointer = (clientY: number) => {
+    const resize = workspaceResizeRef.current;
+    if (!resize) {
+      return;
+    }
+    const primaryHeight = clientY - resize.contentTop - resize.separatorHeight / 2;
+    setWorkspaceSplit(clampWorkspaceSplit(primaryHeight / resize.usableHeight));
+  };
+
+  const handleWorkspaceSeparatorPointerDown = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    if (workspaceLayoutMode !== "split" || event.button !== 0) {
+      return;
+    }
+    const content = workspaceContentRef.current;
+    if (!content) {
+      return;
+    }
+    const contentRect = content.getBoundingClientRect();
+    const separatorHeight = event.currentTarget.getBoundingClientRect().height;
+    workspaceResizeRef.current = {
+      pointerId: event.pointerId,
+      contentTop: contentRect.top,
+      separatorHeight,
+      usableHeight: Math.max(1, contentRect.height - separatorHeight),
+    };
+    event.preventDefault();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setWorkspaceResizing(true);
+    resizeWorkspaceFromPointer(event.clientY);
+  };
+
+  const handleWorkspaceSeparatorPointerMove = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    if (workspaceResizeRef.current?.pointerId === event.pointerId) {
+      resizeWorkspaceFromPointer(event.clientY);
+    }
+  };
+
+  const finishWorkspaceResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (workspaceResizeRef.current?.pointerId !== event.pointerId) {
+      return;
+    }
+    resizeWorkspaceFromPointer(event.clientY);
+    workspaceResizeRef.current = null;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setWorkspaceResizing(false);
+  };
+
+  const cancelWorkspaceResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (workspaceResizeRef.current?.pointerId !== event.pointerId) {
+      return;
+    }
+    workspaceResizeRef.current = null;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setWorkspaceResizing(false);
+  };
+
+  const handleWorkspaceSeparatorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    let nextSplit: number | null = null;
+    if (event.key === "ArrowUp") {
+      nextSplit = workspaceSplit - WORKSPACE_SPLIT_STEP;
+    } else if (event.key === "ArrowDown") {
+      nextSplit = workspaceSplit + WORKSPACE_SPLIT_STEP;
+    } else if (event.key === "Home") {
+      nextSplit = MIN_WORKSPACE_SPLIT;
+    } else if (event.key === "End") {
+      nextSplit = MAX_WORKSPACE_SPLIT;
+    }
+    if (nextSplit === null) {
+      return;
+    }
+    event.preventDefault();
+    setWorkspaceSplit(clampWorkspaceSplit(nextSplit));
+  };
+
+  const workspaceContentStyle = {
+    "--workspace-primary-share": `${workspaceSplit}fr`,
+    "--workspace-terminal-share": `${1 - workspaceSplit}fr`,
+  } as CSSProperties;
+  const primaryFocusLabel = `专注${
+    workspaceView === "waveform" ? "波形" : workspaceView === "monitor" ? "监视" : "姿态"
+  }视图`;
+
   return (
     <div className="app-shell" data-sidebar-open={sidebarOpen}>
       <ActivityRail activePanel={sidebarPanel} onSelect={selectSidebarPanel} />
       <Sidebar
         activePanel={sidebarPanel}
-        theme={theme}
+        themePreference={themePreference}
         onClose={() => setSidebarOpen(false)}
-        onThemeChange={setTheme}
+        onThemePreferenceChange={setThemePreference}
       />
 
       <main className="workspace">
@@ -124,45 +288,61 @@ export default function App() {
             className="workspace-view-tabs"
             role="tablist"
             aria-label="工作区视图"
-            aria-orientation="horizontal"
           >
+            {WORKSPACE_VIEW_TABS.map(([view, label, Icon]) => {
+              const active = workspaceView === view;
+              return (
+                <button
+                  key={view}
+                  id={`workspace-${view}-tab`}
+                  type="button"
+                  role="tab"
+                  aria-controls={`workspace-${view}-panel`}
+                  aria-selected={active}
+                  tabIndex={active ? 0 : -1}
+                  ref={(element) => {
+                    workspaceTabRefs.current[view] = element ?? undefined;
+                  }}
+                  onKeyDown={(event) => handleWorkspaceTabKeyDown(event, view)}
+                  onPointerEnter={view === "attitude" ? preloadAttitudePanel : undefined}
+                  onClick={() => selectWorkspaceView(view)}
+                >
+                  <Icon size={15} />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="workspace-layout-controls" role="group" aria-label="工作区布局">
             <button
-              id="workspace-waveform-tab"
               type="button"
-              role="tab"
-              aria-controls="workspace-waveform-panel"
-              aria-selected={workspaceView === "waveform"}
-              tabIndex={workspaceView === "waveform" ? 0 : -1}
-              data-active={workspaceView === "waveform"}
-              title="波形视图"
-              ref={(element) => {
-                workspaceTabRefs.current.waveform = element ?? undefined;
-              }}
-              onKeyDown={(event) => handleWorkspaceTabKeyDown(event, "waveform")}
-              onClick={() => selectWorkspaceView("waveform")}
+              aria-label={primaryFocusLabel}
+              title={primaryFocusLabel}
+              aria-pressed={workspaceLayoutMode === "primary"}
+              data-active={workspaceLayoutMode === "primary"}
+              onClick={() => setWorkspaceLayoutMode("primary")}
             >
-              <ChartNoAxesCombined size={15} />
-              <span>波形</span>
+              <PanelTop size={15} />
             </button>
             <button
-              id="workspace-attitude-tab"
               type="button"
-              role="tab"
-              aria-controls="workspace-attitude-panel"
-              aria-selected={workspaceView === "attitude"}
-              tabIndex={workspaceView === "attitude" ? 0 : -1}
-              data-active={workspaceView === "attitude"}
-              title="姿态视图"
-              ref={(element) => {
-                workspaceTabRefs.current.attitude = element ?? undefined;
-              }}
-              onKeyDown={(event) => handleWorkspaceTabKeyDown(event, "attitude")}
-              onFocus={() => void loadAttitudePanel()}
-              onPointerEnter={() => void loadAttitudePanel()}
-              onClick={() => selectWorkspaceView("attitude")}
+              aria-label="分栏显示"
+              title="分栏显示"
+              aria-pressed={workspaceLayoutMode === "split"}
+              data-active={workspaceLayoutMode === "split"}
+              onClick={() => setWorkspaceLayoutMode("split")}
             >
-              <Orbit size={15} />
-              <span>姿态</span>
+              <Rows2 size={15} />
+            </button>
+            <button
+              type="button"
+              aria-label="专注终端"
+              title="专注终端"
+              aria-pressed={workspaceLayoutMode === "terminal"}
+              data-active={workspaceLayoutMode === "terminal"}
+              onClick={() => setWorkspaceLayoutMode("terminal")}
+            >
+              <PanelBottom size={15} />
             </button>
           </div>
           <div className="workspace-header-meta">
@@ -171,15 +351,49 @@ export default function App() {
           </div>
         </header>
 
-        <div className="workspace-content" data-waveform-measuring={waveformMeasuring}>
+        <div
+          ref={workspaceContentRef}
+          className="workspace-content"
+          data-waveform-measuring={waveformMeasuring}
+          data-layout-mode={workspaceLayoutMode}
+          data-resizing={workspaceResizing}
+          style={workspaceContentStyle}
+        >
           <WorkspaceTabPanel view="waveform" activeView={workspaceView}>
             <WaveformPanel theme={theme} onMeasurementModeChange={setWaveformMeasuring} />
+          </WorkspaceTabPanel>
+          <WorkspaceTabPanel view="monitor" activeView={workspaceView}>
+            <Suspense fallback={<ChannelMonitorPanelFallback />}>
+              <ChannelMonitorPanel />
+            </Suspense>
           </WorkspaceTabPanel>
           <WorkspaceTabPanel view="attitude" activeView={workspaceView}>
             <Suspense fallback={<AttitudePanelFallback />}>
               <AttitudePanel theme={theme} />
             </Suspense>
           </WorkspaceTabPanel>
+          <div
+            className="workspace-layout-separator"
+            role="separator"
+            aria-label="调整主视图与终端高度"
+            aria-controls={`workspace-${workspaceView}-panel workspace-terminal-panel`}
+            aria-orientation="horizontal"
+            aria-valuemin={Math.round(MIN_WORKSPACE_SPLIT * 100)}
+            aria-valuemax={Math.round(MAX_WORKSPACE_SPLIT * 100)}
+            aria-valuenow={Math.round(workspaceSplit * 100)}
+            aria-valuetext={`主视图 ${Math.round(workspaceSplit * 100)}%`}
+            tabIndex={0}
+            onDoubleClick={() => setWorkspaceSplit(DEFAULT_WORKSPACE_SPLIT)}
+            onKeyDown={handleWorkspaceSeparatorKeyDown}
+            onPointerDown={handleWorkspaceSeparatorPointerDown}
+            onPointerMove={handleWorkspaceSeparatorPointerMove}
+            onPointerUp={finishWorkspaceResize}
+            onPointerCancel={cancelWorkspaceResize}
+            onLostPointerCapture={() => {
+              workspaceResizeRef.current = null;
+              setWorkspaceResizing(false);
+            }}
+          />
           <TerminalPanel />
         </div>
       </main>
@@ -187,6 +401,21 @@ export default function App() {
       <StatusBar />
     </div>
   );
+}
+
+function readWorkspaceSplit(): number {
+  const savedSplit = localStorage.getItem(WORKSPACE_SPLIT_STORAGE_KEY);
+  if (savedSplit === null) {
+    return DEFAULT_WORKSPACE_SPLIT;
+  }
+  const parsedSplit = Number.parseFloat(savedSplit);
+  return Number.isFinite(parsedSplit)
+    ? clampWorkspaceSplit(parsedSplit)
+    : DEFAULT_WORKSPACE_SPLIT;
+}
+
+function clampWorkspaceSplit(value: number): number {
+  return Math.min(MAX_WORKSPACE_SPLIT, Math.max(MIN_WORKSPACE_SPLIT, value));
 }
 
 function WorkspaceTabPanel({
@@ -229,5 +458,15 @@ function AttitudePanelFallback() {
         </div>
       </div>
     </section>
+  );
+}
+
+function ChannelMonitorPanelFallback() {
+  return (
+    <section
+      className="workspace-panel channel-monitor-panel"
+      aria-label="加载中"
+      aria-busy="true"
+    />
   );
 }

@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useEffect,
   useMemo,
   useRef,
@@ -28,7 +30,6 @@ import {
   TerminalSquare,
   Timer,
   TriangleAlert,
-  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -43,9 +44,12 @@ import {
   MIN_COMMAND_INTERVAL_MS,
 } from "../core/commandWorkflow";
 import { isAutoResponderActive } from "../core/autoResponder";
+import { formatHex } from "../core/codec";
 import {
+  COMMAND_CHECKSUM_MODES,
   calculateChecksums,
   MAX_CHECKSUM_INPUT_CHARACTERS,
+  type CommandChecksumMode,
   type ChecksumInputMode,
   type ChecksumResult,
 } from "../core/checksum";
@@ -61,6 +65,13 @@ import {
 } from "../core/dataConverter";
 import { getHorizontalTabTarget } from "../core/tabNavigation";
 import {
+  formatTerminalTime,
+  parseTerminalTimeMode,
+  TERMINAL_TIME_MODE_STORAGE_KEY,
+  terminalTimeDateTime,
+  type TerminalTimeMode,
+} from "../core/terminalTime";
+import {
   filterTerminalEntries,
   findTerminalLiteralMatches,
   MAX_TERMINAL_SEARCH_CHARACTERS,
@@ -72,7 +83,6 @@ import { selectSerialFilePath } from "../services/serialClient";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { DisplayMode, LineEnding, SerialFileSendStatus } from "../types/serial";
 import type {
-  CommandHistoryEntry,
   CommandTaskSnapshot,
   QuickCommand,
   TerminalEntry,
@@ -80,9 +90,22 @@ import type {
 import { ModbusRtuBuilder } from "./ModbusRtuBuilder";
 import { QuickCommandPopover } from "./QuickCommandPopover";
 
+const TerminalExportMenu = lazy(() => import("./TerminalExportMenu"));
+const CommandHistoryPopover = lazy(() => import("./CommandHistoryPopover"));
+
 type RepeatMode = "count" | "continuous";
 const COMMAND_REFERENCE_VIEWS = ["variables", "ascii", "converter", "checksum"] as const;
 type CommandReferenceView = (typeof COMMAND_REFERENCE_VIEWS)[number];
+
+const TERMINAL_TIME_MODE_OPTIONS: readonly {
+  mode: TerminalTimeMode;
+  label: string;
+  description: string;
+}[] = [
+  { mode: "absolute", label: "ABS", description: "绝对时间" },
+  { mode: "relative", label: "REL", description: "相对缓存起点" },
+  { mode: "interval", label: "ΔT", description: "距上一条可见记录" },
+];
 
 const TERMINAL_LATEST_THRESHOLD_PX = 24;
 const MAX_ASCII_SEARCH_CHARACTERS = 32;
@@ -231,11 +254,13 @@ interface CommandDraft {
   value: string;
   mode: DisplayMode;
   lineEnding: LineEnding;
+  checksumMode?: CommandChecksumMode;
 }
 
 interface CommandTemplatePreview {
   byteCount: number;
   variableCount: number;
+  checksumHex: string;
   error: string;
 }
 
@@ -259,6 +284,7 @@ export function TerminalPanel() {
   const displayMode = useWorkbenchStore((state) => state.displayMode);
   const sendMode = useWorkbenchStore((state) => state.sendMode);
   const lineEnding = useWorkbenchStore((state) => state.lineEnding);
+  const commandChecksum = useWorkbenchStore((state) => state.commandChecksum);
   const terminalRxRecordMode = useWorkbenchStore((state) => state.terminalRxRecordMode);
   const terminalRxLineEnding = useWorkbenchStore((state) => state.terminalRxLineEnding);
   const terminalRxTextEncoding = useWorkbenchStore((state) => state.terminalRxTextEncoding);
@@ -268,6 +294,9 @@ export function TerminalPanel() {
   const modbusTransaction = useWorkbenchStore((state) => state.modbusTransaction);
   const modbusTransactions = useWorkbenchStore((state) => state.modbusTransactions);
   const serialFileSend = useWorkbenchStore((state) => state.serialFileSend);
+  const serialControlLineOperation = useWorkbenchStore(
+    (state) => state.serialControlLineOperation,
+  );
   const isSendingCommand = useWorkbenchStore((state) => state.isSendingCommand);
   const commandSendOrigin = useWorkbenchStore((state) => state.commandSendOrigin);
   const terminalPaused = useWorkbenchStore((state) => state.terminalPaused);
@@ -281,6 +310,7 @@ export function TerminalPanel() {
   const setDisplayMode = useWorkbenchStore((state) => state.setDisplayMode);
   const setSendMode = useWorkbenchStore((state) => state.setSendMode);
   const setLineEnding = useWorkbenchStore((state) => state.setLineEnding);
+  const setCommandChecksum = useWorkbenchStore((state) => state.setCommandChecksum);
   const setTerminalRxRecordMode = useWorkbenchStore(
     (state) => state.setTerminalRxRecordMode,
   );
@@ -308,7 +338,10 @@ export function TerminalPanel() {
   const modbusTriggerRef = useRef<HTMLButtonElement>(null);
   const quickCommandTriggerRef = useRef<HTMLButtonElement>(null);
   const variableTriggerRef = useRef<HTMLButtonElement>(null);
+  const historyTriggerRef = useRef<HTMLButtonElement>(null);
   const variableListRef = useRef<HTMLDivElement>(null);
+  const exportControlRef = useRef<HTMLDivElement>(null);
+  const exportTriggerRef = useRef<HTMLButtonElement>(null);
   const asciiSearchRef = useRef<HTMLInputElement>(null);
   const converterInputRef = useRef<HTMLTextAreaElement>(null);
   const checksumInputRef = useRef<HTMLTextAreaElement>(null);
@@ -349,11 +382,16 @@ export function TerminalPanel() {
   const [repeatCountText, setRepeatCountText] = useState("10");
   const [searchQuery, setSearchQuery] = useState("");
   const [directionFilter, setDirectionFilter] = useState<TerminalDirectionFilter>("all");
+  const [exportOpen, setExportOpen] = useState(false);
+  const [terminalTimeMode, setTerminalTimeMode] = useState<TerminalTimeMode>(() =>
+    parseTerminalTimeMode(localStorage.getItem(TERMINAL_TIME_MODE_STORAGE_KEY)),
+  );
   const [terminalFollowSuspended, setTerminalFollowSuspended] = useState(false);
   const hasPayload = message.length > 0 || lineEnding !== "none";
+  const hasSendableFrame = hasPayload || commandChecksum !== "none";
   const templatePreview = useMemo(
-    () => previewCommandTemplate(message, sendMode, lineEnding),
-    [lineEnding, message, sendMode],
+    () => previewCommandTemplate(message, sendMode, lineEnding, commandChecksum),
+    [commandChecksum, lineEnding, message, sendMode],
   );
   const availableVariables = useMemo(
     () => COMMAND_VARIABLE_INSERTIONS.filter((item) => item.mode === sendMode),
@@ -390,6 +428,7 @@ export function TerminalPanel() {
   const modbusTransactionActive = modbusTransaction.status !== "idle";
   const fileSendActive = isFileSendActive(serialFileSend.status);
   const manualSendBlocked =
+    serialControlLineOperation !== "idle" ||
     fileSendActive ||
     modbusTransactionActive ||
     manualSendPending ||
@@ -397,17 +436,18 @@ export function TerminalPanel() {
   const workflowVisible = workflowOpen || taskActive;
   const canStartPeriodic =
     connectionStatus === "connected" &&
-    message.length > 0 &&
     !templatePreview.error &&
     templatePreview.byteCount > 0 &&
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
     !autoResponderActive &&
+    serialControlLineOperation === "idle" &&
     !fileSendActive &&
     !modbusTransactionActive &&
     !taskActive;
   const canExecuteModbus =
     connectionStatus === "connected" &&
+    serialControlLineOperation === "idle" &&
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
     !autoResponderActive &&
@@ -418,6 +458,7 @@ export function TerminalPanel() {
     isNativeRuntime &&
     source === "serial" &&
     connectionStatus === "connected" &&
+    serialControlLineOperation === "idle" &&
     selectedFilePath.length > 0 &&
     !fileSelectionPending &&
     !fileStartPending &&
@@ -449,9 +490,9 @@ export function TerminalPanel() {
   const recordSummary = filtersActive
     ? `${visibleEntries.length} / ${entries.length} 条记录`
     : `${entries.length} 条记录`;
-  const exportTerminalLabel = filtersActive ? "导出全部终端记录" : "导出终端记录";
   const clearTerminalLabel = filtersActive ? "清空全部终端记录" : "清空终端";
   const lastVisibleEntryId = visibleEntries.at(-1)?.id;
+  const terminalTimeOrigin = entries.at(0)?.timestamp;
   const rowVirtualizer = useVirtualizer({
     count: visibleEntries.length,
     getScrollElement: () => viewportRef.current,
@@ -461,6 +502,10 @@ export function TerminalPanel() {
     useFlushSync: false,
     anchorTo: "end",
   });
+
+  useEffect(() => {
+    localStorage.setItem(TERMINAL_TIME_MODE_STORAGE_KEY, terminalTimeMode);
+  }, [terminalTimeMode]);
 
   useEffect(() => {
     if (
@@ -483,8 +528,22 @@ export function TerminalPanel() {
   useEffect(() => {
     if (entries.length === 0) {
       setTerminalFollowSuspended(false);
+      setExportOpen(false);
     }
   }, [entries.length]);
+
+  useEffect(() => {
+    if (!exportOpen) {
+      return undefined;
+    }
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!exportControlRef.current?.contains(event.target as Node)) {
+        setExportOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [exportOpen]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -644,6 +703,9 @@ export function TerminalPanel() {
     setMessage(draft.value);
     setSendMode(draft.mode);
     setLineEnding(draft.lineEnding);
+    if (draft.checksumMode !== undefined) {
+      setCommandChecksum(draft.checksumMode);
+    }
     setSendError("");
     setVariablesOpen(false);
   };
@@ -670,7 +732,7 @@ export function TerminalPanel() {
     resetHistoryNavigation();
     setHistoryOpen(false);
     setModbusOpen(false);
-    applyDraft({ value, mode: "hex", lineEnding: "none" });
+    applyDraft({ value, mode: "hex", lineEnding: "none", checksumMode: "none" });
   };
 
   const executeModbusTransaction = (request: ModbusRtuRequest, timeoutMs: number) =>
@@ -698,7 +760,12 @@ export function TerminalPanel() {
       return;
     }
     if (historyCursorRef.current === null) {
-      historyDraftRef.current = { value: message, mode: sendMode, lineEnding };
+      historyDraftRef.current = {
+        value: message,
+        mode: sendMode,
+        lineEnding,
+        checksumMode: commandChecksum,
+      };
     }
     historyCursorRef.current = index;
     applyDraft(entry);
@@ -711,7 +778,12 @@ export function TerminalPanel() {
     const cursor = historyCursorRef.current;
     if (direction === "previous") {
       if (cursor === null) {
-        historyDraftRef.current = { value: message, mode: sendMode, lineEnding };
+        historyDraftRef.current = {
+          value: message,
+          mode: sendMode,
+          lineEnding,
+          checksumMode: commandChecksum,
+        };
         historyCursorRef.current = commandHistory.length - 1;
       } else {
         historyCursorRef.current = Math.max(0, cursor - 1);
@@ -742,7 +814,7 @@ export function TerminalPanel() {
   };
 
   const submit = async () => {
-    if (!hasPayload || templatePreview.error || taskActive || manualSendBlocked) {
+    if (!hasSendableFrame || templatePreview.error || taskActive || manualSendBlocked) {
       return;
     }
     setSendError("");
@@ -816,8 +888,19 @@ export function TerminalPanel() {
     viewportRef.current?.focus({ preventScroll: true });
   };
 
+  const closeExportMenu = (returnFocus: boolean) => {
+    setExportOpen(false);
+    if (returnFocus) {
+      exportTriggerRef.current?.focus({ preventScroll: true });
+    }
+  };
+
   return (
-    <section className="workspace-panel terminal-panel" aria-labelledby="terminal-title">
+    <section
+      id="workspace-terminal-panel"
+      className="workspace-panel terminal-panel"
+      aria-labelledby="terminal-title"
+    >
       <header className="panel-toolbar terminal-toolbar">
         <div className="panel-title-group">
           <TerminalSquare size={17} />
@@ -830,6 +913,7 @@ export function TerminalPanel() {
           <div className="segmented-control compact-segments" role="group" aria-label="接收显示格式">
             <button
               type="button"
+              aria-pressed={displayMode === "text"}
               data-active={displayMode === "text"}
               disabled={isWorkspaceTransitioning}
               onClick={() => setDisplayMode("text")}
@@ -838,6 +922,7 @@ export function TerminalPanel() {
             </button>
             <button
               type="button"
+              aria-pressed={displayMode === "hex"}
               data-active={displayMode === "hex"}
               disabled={isWorkspaceTransitioning}
               onClick={() => setDisplayMode("hex")}
@@ -854,16 +939,42 @@ export function TerminalPanel() {
           >
             {terminalPaused ? <Play size={16} /> : <CirclePause size={16} />}
           </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={exportTerminalLabel}
-            title={exportTerminalLabel}
-            disabled={!entries.length}
-            onClick={() => exportTerminalEntries(entries, displayMode)}
+          <div
+            className="terminal-export-control"
+            ref={exportControlRef}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setExportOpen(false);
+              }
+            }}
           >
-            <Download size={16} />
-          </button>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="导出终端记录"
+              title="导出终端记录"
+              aria-haspopup="menu"
+              aria-controls="terminal-export-menu"
+              aria-expanded={exportOpen}
+              data-active={exportOpen}
+              disabled={!entries.length}
+              ref={exportTriggerRef}
+              onClick={() => setExportOpen((open) => !open)}
+            >
+              <Download size={16} />
+            </button>
+            {exportOpen && (
+              <Suspense fallback={null}>
+                <TerminalExportMenu
+                  allEntries={entries}
+                  currentViewEntries={visibleEntries}
+                  displayMode={displayMode}
+                  filtersActive={filtersActive}
+                  onClose={() => closeExportMenu(true)}
+                />
+              </Suspense>
+            )}
+          </div>
           <button
             className="icon-button"
             type="button"
@@ -998,6 +1109,63 @@ export function TerminalPanel() {
             TX
           </button>
         </div>
+        <div
+          className="segmented-control compact-segments terminal-time-mode"
+          role="group"
+          aria-label="终端时间基准"
+        >
+          {TERMINAL_TIME_MODE_OPTIONS.map((option) => (
+            <button
+              key={option.mode}
+              type="button"
+              data-active={terminalTimeMode === option.mode}
+              aria-pressed={terminalTimeMode === option.mode}
+              aria-label={`${option.label}，${option.description}`}
+              title={option.description}
+              onClick={() => setTerminalTimeMode(option.mode)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <div className="terminal-mobile-filter-selects">
+          <label>
+            <span className="sr-only">终端时间基准</span>
+            <select
+              id="terminal-mobile-time-mode"
+              name="terminal-mobile-time-mode"
+              aria-label="终端时间基准"
+              title="终端时间基准"
+              value={terminalTimeMode}
+              onChange={(event) =>
+                setTerminalTimeMode(event.target.value as TerminalTimeMode)
+              }
+            >
+              {TERMINAL_TIME_MODE_OPTIONS.map((option) => (
+                <option key={option.mode} value={option.mode}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span className="sr-only">终端方向筛选</span>
+            <select
+              id="terminal-mobile-direction-filter"
+              name="terminal-mobile-direction-filter"
+              aria-label="终端方向筛选"
+              title="终端方向筛选"
+              value={directionFilter}
+              onChange={(event) =>
+                setDirectionFilter(event.target.value as TerminalDirectionFilter)
+              }
+            >
+              <option value="all">全部</option>
+              <option value="rx">RX</option>
+              <option value="tx">TX</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       <div className="terminal-log-shell">
@@ -1031,6 +1199,13 @@ export function TerminalPanel() {
                 if (!entry) {
                   return null;
                 }
+                const timeLabel = formatTerminalTime(
+                  entry.timestamp,
+                  terminalTimeMode,
+                  terminalTimeOrigin,
+                  visibleEntries[virtualRow.index - 1]?.timestamp,
+                );
+                const timeDescription = terminalTimeDescription(terminalTimeMode, timeLabel);
                 return (
                   <div
                     key={entry.id}
@@ -1040,7 +1215,14 @@ export function TerminalPanel() {
                     data-index={virtualRow.index}
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
-                    <time>{formatTime(entry.timestamp)}</time>
+                    <time
+                      data-time-mode={terminalTimeMode}
+                      dateTime={terminalTimeDateTime(entry.timestamp)}
+                      aria-label={timeDescription}
+                      title={timeDescription}
+                    >
+                      {timeLabel}
+                    </time>
                     <span className="direction-label">{entry.direction.toUpperCase()}</span>
                     <code>
                       <HighlightedTerminalPayload
@@ -1087,10 +1269,15 @@ export function TerminalPanel() {
         className="send-composer"
         data-workflow-open={workflowVisible}
         onKeyDown={(event) => {
-          if (fileSendOpen && event.key === "Escape") {
+          if (event.key === "Escape" && (fileSendOpen || historyOpen)) {
             event.preventDefault();
-            setFileSendOpen(false);
-            fileSendTriggerRef.current?.focus();
+            if (fileSendOpen) {
+              setFileSendOpen(false);
+              fileSendTriggerRef.current?.focus();
+            } else {
+              setHistoryOpen(false);
+              historyTriggerRef.current?.focus();
+            }
           }
         }}
       >
@@ -1099,6 +1286,7 @@ export function TerminalPanel() {
             <div className="segmented-control compact-segments" role="group" aria-label="发送格式">
               <button
                 type="button"
+                aria-pressed={sendMode === "text"}
                 data-active={sendMode === "text"}
                 disabled={isWorkspaceTransitioning}
                 onClick={() => {
@@ -1112,6 +1300,7 @@ export function TerminalPanel() {
               </button>
               <button
                 type="button"
+                aria-pressed={sendMode === "hex"}
                 data-active={sendMode === "hex"}
                 disabled={isWorkspaceTransitioning}
                 onClick={() => {
@@ -1123,6 +1312,29 @@ export function TerminalPanel() {
               >
                 HEX
               </button>
+            </div>
+            <div className="send-checksum-field">
+              <label className="send-field-caption" htmlFor="send-checksum">
+                校验
+              </label>
+              <select
+                id="send-checksum"
+                name="send-checksum"
+                aria-label="校验"
+                value={commandChecksum}
+                disabled={isWorkspaceTransitioning}
+                onChange={(event) => {
+                  resetHistoryNavigation();
+                  setSendError("");
+                  setCommandChecksum(event.target.value as CommandChecksumMode);
+                }}
+              >
+                {COMMAND_CHECKSUM_MODES.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="send-line-ending-field">
               <label className="send-field-caption" htmlFor="send-line-ending">
@@ -1160,7 +1372,7 @@ export function TerminalPanel() {
               aria-describedby={
                 visibleError
                   ? "command-send-error"
-                  : hasPayload
+                  : hasSendableFrame
                     ? "command-template-summary"
                     : undefined
               }
@@ -1264,6 +1476,7 @@ export function TerminalPanel() {
             <Bookmark size={16} />
           </button>
           <button
+            ref={historyTriggerRef}
             className="icon-button composer-icon-button command-history-trigger"
             type="button"
             aria-label={`命令历史，${commandHistory.length} 条`}
@@ -1319,7 +1532,7 @@ export function TerminalPanel() {
               type="button"
               disabled={
                 connectionStatus !== "connected" ||
-                !hasPayload ||
+                !hasSendableFrame ||
                 Boolean(templatePreview.error) ||
                 isWorkspaceTransitioning ||
                 manualSendBlocked
@@ -1332,14 +1545,17 @@ export function TerminalPanel() {
           )}
         </div>
 
-        {hasPayload && !templatePreview.error && (
+        {hasSendableFrame && !templatePreview.error && (
           <span
             id="command-template-summary"
             className="command-template-summary"
-            data-dynamic={templatePreview.variableCount > 0}
-            aria-label={`命令模板包含 ${templatePreview.variableCount} 个变量，最终 ${templatePreview.byteCount} 字节`}
+            data-dynamic={
+              templatePreview.variableCount > 0 || Boolean(templatePreview.checksumHex)
+            }
+            aria-label={commandTemplateSummaryLabel(templatePreview)}
           >
             {templatePreview.variableCount} 个变量 · {templatePreview.byteCount} B
+            {templatePreview.checksumHex ? ` · 校验 ${templatePreview.checksumHex}` : ""}
           </span>
         )}
 
@@ -1515,6 +1731,7 @@ export function TerminalPanel() {
             >
               <button
                 type="button"
+                aria-pressed={repeatMode === "count"}
                 data-active={repeatMode === "count"}
                 disabled={taskActive}
                 onClick={() => setRepeatMode("count")}
@@ -1523,6 +1740,7 @@ export function TerminalPanel() {
               </button>
               <button
                 type="button"
+                aria-pressed={repeatMode === "continuous"}
                 data-active={repeatMode === "continuous"}
                 disabled={taskActive}
                 onClick={() => setRepeatMode("continuous")}
@@ -1573,54 +1791,22 @@ export function TerminalPanel() {
         )}
 
         {historyOpen && (
-          <div className="command-history-popover" role="dialog" aria-label="命令历史">
-            <div className="command-history-header">
-              <div>
-                <History size={14} />
-                <strong>命令历史</strong>
-                <span>{commandHistory.length}/100</span>
-              </div>
-              <button
-                className="icon-button compact"
-                type="button"
-                aria-label="清空命令历史"
-                title="清空命令历史"
-                onClick={() => {
-                  clearCommandHistory();
-                  resetHistoryNavigation();
-                  setHistoryOpen(false);
-                  textareaRef.current?.focus();
-                }}
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-            <div className="command-history-list">
-              {commandHistory
-                .map((entry, index) => ({ entry, index }))
-                .reverse()
-                .map(({ entry, index }) => (
-                  <button
-                    key={`${entry.sentAt}-${index}`}
-                    type="button"
-                    onClick={() => {
-                      recallHistory(index);
-                      setHistoryOpen(false);
-                      textareaRef.current?.focus();
-                    }}
-                  >
-                    <code>{historyPreview(entry)}</code>
-                    <span>
-                      {entry.mode.toUpperCase()} · {lineEndingLabel(entry.lineEnding)} ·{" "}
-                      {entry.variableCount > 0
-                        ? `最近 ${entry.encodedBytes} B`
-                        : `${entry.encodedBytes} B`}
-                      {entry.repeatCount > 1 ? ` · ×${entry.repeatCount}` : ""}
-                    </span>
-                  </button>
-                ))}
-            </div>
-          </div>
+          <Suspense fallback={null}>
+            <CommandHistoryPopover
+              entries={commandHistory}
+              onRecall={(index) => {
+                recallHistory(index);
+                setHistoryOpen(false);
+                textareaRef.current?.focus();
+              }}
+              onClear={() => {
+                clearCommandHistory();
+                resetHistoryNavigation();
+                setHistoryOpen(false);
+                textareaRef.current?.focus();
+              }}
+            />
+          </Suspense>
         )}
 
         {variablesOpen && (
@@ -1800,6 +1986,7 @@ export function TerminalPanel() {
                     >
                       <button
                         type="button"
+                        aria-pressed={converterDirection === "bytes-to-numbers"}
                         data-active={converterDirection === "bytes-to-numbers"}
                         onClick={() => {
                           setConverterDirection("bytes-to-numbers");
@@ -1810,6 +1997,7 @@ export function TerminalPanel() {
                       </button>
                       <button
                         type="button"
+                        aria-pressed={converterDirection === "numbers-to-bytes"}
                         data-active={converterDirection === "numbers-to-bytes"}
                         onClick={() => {
                           setConverterDirection("numbers-to-bytes");
@@ -1849,6 +2037,7 @@ export function TerminalPanel() {
                       <button
                         type="button"
                         disabled={!converterUsesEndianness}
+                        aria-pressed={converterEndianness === "le"}
                         data-active={converterEndianness === "le"}
                         onClick={() => {
                           setConverterEndianness("le");
@@ -1860,6 +2049,7 @@ export function TerminalPanel() {
                       <button
                         type="button"
                         disabled={!converterUsesEndianness}
+                        aria-pressed={converterEndianness === "be"}
                         data-active={converterEndianness === "be"}
                         onClick={() => {
                           setConverterEndianness("be");
@@ -1983,6 +2173,7 @@ export function TerminalPanel() {
                   >
                     <button
                       type="button"
+                      aria-pressed={checksumInputMode === "text"}
                       data-active={checksumInputMode === "text"}
                       onClick={() => setChecksumInputMode("text")}
                     >
@@ -1990,6 +2181,7 @@ export function TerminalPanel() {
                     </button>
                     <button
                       type="button"
+                      aria-pressed={checksumInputMode === "hex"}
                       data-active={checksumInputMode === "hex"}
                       onClick={() => setChecksumInputMode("hex")}
                     >
@@ -2098,6 +2290,7 @@ function previewCommandTemplate(
   value: string,
   mode: DisplayMode,
   lineEnding: LineEnding,
+  checksumMode: CommandChecksumMode,
 ): CommandTemplatePreview {
   try {
     const template = compileCommandTemplate(value, mode);
@@ -2106,19 +2299,27 @@ function previewCommandTemplate(
       template,
       { sequence: 1, nowMs, taskStartedAtMs: nowMs },
       lineEnding,
+      checksumMode,
     );
     return {
       byteCount: rendered.bytes.length,
       variableCount: rendered.variableCount,
+      checksumHex: formatHex(rendered.checksumBytes),
       error: "",
     };
   } catch (error) {
     return {
       byteCount: 0,
       variableCount: 0,
+      checksumHex: "",
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function commandTemplateSummaryLabel(preview: CommandTemplatePreview): string {
+  const summary = `命令模板包含 ${preview.variableCount} 个变量，最终 ${preview.byteCount} 字节`;
+  return preview.checksumHex ? `${summary}，校验尾 ${preview.checksumHex}` : summary;
 }
 
 function previewChecksum(value: string, mode: ChecksumInputMode): ChecksumPreview {
@@ -2226,53 +2427,19 @@ function formatTaskSummary(task: CommandTaskSnapshot): string {
   return `${task.message} · ${progress}`;
 }
 
-function historyPreview(entry: CommandHistoryEntry): string {
-  const value = entry.value.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
-  return value || `<${lineEndingLabel(entry.lineEnding)}>`;
-}
-
-function lineEndingLabel(lineEnding: LineEnding): string {
-  switch (lineEnding) {
-    case "lf":
-      return "LF";
-    case "cr":
-      return "CR";
-    case "crlf":
-      return "CRLF";
+function terminalTimeDescription(mode: TerminalTimeMode, label: string): string {
+  switch (mode) {
+    case "relative":
+      return `相对缓存起点 ${label}`;
+    case "interval":
+      return label === "--" ? "没有上一条可见记录" : `距上一条可见记录 ${label}`;
     default:
-      return "无行尾";
+      return `绝对时间 ${label}`;
   }
-}
-
-function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    fractionalSecondDigits: 3,
-    hour12: false,
-  }).format(timestamp);
 }
 
 function terminalRxBoundaryLabel(boundary: NonNullable<TerminalEntry["rxBoundary"]>): string {
   return boundary === "overflow"
     ? "未遇接收行尾，已按 2048 字节分段"
     : "记录已在边界处结束，未包含配置的接收行尾";
-}
-
-function exportTerminalEntries(entries: TerminalEntry[], displayMode: DisplayMode): void {
-  const content = entries
-    .map((entry) => {
-      const timestamp = new Date(entry.timestamp).toISOString();
-      const payload = displayMode === "text" ? entry.text : entry.hex;
-      return `${timestamp}\t${entry.direction.toUpperCase()}\t${entry.byteCount}\t${payload}`;
-    })
-    .join("\n");
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `vofa-ultra-${new Date().toISOString().replace(/[:.]/g, "-")}.log`;
-  anchor.click();
-  URL.revokeObjectURL(url);
 }
