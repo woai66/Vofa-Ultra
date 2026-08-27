@@ -842,6 +842,32 @@ test("Windows 最小窗口中连接主操作始终可达", async ({ page }, test
   });
 });
 
+test("波特率可直接输入且常用值始终可选", async ({ page }) => {
+  await installTauriSerialMock(page);
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+
+  const baud_rate = page.getByRole("textbox", { name: "波特率" });
+  const baud_rate_presets = page.getByRole("combobox", { name: "选择常用波特率" });
+
+  await expect(baud_rate).toHaveValue("115200");
+  await expect(baud_rate_presets.locator("option")).toHaveCount(14);
+  await baud_rate_presets.selectOption("9600");
+  await expect(baud_rate).toHaveValue("9600");
+
+  await baud_rate.fill("250000");
+  await baud_rate.hover();
+  await page.mouse.wheel(0, -100);
+  await expect(baud_rate).toHaveValue("250000");
+  await baud_rate.press("Enter");
+
+  await baud_rate.fill("12000001");
+  await expect(baud_rate).toHaveAttribute("aria-invalid", "true");
+  await baud_rate.press("Escape");
+  await expect(baud_rate).toHaveValue("250000");
+  await expect(baud_rate).toHaveAttribute("aria-invalid", "false");
+});
+
 test("终端上滚挂起跟随并可回到最新", async ({ page }) => {
   await page.goto("/");
   const entries = Array.from(
