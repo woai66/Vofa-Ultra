@@ -2760,7 +2760,7 @@ textarea:focus {
 }
 
 .sidebar-toggle {
-  display: none;
+  display: inline-grid;
 }
 
 .workspace-title {
@@ -6562,6 +6562,17 @@ textarea:focus {
 
   .terminal-line {
     grid-template-columns: 106px 28px minmax(0, 1fr) 62px;
+  }
+}
+
+@media (min-width: 981px) {
+  .app-shell[data-sidebar-open="false"] {
+    grid-template-columns: 56px 0 minmax(0, 1fr);
+  }
+
+  .app-shell[data-sidebar-open="false"] .sidebar {
+    visibility: hidden;
+    pointer-events: none;
   }
 }
 

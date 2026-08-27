@@ -247,8 +247,8 @@ export default function App() {
   };
 
   const workspaceContentStyle = {
-    "--workspace-primary-share": `${workspaceSplit}fr`,
-    "--workspace-terminal-share": `${1 - workspaceSplit}fr`,
+    "--workspace-primary-share": `${workspaceSplit * 100}fr`,
+    "--workspace-terminal-share": `${(1 - workspaceSplit) * 100}fr`,
   } as CSSProperties;
   const primaryFocusLabel = `专注${
     workspaceView === "waveform" ? "波形" : workspaceView === "monitor" ? "监视" : "姿态"

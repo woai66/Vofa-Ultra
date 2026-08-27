@@ -152,6 +152,26 @@ describe("App", () => {
     expect(screen.getByText(APP_DISPLAY_VERSION, { selector: ".version-label" })).toBeVisible();
   });
 
+  it("在桌面工作区收起并恢复侧栏", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const shell = document.querySelector(".app-shell");
+    const toggle = screen.getByRole("button", { name: "显示或隐藏侧栏" });
+    expect(shell).toHaveAttribute("data-sidebar-open", "true");
+
+    await user.click(toggle);
+    expect(shell).toHaveAttribute("data-sidebar-open", "false");
+
+    await user.click(toggle);
+    expect(shell).toHaveAttribute("data-sidebar-open", "true");
+
+    await user.click(screen.getByRole("button", { name: /^连接$/ }));
+    expect(shell).toHaveAttribute("data-sidebar-open", "false");
+    await user.click(screen.getByRole("button", { name: /^通道$/ }));
+    expect(shell).toHaveAttribute("data-sidebar-open", "true");
+  });
+
   it("从活动导航打开处理图编辑器", async () => {
     const user = userEvent.setup();
     render(<App />);

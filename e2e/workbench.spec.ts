@@ -688,8 +688,13 @@ test("工作台分栏支持拖拽、键盘、持久化、专注模式和窄屏�
 
 test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离", async ({ page }, testInfo) => {
   const viewports = [
+    { width: 1_440, height: 900 },
+    { width: 1_366, height: 768 },
+    { width: 1_345, height: 768 },
+    { width: 1_344, height: 768 },
     { width: 1_280, height: 800 },
     { width: 1_200, height: 800 },
+    { width: 1_101, height: 680 },
     { width: 1_100, height: 680 },
     { width: 1_024, height: 680 },
   ];
@@ -767,7 +772,7 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
     };
   });
   expect(vertical_layout.composer_bottom).toBeLessThanOrEqual(vertical_layout.panel_bottom + 1);
-  expect(vertical_layout.panel_bottom).toBeLessThanOrEqual(vertical_layout.status_top + 1);
+  expect(Math.abs(vertical_layout.panel_bottom - vertical_layout.status_top)).toBeLessThanOrEqual(1);
   expect(vertical_layout.log_height).toBeGreaterThanOrEqual(20);
   expect(vertical_layout.document_height).toBeLessThanOrEqual(680);
 
@@ -796,6 +801,22 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
   });
   expect(spectrum_layout.overflow).toBeLessThanOrEqual(1);
   expect(spectrum_layout.outside).toEqual([]);
+
+  const workspace_width_before_collapse = await page
+    .locator(".workspace")
+    .evaluate((element) => element.getBoundingClientRect().width);
+  const sidebar_toggle = page.getByRole("button", { name: "显示或隐藏侧栏" });
+  await sidebar_toggle.click();
+  await expect(app_shell).toHaveAttribute("data-sidebar-open", "false");
+  await expect(sidebar).toBeHidden();
+  const workspace_width_after_collapse = await page
+    .locator(".workspace")
+    .evaluate((element) => element.getBoundingClientRect().width);
+  expect(workspace_width_after_collapse).toBeGreaterThan(workspace_width_before_collapse + 200);
+  await sidebar_toggle.click();
+  await expect(app_shell).toHaveAttribute("data-sidebar-open", "true");
+  await expect(sidebar).toBeVisible();
+
   await page.screenshot({
     path: testInfo.outputPath("windows-minimum-responsive-layout.png"),
     fullPage: true,
