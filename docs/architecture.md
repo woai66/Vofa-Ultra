@@ -100,6 +100,11 @@ token；已经进入 `connecting` 时还会推进 generation 并发布 `disconne
 回执并更新工作区配置；迟到回执不会覆盖新连接。硬件流控接管 RTS 时前后端都拒绝手动操作，文件发送和 Modbus
 RTU 事务期间也保持控制线不变。最后一次成功值会同步给恢复协调器，自动重连沿用该值。
 
+同一 worker 每 200 ms 轮询一次 CTS、DSR、RI 和 DCD（CD）。四路读取彼此隔离，单路驱动错误映射为 `null`，不会结束
+串口连接；只有快照变化时才发布 `serial://modem-status`。该事件使用独立 generation 和 revision，前端先订阅事件、
+再读取 `get_serial_modem_status` 快照，并只接受当前连接的递增 revision。输入线状态是会话级只读数据，不进入
+`SerialConfig`、工作区持久化、协议解析、处理图或录制链路。
+
 ## 可控串口恢复与诊断
 
 自动重连由前端恢复协调器管理，默认关闭，只能在当前桌面应用运行期显式启用，不写入工作区或 Zustand 持久化

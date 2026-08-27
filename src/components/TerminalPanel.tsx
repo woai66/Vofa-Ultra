@@ -914,6 +914,7 @@ export function TerminalPanel() {
           <div className="segmented-control compact-segments" role="group" aria-label="接收显示格式">
             <button
               type="button"
+              aria-pressed={displayMode === "text"}
               data-active={displayMode === "text"}
               disabled={isWorkspaceTransitioning}
               onClick={() => setDisplayMode("text")}
@@ -922,6 +923,7 @@ export function TerminalPanel() {
             </button>
             <button
               type="button"
+              aria-pressed={displayMode === "hex"}
               data-active={displayMode === "hex"}
               disabled={isWorkspaceTransitioning}
               onClick={() => setDisplayMode("hex")}
@@ -1280,6 +1282,7 @@ export function TerminalPanel() {
             <div className="segmented-control compact-segments" role="group" aria-label="发送格式">
               <button
                 type="button"
+                aria-pressed={sendMode === "text"}
                 data-active={sendMode === "text"}
                 disabled={isWorkspaceTransitioning}
                 onClick={() => {
@@ -1293,6 +1296,7 @@ export function TerminalPanel() {
               </button>
               <button
                 type="button"
+                aria-pressed={sendMode === "hex"}
                 data-active={sendMode === "hex"}
                 disabled={isWorkspaceTransitioning}
                 onClick={() => {
@@ -1722,6 +1726,7 @@ export function TerminalPanel() {
             >
               <button
                 type="button"
+                aria-pressed={repeatMode === "count"}
                 data-active={repeatMode === "count"}
                 disabled={taskActive}
                 onClick={() => setRepeatMode("count")}
@@ -1730,6 +1735,7 @@ export function TerminalPanel() {
               </button>
               <button
                 type="button"
+                aria-pressed={repeatMode === "continuous"}
                 data-active={repeatMode === "continuous"}
                 disabled={taskActive}
                 onClick={() => setRepeatMode("continuous")}
@@ -2010,6 +2016,7 @@ export function TerminalPanel() {
                     >
                       <button
                         type="button"
+                        aria-pressed={converterDirection === "bytes-to-numbers"}
                         data-active={converterDirection === "bytes-to-numbers"}
                         onClick={() => {
                           setConverterDirection("bytes-to-numbers");
@@ -2020,6 +2027,7 @@ export function TerminalPanel() {
                       </button>
                       <button
                         type="button"
+                        aria-pressed={converterDirection === "numbers-to-bytes"}
                         data-active={converterDirection === "numbers-to-bytes"}
                         onClick={() => {
                           setConverterDirection("numbers-to-bytes");
@@ -2059,6 +2067,7 @@ export function TerminalPanel() {
                       <button
                         type="button"
                         disabled={!converterUsesEndianness}
+                        aria-pressed={converterEndianness === "le"}
                         data-active={converterEndianness === "le"}
                         onClick={() => {
                           setConverterEndianness("le");
@@ -2070,6 +2079,7 @@ export function TerminalPanel() {
                       <button
                         type="button"
                         disabled={!converterUsesEndianness}
+                        aria-pressed={converterEndianness === "be"}
                         data-active={converterEndianness === "be"}
                         onClick={() => {
                           setConverterEndianness("be");
@@ -2193,6 +2203,7 @@ export function TerminalPanel() {
                   >
                     <button
                       type="button"
+                      aria-pressed={checksumInputMode === "text"}
                       data-active={checksumInputMode === "text"}
                       onClick={() => setChecksumInputMode("text")}
                     >
@@ -2200,6 +2211,7 @@ export function TerminalPanel() {
                     </button>
                     <button
                       type="button"
+                      aria-pressed={checksumInputMode === "hex"}
                       data-active={checksumInputMode === "hex"}
                       onClick={() => setChecksumInputMode("hex")}
                     >

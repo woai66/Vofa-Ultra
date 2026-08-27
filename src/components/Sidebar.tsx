@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import {
   Cable,
   Check,
@@ -55,8 +55,11 @@ import type { SidebarPanel } from "./ActivityRail";
 import { CapturePanel } from "./CapturePanel";
 import { AutomationPanel } from "./AutomationPanel";
 import { ProcessingPanel } from "./ProcessingPanel";
-import { ExtensionPanel } from "./ExtensionPanel";
 import { WorkspacePanel } from "./WorkspacePanel";
+
+const ExtensionPanel = lazy(() =>
+  import("./ExtensionPanel").then(({ ExtensionPanel }) => ({ default: ExtensionPanel })),
+);
 
 interface SidebarProps {
   activePanel: SidebarPanel;
@@ -80,7 +83,15 @@ export function Sidebar({ activePanel, theme, onClose, onThemeChange }: SidebarP
       {activePanel === "connection" && <ConnectionPanel />}
       {activePanel === "channels" && <ChannelPanel />}
       {activePanel === "processing" && <ProcessingPanel />}
-      {activePanel === "extensions" && <ExtensionPanel />}
+      {activePanel === "extensions" && (
+        <Suspense
+          fallback={
+            <div className="sidebar-panel" aria-label="加载中" aria-busy="true" />
+          }
+        >
+          <ExtensionPanel />
+        </Suspense>
+      )}
       {activePanel === "automation" && <AutomationPanel />}
       {activePanel === "capture" && <CapturePanel />}
       <div className="workspace-panel-host" hidden={activePanel !== "workspaces"}>
@@ -105,6 +116,7 @@ function ConnectionPanel() {
   const serialControlLineOperation = useWorkbenchStore(
     (state) => state.serialControlLineOperation,
   );
+  const serialModemStatus = useWorkbenchStore((state) => state.serialModemStatus);
   const serialRecovery = useWorkbenchStore((state) => state.serialRecovery);
   const serialFileSendStatus = useWorkbenchStore((state) => state.serialFileSend.status);
   const modbusTransactionStatus = useWorkbenchStore(
@@ -200,6 +212,7 @@ function ConnectionPanel() {
         <div className="segmented-control" role="group" aria-labelledby="data-source-label">
           <button
             type="button"
+            aria-pressed={source === "serial"}
             data-active={source === "serial"}
             disabled={!isNativeRuntime || configDisabled}
             title={isNativeRuntime ? "使用本机串口" : "浏览器预览不可访问串口"}
@@ -209,6 +222,7 @@ function ConnectionPanel() {
           </button>
           <button
             type="button"
+            aria-pressed={source === "simulator"}
             data-active={source === "simulator"}
             disabled={configDisabled}
             onClick={() => void setSource("simulator")}
@@ -399,6 +413,27 @@ function ConnectionPanel() {
               </span>
             )}
           </div>
+
+          {isConnected && (
+            <dl className="modem-status-grid" aria-label="串口输入握手线状态">
+              {(
+                [
+                  ["CTS", serialModemStatus.cts],
+                  ["DSR", serialModemStatus.dsr],
+                  ["RI", serialModemStatus.ri],
+                  ["DCD", serialModemStatus.dcd],
+                ] as const
+              ).map(([line, value]) => (
+                <div className="modem-status-item" data-state={modemLineState(value)} key={line}>
+                  <dt>{line}</dt>
+                  <dd>
+                    <span className="modem-status-dot" aria-hidden="true" />
+                    {modemLineLabel(value)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
         </section>
       )}
 
@@ -538,6 +573,20 @@ function ConnectionPanel() {
       </div>
     </div>
   );
+}
+
+function modemLineState(value: boolean | null): "asserted" | "deasserted" | "unavailable" {
+  if (value === null) {
+    return "unavailable";
+  }
+  return value ? "asserted" : "deasserted";
+}
+
+function modemLineLabel(value: boolean | null): "有效" | "无效" | "不可用" {
+  if (value === null) {
+    return "不可用";
+  }
+  return value ? "有效" : "无效";
 }
 
 function ChannelPanel() {
@@ -987,10 +1036,20 @@ function SettingsPanel({ theme, onThemeChange }: Pick<SidebarProps, "theme" | "o
           role="group"
           aria-labelledby="appearance-label"
         >
-          <button type="button" data-active={theme === "dark"} onClick={() => onThemeChange("dark")}>
+          <button
+            type="button"
+            aria-pressed={theme === "dark"}
+            data-active={theme === "dark"}
+            onClick={() => onThemeChange("dark")}
+          >
             <Moon size={15} /> 深色
           </button>
-          <button type="button" data-active={theme === "light"} onClick={() => onThemeChange("light")}>
+          <button
+            type="button"
+            aria-pressed={theme === "light"}
+            data-active={theme === "light"}
+            onClick={() => onThemeChange("light")}
+          >
             <Sun size={15} /> 浅色
           </button>
         </div>

@@ -6,6 +6,7 @@ import type {
   SerialControlLine,
   SerialDataPayload,
   SerialFileSendPayload,
+  SerialModemStatusPayload,
   SerialModbusTransactionPayload,
   SerialPortInfo,
   SerialStatePayload,
@@ -15,6 +16,7 @@ import type {
 export interface SerialEventHandlers {
   onData(payload: SerialDataPayload): void;
   onState(payload: SerialStatePayload): void;
+  onModemStatus(payload: SerialModemStatusPayload): void;
   onTx(payload: SerialTxPayload): void;
   onFileSend(payload: SerialFileSendPayload): void;
   onModbusTransaction(payload: SerialModbusTransactionPayload): void;
@@ -32,6 +34,11 @@ export async function listSerialPorts(): Promise<SerialPortInfo[]> {
 export async function getSerialState(): Promise<SerialStatePayload> {
   requireTauriRuntime();
   return invoke<SerialStatePayload>("get_serial_state");
+}
+
+export async function getSerialModemStatus(): Promise<SerialModemStatusPayload> {
+  requireTauriRuntime();
+  return invoke<SerialModemStatusPayload>("get_serial_modem_status");
 }
 
 export async function connectSerial(config: SerialConfig): Promise<SerialStatePayload> {
@@ -113,9 +120,12 @@ export async function subscribeToSerialEvents(
     return () => undefined;
   }
 
-  const unlisten = await Promise.all([
+  const results = await Promise.allSettled([
     listen<SerialDataPayload>("serial://data", ({ payload }) => handlers.onData(payload)),
     listen<SerialStatePayload>("serial://state", ({ payload }) => handlers.onState(payload)),
+    listen<SerialModemStatusPayload>("serial://modem-status", ({ payload }) =>
+      handlers.onModemStatus(payload),
+    ),
     listen<SerialTxPayload>("serial://tx", ({ payload }) => handlers.onTx(payload)),
     listen<SerialFileSendPayload>("serial://file-send", ({ payload }) =>
       handlers.onFileSend(payload),
@@ -124,6 +134,14 @@ export async function subscribeToSerialEvents(
       handlers.onModbusTransaction(payload),
     ),
   ]);
+  const unlisten = results.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed?.status === "rejected") {
+    unlisten.forEach((dispose) => dispose());
+    throw failed.reason;
+  }
 
   return () => {
     unlisten.forEach((dispose) => dispose());

@@ -136,6 +136,15 @@ export interface SerialStatePayload {
   revision: number;
 }
 
+export interface SerialModemStatusPayload {
+  generation: number;
+  revision: number;
+  cts: boolean | null;
+  dsr: boolean | null;
+  ri: boolean | null;
+  dcd: boolean | null;
+}
+
 export interface SerialReconnectTarget {
   kind: "usb";
   vendorId: number;

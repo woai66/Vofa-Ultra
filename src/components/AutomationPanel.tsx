@@ -407,6 +407,7 @@ function ModeField({
       <div className="segmented-control" role="group" aria-labelledby={`${id}-label`}>
         <button
           type="button"
+          aria-pressed={value === "text"}
           data-active={value === "text"}
           disabled={disabled}
           onClick={() => onChange("text")}
@@ -415,6 +416,7 @@ function ModeField({
         </button>
         <button
           type="button"
+          aria-pressed={value === "hex"}
           data-active={value === "hex"}
           disabled={disabled}
           onClick={() => onChange("hex")}

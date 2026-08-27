@@ -9,6 +9,7 @@ import {
   subscribeToCaptureExportEvents,
 } from "../services/captureExportClient";
 import {
+  getSerialModemStatus,
   getSerialState,
   getSerialFileSendState,
   isTauriRuntime,
@@ -43,6 +44,7 @@ export function useWorkbenchRuntime(): void {
   const ingestBytes = useWorkbenchStore((state) => state.ingestBytes);
   const handleSerialData = useWorkbenchStore((state) => state.handleSerialData);
   const handleSerialState = useWorkbenchStore((state) => state.handleSerialState);
+  const handleSerialModemStatus = useWorkbenchStore((state) => state.handleSerialModemStatus);
   const handleSerialTx = useWorkbenchStore((state) => state.handleSerialTx);
   const handleSerialFileSend = useWorkbenchStore((state) => state.handleSerialFileSend);
   const handleModbusTransaction = useWorkbenchStore((state) => state.handleModbusTransaction);
@@ -86,6 +88,7 @@ export function useWorkbenchRuntime(): void {
     void subscribeToSerialEvents({
       onData: handleSerialData,
       onState: handleSerialState,
+      onModemStatus: handleSerialModemStatus,
       onTx: handleSerialTx,
       onFileSend: handleSerialFileSend,
       onModbusTransaction: handleModbusTransaction,
@@ -102,9 +105,14 @@ export function useWorkbenchRuntime(): void {
             getSerialState(),
             getSerialFileSendState(),
           ]);
+          if (cancelled) {
+            return;
+          }
+          handleSerialState(snapshot);
+          handleSerialFileSend(fileSendSnapshot);
+          const modemStatus = await getSerialModemStatus();
           if (!cancelled) {
-            handleSerialState(snapshot);
-            handleSerialFileSend(fileSendSnapshot);
+            handleSerialModemStatus(modemStatus);
           }
         }
       })
@@ -125,6 +133,7 @@ export function useWorkbenchRuntime(): void {
   }, [
     handleSerialData,
     handleSerialFileSend,
+    handleSerialModemStatus,
     handleModbusTransaction,
     handleSerialState,
     handleSerialTx,

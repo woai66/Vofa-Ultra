@@ -202,6 +202,7 @@ import type {
   SerialDataPayload,
   SerialDiagnosticsReport,
   SerialFileSendPayload,
+  SerialModemStatusPayload,
   SerialModbusTransactionPayload,
   SerialPortInfo,
   SerialRecoverySnapshot,
@@ -280,6 +281,17 @@ const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   diagnosticEventCount: 0,
   diagnosticDroppedEvents: 0,
 };
+
+function createUnavailableSerialModemStatus(generation = 0): SerialModemStatusPayload {
+  return {
+    generation,
+    revision: 0,
+    cts: null,
+    dsr: null,
+    ri: null,
+    dcd: null,
+  };
+}
 const INITIAL_NATIVE_RUNTIME = isTauriRuntime();
 const INITIAL_WORKSPACE_CONFIG = createDefaultWorkspaceConfig(
   INITIAL_NATIVE_RUNTIME ? "serial" : "simulator",
@@ -365,6 +377,7 @@ export interface WorkbenchStore {
   isRefreshingPorts: boolean;
   serialConfig: SerialConfig;
   serialControlLineOperation: "idle" | SerialControlLine;
+  serialModemStatus: SerialModemStatusPayload;
   serialRecovery: SerialRecoverySnapshot;
   isCancellingSerialConnection: boolean;
   channels: ChannelSeries[];
@@ -512,6 +525,7 @@ export interface WorkbenchStore {
   ingestBytes(bytes: Uint8Array, timestamp?: number): void;
   handleSerialData(payload: SerialDataPayload): void;
   handleSerialState(payload: SerialStatePayload): void;
+  handleSerialModemStatus(payload: SerialModemStatusPayload): void;
   handleSerialTx(payload: SerialTxPayload): void;
   handleSerialFileSend(payload: SerialFileSendPayload): void;
   handleModbusTransaction(payload: SerialModbusTransactionPayload): void;
@@ -622,6 +636,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       isRefreshingPorts: false,
       serialConfig: { ...INITIAL_WORKSPACE_CONFIG.serialConfig },
       serialControlLineOperation: "idle",
+      serialModemStatus: createUnavailableSerialModemStatus(),
       serialRecovery: { ...INITIAL_SERIAL_RECOVERY },
       isCancellingSerialConnection: false,
       channels: [],
@@ -1032,6 +1047,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           waveformTrigger: availabilityChanged
             ? createIdleWaveformTriggerState()
             : latest.waveformTrigger,
+          serialModemStatus: availabilityChanged
+            ? createUnavailableSerialModemStatus(latest.serialGeneration)
+            : latest.serialModemStatus,
           terminalEntries,
           statusMessage: nativeRuntime
             ? latest.statusMessage
@@ -1083,6 +1101,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             protocolHealth: protocolParser.getHealthSnapshot(),
             terminalEntries,
             connectionStatus: "disconnected",
+            serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
             statusMessage: source === "serial" ? "选择设备后连接" : "模拟数据源已就绪",
           }));
         } finally {
@@ -1265,6 +1284,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               isRefreshingPorts: false,
               connectionStatus: "error",
               statusMessage: getErrorMessage(error),
+              serialModemStatus: createUnavailableSerialModemStatus(
+                get().serialGeneration,
+              ),
               waveformTrigger: createIdleWaveformTriggerState(),
             });
           }
@@ -1316,6 +1338,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             set({
               connectionStatus: "connected",
               statusMessage: "模拟数据正在运行",
+              serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
               stats: { ...emptyStats(), startedAt: Date.now() },
               protocolHealth: protocolParser.getHealthSnapshot(),
               waveformTrigger: createIdleWaveformTriggerState(),
@@ -1327,6 +1350,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             set({
               connectionStatus: "error",
               statusMessage: "请先选择串口设备",
+              serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
               waveformTrigger: createIdleWaveformTriggerState(),
             });
             return;
@@ -1344,6 +1368,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           set({
             connectionStatus: "connecting",
             statusMessage: `正在打开 ${state.serialConfig.portName}`,
+            serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
             protocolHealth: protocolParser.getHealthSnapshot(),
             waveformTrigger: createIdleWaveformTriggerState(),
             terminalEntries,
@@ -1363,6 +1388,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               set({
                 connectionStatus: "error",
                 statusMessage: getErrorMessage(error),
+                serialModemStatus: createUnavailableSerialModemStatus(
+                  get().serialGeneration,
+                ),
                 waveformTrigger: createIdleWaveformTriggerState(),
               });
             }
@@ -1861,6 +1889,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         ) {
           return;
         }
+        const serialModemStatus =
+          payload.status === "connected" &&
+          payload.generation === state.serialModemStatus.generation
+            ? state.serialModemStatus
+            : createUnavailableSerialModemStatus(payload.generation);
         if (payload.status !== "connected") {
           serialControlLineOperation += 1;
           if (
@@ -1903,6 +1936,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             serialStateRevision: payload.revision,
             statusMessage: payload.message ?? "串口发生未知错误",
             serialControlLineOperation: "idle",
+            serialModemStatus,
             waveformTrigger: createIdleWaveformTriggerState(),
             terminalEntries: terminalEntries ?? state.terminalEntries,
           });
@@ -1923,6 +1957,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             payload.message ?? serialStatusMessage(payload.status, payload.portName),
           serialControlLineOperation:
             payload.status === "connected" ? state.serialControlLineOperation : "idle",
+          serialModemStatus,
           waveformTrigger:
             payload.status === state.connectionStatus &&
             payload.generation === state.serialGeneration
@@ -1934,6 +1969,22 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (payload.status === "disconnected" && hasRecordingToStop(state)) {
           void stopCurrentRecordings(get, set);
         }
+      },
+
+      handleSerialModemStatus: (payload) => {
+        set((state) => {
+          if (
+            hasReplaySession(state) ||
+            state.source !== "serial" ||
+            state.connectionStatus !== "connected" ||
+            payload.generation !== state.serialGeneration ||
+            payload.generation !== state.serialModemStatus.generation ||
+            payload.revision <= state.serialModemStatus.revision
+          ) {
+            return state;
+          }
+          return { serialModemStatus: payload };
+        });
       },
 
       handleSerialTx: (payload) => {
@@ -3433,6 +3484,7 @@ export function disposeWorkbenchRuntime(): void {
   useWorkbenchStore.setState({
     attitudeSample: null,
     serialControlLineOperation: "idle",
+    serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
     waveformTrigger: createIdleWaveformTriggerState(),
     processingStatus: liveProcessingRuntime.getSnapshot(),
     protocolHealth: protocolParser.getHealthSnapshot(),
@@ -4467,6 +4519,7 @@ function applyCancelledSerialState(payload: SerialStatePayload): void {
       serialGeneration: payload.generation,
       serialStateRevision: payload.revision,
       statusMessage: payload.message ?? serialStatusMessage(payload.status, payload.portName),
+      serialModemStatus: createUnavailableSerialModemStatus(payload.generation),
       runtimeTransitionStatus:
         state.runtimeTransitionStatus === "connecting"
           ? "idle"
@@ -4491,6 +4544,7 @@ async function disconnectCurrentSource(
     set({
       connectionStatus: "disconnected",
       statusMessage: "模拟数据已停止",
+      serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
       waveformTrigger: createIdleWaveformTriggerState(),
       terminalEntries,
     });
@@ -4505,6 +4559,7 @@ async function disconnectCurrentSource(
     set({
       connectionStatus: "error",
       statusMessage: getErrorMessage(error),
+      serialModemStatus: createUnavailableSerialModemStatus(get().serialGeneration),
       waveformTrigger: createIdleWaveformTriggerState(),
     });
     return false;
@@ -4586,6 +4641,7 @@ async function applyWorkspaceSnapshot(
     stats: emptyStats(),
     protocolHealth: protocolParser.getHealthSnapshot(),
     connectionStatus: "disconnected",
+    serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
     statusMessage: usesBrowserFallback
       ? `“${latestTarget.name}”需要串口，浏览器预览已改用模拟器`
       : `工作区“${latestTarget.name}”已应用`,
