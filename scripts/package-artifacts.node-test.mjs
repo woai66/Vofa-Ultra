@@ -14,6 +14,7 @@ import {
   parse_verbose_tool_version,
   pnpm_version_from_user_agent,
   serialize_build_environment,
+  validate_collect_target,
   validate_repository_metadata,
 } from "./package-artifacts.mjs";
 
@@ -146,6 +147,21 @@ test("accepts canonical public repository metadata", () => {
     metadata.tauri_config,
     metadata.cargo_package,
   ));
+});
+
+test("accepts only the Windows x64 Beta package target", () => {
+  assert.doesNotThrow(() => validate_collect_target(
+    "windows",
+    BUILD_PLATFORMS.windows.target_triple,
+  ));
+  assert.throws(
+    () => validate_collect_target("windows", "aarch64-pc-windows-msvc"),
+    /Windows Beta packages require target x86_64-pc-windows-msvc/,
+  );
+  assert.throws(
+    () => validate_collect_target("linux", BUILD_PLATFORMS.linux.target_triple),
+    /Windows Beta packages require target x86_64-pc-windows-msvc/,
+  );
 });
 
 test("rejects npm repository type, owner, or name drift", () => {

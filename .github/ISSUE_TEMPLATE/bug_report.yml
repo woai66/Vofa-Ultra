@@ -42,9 +42,8 @@ body:
     attributes:
       label: 操作系统
       options:
-        - Windows
-        - macOS
-        - Linux
+        - Windows 11 x64
+        - Windows 10 x64
         - 浏览器预览
     validations:
       required: true

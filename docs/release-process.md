@@ -29,20 +29,22 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 ## 3. 构建候选包
 
-只在对应目标系统构建该平台的无签名候选包。具体命令见 [README](../README.md#本地无签名候选包)。
+首个 Beta 只在 Windows 10/11 x64 构建一个无签名 NSIS `.exe` 候选包。具体命令见
+[README](../README.md#本地无签名-windows-候选包)。
 
 构建后至少确认：
 
 - 安装包能安装、启动和卸载。
 - 模拟数据、真实串口、录制、回放和导出能完成基本冒烟。
 - `SHA256SUMS`、SBOM、第三方许可证材料和实际文件一致。
-- Windows 与 macOS 候选包若未签名或未公证，必须明确标记，不作为稳定版本发布。
+- 候选包未经代码签名，必须明确标记为 Windows Beta 测试包，不作为稳定版本发布。
 
 ## 4. 创建 GitHub 草稿 Release
 
-1. 创建与项目版本一致的 annotated tag，例如 `v0.1.0`。
-2. 在 GitHub 手动创建 Draft Release。
-3. 上传已人工验证的候选包、校验值和必要的许可证材料。
+1. 创建与项目版本一致的 annotated tag，例如 `v0.1.0-beta.1`。
+2. 在 GitHub 手动创建 Draft Prerelease。
+3. 只上传已人工验证的 Windows x64 `.exe`；SHA-256 写入 Release 正文，供应链与许可证材料留作本地复验记录。
 4. 在草稿中记录测试系统、串口硬件、已完成检查和已知限制。
 
-未完成跨平台安装、真实硬件、签名或公证验证时，只保留草稿或明确标记为预发布，不发布为稳定版本。
+未完成 Windows 安装/启动/卸载、真实硬件和核心工作流验证时，只保留草稿，不发布 Beta；首个 Beta 未签名，
+必须始终标记为预发布版本。

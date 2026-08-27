@@ -32,8 +32,6 @@ body:
       label: 运行环境
       options:
         - Windows 桌面应用
-        - macOS 桌面应用
-        - Linux 桌面应用
         - 浏览器预览
         - 尚未运行应用
     validations:

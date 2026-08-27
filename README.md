@@ -1,6 +1,6 @@
 # Vofa-Ultra
 
-面向嵌入式调试与实时数据采集的现代化跨平台串口工作台。
+面向 STM32、ESP32 等嵌入式开发者的现代化 Windows 串口与实时波形工作台。
 
 Vofa-Ultra 学习 VOFA+ 与
 [vofa-NEXT](https://github.com/Horldsence/vofa-NEXT) 的产品思路，但采用独立实现。项目优先保证串口
@@ -104,24 +104,17 @@ pnpm tauri dev
 仓库已提交 `src-tauri/Cargo.lock`，桌面构建应使用锁定依赖。正式发布前仍需在目标平台完成真实串口连接、
 收发、拔插和重连验证。
 
-### 本地无签名候选包
+### 本地无签名 Windows 候选包
 
-项目当前不会在 push、PR 或版本标签上自动构建和发布。需要候选包时，维护者在对应目标系统手动运行以下命令。
-这些产物未经代码签名、公证、跨平台安装和真实串口验证，不应作为稳定版本发布。供应链材料的生成范围见
+项目当前不会在 push、PR 或版本标签上自动构建和发布。首个 Beta 只支持 Windows 10/11 x64，并只生成一个
+未签名的 NSIS `.exe` 测试安装包。该产物未经代码签名和完整真实串口验证，不应作为稳定版本发布。供应链材料见
 [供应链发布说明](docs/supply-chain.md)；人工发布步骤见[发布流程](docs/release-process.md)。
 
 ```bash
 pnpm check:package
-# Windows
 pnpm supply-chain:check x86_64-pc-windows-msvc
-pnpm tauri build --ci --no-sign --target x86_64-pc-windows-msvc --bundles "msi,nsis"
+pnpm tauri build --ci --no-sign --target x86_64-pc-windows-msvc --bundles nsis
 pnpm package:collect windows x86_64-pc-windows-msvc
-# macOS
-pnpm tauri build --ci --no-sign --target x86_64-apple-darwin --bundles dmg
-pnpm package:collect macos x86_64-apple-darwin
-# Linux
-pnpm tauri build --ci --no-sign --target x86_64-unknown-linux-gnu --bundles "deb,appimage"
-pnpm package:collect linux x86_64-unknown-linux-gnu
 ```
 
 ## 协议输入

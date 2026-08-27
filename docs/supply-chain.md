@@ -1,7 +1,7 @@
 # 供应链发布说明
 
-Vofa-Ultra 可在本地为每个桌面目标生成独立的软件物料清单和第三方许可证材料。项目当前不使用线上构建或自动
-聚合资产，候选包及其校验材料由维护者在目标系统生成并人工核对。
+Vofa-Ultra 当前在本地为 Windows x64 目标生成软件物料清单和第三方许可证材料。项目不使用线上构建或自动
+聚合资产，首个 Beta 的 NSIS 候选包及其校验材料由维护者在 Windows 上生成并人工核对。
 
 ## 输入与范围
 
@@ -53,16 +53,15 @@ CycloneDX Schema、完整 target、项目元数据、输入摘要、精确 NOTIC
 不能用裸 `tauri build` 或 `cargo build` 绕过。
 
 复制安装包前，`package:collect` 会扫描同一 release 目录中的裸主程序，拒绝项目目录或 Cargo Home 的解析路径、
-真实路径、正反斜杠变体及 UTF-8/UTF-16LE 表示。检查会扫描未压缩的可执行文件，不把 MSI、NSIS、DMG、DEB 或
-AppImage 的外层压缩视为脱敏；错误也不会回显命中的本机路径。这项检查防止 Rust panic/source-location 字符串泄露
+真实路径、正反斜杠变体及 UTF-8/UTF-16LE 表示。检查会扫描未压缩的可执行文件，不把 NSIS 安装包的外层压缩
+视为脱敏；错误也不会回显命中的本机路径。这项检查防止 Rust panic/source-location 字符串泄露
 构建者目录，但不等同于任意隐私数据扫描，也不使安装包自动可复现。
 
-每次非 debug 的 `pnpm tauri build` 开始前，包装层只清理本次 target 的生成型 `release/bundle` 目录。所有平台格式
-必须在同一次命令中生成；缺少任一预期格式时，收集器会拒绝继续。这能阻止不同构建轮次的旧安装包混入候选目录，
+每次非 debug 的 `pnpm tauri build` 开始前，包装层只清理本次 target 的生成型 `release/bundle` 目录。Windows
+Beta 只接受本轮生成的 NSIS `.exe`；缺少该文件时，收集器会拒绝继续。这能阻止旧安装包混入候选目录，
 但不能证明压缩安装包内的主程序与当前裸主程序完全一致。
 
-未来的线上发布方案可在三个平台分别生成 provenance，再复验并聚合当前版本的资产。该方案当前未实现，也不能
-替代签名、公证、安装或真实串口验收；设计草案见[发布流程](release-process.md)。
+未来是否恢复线上构建或其他平台发布，等待 Windows 版本稳定后再独立评估；它们不属于首个 Beta 的发布门槛。
 
 ## 许可证策略
 
@@ -100,6 +99,6 @@ pnpm supply-chain:generate artifacts/supply-chain/windows x86_64-pc-windows-msvc
 必须传同一 target，例如：
 
 ```bash
-pnpm tauri build --ci --no-sign --target x86_64-pc-windows-msvc --bundles "msi,nsis"
+pnpm tauri build --ci --no-sign --target x86_64-pc-windows-msvc --bundles nsis
 pnpm package:collect windows x86_64-pc-windows-msvc
 ```
