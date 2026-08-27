@@ -1554,6 +1554,31 @@ describe("TerminalPanel", () => {
     ).toEqual([]);
   });
 
+  it("拒绝会被静默改写的 HEX 输入并禁用空字节帧", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const input = screen.getByRole("textbox", { name: "发送内容" });
+    const send = screen.getByRole("button", { name: "发送" });
+
+    await user.click(
+      within(screen.getByRole("group", { name: "发送格式" })).getByRole("button", {
+        name: "HEX",
+      }),
+    );
+    for (const malformed of ["10x2", "A0xB", "1 2", "0x1 0x2"]) {
+      fireEvent.change(input, { target: { value: malformed } });
+      expect(input).toHaveAttribute("aria-invalid", "true");
+      expect(screen.getByRole("alert")).toBeVisible();
+      expect(send).toBeDisabled();
+    }
+
+    fireEvent.change(input, { target: { value: " , ; : _ - " } });
+    expect(input).toHaveAttribute("aria-invalid", "false");
+    expect(send).toBeDisabled();
+    expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
+  });
+
   it("空输入选择 CR 后允许启动仅行尾的周期任务", async () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);

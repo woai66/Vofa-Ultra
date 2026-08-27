@@ -418,7 +418,7 @@ export function TerminalPanel() {
   );
   const [terminalFollowSuspended, setTerminalFollowSuspended] = useState(false);
   const hasPayload = message.length > 0 || lineEnding !== "none";
-  const hasSendableFrame = hasPayload || commandChecksum !== "none";
+  const hasFrameInput = hasPayload || commandChecksum !== "none";
   const txTextEncodingReady =
     sendMode === "hex" || loadedTxTextEncoding === terminalTxTextEncoding;
   const templatePreview = useMemo(() => {
@@ -447,6 +447,7 @@ export function TerminalPanel() {
     txTextEncodingLoadError,
     txTextEncodingReady,
   ]);
+  const hasSendableFrame = templatePreview.byteCount > 0;
   const availableVariables = useMemo(
     () => COMMAND_VARIABLE_INSERTIONS.filter((item) => item.mode === sendMode),
     [sendMode],
@@ -1540,7 +1541,7 @@ export function TerminalPanel() {
               aria-describedby={
                 visibleError
                   ? "command-send-error"
-                  : hasSendableFrame
+                  : hasFrameInput
                     ? "command-template-summary"
                     : undefined
               }
@@ -1716,13 +1717,13 @@ export function TerminalPanel() {
           )}
         </div>
 
-        {hasSendableFrame && templatePreview.loading && (
+        {hasFrameInput && templatePreview.loading && (
           <span className="command-template-summary" role="status">
             正在加载 {textEncodingLabel(terminalTxTextEncoding)} 编码器
           </span>
         )}
 
-        {hasSendableFrame && !templatePreview.error && !templatePreview.loading && (
+        {hasFrameInput && !templatePreview.error && !templatePreview.loading && (
           <span
             id="command-template-summary"
             className="command-template-summary"
