@@ -297,14 +297,24 @@ test("状态栏显示当前双向吞吐并在空闲后归零", async ({ page }) 
     stats: { rxBytes: 4_096, txBytes: 2_048, rxFrames: 2, startedAt },
   });
   await expect
-    .poll(async () => (await rate.textContent()) ?? "", { timeout: 2_500 })
-    .not.toContain("RX 0 B/s");
-  await expect(rate).not.toContainText("TX 0 B/s");
+    .poll(async () => {
+      const text = (await rate.textContent()) ?? "";
+      return {
+        rxActive: !text.includes("RX 0 B/s"),
+        txActive: !text.includes("TX 0 B/s"),
+      };
+    }, { intervals: [50], timeout: 2_500 })
+    .toEqual({ rxActive: true, txActive: true });
 
   await expect
-    .poll(async () => (await rate.textContent()) ?? "", { timeout: 2_500 })
-    .toContain("RX 0 B/s");
-  await expect(rate).toContainText("TX 0 B/s");
+    .poll(async () => {
+      const text = (await rate.textContent()) ?? "";
+      return {
+        rxIdle: text.includes("RX 0 B/s"),
+        txIdle: text.includes("TX 0 B/s"),
+      };
+    }, { intervals: [50], timeout: 2_500 })
+    .toEqual({ rxIdle: true, txIdle: true });
 
   await page.setViewportSize({ width: 320, height: 568 });
   await expect(rate).toHaveAttribute("aria-label", /RX 0 B\/s，TX 0 B\/s/);
