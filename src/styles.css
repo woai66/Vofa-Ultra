@@ -923,6 +923,21 @@ textarea:disabled {
   font-weight: 600;
 }
 
+.baud-rate-custom-field {
+  display: grid;
+  gap: 6px;
+}
+
+.baud-rate-custom-field input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.baud-rate-custom-field .field-hint {
+  color: var(--text-subtle);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .field-row-heading {
   display: flex;
   align-items: center;
