@@ -55,6 +55,7 @@ import {
   disconnectSerial,
   listSerialPorts,
   sendSerial,
+  setSerialControlLine,
   startSerialFileSend,
   startSerialModbusTransaction,
 } from "../services/serialClient";
@@ -96,6 +97,7 @@ vi.mock("../services/serialClient", async (importOriginal) => {
     disconnectSerial: vi.fn(),
     listSerialPorts: vi.fn(),
     sendSerial: vi.fn(),
+    setSerialControlLine: vi.fn(),
     startSerialFileSend: vi.fn(),
     startSerialModbusTransaction: vi.fn(),
   };
@@ -149,6 +151,7 @@ const connectSerialMock = vi.mocked(connectSerial);
 const disconnectSerialMock = vi.mocked(disconnectSerial);
 const listSerialPortsMock = vi.mocked(listSerialPorts);
 const sendSerialMock = vi.mocked(sendSerial);
+const setSerialControlLineMock = vi.mocked(setSerialControlLine);
 const startSerialFileSendMock = vi.mocked(startSerialFileSend);
 const startSerialModbusTransactionMock = vi.mocked(startSerialModbusTransaction);
 const enqueueSimulatorCaptureMock = vi.mocked(enqueueSimulatorCapture);
@@ -350,6 +353,7 @@ describe("workbenchStore", () => {
     });
     listSerialPortsMock.mockReset();
     sendSerialMock.mockReset().mockResolvedValue(undefined);
+    setSerialControlLineMock.mockReset().mockResolvedValue(undefined);
     startSerialFileSendMock.mockReset();
     startSerialModbusTransactionMock.mockReset().mockResolvedValue(undefined);
     enqueueSimulatorCaptureMock.mockReset().mockReturnValue(true);
@@ -391,6 +395,15 @@ describe("workbenchStore", () => {
       statusMessage: "等待连接",
       ports: [],
       isRefreshingPorts: false,
+      serialControlLineOperation: "idle",
+      serialModemStatus: {
+        generation: 0,
+        revision: 0,
+        cts: null,
+        dsr: null,
+        ri: null,
+        dcd: null,
+      },
       serialRecovery: {
         enabled: false,
         phase: "off",
@@ -1904,6 +1917,104 @@ describe("workbenchStore", () => {
       connectionStatus: "error",
       serialStateRevision: 11,
       statusMessage: "设备已移除",
+    });
+  });
+
+  it("输入握手线只接受当前连接递增修订，并在换代时重新开始", () => {
+    useWorkbenchStore.setState({
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialStateRevision: 2,
+      serialModemStatus: {
+        generation: 7,
+        revision: 0,
+        cts: null,
+        dsr: null,
+        ri: null,
+        dcd: null,
+      },
+    });
+
+    useWorkbenchStore.getState().handleSerialModemStatus({
+      generation: 6,
+      revision: 8,
+      cts: true,
+      dsr: true,
+      ri: true,
+      dcd: true,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus.revision).toBe(0);
+
+    const first = {
+      generation: 7,
+      revision: 1,
+      cts: true,
+      dsr: false,
+      ri: null,
+      dcd: true,
+    } as const;
+    useWorkbenchStore.getState().handleSerialModemStatus(first);
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual(first);
+
+    useWorkbenchStore.getState().handleSerialModemStatus({
+      ...first,
+      cts: false,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual(first);
+
+    const second = { ...first, revision: 2, cts: false };
+    useWorkbenchStore.getState().handleSerialModemStatus(second);
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual(second);
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "disconnected",
+      portName: "COM3",
+      generation: 7,
+      revision: 3,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual({
+      generation: 7,
+      revision: 0,
+      cts: null,
+      dsr: null,
+      ri: null,
+      dcd: null,
+    });
+
+    useWorkbenchStore.getState().handleSerialModemStatus({ ...second, revision: 3 });
+    expect(useWorkbenchStore.getState().serialModemStatus.revision).toBe(0);
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connected",
+      portName: "COM3",
+      generation: 8,
+      revision: 4,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus).toMatchObject({
+      generation: 8,
+      revision: 0,
+    });
+
+    const reconnected = { ...first, generation: 8, revision: 1, dcd: false };
+    useWorkbenchStore.getState().handleSerialModemStatus(reconnected);
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual(reconnected);
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "error",
+      portName: "COM3",
+      message: "设备已移除",
+      errorCode: "read-failed",
+      generation: 8,
+      revision: 5,
+    });
+    expect(useWorkbenchStore.getState().serialModemStatus).toEqual({
+      generation: 8,
+      revision: 0,
+      cts: null,
+      dsr: null,
+      ri: null,
+      dcd: null,
     });
   });
 
@@ -3957,6 +4068,282 @@ describe("workbenchStore", () => {
       ports: [{ name: "COM7", kind: "usb" }],
       serialConfig: { portName: "COM7" },
     });
+  });
+
+  it("后台刷新自然排序并保留暂时离线的当前端口和状态消息", async () => {
+    listSerialPortsMock.mockResolvedValue([
+      { name: "COM10", kind: "usb", product: "Adapter B" },
+      { name: "COM2", kind: "usb", product: "Adapter A" },
+    ]);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      statusMessage: "等待连接",
+      serialConfig: { ...state.serialConfig, portName: "COM9" },
+    }));
+
+    await useWorkbenchStore.getState().refreshPorts("background");
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      ports: [{ name: "COM2" }, { name: "COM10" }],
+      serialConfig: { portName: "COM9" },
+      statusMessage: "等待连接",
+      connectionStatus: "disconnected",
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("后台枚举失败不覆盖连接状态和用户消息", async () => {
+    listSerialPortsMock.mockRejectedValue(new Error("驱动暂时不可用"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "error",
+      statusMessage: "COM7 打开失败",
+    });
+
+    await useWorkbenchStore.getState().refreshPorts("background");
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "error",
+      statusMessage: "COM7 打开失败",
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("后台枚举完成前生命周期变化后即使回到空闲也丢弃迟到结果", async () => {
+    let resolvePorts: ((ports: SerialPortInfo[]) => void) | undefined;
+    listSerialPortsMock.mockImplementation(
+      () => new Promise((resolve) => {
+        resolvePorts = resolve;
+      }),
+    );
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      serialStateRevision: 5,
+      statusMessage: "等待连接",
+      ports: [{ name: "COM7", kind: "usb" }],
+      serialConfig: { ...state.serialConfig, portName: "COM7" },
+    }));
+
+    const refresh = useWorkbenchStore.getState().refreshPorts("background");
+    useWorkbenchStore.setState({
+      connectionStatus: "connecting",
+      serialStateRevision: 6,
+      statusMessage: "正在连接 COM7",
+    });
+    useWorkbenchStore.setState({
+      connectionStatus: "disconnected",
+      serialStateRevision: 7,
+      statusMessage: "连接已取消",
+    });
+    resolvePorts?.([{ name: "COM8", kind: "usb" }]);
+    await refresh;
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      ports: [{ name: "COM7" }],
+      serialConfig: { portName: "COM7" },
+      connectionStatus: "disconnected",
+      serialStateRevision: 7,
+      statusMessage: "连接已取消",
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("后台刷新只在桌面串口空闲状态启动", async () => {
+    listSerialPortsMock.mockResolvedValue([{ name: "COM7", kind: "usb" }]);
+    useWorkbenchStore.setState({ isNativeRuntime: true, source: "simulator" });
+    await useWorkbenchStore.getState().refreshPorts("background");
+    useWorkbenchStore.setState({ source: "serial", connectionStatus: "connected" });
+    await useWorkbenchStore.getState().refreshPorts("background");
+
+    expect(listSerialPortsMock).not.toHaveBeenCalled();
+  });
+
+  it("驱动确认后更新运行时 DTR 并结束忙碌状态", async () => {
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      statusMessage: "COM7 已连接",
+      serialConfig: { ...state.serialConfig, portName: "COM7", dtr: true },
+    }));
+
+    await expect(useWorkbenchStore.getState().setSerialControlLine("dtr", false)).resolves.toBe(
+      true,
+    );
+
+    expect(setSerialControlLineMock).toHaveBeenCalledWith(7, "dtr", false);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      serialConfig: { dtr: false },
+      serialControlLineOperation: "idle",
+      statusMessage: "DTR 已设为无效",
+      connectionStatus: "connected",
+    });
+  });
+
+  it("控制线失败时保留原值并只记录有界错误码", async () => {
+    setSerialControlLineMock.mockRejectedValue({
+      errorCode: "rts-failed",
+      message: "驱动拒绝请求",
+    });
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialConfig: { ...state.serialConfig, rts: false },
+    }));
+
+    await expect(useWorkbenchStore.getState().setSerialControlLine("rts", true)).resolves.toBe(
+      false,
+    );
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      serialConfig: { rts: false },
+      serialControlLineOperation: "idle",
+      statusMessage: "设置 RTS 失败：驱动拒绝请求",
+      connectionStatus: "connected",
+    });
+    const events = useWorkbenchStore.getState().getSerialDiagnostics().events;
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: "control_line_failed",
+        generation: 7,
+        errorCode: "rts-failed",
+        outcome: "rts",
+      }),
+    );
+
+    setSerialControlLineMock.mockRejectedValueOnce({
+      errorCode: "path:C:\\private",
+      message: "另一次失败",
+    });
+    await expect(useWorkbenchStore.getState().setSerialControlLine("dtr", false)).resolves.toBe(
+      false,
+    );
+    const sanitizedEvents = useWorkbenchStore.getState().getSerialDiagnostics().events;
+    expect(sanitizedEvents).toContainEqual(
+      expect.objectContaining({
+        kind: "control_line_failed",
+        errorCode: "unknown",
+        outcome: "dtr",
+      }),
+    );
+    expect(JSON.stringify(sanitizedEvents)).not.toContain("private");
+    expect(JSON.stringify(sanitizedEvents)).not.toContain("另一次失败");
+  });
+
+  it("控制线请求在连接代次变化后丢弃迟到成功", async () => {
+    const control = deferred<void>();
+    setSerialControlLineMock.mockReturnValue(control.promise);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialConfig: { ...state.serialConfig, dtr: true },
+    }));
+
+    const pending = useWorkbenchStore.getState().setSerialControlLine("dtr", false);
+    expect(useWorkbenchStore.getState().serialControlLineOperation).toBe("dtr");
+    useWorkbenchStore.setState({ serialGeneration: 8, statusMessage: "新连接已建立" });
+    control.resolve(undefined);
+
+    await expect(pending).resolves.toBe(false);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      serialConfig: { dtr: true },
+      serialControlLineOperation: "idle",
+      statusMessage: "新连接已建立",
+    });
+  });
+
+  it("硬件流控和在途操作阻止并发控制线请求", async () => {
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialConfig: { ...state.serialConfig, flowControl: "hardware" },
+    }));
+
+    await expect(useWorkbenchStore.getState().setSerialControlLine("rts", false)).resolves.toBe(
+      false,
+    );
+    expect(setSerialControlLineMock).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState().statusMessage).toBe(
+      "硬件流控已接管 RTS，无法手动设置",
+    );
+
+    const control = deferred<void>();
+    setSerialControlLineMock.mockReturnValue(control.promise);
+    useWorkbenchStore.setState((state) => ({
+      serialConfig: { ...state.serialConfig, flowControl: "none" },
+    }));
+    const first = useWorkbenchStore.getState().setSerialControlLine("dtr", false);
+    await expect(useWorkbenchStore.getState().setSerialControlLine("rts", false)).resolves.toBe(
+      false,
+    );
+    expect(setSerialControlLineMock).toHaveBeenCalledTimes(1);
+    control.resolve(undefined);
+    await expect(first).resolves.toBe(true);
+  });
+
+  it("控制线操作完成前不启动依赖稳定串口状态的任务", async () => {
+    startCaptureMock.mockResolvedValue({
+      status: "recording",
+      sessionId: 7,
+      revision: 1,
+      formatVersion: 2,
+      path: "C:\\captures\\session.vucap",
+      startedAtUnixMs: 1_000,
+      dataBytes: 0,
+      recordCount: 0,
+      markerCount: 0,
+    });
+    startNumericLogMock.mockResolvedValue(numericLogState("recording"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      protocol: "firewater",
+      serialControlLineOperation: "dtr",
+    });
+
+    await expect(useWorkbenchStore.getState().startCapture()).resolves.toBe(false);
+    await expect(useWorkbenchStore.getState().startNumericLog()).resolves.toBe(false);
+    await expect(
+      useWorkbenchStore.getState().send("PING", "text", "none"),
+    ).rejects.toThrow("串口控制线操作进行中");
+    expect(() =>
+      useWorkbenchStore.getState().startPeriodicSend("PING", "text", "none", 100, 1),
+    ).toThrow("串口控制线操作进行中");
+    expect(() => useWorkbenchStore.getState().startAutoResponder()).toThrow(
+      "串口控制线操作进行中",
+    );
+    await expect(useWorkbenchStore.getState().startFileSend("C:\\firmware.bin")).rejects.toThrow(
+      "串口控制线操作进行中",
+    );
+    await expect(
+      useWorkbenchStore.getState().startModbusTransaction(
+        {
+          operation: "read-holding-registers",
+          unitId: 1,
+          address: 0,
+          quantity: 1,
+        },
+        500,
+      ),
+    ).rejects.toThrow("串口控制线操作进行中");
+    expect(startCaptureMock).not.toHaveBeenCalled();
+    expect(startNumericLogMock).not.toHaveBeenCalled();
+    expect(sendSerialMock).not.toHaveBeenCalled();
+    expect(startSerialFileSendMock).not.toHaveBeenCalled();
+    expect(startSerialModbusTransactionMock).not.toHaveBeenCalled();
   });
 
   it("开始录制时冻结数据源、协议和串口参数", async () => {

@@ -1,8 +1,11 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyProtocolHealth } from "../core/protocols";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { Sidebar } from "./Sidebar";
+
+const originalRefreshPorts = useWorkbenchStore.getState().refreshPorts;
+const originalSetSerialControlLine = useWorkbenchStore.getState().setSerialControlLine;
 
 describe("Sidebar 串口恢复界面", () => {
   beforeEach(() => {
@@ -15,6 +18,7 @@ describe("Sidebar 串口恢复界面", () => {
         {
           name: "COM3",
           kind: "usb",
+          manufacturer: "Acme Devices",
           product: "Telemetry",
           serialNumber: "DEVICE-001",
           vendorId: 0x1234,
@@ -24,6 +28,15 @@ describe("Sidebar 串口恢复界面", () => {
       serialConfig: {
         ...useWorkbenchStore.getState().serialConfig,
         portName: "COM3",
+      },
+      serialControlLineOperation: "idle",
+      serialModemStatus: {
+        generation: 0,
+        revision: 0,
+        cts: null,
+        dsr: null,
+        ri: null,
+        dcd: null,
       },
       serialRecovery: {
         enabled: true,
@@ -46,6 +59,10 @@ describe("Sidebar 串口恢复界面", () => {
 
   afterEach(() => {
     cleanup();
+    useWorkbenchStore.setState({
+      refreshPorts: originalRefreshPorts,
+      setSerialControlLine: originalSetSerialControlLine,
+    });
   });
 
   it("提供侧栏关闭动作", () => {
@@ -137,11 +154,217 @@ describe("Sidebar 串口恢复界面", () => {
 
     expect(screen.getByRole("button", { name: "正在取消" })).toBeDisabled();
   });
+
+  it("显示 USB 摘要但不显示完整序列号", () => {
+    render(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    const summary = screen.getByRole("group", { name: "已选端口信息" });
+    expect(summary).toHaveTextContent("Telemetry");
+    expect(summary).toHaveTextContent("Acme Devices");
+    expect(summary).toHaveTextContent("USB");
+    expect(summary).toHaveTextContent("1234:5678");
+    expect(summary).toHaveTextContent("唯一身份");
+    expect(summary).not.toHaveTextContent("DEVICE-001");
+  });
+
+  it("向辅助技术暴露当前数据源选项", () => {
+    const { rerender } = render(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "串口" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "模拟器" })).toHaveAttribute("aria-pressed", "false");
+
+    useWorkbenchStore.setState({ source: "simulator" });
+    rerender(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "串口" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "模拟器" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("端口选项按名称自然排序并包含设备摘要", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      ports: [
+        { name: "COM10", kind: "usb", product: "Adapter B" },
+        { name: "COM2", kind: "usb", product: "Adapter A" },
+      ],
+      serialConfig: { ...state.serialConfig, portName: "COM2" },
+      serialRecovery: {
+        ...state.serialRecovery,
+        phase: "armed",
+      },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    const select = screen.getByLabelText("串口设备") as HTMLSelectElement;
+    expect(Array.from(select.options, (option) => option.textContent)).toEqual([
+      "COM2 · Adapter A",
+      "COM10 · Adapter B",
+    ]);
+  });
+
+  it("打开桌面串口连接面板时请求后台刷新", () => {
+    const refreshPorts = vi.fn().mockResolvedValue(undefined);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      serialRecovery: {
+        enabled: false,
+        phase: "off",
+        attempt: 0,
+        maxAttempts: 10,
+        message: "自动重连未启用",
+        diagnosticEventCount: 0,
+        diagnosticDroppedEvents: 0,
+      },
+      refreshPorts,
+    });
+    render(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    expect(refreshPorts).toHaveBeenCalledWith("background");
+  });
+
+  it("连接后设置控制线并播报异步结果和 RTS 锁定原因", () => {
+    const setSerialControlLine = vi.fn().mockResolvedValue(true);
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      statusMessage: "DTR 已设为有效",
+      serialRecovery: { ...state.serialRecovery, phase: "armed" },
+      serialConfig: { ...state.serialConfig, dtr: true, rts: true, flowControl: "none" },
+      setSerialControlLine,
+    }));
+    const { rerender } = render(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    const dtr = screen.getByRole("checkbox", { name: "DTR" });
+    const rts = screen.getByRole("checkbox", { name: "RTS" });
+    expect(dtr).toBeEnabled();
+    expect(rts).toBeEnabled();
+    fireEvent.click(dtr);
+    expect(setSerialControlLine).toHaveBeenCalledWith("dtr", false);
+
+    useWorkbenchStore.setState((state) => ({
+      serialConfig: { ...state.serialConfig, flowControl: "hardware" },
+    }));
+    rerender(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("checkbox", { name: "DTR" })).toBeEnabled();
+    const lockedRts = screen.getByRole("checkbox", { name: "RTS" });
+    expect(lockedRts).toBeDisabled();
+    expect(lockedRts).toHaveAccessibleDescription("硬件流控已接管 RTS，无法手动设置");
+    expect(screen.getByRole("status")).toHaveTextContent("DTR 已设为有效");
+  });
+
+  it("连接时显示四路输入握手线三态，断开后隐藏", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialRecovery: { ...state.serialRecovery, phase: "armed" },
+      serialModemStatus: {
+        generation: 7,
+        revision: 2,
+        cts: true,
+        dsr: false,
+        ri: null,
+        dcd: true,
+      },
+    }));
+    const props = {
+      activePanel: "connection" as const,
+      theme: "dark" as const,
+      onClose: vi.fn(),
+      onThemeChange: vi.fn(),
+    };
+    const { rerender } = render(<Sidebar {...props} />);
+
+    const status = screen.getByLabelText("串口输入握手线状态");
+    expect(within(status).getByText("CTS").parentElement).toHaveTextContent("CTS有效");
+    expect(within(status).getByText("DSR").parentElement).toHaveTextContent("DSR无效");
+    expect(within(status).getByText("RI").parentElement).toHaveTextContent("RI不可用");
+    expect(within(status).getByText("DCD").parentElement).toHaveTextContent("DCD有效");
+    expect(
+      Array.from(
+        status.querySelectorAll<HTMLElement>(".modem-status-item"),
+        (item) => item.dataset.state,
+      ),
+    ).toEqual(["asserted", "deasserted", "unavailable", "asserted"]);
+
+    useWorkbenchStore.setState({ connectionStatus: "disconnected" });
+    rerender(<Sidebar {...props} />);
+    expect(screen.queryByLabelText("串口输入握手线状态")).not.toBeInTheDocument();
+  });
+});
+
+describe("Sidebar 外观设置", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("向辅助技术暴露当前主题选项", () => {
+    render(
+      <Sidebar
+        activePanel="settings"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /深色/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /浅色/ })).toHaveAttribute("aria-pressed", "false");
+  });
 });
 
 describe("Sidebar 协议解析健康度", () => {
   beforeEach(() => {
-    useWorkbenchStore.setState({
+    useWorkbenchStore.setState((state) => ({
       protocol: "firewater",
       replayStatus: "idle",
       replaySessionId: 0,
@@ -151,7 +374,12 @@ describe("Sidebar 协议解析健康度", () => {
       channels: [],
       processedChannels: [],
       workspaceTransitionStatus: "idle",
-    });
+      serialRecovery: {
+        ...state.serialRecovery,
+        enabled: false,
+        phase: "off",
+      },
+    }));
     useWorkbenchStore.getState().setProtocol("firewater");
   });
 

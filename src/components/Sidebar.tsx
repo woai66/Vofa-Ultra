@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import {
   Cable,
   Check,
@@ -31,6 +31,7 @@ import {
   PROTOCOL_DROP_REASON_LABELS,
 } from "../core/protocols";
 import { isRecoveryActivePhase } from "../core/serialRecovery";
+import { presentSerialPort, sortSerialPorts } from "../core/serialPorts";
 import type { ThemeMode } from "../App";
 import {
   BAUD_RATES,
@@ -54,8 +55,11 @@ import type { SidebarPanel } from "./ActivityRail";
 import { CapturePanel } from "./CapturePanel";
 import { AutomationPanel } from "./AutomationPanel";
 import { ProcessingPanel } from "./ProcessingPanel";
-import { ExtensionPanel } from "./ExtensionPanel";
 import { WorkspacePanel } from "./WorkspacePanel";
+
+const ExtensionPanel = lazy(() =>
+  import("./ExtensionPanel").then(({ ExtensionPanel }) => ({ default: ExtensionPanel })),
+);
 
 interface SidebarProps {
   activePanel: SidebarPanel;
@@ -79,7 +83,15 @@ export function Sidebar({ activePanel, theme, onClose, onThemeChange }: SidebarP
       {activePanel === "connection" && <ConnectionPanel />}
       {activePanel === "channels" && <ChannelPanel />}
       {activePanel === "processing" && <ProcessingPanel />}
-      {activePanel === "extensions" && <ExtensionPanel />}
+      {activePanel === "extensions" && (
+        <Suspense
+          fallback={
+            <div className="sidebar-panel" aria-label="加载中" aria-busy="true" />
+          }
+        >
+          <ExtensionPanel />
+        </Suspense>
+      )}
       {activePanel === "automation" && <AutomationPanel />}
       {activePanel === "capture" && <CapturePanel />}
       <div className="workspace-panel-host" hidden={activePanel !== "workspaces"}>
@@ -101,13 +113,22 @@ function ConnectionPanel() {
   const ports = useWorkbenchStore((state) => state.ports);
   const isRefreshingPorts = useWorkbenchStore((state) => state.isRefreshingPorts);
   const config = useWorkbenchStore((state) => state.serialConfig);
+  const serialControlLineOperation = useWorkbenchStore(
+    (state) => state.serialControlLineOperation,
+  );
+  const serialModemStatus = useWorkbenchStore((state) => state.serialModemStatus);
   const serialRecovery = useWorkbenchStore((state) => state.serialRecovery);
+  const serialFileSendStatus = useWorkbenchStore((state) => state.serialFileSend.status);
+  const modbusTransactionStatus = useWorkbenchStore(
+    (state) => state.modbusTransaction.status,
+  );
   const isCancellingSerialConnection = useWorkbenchStore(
     (state) => state.isCancellingSerialConnection,
   );
   const setSource = useWorkbenchStore((state) => state.setSource);
   const setProtocol = useWorkbenchStore((state) => state.setProtocol);
   const updateConfig = useWorkbenchStore((state) => state.updateSerialConfig);
+  const setSerialControlLine = useWorkbenchStore((state) => state.setSerialControlLine);
   const refreshPorts = useWorkbenchStore((state) => state.refreshPorts);
   const connect = useWorkbenchStore((state) => state.connect);
   const disconnect = useWorkbenchStore((state) => state.disconnect);
@@ -130,6 +151,7 @@ function ConnectionPanel() {
     (state) => state.runtimeTransitionStatus,
   );
   const captureStatus = useWorkbenchStore((state) => state.captureStatus);
+  const numericLogStatus = useWorkbenchStore((state) => state.numericLogStatus);
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
   const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
 
@@ -150,6 +172,30 @@ function ConnectionPanel() {
     isRuntimeTransitioning ||
     isCaptureTransitioning;
   const configDisabled = isConnected || isBusy || isRecording || isReplayLoaded;
+  const controlLineDisabled =
+    isCancellingSerialConnection ||
+    isBusy ||
+    isRecording ||
+    isReplayLoaded ||
+    serialControlLineOperation !== "idle" ||
+    numericLogStatus === "starting" ||
+    numericLogStatus === "recording" ||
+    numericLogStatus === "stopping" ||
+    serialFileSendStatus === "queued" ||
+    serialFileSendStatus === "sending" ||
+    serialFileSendStatus === "cancelling" ||
+    modbusTransactionStatus !== "idle";
+  const sortedPorts = useMemo(() => sortSerialPorts(ports), [ports]);
+  const selectedPortPresentation = useMemo(() => {
+    const selectedPort = ports.find((port) => port.name === config.portName);
+    return selectedPort ? presentSerialPort(selectedPort) : null;
+  }, [config.portName, ports]);
+
+  useEffect(() => {
+    if (isNativeRuntime && source === "serial") {
+      void refreshPorts("background");
+    }
+  }, [isNativeRuntime, refreshPorts, source]);
 
   return (
     <div className="sidebar-panel">
@@ -166,6 +212,7 @@ function ConnectionPanel() {
         <div className="segmented-control" role="group" aria-labelledby="data-source-label">
           <button
             type="button"
+            aria-pressed={source === "serial"}
             data-active={source === "serial"}
             disabled={!isNativeRuntime || configDisabled}
             title={isNativeRuntime ? "使用本机串口" : "浏览器预览不可访问串口"}
@@ -175,6 +222,7 @@ function ConnectionPanel() {
           </button>
           <button
             type="button"
+            aria-pressed={source === "simulator"}
             data-active={source === "simulator"}
             disabled={configDisabled}
             onClick={() => void setSource("simulator")}
@@ -211,13 +259,34 @@ function ConnectionPanel() {
             {config.portName && !ports.some((port) => port.name === config.portName) && (
               <option value={config.portName}>{config.portName} · 当前不可用</option>
             )}
-            {ports.map((port) => (
+            {sortedPorts.map((port) => (
               <option key={port.name} value={port.name}>
-                {port.name}
-                {port.product ? ` · ${port.product}` : ""}
+                {presentSerialPort(port).optionLabel}
               </option>
             ))}
           </select>
+          {selectedPortPresentation && (
+            <div className="serial-port-summary" role="group" aria-label="已选端口信息">
+              <div className="serial-port-summary-name">
+                <Cable size={14} aria-hidden="true" />
+                <strong title={selectedPortPresentation.primaryLabel}>
+                  {selectedPortPresentation.primaryLabel}
+                </strong>
+              </div>
+              {selectedPortPresentation.secondaryLabel && (
+                <span title={selectedPortPresentation.secondaryLabel}>
+                  {selectedPortPresentation.secondaryLabel}
+                </span>
+              )}
+              <div className="serial-port-summary-meta">
+                <span>{selectedPortPresentation.kindLabel}</span>
+                {selectedPortPresentation.usbIdentifier && (
+                  <code>{selectedPortPresentation.usbIdentifier}</code>
+                )}
+                {selectedPortPresentation.hasUniqueUsbIdentity && <span>唯一身份</span>}
+              </div>
+            </div>
+          )}
 
           <label className="field-label" htmlFor="baud-rate">
             波特率
@@ -307,20 +376,64 @@ function ConnectionPanel() {
               <input
                 type="checkbox"
                 checked={config.dtr}
-                disabled={configDisabled}
-                onChange={(event) => updateConfig("dtr", event.target.checked)}
+                disabled={controlLineDisabled}
+                aria-busy={serialControlLineOperation === "dtr"}
+                onChange={(event) => {
+                  if (isConnected) {
+                    void setSerialControlLine("dtr", event.target.checked);
+                  } else {
+                    updateConfig("dtr", event.target.checked);
+                  }
+                }}
               />
             </label>
-            <label className="toggle-row">
+            <label
+              className="toggle-row"
+              title={config.flowControl === "hardware" ? "硬件流控已接管 RTS" : undefined}
+            >
               <span>RTS</span>
               <input
                 type="checkbox"
                 checked={config.rts}
-                disabled={configDisabled}
-                onChange={(event) => updateConfig("rts", event.target.checked)}
+                disabled={controlLineDisabled || config.flowControl === "hardware"}
+                aria-busy={serialControlLineOperation === "rts"}
+                aria-describedby={config.flowControl === "hardware" ? "rl" : undefined}
+                onChange={(event) => {
+                  if (isConnected) {
+                    void setSerialControlLine("rts", event.target.checked);
+                  } else {
+                    updateConfig("rts", event.target.checked);
+                  }
+                }}
               />
             </label>
+            {config.flowControl === "hardware" && (
+              <span id="rl" className="sr-only">
+                硬件流控已接管 RTS，无法手动设置
+              </span>
+            )}
           </div>
+
+          {isConnected && (
+            <dl className="modem-status-grid" aria-label="串口输入握手线状态">
+              {(
+                [
+                  ["CTS", serialModemStatus.cts],
+                  ["DSR", serialModemStatus.dsr],
+                  ["RI", serialModemStatus.ri],
+                  ["DCD", serialModemStatus.dcd],
+                ] as const
+              ).map(([line, value]) => (
+                <div className="modem-status-item" data-state={modemLineState(value)} key={line}>
+                  <dt>{line}</dt>
+                  <dd>
+                    <span className="modem-status-dot" aria-hidden="true" />
+                    {modemLineLabel(value)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
         </section>
       )}
 
@@ -413,7 +526,11 @@ function ConnectionPanel() {
       </section>
 
       <div className="connection-action-area">
-        <div className="connection-message" data-status={connectionStatus}>
+        <div
+          className="connection-message"
+          data-status={connectionStatus}
+          role="status"
+        >
           <span className="status-dot" />
           <span>{statusMessage}</span>
         </div>
@@ -456,6 +573,20 @@ function ConnectionPanel() {
       </div>
     </div>
   );
+}
+
+function modemLineState(value: boolean | null): "asserted" | "deasserted" | "unavailable" {
+  if (value === null) {
+    return "unavailable";
+  }
+  return value ? "asserted" : "deasserted";
+}
+
+function modemLineLabel(value: boolean | null): "有效" | "无效" | "不可用" {
+  if (value === null) {
+    return "不可用";
+  }
+  return value ? "有效" : "无效";
 }
 
 function ChannelPanel() {
@@ -905,10 +1036,20 @@ function SettingsPanel({ theme, onThemeChange }: Pick<SidebarProps, "theme" | "o
           role="group"
           aria-labelledby="appearance-label"
         >
-          <button type="button" data-active={theme === "dark"} onClick={() => onThemeChange("dark")}>
+          <button
+            type="button"
+            aria-pressed={theme === "dark"}
+            data-active={theme === "dark"}
+            onClick={() => onThemeChange("dark")}
+          >
             <Moon size={15} /> 深色
           </button>
-          <button type="button" data-active={theme === "light"} onClick={() => onThemeChange("light")}>
+          <button
+            type="button"
+            aria-pressed={theme === "light"}
+            data-active={theme === "light"}
+            onClick={() => onThemeChange("light")}
+          >
             <Sun size={15} /> 浅色
           </button>
         </div>
