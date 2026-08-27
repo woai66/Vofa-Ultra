@@ -34,6 +34,9 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 构建后至少确认：
 
+首次试用可按[首轮 Beta 快速测试](hardware-compatibility.md#首轮-beta-快速测试)执行；发现阻塞问题后，再补充完整的
+硬件兼容性证据。
+
 - 安装包能安装、启动和卸载。
 - 模拟数据、真实串口、录制、回放和导出能完成基本冒烟。
 - `SHA256SUMS`、SBOM、第三方许可证材料和实际文件一致。
