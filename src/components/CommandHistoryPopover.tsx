@@ -1,6 +1,7 @@
 import { History, Trash2 } from "lucide-react";
 import type { LineEnding } from "../types/serial";
 import type { CommandHistoryEntry } from "../types/workbench";
+import { textEncodingLabel } from "../core/textEncoding";
 
 interface CommandHistoryPopoverProps {
   entries: readonly CommandHistoryEntry[];
@@ -45,6 +46,7 @@ export default function CommandHistoryPopover({
               <code>{historyPreview(entry)}</code>
               <span>
                 {entry.mode.toUpperCase()} · {lineEndingLabel(entry.lineEnding)} ·{" "}
+                {entry.mode === "text" ? `${textEncodingLabel(entry.textEncoding)} · ` : ""}
                 {entry.checksumMode === "none"
                   ? "无校验"
                   : entry.checksumMode.toUpperCase()} ·{" "}

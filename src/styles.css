@@ -4741,6 +4741,18 @@ textarea:focus {
   gap: 5px;
 }
 
+.send-text-encoding-field {
+  display: flex;
+  width: 142px;
+  flex: 0 0 142px;
+  align-items: center;
+  gap: 5px;
+}
+
+.send-text-encoding-field select {
+  width: 108px;
+}
+
 .send-checksum-field {
   display: flex;
   width: 192px;

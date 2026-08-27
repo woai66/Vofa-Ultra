@@ -5,6 +5,7 @@ import {
   getSerialFileSendState,
   getSerialModemStatus,
   selectSerialFilePath,
+  sendSerial,
   setSerialControlLine,
   startSerialFileSend,
   startSerialModbusTransaction,
@@ -91,6 +92,19 @@ describe("serialClient", () => {
     expect(invokeMock.mock.calls).toEqual([
       ["set_serial_control_line", { generation: 7, line: "dtr", asserted: false }],
       ["set_serial_control_line", { generation: 7, line: "rts", asserted: true }],
+    ]);
+  });
+
+  it("发送命令把字节和可选文本编码传给 Tauri", async () => {
+    invokeMock.mockResolvedValue(undefined);
+    const bytes = Uint8Array.from([0xd6, 0xd0, 0xce, 0xc4]);
+
+    await sendSerial(bytes, "gb18030");
+    await sendSerial(Uint8Array.from([0xaa]));
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["send_serial", { data: [0xd6, 0xd0, 0xce, 0xc4], textEncoding: "gb18030" }],
+      ["send_serial", { data: [0xaa], textEncoding: undefined }],
     ]);
   });
 

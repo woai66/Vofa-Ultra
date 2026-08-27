@@ -82,6 +82,7 @@ describe("TerminalPanel", () => {
       terminalRxRecordMode: "chunk",
       terminalRxLineEnding: "lf",
       terminalRxTextEncoding: "utf-8",
+      terminalTxTextEncoding: "utf-8",
       terminalPaused: false,
       terminalAutoScroll: true,
     });
@@ -444,18 +445,22 @@ describe("TerminalPanel", () => {
 
   it("用上下键恢复命令格式并在末尾返回原草稿", async () => {
     useWorkbenchStore.getState().setCommandChecksum("sum8");
+    useWorkbenchStore.getState().setTerminalTxTextEncoding("gb18030");
     await useWorkbenchStore.getState().send("FIRST", "text", "lf");
     useWorkbenchStore.getState().setCommandChecksum("xor8");
+    useWorkbenchStore.getState().setTerminalTxTextEncoding("utf-8");
     await useWorkbenchStore.getState().send("AA", "hex", "none");
     useWorkbenchStore.getState().setSendMode("hex");
     useWorkbenchStore.getState().setLineEnding("none");
     useWorkbenchStore.getState().setCommandChecksum("crc32-be");
+    useWorkbenchStore.getState().setTerminalTxTextEncoding("windows-1252");
     const user = userEvent.setup();
     render(<TerminalPanel />);
     const input = screen.getByRole("textbox", {
       name: "发送内容",
     }) as HTMLTextAreaElement;
     const sendFormat = screen.getByRole("group", { name: "发送格式" });
+    const textEncoding = screen.getByRole("combobox", { name: "发送文本编码" });
 
     expect(within(sendFormat).getByRole("button", { name: "文本" })).toHaveAttribute(
       "aria-pressed",
@@ -491,6 +496,7 @@ describe("TerminalPanel", () => {
     );
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("lf");
     expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("sum8");
+    expect(textEncoding).toHaveValue("gb18030");
 
     await user.keyboard("{ArrowDown}{ArrowDown}");
     expect(input).toHaveValue("draft");
@@ -504,6 +510,7 @@ describe("TerminalPanel", () => {
     );
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("none");
     expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("crc32-be");
+    expect(textEncoding).toHaveValue("windows-1252");
   });
 
   it("组合输入或文本选区存在时保留原生方向键行为", async () => {
@@ -576,6 +583,40 @@ describe("TerminalPanel", () => {
     await waitFor(() => {
       expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.hex).toBe("01 FF 0D");
     });
+  });
+
+  it("选择 GB18030 后按实际字节预览、发送并从历史恢复编码", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const input = screen.getByRole("textbox", { name: "发送内容" });
+    const encoding = screen.getByRole("combobox", { name: "发送文本编码" });
+    const send = screen.getByRole("button", { name: "发送" });
+
+    expect(within(encoding).getAllByRole("option")).toHaveLength(3);
+    await user.selectOptions(encoding, "gb18030");
+    await user.type(input, "中文€");
+    await waitFor(() => {
+      expect(screen.getByLabelText("命令模板包含 0 个变量，最终 6 字节")).toBeVisible();
+      expect(send).toBeEnabled();
+    });
+
+    await user.click(send);
+    await waitFor(() => {
+      expect(useWorkbenchStore.getState().terminalEntries.at(-1)).toMatchObject({
+        text: "中文€",
+        hex: "D6 D0 CE C4 A2 E3",
+      });
+    });
+    expect(useWorkbenchStore.getState().commandHistory[0]).toMatchObject({
+      textEncoding: "gb18030",
+      encodedBytes: 6,
+    });
+
+    await user.selectOptions(encoding, "utf-8");
+    await user.click(screen.getByRole("button", { name: "命令历史，1 条" }));
+    const historyDialog = await screen.findByRole("dialog", { name: "命令历史" });
+    await user.click(within(historyDialog).getByRole("button", { name: /中文/ }));
+    expect(encoding).toHaveValue("gb18030");
   });
 
   it("自动附加所选校验尾并在预览中展示最终帧", async () => {

@@ -5,8 +5,10 @@ export const TERMINAL_RX_RECORD_MODES = ["chunk", "line"] as const;
 export type TerminalRxRecordMode = (typeof TERMINAL_RX_RECORD_MODES)[number];
 export const TERMINAL_RX_LINE_ENDINGS = ["lf", "crlf", "cr"] as const;
 export type TerminalRxLineEnding = (typeof TERMINAL_RX_LINE_ENDINGS)[number];
-export const TERMINAL_RX_TEXT_ENCODINGS = ["utf-8", "gb18030", "windows-1252"] as const;
-export type TerminalRxTextEncoding = (typeof TERMINAL_RX_TEXT_ENCODINGS)[number];
+export const TERMINAL_TEXT_ENCODINGS = ["utf-8", "gb18030", "windows-1252"] as const;
+export type TerminalTextEncoding = (typeof TERMINAL_TEXT_ENCODINGS)[number];
+export const TERMINAL_RX_TEXT_ENCODINGS = TERMINAL_TEXT_ENCODINGS;
+export type TerminalRxTextEncoding = TerminalTextEncoding;
 
 export interface ParsedFrame {
   values: number[];
@@ -67,6 +69,7 @@ export interface CommandHistoryEntry {
   mode: DisplayMode;
   lineEnding: LineEnding;
   checksumMode: CommandChecksumMode;
+  textEncoding: TerminalTextEncoding;
   payloadBytes: number;
   encodedBytes: number;
   variableCount: number;

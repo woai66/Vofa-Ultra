@@ -1,3 +1,5 @@
+import type { TerminalTextEncoding } from "./workbench";
+
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 export type DataSource = "serial" | "simulator";
 export const PROTOCOL_IDS = ["firewater", "justfloat", "raw"] as const;
@@ -79,6 +81,7 @@ export interface SerialTxPayload {
   byteCount: number;
   transmittedAt: number;
   generation: number;
+  textEncoding?: TerminalTextEncoding;
 }
 
 export type SerialFileSendStatus =

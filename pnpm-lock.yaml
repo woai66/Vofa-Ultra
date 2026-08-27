@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@kayahr/text-encoding':
+        specifier: 2.1.0
+        version: 2.1.0
       '@tanstack/react-virtual':
         specifier: ^3.13.12
         version: 3.14.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -529,6 +532,9 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@kayahr/text-encoding@2.1.0':
+    resolution: {integrity: sha512-U/2bmZyKG0TvhIws4+tfA8AWtl0RHOaFENQG8DAe7UyEhIYuhpSgijOh4WDFHLIDO6+WyFRM9nZtKm5Pe6iquw==}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     resolution: {integrity: sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ==}
@@ -2185,6 +2191,8 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@kayahr/text-encoding@2.1.0': {}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
