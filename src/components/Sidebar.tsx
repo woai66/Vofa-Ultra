@@ -403,6 +403,7 @@ function ConnectionPanel() {
           </label>
           <select
             id="simulator-signal"
+            name="simulator-signal"
             value={simulatorConfig.signal}
             disabled={configDisabled}
             onChange={(event) =>
@@ -416,9 +417,11 @@ function ConnectionPanel() {
             ))}
           </select>
           <div className="field-grid simulator-config-grid">
-            <label>
+            <label htmlFor="simulator-channel-count">
               <span className="field-label">通道数</span>
               <input
+                id="simulator-channel-count"
+                name="simulator-channel-count"
                 aria-label="模拟器通道数"
                 type="number"
                 min={MIN_SIMULATOR_CHANNELS}
@@ -438,9 +441,11 @@ function ConnectionPanel() {
                 }}
               />
             </label>
-            <label>
+            <label htmlFor="simulator-sample-rate">
               <span className="field-label">采样率</span>
               <select
+                id="simulator-sample-rate"
+                name="simulator-sample-rate"
                 aria-label="模拟器采样率"
                 value={simulatorConfig.sampleRate}
                 disabled={configDisabled}
@@ -481,6 +486,7 @@ function ConnectionPanel() {
           </div>
           <select
             id="serial-port"
+            name="serial-port"
             value={config.portName}
             disabled={configDisabled}
             onChange={(event) => updateConfig("portName", event.target.value)}
@@ -525,9 +531,11 @@ function ConnectionPanel() {
           />
 
           <div className="field-grid three-columns">
-            <label>
+            <label htmlFor="serial-data-bits">
               <span className="field-label">数据位</span>
               <select
+                id="serial-data-bits"
+                name="serial-data-bits"
                 value={config.dataBits}
                 disabled={configDisabled}
                 onChange={(event) =>
@@ -541,9 +549,11 @@ function ConnectionPanel() {
                 ))}
               </select>
             </label>
-            <label>
+            <label htmlFor="serial-parity">
               <span className="field-label">校验</span>
               <select
+                id="serial-parity"
+                name="serial-parity"
                 value={config.parity}
                 disabled={configDisabled}
                 onChange={(event) =>
@@ -555,9 +565,11 @@ function ConnectionPanel() {
                 <option value="even">偶</option>
               </select>
             </label>
-            <label>
+            <label htmlFor="serial-stop-bits">
               <span className="field-label">停止位</span>
               <select
+                id="serial-stop-bits"
+                name="serial-stop-bits"
                 value={config.stopBits}
                 disabled={configDisabled}
                 onChange={(event) => updateConfig("stopBits", Number(event.target.value) as 1 | 2)}
@@ -568,9 +580,11 @@ function ConnectionPanel() {
             </label>
           </div>
 
-          <label>
+          <label htmlFor="serial-flow-control">
             <span className="field-label">流控</span>
             <select
+              id="serial-flow-control"
+              name="serial-flow-control"
               value={config.flowControl}
               disabled={configDisabled}
               onChange={(event) =>
@@ -590,6 +604,8 @@ function ConnectionPanel() {
             <label className="toggle-row">
               <span>DTR</span>
               <input
+                id="serial-dtr"
+                name="serial-dtr"
                 type="checkbox"
                 checked={config.dtr}
                 disabled={controlLineDisabled}
@@ -609,6 +625,8 @@ function ConnectionPanel() {
             >
               <span>RTS</span>
               <input
+                id="serial-rts"
+                name="serial-rts"
                 type="checkbox"
                 checked={config.rts}
                 disabled={controlLineDisabled || config.flowControl === "hardware"}
@@ -658,6 +676,8 @@ function ConnectionPanel() {
           <label className="toggle-row recovery-toggle">
             <span>自动重连</span>
             <input
+              id="serial-auto-reconnect"
+              name="serial-auto-reconnect"
               type="checkbox"
               checked={serialRecovery.enabled}
               disabled={isCancellingSerialConnection}
@@ -1135,6 +1155,7 @@ function ChannelRow({
             <label>
               <span>别名</span>
               <input
+                name={`channel-${channel.id}-alias`}
                 aria-label={`${channel.id} 通道别名`}
                 maxLength={64}
                 value={alias}
@@ -1145,6 +1166,7 @@ function ChannelRow({
             <label>
               <span>单位</span>
               <input
+                name={`channel-${channel.id}-unit`}
                 aria-label={`${channel.id} 通道单位`}
                 maxLength={24}
                 value={unit}
@@ -1156,6 +1178,7 @@ function ChannelRow({
               <span>颜色</span>
               <span>
                 <input
+                  name={`channel-${channel.id}-color`}
                   type="color"
                   aria-label={`${channel.id} 通道颜色`}
                   value={color}
@@ -1288,6 +1311,7 @@ function SettingsPanel({
         </label>
         <select
           id="chart-window-setting"
+          name="chart-window-setting"
           value={chartWindowSeconds}
           disabled={isTransitioning}
           onChange={(event) =>
@@ -1299,9 +1323,11 @@ function SettingsPanel({
           <option value={30}>30 秒</option>
           <option value={60}>60 秒</option>
         </select>
-        <label className="toggle-row standalone">
+        <label className="toggle-row standalone" htmlFor="terminal-auto-scroll">
           <span>终端自动滚动</span>
           <input
+            id="terminal-auto-scroll"
+            name="terminal-auto-scroll"
             type="checkbox"
             checked={terminalAutoScroll}
             disabled={isTransitioning}
