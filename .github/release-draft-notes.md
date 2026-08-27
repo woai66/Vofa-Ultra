@@ -3,9 +3,7 @@
 > platform smoke tests, hardware checks, signing, and macOS notarization gates in `docs/release-process.md` are
 > complete.
 
-The workflow reverified all three current-run artifacts, their target-specific CycloneDX, NOTICE, and canonical build
-environment records, the repository license, the versioned changelog, and the source/run binding metadata before
-producing the aggregate `SHA256SUMS`. GitHub provenance attestations bind both the original platform files and the
-verified aggregate assets to their workflow and source commit. They are not code signatures or reproducible-build
-proof. The workflow also checked the remote tag against the triggering commit before and after draft creation. A draft
-is never evidence that installation or real serial hardware behavior passed.
+These candidate packages were built and collected manually on their target platforms. Before publishing, verify every
+file against `SHA256SUMS`, record the source commit and toolchain used for each platform, and confirm that the versioned
+changelog matches the packages. Manual checks do not replace code signing, notarization, installation tests, or real
+serial hardware validation.

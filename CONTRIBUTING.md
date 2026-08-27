@@ -86,21 +86,15 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 新结果使用[硬件兼容性报告表单](.github/ISSUE_TEMPLATE/hardware_report.yml)，烧录和硬件操作由测试者手动完成。
 
 涉及协议解析、环形缓冲、处理图、Store 摄入或回放批处理的改动必须运行 `pnpm benchmark`，并在 PR 中记录
-`artifacts/performance/summary.md` 的结果。Linux CI 结果是绝对预算的权威依据；放宽
+`artifacts/performance/summary.md` 的结果。项目当前没有统一的线上性能环境；放宽
 `performance-budgets.json` 时必须附同一环境至少五轮数据、业务吞吐依据和独立 review，不能与性能退化修复混在
 同一项无说明提交中。完整方法见[性能基准](docs/performance.md)。
 
 ## 候选安装包
 
-普通 push 和 PR 只验证三平台最终桌面二进制，不生成安装包。需要检查打包链路时，手动运行 `CI` workflow；
-与 `package.json`、`tauri.conf.json` 和 `Cargo.toml` 版本一致的 `v*` 标签也会触发打包。手动 workflow 只上传
-无签名 MSI、NSIS、DMG、DEB、AppImage、平台 CycloneDX、第三方 notices、项目许可证及逐文件 SHA-256。标签
-workflow 会在三平台全部成功后重新验证并聚合这些文件，通过 `release-draft` Environment 创建 draft Release；
-聚合资产还包含版本 CHANGELOG 与 source/run 绑定记录，并在创建前后验证远端标签 commit。v0.x 和 SemVer
-预发布版本会标记为 prerelease；自动化不会 Publish 或标记 Latest。完整门禁见[发布流程](docs/release-process.md)。
-
-版本标签、draft 审批、正式发布、签名和公证属于发布者操作。候选包生成成功不能替代目标系统上的安装、启动、
-卸载和串口硬件冒烟记录。AppImage 从 Actions artifact 下载后可能需要重新添加可执行权限。
+项目当前未启用 GitHub Actions；push、PR 和版本标签不会自动测试、打包或创建 Release，Dependabot 只负责依赖
+更新提醒。需要检查打包链路时，维护者应在对应目标系统使用 README 中的本地命令。候选包生成成功不能替代目标
+系统上的安装、启动、卸载和串口硬件冒烟记录。人工步骤见[发布流程](docs/release-process.md)。
 
 ## Pull Request
 
@@ -112,4 +106,4 @@ PR 正文至少包含：
 - 兼容性：涉及稳定数据面时说明向后读取、旧版前向读取、回滚和弃用计划。
 - 截图：仅 UI 行为或布局发生变化时需要。
 
-CI 通过不等于可以合并。涉及串口生命周期、记录格式、权限或发布流程的改动需要额外人工 review。
+本地检查通过不等于可以合并。涉及串口生命周期、记录格式、权限或发布流程的改动需要额外人工 review。
