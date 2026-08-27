@@ -612,10 +612,11 @@ describe("workbenchStore", () => {
     ]);
   });
 
-  it("切换编码先用旧编码结算残行且不改变 TX 的 UTF-8 语义", async () => {
+  it("切换 RX 编码先结算残行且不改变独立的 TX 编码", async () => {
     useWorkbenchStore.setState({ connectionStatus: "connected" });
     useWorkbenchStore.getState().setTerminalRxRecordMode("line");
     useWorkbenchStore.getState().setTerminalRxTextEncoding("gb18030");
+    useWorkbenchStore.getState().setTerminalTxTextEncoding("gb18030");
     useWorkbenchStore.getState().ingestBytes(Uint8Array.from([0xc4, 0xe3]), 100);
 
     useWorkbenchStore.getState().setTerminalRxTextEncoding("windows-1252");
@@ -625,8 +626,25 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
       { direction: "rx", timestamp: 100, text: "你", rxBoundary: "unterminated" },
       { direction: "rx", timestamp: 200, text: "€\\n", hex: "80 0A" },
-      { direction: "tx", text: "你", hex: "E4 BD A0" },
+      { direction: "tx", text: "你", hex: "C4 E3" },
     ]);
+  });
+
+  it("按串口 TX 事件携带的编码解码终端文本", () => {
+    useWorkbenchStore.getState().handleSerialTx({
+      data: testBase64(Uint8Array.from([0x43, 0x61, 0x66, 0xe9, 0x20, 0x80])),
+      byteCount: 6,
+      transmittedAt: 300,
+      generation: 0,
+      textEncoding: "windows-1252",
+    });
+
+    expect(useWorkbenchStore.getState().terminalEntries.at(-1)).toMatchObject({
+      direction: "tx",
+      timestamp: 300,
+      text: "Café €",
+      hex: "43 61 66 E9 20 80",
+    });
   });
 
   it("未结束行超限时分段，暂停时保留剩余残片", () => {
@@ -1504,6 +1522,49 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().commandHistory).toHaveLength(1);
   });
 
+  it("手动发送按所选 GB18030 生成真实串口字节并保存编码", async () => {
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 1,
+    });
+    useWorkbenchStore.getState().setTerminalTxTextEncoding("gb18030");
+
+    await useWorkbenchStore.getState().send("中文€", "text", "none");
+
+    expect(sendSerialMock).toHaveBeenCalledWith(
+      Uint8Array.from([0xd6, 0xd0, 0xce, 0xc4, 0xa2, 0xe3]),
+      "gb18030",
+    );
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([
+      expect.objectContaining({
+        value: "中文€",
+        textEncoding: "gb18030",
+        encodedBytes: 6,
+      }),
+    ]);
+  });
+
+  it("Windows-1252 拒绝中文且不调用串口或写入历史", async () => {
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 1,
+    });
+    useWorkbenchStore.getState().setTerminalTxTextEncoding("windows-1252");
+
+    await expect(useWorkbenchStore.getState().send("中文", "text", "none")).rejects.toThrow(
+      /Windows-1252 无法表示字符 U\+4E2D/,
+    );
+    expect(sendSerialMock).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      commandHistory: [],
+      isSendingCommand: false,
+    });
+  });
+
   it("有限周期发送串行完成并把重复命令压缩为一条历史", async () => {
     vi.useFakeTimers();
     useWorkbenchStore.setState({
@@ -1557,6 +1618,34 @@ describe("workbenchStore", () => {
         variableCount: 1,
         repeatCount: 3,
       }),
+    ]);
+  });
+
+  it("周期发送冻结启动时的文本编码", async () => {
+    vi.useFakeTimers();
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    useWorkbenchStore.getState().setTerminalTxTextEncoding("gb18030");
+
+    await useWorkbenchStore
+      .getState()
+      .startPeriodicSend("中${seq}", "text", "none", 20, 3);
+    useWorkbenchStore.getState().setTerminalTxTextEncoding("windows-1252");
+    await vi.advanceTimersByTimeAsync(40);
+
+    const txEntries = useWorkbenchStore
+      .getState()
+      .terminalEntries.filter((entry) => entry.direction === "tx");
+    expect(txEntries.map((entry) => entry.text)).toEqual(["中1", "中2", "中3"]);
+    expect(txEntries.map((entry) => entry.hex)).toEqual([
+      "D6 D0 31",
+      "D6 D0 32",
+      "D6 D0 33",
+    ]);
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([
+      expect.objectContaining({ textEncoding: "gb18030", repeatCount: 3 }),
     ]);
   });
 
@@ -1724,6 +1813,48 @@ describe("workbenchStore", () => {
         sentCount: 1,
       },
       stats: { txBytes: 7 },
+    });
+  });
+
+  it("自动应答分别使用 RX GB18030 与 TX Windows-1252", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+      terminalRxTextEncoding: "gb18030",
+      terminalTxTextEncoding: "windows-1252",
+    });
+    useWorkbenchStore.getState().setAutoResponderRules([
+      {
+        ...createDefaultAutoResponderRule("encoded", "独立编码"),
+        triggerMode: "text",
+        trigger: "中文",
+        responseMode: "text",
+        response: "Café €",
+      },
+    ]);
+
+    await useWorkbenchStore.getState().startAutoResponder();
+    useWorkbenchStore.getState().setTerminalRxTextEncoding("utf-8");
+    useWorkbenchStore.getState().setTerminalTxTextEncoding("utf-8");
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      terminalRxTextEncoding: "gb18030",
+      terminalTxTextEncoding: "windows-1252",
+    });
+    useWorkbenchStore
+      .getState()
+      .ingestBytes(Uint8Array.from([0xd6, 0xd0, 0xce, 0xc4]), Date.now());
+    await flushPromises();
+
+    expect(
+      useWorkbenchStore
+        .getState()
+        .terminalEntries.filter((entry) => entry.direction === "tx"),
+    ).toEqual([
+      expect.objectContaining({ text: "Café €", hex: "43 61 66 E9 20 80" }),
+    ]);
+    expect(useWorkbenchStore.getState().autoResponder).toMatchObject({
+      matchCount: 1,
+      sentCount: 1,
     });
   });
 
@@ -3663,7 +3794,7 @@ describe("workbenchStore", () => {
     const beforeActiveId = useWorkbenchStore.getState().activeWorkspaceId;
     const importedId = useWorkbenchStore.getState().importWorkspace({
       format: "vofa-ultra.workspace",
-      schemaVersion: 12,
+      schemaVersion: 13,
       name: "默认工作区",
       config: createDefaultWorkspaceConfig("serial"),
     });
@@ -3748,10 +3879,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 12 });
+    ).toMatchObject({ version: 13 });
   });
 
-  it("通过 rehydrate 把 v1 工作区写回 v12 且保留快照", async () => {
+  it("通过 rehydrate 把 v1 工作区写回 v13 且保留快照", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.processingGraph;
@@ -3764,6 +3895,7 @@ describe("workbenchStore", () => {
     delete legacyConfig.channelPresentations;
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
+    delete legacyConfig.terminalTxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -3807,10 +3939,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 12 });
+    ).toMatchObject({ version: 13 });
   });
 
-  it("通过 rehydrate 把 v3 工作区补充默认配置并写回 v12", async () => {
+  it("通过 rehydrate 把 v3 工作区补充默认配置并写回 v13", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.autoResponderRules;
@@ -3821,6 +3953,7 @@ describe("workbenchStore", () => {
     delete legacyConfig.channelPresentations;
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
+    delete legacyConfig.terminalTxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -3854,7 +3987,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 12 });
+    ).toMatchObject({ version: 13 });
   });
 
   it("通过 rehydrate 从 v4 补充空快捷命令并保留全部工作区", async () => {
@@ -3871,12 +4004,14 @@ describe("workbenchStore", () => {
     delete legacyFirst.channelPresentations;
     delete legacyFirst.commandChecksum;
     delete legacyFirst.simulatorConfig;
+    delete legacyFirst.terminalTxTextEncoding;
     delete legacySecond.terminalRxRecordMode;
     delete legacySecond.terminalRxLineEnding;
     delete legacySecond.terminalRxTextEncoding;
     delete legacySecond.channelPresentations;
     delete legacySecond.commandChecksum;
     delete legacySecond.simulatorConfig;
+    delete legacySecond.terminalTxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -3920,10 +4055,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 12 });
+    ).toMatchObject({ version: 13 });
   });
 
-  it("通过 rehydrate 把 v5 的全部工作区无损迁移并写回 v12", async () => {
+  it("通过 rehydrate 把 v5 的全部工作区无损迁移并写回 v13", async () => {
     const firstConfig = createDefaultWorkspaceConfig("simulator");
     firstConfig.lineEnding = "crlf";
     firstConfig.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
@@ -3939,12 +4074,14 @@ describe("workbenchStore", () => {
     delete (first.config as Partial<typeof first.config>).channelPresentations;
     delete (first.config as Partial<typeof first.config>).commandChecksum;
     delete (first.config as Partial<typeof first.config>).simulatorConfig;
+    delete (first.config as Partial<typeof first.config>).terminalTxTextEncoding;
     delete (second.config as Partial<typeof second.config>).terminalRxRecordMode;
     delete (second.config as Partial<typeof second.config>).terminalRxLineEnding;
     delete (second.config as Partial<typeof second.config>).terminalRxTextEncoding;
     delete (second.config as Partial<typeof second.config>).channelPresentations;
     delete (second.config as Partial<typeof second.config>).commandChecksum;
     delete (second.config as Partial<typeof second.config>).simulatorConfig;
+    delete (second.config as Partial<typeof second.config>).terminalTxTextEncoding;
     const legacySecondConfig = JSON.parse(JSON.stringify(secondConfig)) as Record<string, unknown>;
     delete legacySecondConfig.terminalRxRecordMode;
     delete legacySecondConfig.terminalRxLineEnding;
@@ -3952,6 +4089,7 @@ describe("workbenchStore", () => {
     delete legacySecondConfig.channelPresentations;
     delete legacySecondConfig.commandChecksum;
     delete legacySecondConfig.simulatorConfig;
+    delete legacySecondConfig.terminalTxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -3984,7 +4122,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 12 });
+    ).toMatchObject({ version: 13 });
   });
 
   it("迁移 v6 本地状态并保留工作区内的 CR 发送行尾", async () => {
@@ -4000,6 +4138,7 @@ describe("workbenchStore", () => {
     delete (workspace.config as Partial<typeof workspace.config>).channelPresentations;
     delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
     delete (workspace.config as Partial<typeof workspace.config>).simulatorConfig;
+    delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.terminalRxRecordMode;
     delete legacyConfig.terminalRxLineEnding;
@@ -4007,6 +4146,7 @@ describe("workbenchStore", () => {
     delete legacyConfig.channelPresentations;
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
+    delete legacyConfig.terminalTxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4053,11 +4193,13 @@ describe("workbenchStore", () => {
     delete (workspace.config as Partial<typeof workspace.config>).channelPresentations;
     delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
     delete (workspace.config as Partial<typeof workspace.config>).simulatorConfig;
+    delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.terminalRxTextEncoding;
     delete legacyConfig.channelPresentations;
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
+    delete legacyConfig.terminalTxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4082,7 +4224,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 12 });
+    ).toMatchObject({ version: 13 });
   });
 
   it("迁移 v8 本地状态并保留活动处理图与工作区快照", async () => {
@@ -4098,10 +4240,12 @@ describe("workbenchStore", () => {
     delete (workspace.config as Partial<typeof workspace.config>).channelPresentations;
     delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
     delete (workspace.config as Partial<typeof workspace.config>).simulatorConfig;
+    delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.channelPresentations;
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
+    delete legacyConfig.terminalTxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4124,7 +4268,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 12 });
+    ).toMatchObject({ version: 13 });
   });
 
   it("迁移 v9 转换节点并补充空通道展示配置", async () => {
@@ -4147,10 +4291,12 @@ describe("workbenchStore", () => {
     delete (workspace.config as Partial<typeof workspace.config>).channelPresentations;
     delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
     delete (workspace.config as Partial<typeof workspace.config>).simulatorConfig;
+    delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.channelPresentations;
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
+    delete legacyConfig.terminalTxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4188,9 +4334,11 @@ describe("workbenchStore", () => {
     const workspace = createWorkspaceProfile("v10 工作区", config, "legacy-v10", 100);
     delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
     delete (workspace.config as Partial<typeof workspace.config>).simulatorConfig;
+    delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
+    delete legacyConfig.terminalTxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4212,7 +4360,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 12 });
+    ).toMatchObject({ version: 13 });
   });
 
   it("迁移 v11 本地状态并为活动配置与工作区补充默认模拟器配置", async () => {
@@ -4220,8 +4368,10 @@ describe("workbenchStore", () => {
     config.commandChecksum = "xor8";
     const workspace = createWorkspaceProfile("v11 工作区", config, "legacy-v11", 100);
     delete (workspace.config as Partial<typeof workspace.config>).simulatorConfig;
+    delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.simulatorConfig;
+    delete legacyConfig.terminalTxTextEncoding;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4252,12 +4402,52 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 12 });
+    ).toMatchObject({ version: 13 });
+  });
+
+  it("迁移 v12 本地状态并为活动配置与工作区补充 UTF-8 发送编码", async () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.terminalRxTextEncoding = "gb18030";
+    const workspace = createWorkspaceProfile("v12 工作区", config, "legacy-v12", 100);
+    delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
+    const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+    delete legacyConfig.terminalTxTextEncoding;
+    localStorage.setItem(
+      "vofa-ultra-workbench",
+      JSON.stringify({
+        version: 12,
+        state: {
+          ...legacyConfig,
+          workspaces: [workspace],
+          activeWorkspaceId: workspace.id,
+        },
+      }),
+    );
+
+    await useWorkbenchStore.persist.rehydrate();
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      activeWorkspaceId: workspace.id,
+      terminalRxTextEncoding: "gb18030",
+      terminalTxTextEncoding: "utf-8",
+      workspaces: [
+        {
+          id: workspace.id,
+          config: {
+            terminalRxTextEncoding: "gb18030",
+            terminalTxTextEncoding: "utf-8",
+          },
+        },
+      ],
+    });
+    expect(
+      JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
+    ).toMatchObject({ version: 13 });
   });
 
   it("拒绝并保留更高版本的持久化数据", async () => {
     const futureValue = JSON.stringify({
-      version: 13,
+      version: 14,
       state: {
         futureWorkspaceFormat: true,
         workspaces: [{ id: "future-only" }],
@@ -4270,13 +4460,13 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState()).toMatchObject({
       workspaceStorageStatus: "newer-version",
-      incompatibleStorageVersion: 13,
+      incompatibleStorageVersion: 14,
     });
     expect(() => useWorkbenchStore.getState().saveActiveWorkspace("不会保存")).toThrow(
-      /版本 13.*不能保存/,
+      /版本 14.*不能保存/,
     );
     expect(() => useWorkbenchStore.getState().setQuickCommands([quickCommand()])).toThrow(
-      /版本 13.*不能保存/,
+      /版本 14.*不能保存/,
     );
     expect(() =>
       useWorkbenchStore.getState().setChannelPresentation("firewater", "channel-0", {
@@ -4284,7 +4474,7 @@ describe("workbenchStore", () => {
         unit: "",
         color: null,
       }),
-    ).toThrow(/版本 13.*不能保存/);
+    ).toThrow(/版本 14.*不能保存/);
     const beforeExport = useWorkbenchStore.getState();
     expect(beforeExport.createActiveWorkspaceExport("只读工作副本")).toMatchObject({
       name: "只读工作副本",

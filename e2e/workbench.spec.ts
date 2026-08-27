@@ -1954,7 +1954,7 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   expect(layout.documentWidth).toBeLessThanOrEqual(320);
 });
 
-test("通道展示配置按协议隔离并随 v12 工作区往返", async ({ page }, testInfo) => {
+test("通道展示配置按协议隔离并随 v13 工作区往返", async ({ page }, testInfo) => {
   await page.goto("/");
   await ingestProtocolText(page, "voltage:12.5,current:2\n", 1_000);
   await page.getByRole("button", { name: "通道", exact: true }).click();
@@ -2011,7 +2011,7 @@ test("通道展示配置按协议隔离并随 v12 工作区往返", async ({ pag
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 12,
+    schemaVersion: 13,
     config: {
       channelPresentations: {
         firewater: {
@@ -2068,7 +2068,7 @@ test("通道展示配置按协议隔离并随 v12 工作区往返", async ({ pag
   }
 });
 
-test("处理图预设与转换节点生成派生通道并随 v12 工作区往返", async ({ page }, testInfo) => {
+test("处理图预设与转换节点生成派生通道并随 v13 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -2131,7 +2131,7 @@ test("处理图预设与转换节点生成派生通道并随 v12 工作区往返
     schemaVersion: number;
     config: { processingGraph: ProcessingGraphConfig };
   };
-  expect(exported.schemaVersion).toBe(12);
+  expect(exported.schemaVersion).toBe(13);
   expect(exported.config.processingGraph).toMatchObject({
     enabled: true,
     nodes: [
@@ -2158,7 +2158,7 @@ test("处理图预设与转换节点生成派生通道并随 v12 工作区往返
   expect(pageErrors).toEqual([]);
 });
 
-test("实时 RX 自动应答保持有界运行并随 v12 工作区往返", async ({ page }, testInfo) => {
+test("实时 RX 自动应答保持有界运行并随 v13 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -2226,7 +2226,7 @@ test("实时 RX 自动应答保持有界运行并随 v12 工作区往返", async
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 12,
+    schemaVersion: 13,
     config: {
       autoResponderRules: [
         {
@@ -2525,7 +2525,35 @@ test("有界命令历史与可取消周期发送形成完整工作流", async ({
   await expect(page.getByRole("dialog", { name: "命令历史" })).toContainText("<CR>");
 });
 
-test("发送栏自动校验尾按帧顺序发送并随 v12 工作区往返", async ({ page }, testInfo) => {
+test("GB18030 文本发送使用实际字节并从历史恢复编码", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+
+  const encoding = page.getByRole("combobox", { name: "发送文本编码" });
+  const input = page.getByRole("textbox", { name: "发送内容" });
+  await encoding.selectOption("gb18030");
+  await input.fill("中文€");
+  await expect(page.getByLabel("命令模板包含 0 个变量，最终 6 字节")).toBeVisible();
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+
+  await page
+    .getByRole("group", { name: "接收显示格式" })
+    .getByRole("button", { name: "HEX" })
+    .click();
+  await expect(page.locator('.terminal-line[data-direction="tx"] code').last()).toHaveText(
+    "D6 D0 CE C4 A2 E3",
+  );
+
+  await encoding.selectOption("utf-8");
+  await page.getByRole("button", { name: "命令历史，1 条" }).click();
+  const history = page.getByRole("dialog", { name: "命令历史" });
+  await expect(history).toContainText("GB18030");
+  await history.getByRole("button", { name: /中文/ }).click();
+  await expect(encoding).toHaveValue("gb18030");
+});
+
+test("发送栏自动校验尾按帧顺序发送并随 v13 工作区往返", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByRole("button", { name: "启动模拟" }).click();
   await expect(page.getByText("模拟数据正在运行")).toBeVisible();
@@ -2573,7 +2601,7 @@ test("发送栏自动校验尾按帧顺序发送并随 v12 工作区往返", asy
     config: { commandChecksum: string };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 12,
+    schemaVersion: 13,
     config: { commandChecksum: "crc16-modbus-le" },
   });
 
@@ -3359,7 +3387,7 @@ test("命名工作区可保存、切换、导出并重新导入", async ({ page 
   };
   expect(exported).toMatchObject({
     format: "vofa-ultra.workspace",
-    schemaVersion: 12,
+    schemaVersion: 13,
     name: "台架导出草稿",
     config: { protocol: "justfloat" },
   });
@@ -3461,7 +3489,7 @@ async function canvasScreenshotStats(locator: Locator): Promise<{
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({
-    version: 13,
+    version: 14,
     state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
   });
   await page.addInitScript((value) => {
@@ -3470,7 +3498,7 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("button", { name: "工作区" }).click();
-  await expect(page.getByRole("alert")).toContainText("版本 13 的较新配置");
+  await expect(page.getByRole("alert")).toContainText("版本 14 的较新配置");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();

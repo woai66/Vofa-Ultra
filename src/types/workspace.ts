@@ -16,6 +16,7 @@ import type {
   TerminalRxLineEnding,
   TerminalRxRecordMode,
   TerminalRxTextEncoding,
+  TerminalTextEncoding,
 } from "./workbench";
 import type { CommandChecksumMode } from "../core/checksum";
 import type { SimulatorConfig } from "./simulator";
@@ -108,7 +109,11 @@ export interface WorkspaceConfigV12 extends WorkspaceConfigV11 {
   simulatorConfig: SimulatorConfig;
 }
 
-export type WorkspaceConfig = WorkspaceConfigV12;
+export interface WorkspaceConfigV13 extends WorkspaceConfigV12 {
+  terminalTxTextEncoding: TerminalTextEncoding;
+}
+
+export type WorkspaceConfig = WorkspaceConfigV13;
 
 export interface WorkspaceProfile {
   id: string;
@@ -200,4 +205,11 @@ export interface WorkspaceExportV12 {
   schemaVersion: 12;
   name: string;
   config: WorkspaceConfigV12;
+}
+
+export interface WorkspaceExportV13 {
+  format: "vofa-ultra.workspace";
+  schemaVersion: 13;
+  name: string;
+  config: WorkspaceConfigV13;
 }

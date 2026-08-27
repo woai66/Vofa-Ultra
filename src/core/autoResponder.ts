@@ -10,6 +10,8 @@ import type {
   AutoResponderRule,
   AutoResponderSnapshot,
 } from "../types/automation";
+import type { TerminalTextEncoding } from "../types/workbench";
+import { encodeText } from "./textEncoding";
 
 export const MAX_AUTO_RESPONDER_RULES = 16;
 export const MAX_AUTO_RESPONDER_NAME_LENGTH = 64;
@@ -184,12 +186,18 @@ export class AutoResponderRuntime {
     return isAutoResponderActive(this.snapshot);
   }
 
-  start(rules: readonly AutoResponderRule[]): void {
+  start(
+    rules: readonly AutoResponderRule[],
+    rxTextEncoding: TerminalTextEncoding = "utf-8",
+    txTextEncoding: TerminalTextEncoding = "utf-8",
+  ): void {
     if (this.isActive() || this.pumping) {
       throw new Error("自动应答仍在运行或停止中");
     }
     const parsedRules = parseAutoResponderRules(rules);
-    const compiledRules = parsedRules.filter((rule) => rule.enabled).map(compileRule);
+    const compiledRules = parsedRules
+      .filter((rule) => rule.enabled)
+      .map((rule) => compileRule(rule, rxTextEncoding, txTextEncoding));
     if (compiledRules.length === 0) {
       throw new Error("至少需要启用一条自动应答规则");
     }
@@ -334,6 +342,7 @@ export class AutoResponderRuntime {
         mode: compiled.responseTemplate.mode,
         lineEnding: compiled.rule.lineEnding,
         checksumMode: "none",
+        textEncoding: compiled.responseTemplate.textEncoding,
         bytes: Uint8Array.from(rendered.bytes),
         variableCount: rendered.variableCount,
       };
@@ -646,8 +655,11 @@ function parseAutoResponderRule(
       `触发内容文本不能超过 ${MAX_AUTO_RESPONDER_TRIGGER_SOURCE_BYTES / 1024} KiB`,
     );
   }
-  const triggerBytes = compileTrigger(triggerSource, triggerMode);
-  const trigger = triggerMode === "hex" ? formatHex(triggerBytes) : triggerSource;
+  if (triggerMode === "text" && triggerSource.length === 0) {
+    throw new Error("触发内容不能为空");
+  }
+  const trigger =
+    triggerMode === "hex" ? formatHex(compileTrigger(triggerSource, triggerMode)) : triggerSource;
   const responseMode = requireEnum(record.responseMode, ["text", "hex"], "响应格式");
   const response = requireString(record.response, "响应内容");
   if (new TextEncoder().encode(response).byteLength > MAX_AUTO_RESPONDER_RESPONSE_TEMPLATE_BYTES) {
@@ -690,20 +702,28 @@ function parseAutoResponderRule(
   };
 }
 
-function compileRule(rule: AutoResponderRule): CompiledRule {
-  const triggerBytes = compileTrigger(rule.trigger, rule.triggerMode);
+function compileRule(
+  rule: AutoResponderRule,
+  rxTextEncoding: TerminalTextEncoding,
+  txTextEncoding: TerminalTextEncoding,
+): CompiledRule {
+  const triggerBytes = compileTrigger(rule.trigger, rule.triggerMode, rxTextEncoding);
   return {
     rule: { ...rule },
     triggerBytes,
     prefixTable: createPrefixTable(triggerBytes),
-    responseTemplate: compileCommandTemplate(rule.response, rule.responseMode),
+    responseTemplate: compileCommandTemplate(rule.response, rule.responseMode, txTextEncoding),
     matchLength: 0,
     lastAcceptedAt: Number.NEGATIVE_INFINITY,
   };
 }
 
-function compileTrigger(value: string, mode: AutoResponderRule["triggerMode"]): Uint8Array {
-  const bytes = mode === "hex" ? parseHex(value) : new TextEncoder().encode(value);
+function compileTrigger(
+  value: string,
+  mode: AutoResponderRule["triggerMode"],
+  textEncoding: TerminalTextEncoding = "utf-8",
+): Uint8Array {
+  const bytes = mode === "hex" ? parseHex(value) : encodeText(value, textEncoding);
   if (bytes.length === 0) {
     throw new Error("触发内容不能为空");
   }

@@ -49,6 +49,7 @@ import {
   TERMINAL_RX_LINE_ENDINGS,
   TERMINAL_RX_RECORD_MODES,
   TERMINAL_RX_TEXT_ENCODINGS,
+  TERMINAL_TEXT_ENCODINGS,
 } from "../types/workbench";
 import type {
   ChartWindowSeconds,
@@ -65,7 +66,8 @@ import type {
   WorkspaceConfigV10,
   WorkspaceConfigV11,
   WorkspaceConfigV12,
-  WorkspaceExportV12,
+  WorkspaceConfigV13,
+  WorkspaceExportV13,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AttitudeConfig } from "../types/attitude";
@@ -73,7 +75,7 @@ import type { ProcessingGraphConfig } from "../types/processingGraph";
 import type { LineEnding } from "../types/serial";
 
 export const WORKSPACE_FILE_FORMAT = "vofa-ultra.workspace";
-export const WORKSPACE_SCHEMA_VERSION = 12;
+export const WORKSPACE_SCHEMA_VERSION = 13;
 export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   1,
   2,
@@ -86,6 +88,7 @@ export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   9,
   10,
   11,
+  12,
   WORKSPACE_SCHEMA_VERSION,
 ] as const;
 export const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
@@ -136,6 +139,10 @@ const WORKSPACE_CONFIG_V12_KEYS = [
   ...WORKSPACE_CONFIG_V11_KEYS,
   "simulatorConfig",
 ] as const;
+const WORKSPACE_CONFIG_V13_KEYS = [
+  ...WORKSPACE_CONFIG_V12_KEYS,
+  "terminalTxTextEncoding",
+] as const;
 const SERIAL_CONFIG_KEYS = [
   "portName",
   "baudRate",
@@ -167,6 +174,7 @@ export function createDefaultWorkspaceConfig(source: WorkspaceConfig["source"]):
     terminalRxRecordMode: "chunk",
     terminalRxLineEnding: "lf",
     terminalRxTextEncoding: "utf-8",
+    terminalTxTextEncoding: "utf-8",
     terminalAutoScroll: true,
     chartWindowSeconds: 15,
     channelVisibility: {},
@@ -195,6 +203,7 @@ export function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
     terminalRxRecordMode: config.terminalRxRecordMode,
     terminalRxLineEnding: config.terminalRxLineEnding,
     terminalRxTextEncoding: config.terminalRxTextEncoding,
+    terminalTxTextEncoding: config.terminalTxTextEncoding,
     terminalAutoScroll: config.terminalAutoScroll,
     chartWindowSeconds: config.chartWindowSeconds,
     channelVisibility: { ...config.channelVisibility },
@@ -236,6 +245,7 @@ export function areWorkspaceConfigsEqual(
     left.terminalRxRecordMode === right.terminalRxRecordMode &&
     left.terminalRxLineEnding === right.terminalRxLineEnding &&
     left.terminalRxTextEncoding === right.terminalRxTextEncoding &&
+    left.terminalTxTextEncoding === right.terminalTxTextEncoding &&
     left.terminalAutoScroll === right.terminalAutoScroll &&
     left.chartWindowSeconds === right.chartWindowSeconds &&
     JSON.stringify(leftVisibility) === JSON.stringify(rightVisibility) &&
@@ -323,7 +333,7 @@ export function assertWorkspaceNameAvailable(
 }
 
 export function serializeWorkspace(profile: WorkspaceProfile): string {
-  const exported: WorkspaceExportV12 = {
+  const exported: WorkspaceExportV13 = {
     format: WORKSPACE_FILE_FORMAT,
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     name: profile.name,
@@ -334,7 +344,7 @@ export function serializeWorkspace(profile: WorkspaceProfile): string {
   return serialized;
 }
 
-export function parseWorkspaceExport(text: string): WorkspaceExportV12 {
+export function parseWorkspaceExport(text: string): WorkspaceExportV13 {
   assertWorkspaceFileSize(text);
 
   let parsed: unknown;
@@ -375,9 +385,32 @@ export function parseWorkspaceConfig(value: unknown): WorkspaceConfig {
 function parseWorkspaceConfigWithLineEndings(
   value: unknown,
   allowedLineEndings: readonly LineEnding[],
+): WorkspaceConfigV13 {
+  const record = requireRecord(value, "工作区配置");
+  assertExactKeys(record, WORKSPACE_CONFIG_V13_KEYS, "工作区配置");
+  return {
+    ...parseWorkspaceConfigV12Record(record, allowedLineEndings),
+    terminalTxTextEncoding: requireEnum(
+      record.terminalTxTextEncoding,
+      TERMINAL_TEXT_ENCODINGS,
+      "发送文本编码",
+    ),
+  };
+}
+
+function parseWorkspaceConfigV12(
+  value: unknown,
+  allowedLineEndings: readonly LineEnding[] = LINE_ENDINGS,
 ): WorkspaceConfigV12 {
   const record = requireRecord(value, "工作区配置");
   assertExactKeys(record, WORKSPACE_CONFIG_V12_KEYS, "工作区配置");
+  return parseWorkspaceConfigV12Record(record, allowedLineEndings);
+}
+
+function parseWorkspaceConfigV12Record(
+  record: Record<string, unknown>,
+  allowedLineEndings: readonly LineEnding[],
+): WorkspaceConfigV12 {
   return {
     ...parseWorkspaceConfigV11Record(record, allowedLineEndings),
     simulatorConfig: parseSimulatorConfig(record.simulatorConfig),
@@ -738,9 +771,23 @@ function migrateWorkspaceConfigV11(config: WorkspaceConfigV11): WorkspaceConfigV
   };
 }
 
+function migrateWorkspaceConfigV12(config: WorkspaceConfigV12): WorkspaceConfigV13 {
+  return {
+    ...config,
+    terminalTxTextEncoding: "utf-8",
+  };
+}
+
 function parseVersionedWorkspaceConfig(version: unknown, value: unknown): WorkspaceConfig {
   if (version === WORKSPACE_SCHEMA_VERSION) {
     return parseWorkspaceConfig(value);
+  }
+  return migrateWorkspaceConfigV12(parseVersionedWorkspaceConfigV12(version, value));
+}
+
+function parseVersionedWorkspaceConfigV12(version: unknown, value: unknown): WorkspaceConfigV12 {
+  if (version === 12) {
+    return parseWorkspaceConfigV12(value);
   }
   return migrateWorkspaceConfigV11(parseVersionedWorkspaceConfigV11(version, value));
 }
@@ -908,6 +955,9 @@ export function restoreWorkspaceConfig(
     terminalRxTextEncoding: isEnum(record.terminalRxTextEncoding, TERMINAL_RX_TEXT_ENCODINGS)
       ? record.terminalRxTextEncoding
       : fallback.terminalRxTextEncoding,
+    terminalTxTextEncoding: isEnum(record.terminalTxTextEncoding, TERMINAL_TEXT_ENCODINGS)
+      ? record.terminalTxTextEncoding
+      : fallback.terminalTxTextEncoding,
     terminalAutoScroll:
       typeof record.terminalAutoScroll === "boolean"
         ? record.terminalAutoScroll
@@ -993,14 +1043,21 @@ function parseWorkspaceProfileConfig(
   allowedLineEndings: readonly LineEnding[],
   processingGraphSchema: ProcessingGraphSchemaMode,
 ): WorkspaceConfig {
-  if (Object.hasOwn(configRecord, "simulatorConfig")) {
+  if (Object.hasOwn(configRecord, "terminalTxTextEncoding")) {
     return parseWorkspaceConfigWithLineEndings(configRecord, allowedLineEndings);
   }
-  return migrateWorkspaceConfigV11(
-    parseWorkspaceProfileConfigV11(
-      configRecord,
-      allowedLineEndings,
-      processingGraphSchema,
+  if (Object.hasOwn(configRecord, "simulatorConfig")) {
+    return migrateWorkspaceConfigV12(
+      parseWorkspaceConfigV12(configRecord, allowedLineEndings),
+    );
+  }
+  return migrateWorkspaceConfigV12(
+    migrateWorkspaceConfigV11(
+      parseWorkspaceProfileConfigV11(
+        configRecord,
+        allowedLineEndings,
+        processingGraphSchema,
+      ),
     ),
   );
 }

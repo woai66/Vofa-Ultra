@@ -48,6 +48,7 @@ export function AutomationPanel() {
   );
   const [feedback, setFeedback] = useState("");
   const [isError, setIsError] = useState(false);
+  const [startPending, setStartPending] = useState(false);
   const active = isAutoResponderActive(runtime);
   const taskActive = commandTask.status === "running" || commandTask.status === "stopping";
   const isTransitioning =
@@ -62,7 +63,8 @@ export function AutomationPanel() {
     !taskActive &&
     !isModbusPollActive(modbusPoll) &&
     !isSendingCommand &&
-    !isTransitioning;
+    !isTransitioning &&
+    !startPending;
   const draftDirty = useMemo(
     () => Boolean(
       draft && selectedRule && !areAutoResponderRulesEqual([draft], [selectedRule]),
@@ -181,16 +183,19 @@ export function AutomationPanel() {
     }
   };
 
-  const toggleRuntime = (enabled: boolean) => {
+  const toggleRuntime = async (enabled: boolean) => {
     setFeedback("");
     try {
       if (enabled) {
-        start();
+        setStartPending(true);
+        await start();
       } else {
         stop();
       }
     } catch (error) {
       showFeedback(getErrorMessage(error), true);
+    } finally {
+      setStartPending(false);
     }
   };
 
@@ -211,8 +216,8 @@ export function AutomationPanel() {
             id="automation-runtime-enabled"
             type="checkbox"
             checked={active}
-            disabled={!active && !canStart}
-            onChange={(event) => toggleRuntime(event.target.checked)}
+            disabled={startPending || (!active && !canStart)}
+            onChange={(event) => void toggleRuntime(event.target.checked)}
           />
         </label>
         <div

@@ -12,6 +12,7 @@ import type {
   SerialStatePayload,
   SerialTxPayload,
 } from "../types/serial";
+import type { TerminalTextEncoding } from "../types/workbench";
 
 export interface SerialEventHandlers {
   onData(payload: SerialDataPayload): void;
@@ -56,9 +57,12 @@ export async function disconnectSerial(): Promise<SerialStatePayload> {
   return invoke<SerialStatePayload>("disconnect_serial");
 }
 
-export async function sendSerial(data: Uint8Array): Promise<void> {
+export async function sendSerial(
+  data: Uint8Array,
+  textEncoding?: TerminalTextEncoding,
+): Promise<void> {
   requireTauriRuntime();
-  await invoke("send_serial", { data: Array.from(data) });
+  await invoke("send_serial", { data: Array.from(data), textEncoding });
 }
 
 export async function setSerialControlLine(

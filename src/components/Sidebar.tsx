@@ -63,9 +63,11 @@ import {
 } from "../types/simulator";
 import type { SidebarPanel } from "./ActivityRail";
 import { CapturePanel } from "./CapturePanel";
-import { AutomationPanel } from "./AutomationPanel";
 import { WorkspacePanel } from "./WorkspacePanel";
 
+const AutomationPanel = lazy(() =>
+  import("./AutomationPanel").then(({ AutomationPanel }) => ({ default: AutomationPanel })),
+);
 const ProcessingPanel = lazy(() =>
   import("./ProcessingPanel").then(({ ProcessingPanel }) => ({ default: ProcessingPanel })),
 );
@@ -117,7 +119,15 @@ export function Sidebar({
           <ExtensionPanel />
         </Suspense>
       )}
-      {activePanel === "automation" && <AutomationPanel />}
+      {activePanel === "automation" && (
+        <Suspense
+          fallback={
+            <div className="sidebar-panel" aria-label="加载中" aria-busy="true" />
+          }
+        >
+          <AutomationPanel />
+        </Suspense>
+      )}
       {activePanel === "capture" && <CapturePanel />}
       <div className="workspace-panel-host" hidden={activePanel !== "workspaces"}>
         <WorkspacePanel />
