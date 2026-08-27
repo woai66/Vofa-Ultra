@@ -18,6 +18,7 @@ import type {
   TerminalRxTextEncoding,
 } from "./workbench";
 import type { CommandChecksumMode } from "../core/checksum";
+import type { SimulatorConfig } from "./simulator";
 
 export type ChartWindowSeconds = 5 | 15 | 30 | 60;
 
@@ -103,7 +104,11 @@ export interface WorkspaceConfigV11 extends WorkspaceConfigV10 {
   commandChecksum: CommandChecksumMode;
 }
 
-export type WorkspaceConfig = WorkspaceConfigV11;
+export interface WorkspaceConfigV12 extends WorkspaceConfigV11 {
+  simulatorConfig: SimulatorConfig;
+}
+
+export type WorkspaceConfig = WorkspaceConfigV12;
 
 export interface WorkspaceProfile {
   id: string;
@@ -188,4 +193,11 @@ export interface WorkspaceExportV11 {
   schemaVersion: 11;
   name: string;
   config: WorkspaceConfigV11;
+}
+
+export interface WorkspaceExportV12 {
+  format: "vofa-ultra.workspace";
+  schemaVersion: 12;
+  name: string;
+  config: WorkspaceConfigV12;
 }

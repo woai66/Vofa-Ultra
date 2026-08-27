@@ -311,6 +311,91 @@ test("状态栏显示当前双向吞吐并在空闲后归零", async ({ page }) 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 });
 
+test("模拟信号实验室支持十六通道配置、运行锁定与可复现重启", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+
+  await page.setViewportSize({ width: 1_280, height: 800 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("radio", { name: /Raw Data/ }).click();
+
+  const signal = page.getByLabel("信号类型");
+  const channelCount = page.getByRole("spinbutton", { name: "模拟器通道数" });
+  const sampleRate = page.getByLabel("模拟器采样率");
+  await signal.selectOption("white-noise");
+  await channelCount.fill("16");
+  await sampleRate.selectOption("10");
+  await expect(signal).toHaveValue("white-noise");
+  await expect(channelCount).toHaveValue("16");
+  await expect(sampleRate).toHaveValue("10");
+
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+  await expect(signal).toBeDisabled();
+  await expect(channelCount).toBeDisabled();
+  await expect(sampleRate).toBeDisabled();
+
+  const rxLines = page.locator('.terminal-line[data-direction="rx"]');
+  await expect.poll(() => rxLines.count()).toBeGreaterThanOrEqual(3);
+  const firstRun = (await rxLines.locator("code").allTextContents()).slice(0, 3);
+  expect(firstRun).toHaveLength(3);
+  expect(firstRun[0]).toContain("sample=00000");
+  expect(firstRun[1]).toContain("sample=00001");
+  expect(firstRun[2]).toContain("sample=00002");
+  expect(firstRun.every((line) => line.includes("ch16="))).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("simulator-signals-desktop.png"),
+    fullPage: true,
+  });
+
+  await page.getByRole("button", { name: "断开连接" }).click();
+  await expect(page.getByText("模拟数据已停止")).toBeVisible();
+  await page.getByRole("button", { name: "清空终端", exact: true }).click();
+  await expect(rxLines).toHaveCount(0);
+
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect.poll(() => rxLines.count()).toBeGreaterThanOrEqual(3);
+  const secondRun = (await rxLines.locator("code").allTextContents()).slice(0, 3);
+  expect(secondRun).toEqual(firstRun);
+  await page.getByRole("button", { name: "断开连接" }).click();
+
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  const simulatorPanel = page.getByRole("region", { name: "模拟器配置" });
+  await expect(simulatorPanel).toBeVisible();
+  await expect
+    .poll(() => simulatorPanel.evaluate((element) => element.getBoundingClientRect().left))
+    .toBeGreaterThanOrEqual(0);
+  const mobileLayout = await simulatorPanel.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return {
+      left: bounds.left,
+      width: bounds.width,
+      right: bounds.right,
+      scrollWidth: document.documentElement.scrollWidth,
+      controlHeights: [...element.querySelectorAll<HTMLElement>("input, select")].map(
+        (control) => control.getBoundingClientRect().height,
+      ),
+    };
+  });
+  expect(mobileLayout.left).toBeGreaterThanOrEqual(0);
+  expect(mobileLayout.width).toBeGreaterThanOrEqual(280);
+  expect(mobileLayout.right).toBeLessThanOrEqual(320);
+  expect(mobileLayout.scrollWidth).toBeLessThanOrEqual(320);
+  expect(mobileLayout.controlHeights.every((height) => height >= 44)).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("simulator-signals-mobile.png"),
+    fullPage: true,
+  });
+  expect(pageErrors).toEqual([]);
+});
+
 test("标签组支持标准键盘导航", async ({ page }) => {
   await page.goto("/");
 
@@ -1869,7 +1954,7 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   expect(layout.documentWidth).toBeLessThanOrEqual(320);
 });
 
-test("通道展示配置按协议隔离并随 v11 工作区往返", async ({ page }, testInfo) => {
+test("通道展示配置按协议隔离并随 v12 工作区往返", async ({ page }, testInfo) => {
   await page.goto("/");
   await ingestProtocolText(page, "voltage:12.5,current:2\n", 1_000);
   await page.getByRole("button", { name: "通道", exact: true }).click();
@@ -1926,7 +2011,7 @@ test("通道展示配置按协议隔离并随 v11 工作区往返", async ({ pag
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 11,
+    schemaVersion: 12,
     config: {
       channelPresentations: {
         firewater: {
@@ -1983,7 +2068,7 @@ test("通道展示配置按协议隔离并随 v11 工作区往返", async ({ pag
   }
 });
 
-test("处理图预设与转换节点生成派生通道并随 v11 工作区往返", async ({ page }, testInfo) => {
+test("处理图预设与转换节点生成派生通道并随 v12 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -2046,7 +2131,7 @@ test("处理图预设与转换节点生成派生通道并随 v11 工作区往返
     schemaVersion: number;
     config: { processingGraph: ProcessingGraphConfig };
   };
-  expect(exported.schemaVersion).toBe(11);
+  expect(exported.schemaVersion).toBe(12);
   expect(exported.config.processingGraph).toMatchObject({
     enabled: true,
     nodes: [
@@ -2073,7 +2158,7 @@ test("处理图预设与转换节点生成派生通道并随 v11 工作区往返
   expect(pageErrors).toEqual([]);
 });
 
-test("实时 RX 自动应答保持有界运行并随 v11 工作区往返", async ({ page }, testInfo) => {
+test("实时 RX 自动应答保持有界运行并随 v12 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -2141,7 +2226,7 @@ test("实时 RX 自动应答保持有界运行并随 v11 工作区往返", async
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 11,
+    schemaVersion: 12,
     config: {
       autoResponderRules: [
         {
@@ -2440,7 +2525,7 @@ test("有界命令历史与可取消周期发送形成完整工作流", async ({
   await expect(page.getByRole("dialog", { name: "命令历史" })).toContainText("<CR>");
 });
 
-test("发送栏自动校验尾按帧顺序发送并随 v11 工作区往返", async ({ page }, testInfo) => {
+test("发送栏自动校验尾按帧顺序发送并随 v12 工作区往返", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByRole("button", { name: "启动模拟" }).click();
   await expect(page.getByText("模拟数据正在运行")).toBeVisible();
@@ -2488,7 +2573,7 @@ test("发送栏自动校验尾按帧顺序发送并随 v11 工作区往返", asy
     config: { commandChecksum: string };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 11,
+    schemaVersion: 12,
     config: { commandChecksum: "crc16-modbus-le" },
   });
 
@@ -3274,7 +3359,7 @@ test("命名工作区可保存、切换、导出并重新导入", async ({ page 
   };
   expect(exported).toMatchObject({
     format: "vofa-ultra.workspace",
-    schemaVersion: 11,
+    schemaVersion: 12,
     name: "台架导出草稿",
     config: { protocol: "justfloat" },
   });
@@ -3376,7 +3461,7 @@ async function canvasScreenshotStats(locator: Locator): Promise<{
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({
-    version: 12,
+    version: 13,
     state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
   });
   await page.addInitScript((value) => {
@@ -3385,7 +3470,7 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("button", { name: "工作区" }).click();
-  await expect(page.getByRole("alert")).toContainText("版本 12 的较新配置");
+  await expect(page.getByRole("alert")).toContainText("版本 13 的较新配置");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();

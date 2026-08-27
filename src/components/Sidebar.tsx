@@ -32,6 +32,7 @@ import {
   BUILTIN_PROTOCOLS,
   PROTOCOL_DROP_REASON_LABELS,
 } from "../core/protocols";
+import { SIMULATOR_SIGNAL_DEFINITIONS } from "../core/simulator";
 import { isRecoveryActivePhase } from "../core/serialRecovery";
 import { presentSerialPort, sortSerialPorts } from "../core/serialPorts";
 import type { ThemePreference } from "../App";
@@ -53,6 +54,13 @@ import type {
   ChartWindowSeconds,
 } from "../types/workspace";
 import type { ProtocolHealthSnapshot } from "../types/workbench";
+import {
+  MAX_SIMULATOR_CHANNELS,
+  MIN_SIMULATOR_CHANNELS,
+  SIMULATOR_SAMPLE_RATES,
+  type SimulatorSampleRate,
+  type SimulatorSignalType,
+} from "../types/simulator";
 import type { SidebarPanel } from "./ActivityRail";
 import { CapturePanel } from "./CapturePanel";
 import { AutomationPanel } from "./AutomationPanel";
@@ -133,6 +141,7 @@ function ConnectionPanel() {
   const ports = useWorkbenchStore((state) => state.ports);
   const isRefreshingPorts = useWorkbenchStore((state) => state.isRefreshingPorts);
   const config = useWorkbenchStore((state) => state.serialConfig);
+  const simulatorConfig = useWorkbenchStore((state) => state.simulatorConfig);
   const serialControlLineOperation = useWorkbenchStore(
     (state) => state.serialControlLineOperation,
   );
@@ -149,6 +158,9 @@ function ConnectionPanel() {
   const setSource = useWorkbenchStore((state) => state.setSource);
   const setProtocol = useWorkbenchStore((state) => state.setProtocol);
   const updateConfig = useWorkbenchStore((state) => state.updateSerialConfig);
+  const updateSimulatorConfig = useWorkbenchStore(
+    (state) => state.updateSimulatorConfig,
+  );
   const setSerialControlLine = useWorkbenchStore((state) => state.setSerialControlLine);
   const refreshPorts = useWorkbenchStore((state) => state.refreshPorts);
   const connect = useWorkbenchStore((state) => state.connect);
@@ -253,6 +265,75 @@ function ConnectionPanel() {
           </button>
         </div>
       </section>
+
+      {source === "simulator" && (
+        <section
+          className="sidebar-section connection-fields simulator-fields"
+          aria-label="模拟器配置"
+        >
+          <label className="field-label" htmlFor="simulator-signal">
+            信号类型
+          </label>
+          <select
+            id="simulator-signal"
+            value={simulatorConfig.signal}
+            disabled={configDisabled}
+            onChange={(event) =>
+              updateSimulatorConfig("signal", event.target.value as SimulatorSignalType)
+            }
+          >
+            {SIMULATOR_SIGNAL_DEFINITIONS.map(({ id, displayName }) => (
+              <option key={id} value={id}>
+                {displayName}
+              </option>
+            ))}
+          </select>
+          <div className="field-grid simulator-config-grid">
+            <label>
+              <span className="field-label">通道数</span>
+              <input
+                aria-label="模拟器通道数"
+                type="number"
+                min={MIN_SIMULATOR_CHANNELS}
+                max={MAX_SIMULATOR_CHANNELS}
+                step={1}
+                value={simulatorConfig.channelCount}
+                disabled={configDisabled}
+                onChange={(event) => {
+                  const channelCount = Number(event.target.value);
+                  if (
+                    Number.isInteger(channelCount) &&
+                    channelCount >= MIN_SIMULATOR_CHANNELS &&
+                    channelCount <= MAX_SIMULATOR_CHANNELS
+                  ) {
+                    updateSimulatorConfig("channelCount", channelCount);
+                  }
+                }}
+              />
+            </label>
+            <label>
+              <span className="field-label">采样率</span>
+              <select
+                aria-label="模拟器采样率"
+                value={simulatorConfig.sampleRate}
+                disabled={configDisabled}
+                onChange={(event) =>
+                  updateSimulatorConfig(
+                    "sampleRate",
+                    Number(event.target.value) as SimulatorSampleRate,
+                  )
+                }
+              >
+                {SIMULATOR_SAMPLE_RATES.map((sampleRate) => (
+                  <option key={sampleRate} value={sampleRate}>
+                    {sampleRate} Hz
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </section>
+      )}
 
       {source === "serial" && (
         <section className="sidebar-section connection-fields">

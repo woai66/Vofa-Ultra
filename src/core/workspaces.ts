@@ -39,6 +39,13 @@ import {
   parseCommandChecksumMode,
 } from "./checksum";
 import {
+  areSimulatorConfigsEqual,
+  cloneSimulatorConfig,
+  createDefaultSimulatorConfig,
+  parseSimulatorConfig,
+  tryParseSimulatorConfig,
+} from "./simulator";
+import {
   TERMINAL_RX_LINE_ENDINGS,
   TERMINAL_RX_RECORD_MODES,
   TERMINAL_RX_TEXT_ENCODINGS,
@@ -57,7 +64,8 @@ import type {
   WorkspaceConfigV9,
   WorkspaceConfigV10,
   WorkspaceConfigV11,
-  WorkspaceExportV11,
+  WorkspaceConfigV12,
+  WorkspaceExportV12,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AttitudeConfig } from "../types/attitude";
@@ -65,7 +73,7 @@ import type { ProcessingGraphConfig } from "../types/processingGraph";
 import type { LineEnding } from "../types/serial";
 
 export const WORKSPACE_FILE_FORMAT = "vofa-ultra.workspace";
-export const WORKSPACE_SCHEMA_VERSION = 11;
+export const WORKSPACE_SCHEMA_VERSION = 12;
 export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   1,
   2,
@@ -77,6 +85,7 @@ export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   8,
   9,
   10,
+  11,
   WORKSPACE_SCHEMA_VERSION,
 ] as const;
 export const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
@@ -123,6 +132,10 @@ const WORKSPACE_CONFIG_V11_KEYS = [
   ...WORKSPACE_CONFIG_V10_KEYS,
   "commandChecksum",
 ] as const;
+const WORKSPACE_CONFIG_V12_KEYS = [
+  ...WORKSPACE_CONFIG_V11_KEYS,
+  "simulatorConfig",
+] as const;
 const SERIAL_CONFIG_KEYS = [
   "portName",
   "baudRate",
@@ -163,6 +176,7 @@ export function createDefaultWorkspaceConfig(source: WorkspaceConfig["source"]):
     quickCommands: [],
     channelPresentations: createDefaultChannelPresentations(),
     commandChecksum: DEFAULT_COMMAND_CHECKSUM_MODE,
+    simulatorConfig: createDefaultSimulatorConfig(),
   };
 }
 
@@ -190,6 +204,7 @@ export function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
     quickCommands: cloneQuickCommands(config.quickCommands),
     channelPresentations: cloneChannelPresentations(config.channelPresentations),
     commandChecksum: config.commandChecksum,
+    simulatorConfig: cloneSimulatorConfig(config.simulatorConfig),
   };
 }
 
@@ -229,7 +244,8 @@ export function areWorkspaceConfigsEqual(
     areAutoResponderRulesEqual(left.autoResponderRules, right.autoResponderRules) &&
     areQuickCommandsEqual(left.quickCommands, right.quickCommands) &&
     areChannelPresentationsEqual(left.channelPresentations, right.channelPresentations) &&
-    left.commandChecksum === right.commandChecksum
+    left.commandChecksum === right.commandChecksum &&
+    areSimulatorConfigsEqual(left.simulatorConfig, right.simulatorConfig)
   );
 }
 
@@ -307,7 +323,7 @@ export function assertWorkspaceNameAvailable(
 }
 
 export function serializeWorkspace(profile: WorkspaceProfile): string {
-  const exported: WorkspaceExportV11 = {
+  const exported: WorkspaceExportV12 = {
     format: WORKSPACE_FILE_FORMAT,
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     name: profile.name,
@@ -318,7 +334,7 @@ export function serializeWorkspace(profile: WorkspaceProfile): string {
   return serialized;
 }
 
-export function parseWorkspaceExport(text: string): WorkspaceExportV11 {
+export function parseWorkspaceExport(text: string): WorkspaceExportV12 {
   assertWorkspaceFileSize(text);
 
   let parsed: unknown;
@@ -359,9 +375,28 @@ export function parseWorkspaceConfig(value: unknown): WorkspaceConfig {
 function parseWorkspaceConfigWithLineEndings(
   value: unknown,
   allowedLineEndings: readonly LineEnding[],
+): WorkspaceConfigV12 {
+  const record = requireRecord(value, "工作区配置");
+  assertExactKeys(record, WORKSPACE_CONFIG_V12_KEYS, "工作区配置");
+  return {
+    ...parseWorkspaceConfigV11Record(record, allowedLineEndings),
+    simulatorConfig: parseSimulatorConfig(record.simulatorConfig),
+  };
+}
+
+function parseWorkspaceConfigV11(
+  value: unknown,
+  allowedLineEndings: readonly LineEnding[] = LINE_ENDINGS,
 ): WorkspaceConfigV11 {
   const record = requireRecord(value, "工作区配置");
   assertExactKeys(record, WORKSPACE_CONFIG_V11_KEYS, "工作区配置");
+  return parseWorkspaceConfigV11Record(record, allowedLineEndings);
+}
+
+function parseWorkspaceConfigV11Record(
+  record: Record<string, unknown>,
+  allowedLineEndings: readonly LineEnding[],
+): WorkspaceConfigV11 {
   return {
     ...parseWorkspaceConfigV10Record(record, allowedLineEndings),
     commandChecksum: parseCommandChecksumMode(record.commandChecksum),
@@ -696,9 +731,23 @@ function migrateWorkspaceConfigV10(config: WorkspaceConfigV10): WorkspaceConfigV
   };
 }
 
+function migrateWorkspaceConfigV11(config: WorkspaceConfigV11): WorkspaceConfigV12 {
+  return {
+    ...config,
+    simulatorConfig: createDefaultSimulatorConfig(),
+  };
+}
+
 function parseVersionedWorkspaceConfig(version: unknown, value: unknown): WorkspaceConfig {
   if (version === WORKSPACE_SCHEMA_VERSION) {
     return parseWorkspaceConfig(value);
+  }
+  return migrateWorkspaceConfigV11(parseVersionedWorkspaceConfigV11(version, value));
+}
+
+function parseVersionedWorkspaceConfigV11(version: unknown, value: unknown): WorkspaceConfigV11 {
+  if (version === 11) {
+    return parseWorkspaceConfigV11(value);
   }
   return migrateWorkspaceConfigV10(parseVersionedWorkspaceConfigV10(version, value));
 }
@@ -813,6 +862,9 @@ export function restoreWorkspaceConfig(
     cloneChannelPresentations(fallback.channelPresentations);
   const commandChecksum =
     tryParseCommandChecksumMode(record.commandChecksum) ?? fallback.commandChecksum;
+  const simulatorConfig =
+    tryParseSimulatorConfig(record.simulatorConfig) ??
+    cloneSimulatorConfig(fallback.simulatorConfig);
   return {
     source: isEnum(record.source, ["serial", "simulator"]) ? record.source : fallback.source,
     protocol: isEnum(record.protocol, PROTOCOL_IDS)
@@ -872,6 +924,7 @@ export function restoreWorkspaceConfig(
     quickCommands,
     channelPresentations,
     commandChecksum,
+    simulatorConfig,
   };
 }
 
@@ -940,8 +993,25 @@ function parseWorkspaceProfileConfig(
   allowedLineEndings: readonly LineEnding[],
   processingGraphSchema: ProcessingGraphSchemaMode,
 ): WorkspaceConfig {
-  if (Object.hasOwn(configRecord, "commandChecksum")) {
+  if (Object.hasOwn(configRecord, "simulatorConfig")) {
     return parseWorkspaceConfigWithLineEndings(configRecord, allowedLineEndings);
+  }
+  return migrateWorkspaceConfigV11(
+    parseWorkspaceProfileConfigV11(
+      configRecord,
+      allowedLineEndings,
+      processingGraphSchema,
+    ),
+  );
+}
+
+function parseWorkspaceProfileConfigV11(
+  configRecord: Record<string, unknown>,
+  allowedLineEndings: readonly LineEnding[],
+  processingGraphSchema: ProcessingGraphSchemaMode,
+): WorkspaceConfigV11 {
+  if (Object.hasOwn(configRecord, "commandChecksum")) {
+    return parseWorkspaceConfigV11(configRecord, allowedLineEndings);
   }
   if (Object.hasOwn(configRecord, "channelPresentations")) {
     return migrateWorkspaceConfigV10(

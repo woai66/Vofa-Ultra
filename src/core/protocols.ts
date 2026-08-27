@@ -235,9 +235,10 @@ const protocolRegistry = {
     encodeSimulatorSample: (values: readonly number[], sampleIndex: number) =>
       RAW_ENCODER.encode(
         `sample=${sampleIndex.toString().padStart(5, "0")} ` +
-          `temp=${formatSimulatorValue(values[0])} ` +
-          `voltage=${formatSimulatorValue(values[1])} ` +
-          `load=${formatSimulatorValue(values[2])}\n`,
+          values
+            .map((value, index) => `ch${index + 1}=${formatSimulatorValue(value)}`)
+            .join(" ") +
+          "\n",
       ),
   }),
 } as const satisfies Readonly<Record<ProtocolKind, BuiltinProtocolDefinition>>;
