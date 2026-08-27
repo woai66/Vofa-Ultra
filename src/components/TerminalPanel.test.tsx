@@ -618,6 +618,34 @@ describe("TerminalPanel", () => {
     });
   });
 
+  it("Enter 与发送按钮共享可执行条件", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    useWorkbenchStore.setState({ connectionStatus: "disconnected", send });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const input = screen.getByRole("textbox", { name: "发送内容" });
+    const sendButton = screen.getByRole("button", { name: "发送" });
+
+    await user.type(input, "PING");
+    expect(sendButton).toBeDisabled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(send).not.toHaveBeenCalled();
+    expect(input).toHaveValue("PING");
+
+    useWorkbenchStore.setState({
+      connectionStatus: "connected",
+      workspaceTransitionStatus: "switching",
+    });
+    expect(sendButton).toBeDisabled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(send).not.toHaveBeenCalled();
+
+    useWorkbenchStore.setState({ workspaceTransitionStatus: "idle" });
+    await waitFor(() => expect(sendButton).toBeEnabled());
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(send).toHaveBeenCalledWith("PING", "text", "none"));
+  });
+
   it("发送完成前编辑新草稿时保留新内容", async () => {
     const deferred = createDeferred<void>();
     const send = vi.fn(() => deferred.promise);
