@@ -1,7 +1,7 @@
 # 性能基准
 
-性能基准用于发现协议解析、处理图、数据转换、扩展同步分批复制和工作台数据平面的数量级回退，不用于比较开发者硬件。
-项目当前未启用 GitHub Actions 性能任务，因此没有统一的线上权威环境；本地结果只作为回归线索。
+性能门禁用于阻止协议解析、处理图、数据转换、扩展同步分批复制和工作台数据平面的数量级回退，不用于比较开发者硬件。
+GitHub Actions 的 Ubuntu 22.04 performance job 是绝对预算的权威环境；Windows、macOS 和其他本地结果只用于定位变化。
 
 ## 运行与产物
 
@@ -10,7 +10,8 @@ pnpm benchmark
 ```
 
 命令固定使用一个 Vitest worker，并禁用文件并行。原始报告写入 `artifacts/performance/vitest.json`，校验后的
-机器可读摘要和 Markdown 摘要分别写入 `summary.json`、`summary.md`。该目录是本地诊断产物，不提交到仓库。
+机器可读摘要和 Markdown 摘要分别写入 `summary.json`、`summary.md`。该目录是诊断产物，不提交到仓库；CI 无论
+成功或失败都会上传 14 天。
 
 ## 固定场景
 

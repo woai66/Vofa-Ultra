@@ -585,11 +585,17 @@ collector 只扫描完整 target 对应的 bundle 目录，接受项目元数据
    显式发送、字节/数值互转标准向量、处理图转换链与工作区 v9、
    捕获导出入口权限、原始文件显式开始/进度/取消、窄屏溢出、短窗口布局和同一 USB
    设备跨端口名恢复，以及桌面模拟桥接下解析样本的数值 CSV 启停与批处理。
-4. 当前不启用 GitHub Actions。维护者在本地运行 `pnpm check`、`pnpm benchmark`、`pnpm test:e2e` 和 Rust 检查。
-5. 本地性能基准以单 worker 运行固定工作量和预热后的中位数预算，严格拒绝场景缺失、未预算场景和样本不足；
-   Store 场景先预填到每通道 2000 点，再覆盖真实 Base64 串口入口与多记录回放批次。
-6. 候选包由维护者在对应目标系统手动生成，并检查版本、供应链材料与 SHA-256；线上聚合和 draft Release 尚未启用。
-7. 正式发布前必须补充候选包安装/卸载冒烟，以及真实串口的长稳、拔插、流控和高波特率测试。
+4. GitHub Actions 在三个桌面系统执行 rustfmt、Clippy、Rust 测试、目标过滤的许可证/SBOM 门禁和
+   `tauri build --no-bundle`，在 Node.js 22 上执行前端检查和浏览器验收。
+5. 独立 Linux performance job 以单 worker 运行固定工作量和预热后的中位数预算，严格拒绝场景缺失、未预算场景
+   和样本不足；Store 场景先预填到每通道 2000 点，再覆盖真实 Base64 串口入口与多记录回放批次。
+6. 手动 workflow 或与项目版本一致的 `v*` 标签生成无签名 MSI、NSIS、DMG、DEB、AppImage，并验证产物非空、
+   文件名版本、嵌入/sidecar 供应链材料和逐文件 SHA-256。
+7. 标签 workflow 在独立性能预算与三平台全部成功后复验当前 run 的完整产物，加入版本 CHANGELOG、source/run
+   绑定记录、目标专属供应链文件与统一 `SHA256SUMS`；创建前后都将远端标签解引用到 commit，并要求与触发源码一致。
+8. 聚合产物通过受保护 Environment 创建 draft；v0.x 和 SemVer 预发布版本自动标记为 prerelease，自动化不
+   Publish，也不标记 Latest。
+9. 正式发布前必须补充候选包安装/卸载冒烟，以及真实串口的长稳、拔插、流控和高波特率测试。
 
 ## 扩展原则
 
