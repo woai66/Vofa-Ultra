@@ -1124,7 +1124,6 @@ export function TerminalPanel() {
             type="button"
             aria-label={clearTerminalLabel}
             title={clearTerminalLabel}
-            disabled={!entries.length}
             onClick={clearTerminal}
           >
             <Eraser size={16} />
