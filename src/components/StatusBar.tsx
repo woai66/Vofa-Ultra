@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CircleGauge,
   CirclePlay,
@@ -15,11 +15,20 @@ import {
 } from "../core/protocols";
 import { isRecoveryActivePhase } from "../core/serialRecovery";
 import {
+  sampleTransferRates,
+  ZERO_TRANSFER_RATES,
+  type TransferRateSample,
+  type TransferRates,
+} from "../core/transferRate";
+import {
   selectActiveProtocol,
   selectActiveProtocolHealth,
   useWorkbenchStore,
 } from "../store/workbenchStore";
 import type { SerialRecoveryPhase } from "../types/serial";
+import type { TransferStats } from "../types/workbench";
+
+const TRANSFER_RATE_SAMPLE_INTERVAL_MS = 1_000;
 
 export function StatusBar() {
   const source = useWorkbenchStore((state) => state.source);
@@ -39,15 +48,7 @@ export function StatusBar() {
   const replaySpeed = useWorkbenchStore((state) => state.replaySpeed);
   const replayPositionUs = useWorkbenchStore((state) => state.replayPositionUs);
   const replayDurationUs = useWorkbenchStore((state) => state.replayDurationUs);
-  const [now, setNow] = useState(Date.now());
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const elapsedSeconds = stats.startedAt ? Math.max((now - stats.startedAt) / 1_000, 1) : 1;
-  const receiveRate = stats.rxBytes / elapsedSeconds;
+  const transferRates = useTransferRates(stats);
   const replayLoaded = replaySessionId > 0 && replayStatus !== "idle";
   const recoveryActive = source === "serial" && isRecoveryActivePhase(serialRecovery.phase);
   const protocolWarning = activeProtocol !== "raw" && protocolHealth.droppedFrames > 0;
@@ -112,9 +113,14 @@ export function StatusBar() {
           </span>
         </div>
       )}
-      <div className="status-item" title="接收速率">
+      <div
+        className="status-item transfer-rate"
+        aria-label={transferRateLabel(transferRates)}
+        title="实时传输速率"
+      >
         <Database size={13} />
-        <span>{formatBytes(receiveRate)}/s</span>
+        <span>RX {formatBytes(transferRates.rxBytesPerSecond)}/s</span>
+        <span>TX {formatBytes(transferRates.txBytesPerSecond)}/s</span>
       </div>
       <div className="status-item transfer-stats">
         <span>RX {formatBytes(stats.rxBytes)}</span>
@@ -129,6 +135,51 @@ export function StatusBar() {
       </div>
     </footer>
   );
+}
+
+function useTransferRates(stats: TransferStats): TransferRates {
+  const statsRef = useRef(stats);
+  const sampleRef = useRef<TransferRateSample | null>(null);
+  const [rates, setRates] = useState<TransferRates>(ZERO_TRANSFER_RATES);
+  statsRef.current = stats;
+
+  useEffect(() => {
+    const sample = () => {
+      const update = sampleTransferRates(statsRef.current, performance.now(), sampleRef.current);
+      sampleRef.current = update.sample;
+      setRates((current) =>
+        current.rxBytesPerSecond === update.rates.rxBytesPerSecond &&
+        current.txBytesPerSecond === update.rates.txBytesPerSecond
+          ? current
+          : update.rates,
+      );
+    };
+    sample();
+    const timer = window.setInterval(sample, TRANSFER_RATE_SAMPLE_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const previous = sampleRef.current;
+    if (
+      previous &&
+      (previous.startedAt !== stats.startedAt ||
+        stats.rxBytes < previous.rxBytes ||
+        stats.txBytes < previous.txBytes)
+    ) {
+      const update = sampleTransferRates(stats, performance.now(), previous);
+      sampleRef.current = update.sample;
+      setRates(ZERO_TRANSFER_RATES);
+    }
+  }, [stats]);
+
+  return rates;
+}
+
+function transferRateLabel(rates: TransferRates): string {
+  return `实时传输速率：RX ${formatBytes(rates.rxBytesPerSecond)}/s，TX ${formatBytes(
+    rates.txBytesPerSecond,
+  )}/s`;
 }
 
 function connectionLabel(status: string): string {

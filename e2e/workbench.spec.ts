@@ -282,6 +282,35 @@ test("主题偏好跟随系统并持久化固定选择", async ({ page }, testIn
   });
 });
 
+test("状态栏显示当前双向吞吐并在空闲后归零", async ({ page }) => {
+  await page.setViewportSize({ width: 1_280, height: 800 });
+  await page.goto("/");
+  const startedAt = Date.now();
+  await setWorkbenchState(page, {
+    stats: { rxBytes: 0, txBytes: 0, rxFrames: 0, startedAt },
+  });
+
+  const rate = page.locator(".transfer-rate");
+  await expect(rate).toContainText("RX 0 B/s");
+  await expect(rate).toContainText("TX 0 B/s");
+  await setWorkbenchState(page, {
+    stats: { rxBytes: 4_096, txBytes: 2_048, rxFrames: 2, startedAt },
+  });
+  await expect
+    .poll(async () => (await rate.textContent()) ?? "", { timeout: 2_500 })
+    .not.toContain("RX 0 B/s");
+  await expect(rate).not.toContainText("TX 0 B/s");
+
+  await expect
+    .poll(async () => (await rate.textContent()) ?? "", { timeout: 2_500 })
+    .toContain("RX 0 B/s");
+  await expect(rate).toContainText("TX 0 B/s");
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await expect(rate).toHaveAttribute("aria-label", /RX 0 B\/s，TX 0 B\/s/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+});
+
 test("标签组支持标准键盘导航", async ({ page }) => {
   await page.goto("/");
 
