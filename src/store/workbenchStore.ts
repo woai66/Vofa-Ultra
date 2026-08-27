@@ -356,6 +356,7 @@ let captureStopPromise: Promise<boolean> | null = null;
 let numericLogStopPromise: Promise<boolean> | null = null;
 let serialRecoveryCoordinator: SerialReconnectCoordinator | null = null;
 let serialConnectOperation = 0;
+let serialPortRefreshOperation = 0;
 let serialControlLineOperation = 0;
 let serialRecoverySettingOperation = 0;
 let commandScheduler: CommandScheduler | null = null;
@@ -1067,6 +1068,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (switchedToBrowserSimulator) {
           resetLiveStreamBoundary(state.protocol);
         }
+        if (availabilityChanged) {
+          invalidateSerialPortRefresh(set);
+        }
         set((latest) => ({
           isNativeRuntime: nativeRuntime,
           source: nativeRuntime ? latest.source : "simulator",
@@ -1116,6 +1120,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!beginRuntimeTransition(get, set, "switching-source")) {
           return;
         }
+        invalidateSerialPortRefresh(set);
         stopCurrentModbusPolling("source-change", false);
         try {
           await getSerialRecoveryCoordinator().cancel("source-change", true);
@@ -1307,25 +1312,22 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         ) {
           return;
         }
-        if (mode === "background" && !isBackgroundPortRefreshContext(state)) {
-          return;
-        }
         if (!state.isNativeRuntime) {
           if (mode === "manual") {
             set({ statusMessage: "浏览器预览无法枚举本机串口" });
           }
           return;
         }
-        const backgroundContext = mode === "background" ? state : null;
+        if (!isSerialPortRefreshContext(state)) {
+          return;
+        }
+        const operation = ++serialPortRefreshOperation;
+        const context = state;
 
         set({ isRefreshingPorts: true });
         try {
           const ports = sortSerialPorts(await listSerialPorts());
-          if (
-            mode === "background" &&
-            (!backgroundContext || !isSameBackgroundPortRefreshContext(backgroundContext, get()))
-          ) {
-            set({ isRefreshingPorts: false });
+          if (!ownsSerialPortRefresh(operation, context, get())) {
             return;
           }
           const currentPort = get().serialConfig.portName;
@@ -1333,7 +1335,6 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           const selectedPort = currentPort || ports[0]?.name || "";
           set((state) => ({
             ports,
-            isRefreshingPorts: false,
             serialConfig: { ...state.serialConfig, portName: selectedPort },
             statusMessage:
               mode === "background"
@@ -1345,11 +1346,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
                     : "未发现串口设备",
           }));
         } catch (error) {
-          if (mode === "background") {
-            set({ isRefreshingPorts: false });
-          } else {
+          if (!ownsSerialPortRefresh(operation, context, get())) {
+            return;
+          }
+          if (mode === "manual") {
             set({
-              isRefreshingPorts: false,
               connectionStatus: "error",
               statusMessage: getErrorMessage(error),
               serialModemStatus: createUnavailableSerialModemStatus(
@@ -1357,6 +1358,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               ),
               waveformTrigger: createIdleWaveformTriggerState(),
             });
+          }
+        } finally {
+          if (operation === serialPortRefreshOperation) {
+            set({ isRefreshingPorts: false });
           }
         }
       },
@@ -1368,6 +1373,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!beginRuntimeTransition(get, set, "connecting")) {
           return;
         }
+        invalidateSerialPortRefresh(set);
         stopCurrentModbusPolling("connection-change", false);
         await cancelActiveSerialFileSend(get);
         await cancelActiveModbusTransaction(get);
@@ -3510,6 +3516,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 );
 
 export function disposeWorkbenchRuntime(): void {
+  invalidateSerialPortRefresh(useWorkbenchStore.setState);
   serialControlLineOperation += 1;
   stopCurrentModbusPolling("runtime-dispose", false);
   stopCurrentCommandWorkflows("runtime-dispose");
@@ -4408,7 +4415,7 @@ function isSerialControlLineContextAvailable(state: WorkbenchStore): boolean {
   );
 }
 
-function isBackgroundPortRefreshContext(state: WorkbenchStore): boolean {
+function isSerialPortRefreshContext(state: WorkbenchStore): boolean {
   return (
     state.isNativeRuntime &&
     state.source === "serial" &&
@@ -4426,12 +4433,12 @@ function isBackgroundPortRefreshContext(state: WorkbenchStore): boolean {
   );
 }
 
-function isSameBackgroundPortRefreshContext(
+function isSameSerialPortRefreshContext(
   initial: WorkbenchStore,
   current: WorkbenchStore,
 ): boolean {
   return (
-    isBackgroundPortRefreshContext(current) &&
+    isSerialPortRefreshContext(current) &&
     current.source === initial.source &&
     current.connectionStatus === initial.connectionStatus &&
     current.serialGeneration === initial.serialGeneration &&
@@ -4445,6 +4452,22 @@ function isSameBackgroundPortRefreshContext(
     current.serialFileSend.revision === initial.serialFileSend.revision &&
     current.replayRevision === initial.replayRevision
   );
+}
+
+function ownsSerialPortRefresh(
+  operation: number,
+  initial: WorkbenchStore,
+  current: WorkbenchStore,
+): boolean {
+  return (
+    operation === serialPortRefreshOperation &&
+    isSameSerialPortRefreshContext(initial, current)
+  );
+}
+
+function invalidateSerialPortRefresh(set: WorkbenchSet): void {
+  serialPortRefreshOperation += 1;
+  set({ isRefreshingPorts: false });
 }
 
 function isCaptureExportBusy(status: CaptureExportUiStatus): boolean {

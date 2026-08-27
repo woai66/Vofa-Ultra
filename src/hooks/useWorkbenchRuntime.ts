@@ -122,7 +122,7 @@ export function useWorkbenchRuntime(): void {
       });
 
     if (nativeRuntime) {
-      void refreshPorts();
+      void refreshPorts("background");
       void initializeExtensionRuntime();
     }
 
