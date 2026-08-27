@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileInput, Network, Play, Square, Trash2, X } from "lucide-react";
+import { FileInput, Network, Play, RefreshCw, Square, Trash2, X } from "lucide-react";
+import {
+  DEFAULT_MODBUS_POLL_INTERVAL_MS,
+  isModbusPollActive,
+  MAX_MODBUS_POLL_INTERVAL_MS,
+  MIN_MODBUS_POLL_INTERVAL_MS,
+  type ModbusPollLatestResult,
+  type ModbusPollSnapshot,
+} from "../core/modbusPoller";
 import {
   buildModbusRtuRequest,
   formatModbusRtuFrame,
@@ -14,6 +22,8 @@ import {
   parseModbusRegisterValues,
   parseModbusUnsignedInteger,
   type ModbusRtuOperation,
+  type ModbusRtuReadOperation,
+  type ModbusRtuReadRequest,
   type ModbusRtuRequest,
   type ModbusRtuTransactionRecord,
   type ModbusRtuTransactionSnapshot,
@@ -22,10 +32,18 @@ import {
 interface ModbusRtuBuilderProps {
   onApply(frame: Uint8Array): void;
   onExecute(request: ModbusRtuRequest, timeoutMs: number): Promise<boolean>;
+  onStartPolling(
+    request: ModbusRtuReadRequest,
+    timeoutMs: number,
+    intervalMs: number,
+  ): void;
+  onStopPolling(): void;
   onCancel(): Promise<boolean>;
   onClearHistory(): void;
   onClose(): void;
   canExecute: boolean;
+  canStartPolling: boolean;
+  polling: ModbusPollSnapshot;
   transaction: ModbusRtuTransactionSnapshot;
   transactions: readonly ModbusRtuTransactionRecord[];
 }
@@ -41,24 +59,35 @@ interface ModbusRtuPreview {
 export function ModbusRtuBuilder({
   onApply,
   onExecute,
+  onStartPolling,
+  onStopPolling,
   onCancel,
   onClearHistory,
   onClose,
   canExecute,
+  canStartPolling,
+  polling,
   transaction,
   transactions,
 }: ModbusRtuBuilderProps) {
+  const savedPollRequest = polling.request;
   const operationRef = useRef<HTMLSelectElement>(null);
-  const [operation, setOperation] = useState<ModbusRtuOperation>("read-holding-registers");
-  const [unitIdText, setUnitIdText] = useState("1");
-  const [addressText, setAddressText] = useState("0");
-  const [quantityText, setQuantityText] = useState("1");
+  const [operation, setOperation] = useState<ModbusRtuOperation>(
+    savedPollRequest?.operation ?? "read-holding-registers",
+  );
+  const [unitIdText, setUnitIdText] = useState(String(savedPollRequest?.unitId ?? 1));
+  const [addressText, setAddressText] = useState(String(savedPollRequest?.address ?? 0));
+  const [quantityText, setQuantityText] = useState(String(savedPollRequest?.quantity ?? 1));
   const [singleCoilValue, setSingleCoilValue] = useState(true);
   const [singleRegisterText, setSingleRegisterText] = useState("0");
   const [multipleCoilsText, setMultipleCoilsText] = useState("1, 0");
   const [multipleRegistersText, setMultipleRegistersText] = useState("0, 1");
-  const [timeoutText, setTimeoutText] = useState("1000");
+  const [timeoutText, setTimeoutText] = useState(String(savedPollRequest ? polling.timeoutMs : 1_000));
+  const [intervalText, setIntervalText] = useState(
+    String(savedPollRequest ? polling.intervalMs : DEFAULT_MODBUS_POLL_INTERVAL_MS),
+  );
   const [actionError, setActionError] = useState("");
+  const pollingActive = isModbusPollActive(polling);
   const preview = useMemo<ModbusRtuPreview>(() => {
     try {
       const request = createRequest({
@@ -114,14 +143,28 @@ export function ModbusRtuBuilder({
       return;
     }
     try {
-      const timeoutMs = parseModbusUnsignedInteger(
-        timeoutText,
-        "响应超时",
-        MAX_MODBUS_TRANSACTION_TIMEOUT_MS,
-        MIN_MODBUS_TRANSACTION_TIMEOUT_MS,
-      );
+      const timeoutMs = parseTimeout(timeoutText);
       setActionError("");
       await onExecute(preview.request, timeoutMs);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const startPolling = () => {
+    if (!preview.request || !isReadRequest(preview.request) || !canStartPolling) {
+      return;
+    }
+    try {
+      const timeoutMs = parseTimeout(timeoutText);
+      const intervalMs = parseModbusUnsignedInteger(
+        intervalText,
+        "轮询间隔",
+        MAX_MODBUS_POLL_INTERVAL_MS,
+        MIN_MODBUS_POLL_INTERVAL_MS,
+      );
+      setActionError("");
+      onStartPolling(preview.request, timeoutMs, intervalMs);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     }
@@ -173,7 +216,11 @@ export function ModbusRtuBuilder({
             name="modbus-operation"
             aria-label="Modbus 功能"
             value={operation}
-            onChange={(event) => setOperation(event.target.value as ModbusRtuOperation)}
+            disabled={pollingActive}
+            onChange={(event) => {
+              setOperation(event.target.value as ModbusRtuOperation);
+              setActionError("");
+            }}
           >
             {MODBUS_RTU_OPERATION_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -193,6 +240,7 @@ export function ModbusRtuBuilder({
             aria-label="Modbus 站号"
             maxLength={5}
             value={unitIdText}
+            disabled={pollingActive}
             onChange={(event) => setUnitIdText(event.target.value)}
           />
           <small>0-{MAX_MODBUS_RTU_UNIT_ID}</small>
@@ -208,6 +256,7 @@ export function ModbusRtuBuilder({
             aria-label="Modbus 起始地址"
             maxLength={10}
             value={addressText}
+            disabled={pollingActive}
             onChange={(event) => setAddressText(event.target.value)}
           />
           <small>0-based</small>
@@ -224,6 +273,7 @@ export function ModbusRtuBuilder({
               aria-label="Modbus 读取数量"
               maxLength={6}
               value={quantityText}
+              disabled={pollingActive}
               onChange={(event) => setQuantityText(event.target.value)}
             />
             <small>
@@ -243,6 +293,7 @@ export function ModbusRtuBuilder({
                 type="button"
                 data-active={!singleCoilValue}
                 aria-pressed={!singleCoilValue}
+                disabled={pollingActive}
                 onClick={() => setSingleCoilValue(false)}
               >
                 OFF
@@ -251,6 +302,7 @@ export function ModbusRtuBuilder({
                 type="button"
                 data-active={singleCoilValue}
                 aria-pressed={singleCoilValue}
+                disabled={pollingActive}
                 onClick={() => setSingleCoilValue(true)}
               >
                 ON
@@ -270,6 +322,7 @@ export function ModbusRtuBuilder({
               aria-label="Modbus 寄存器值"
               maxLength={10}
               value={singleRegisterText}
+              disabled={pollingActive}
               onChange={(event) => setSingleRegisterText(event.target.value)}
             />
             <small>0-65535</small>
@@ -288,6 +341,7 @@ export function ModbusRtuBuilder({
               spellCheck={false}
               placeholder="1, 0, 1, 1"
               value={multipleCoilsText}
+              disabled={pollingActive}
               onChange={(event) => setMultipleCoilsText(event.target.value)}
             />
           </label>
@@ -305,6 +359,7 @@ export function ModbusRtuBuilder({
               spellCheck={false}
               placeholder="10, 0x0102"
               value={multipleRegistersText}
+              disabled={pollingActive}
               onChange={(event) => setMultipleRegistersText(event.target.value)}
             />
           </label>
@@ -328,6 +383,29 @@ export function ModbusRtuBuilder({
           </span>
         )}
       </div>
+
+      {polling.status !== "idle" && (
+        <section
+          className="modbus-poll-status"
+          data-status={polling.status}
+          aria-label="Modbus RTU 只读轮询状态"
+          aria-live={polling.status === "error" || polling.status === "stopped" ? "polite" : "off"}
+        >
+          <header>
+            <div>
+              <strong>只读轮询</strong>
+              <span>{pollStatusLabel(polling.status)}</span>
+            </div>
+            <span>
+              成功 {polling.successCount} · 失败 {polling.failureCount}
+            </span>
+          </header>
+          <p>{polling.message}</p>
+          {polling.request && polling.latestResult && (
+            <code>{formatPollResult(polling.request, polling.latestResult)}</code>
+          )}
+        </section>
+      )}
 
       {(transaction.status !== "idle" || transactions.length > 0) && (
         <section className="modbus-transaction-section" aria-label="Modbus RTU 事务结果">
@@ -369,30 +447,65 @@ export function ModbusRtuBuilder({
       )}
 
       <footer className="modbus-builder-actions">
-        <label className="modbus-timeout-field">
-          <span>响应超时</span>
-          <input
-            type="number"
-            inputMode="numeric"
-            aria-label="Modbus 响应超时毫秒"
-            min={MIN_MODBUS_TRANSACTION_TIMEOUT_MS}
-            max={MAX_MODBUS_TRANSACTION_TIMEOUT_MS}
-            step={100}
-            value={timeoutText}
-            disabled={transaction.status !== "idle"}
-            onChange={(event) => {
-              setTimeoutText(event.target.value);
-              setActionError("");
-            }}
-          />
-          <small>ms</small>
-        </label>
+        <div className="modbus-timing-fields">
+          <label className="modbus-timeout-field">
+            <span>响应超时</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              aria-label="Modbus 响应超时毫秒"
+              min={MIN_MODBUS_TRANSACTION_TIMEOUT_MS}
+              max={MAX_MODBUS_TRANSACTION_TIMEOUT_MS}
+              step={100}
+              value={timeoutText}
+              disabled={transaction.status !== "idle" || pollingActive}
+              onChange={(event) => {
+                setTimeoutText(event.target.value);
+                setActionError("");
+              }}
+            />
+            <small>ms</small>
+          </label>
+          <label className="modbus-timeout-field">
+            <span>轮询间隔</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              aria-label="Modbus 轮询间隔毫秒"
+              min={MIN_MODBUS_POLL_INTERVAL_MS}
+              max={MAX_MODBUS_POLL_INTERVAL_MS}
+              step={100}
+              value={intervalText}
+              disabled={pollingActive}
+              onChange={(event) => {
+                setIntervalText(event.target.value);
+                setActionError("");
+              }}
+            />
+            <small>ms</small>
+          </label>
+        </div>
         <div className="modbus-builder-action-buttons">
           <button className="secondary-button" type="submit" disabled={!preview.frame}>
-          <FileInput size={15} />
-          填入发送框
+            <FileInput size={15} />
+            填入发送框
           </button>
-          {transaction.status !== "idle" ? (
+          {pollingActive ? (
+            <button
+              className="primary-button"
+              type="button"
+              data-action="stop"
+              disabled={polling.status === "stopping" && !polling.lastError}
+              onClick={onStopPolling}
+            >
+              <Square size={14} />
+              {polling.status === "stopping"
+                ? polling.lastError
+                  ? "重试停止"
+                  : "停止中"
+                : "停止轮询"}
+            </button>
+          ) : transaction.status !== "idle" ? (
             <button
               className="primary-button"
               type="button"
@@ -404,15 +517,35 @@ export function ModbusRtuBuilder({
               {transaction.status === "cancelling" ? "取消中" : "取消事务"}
             </button>
           ) : (
-            <button
-              className="primary-button"
-              type="button"
-              disabled={!preview.frame || !canExecute}
-              onClick={() => void execute()}
-            >
-              <Play size={15} />
-              执行事务
-            </button>
+            <>
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={!preview.frame || !canExecute}
+                onClick={() => void execute()}
+              >
+                <Play size={15} />
+                执行一次
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                title={
+                  preview.request && !isReadRequest(preview.request)
+                    ? "轮询仅支持 01/02/03/04 读取功能"
+                    : "启动只读轮询"
+                }
+                disabled={
+                  !preview.request ||
+                  !isReadRequest(preview.request) ||
+                  !canStartPolling
+                }
+                onClick={startPolling}
+              >
+                <RefreshCw size={15} />
+                开始轮询
+              </button>
+            </>
           )}
         </div>
         {actionError && (
@@ -497,8 +630,21 @@ function createRequest(draft: RequestDraft): ModbusRtuRequest {
   }
 }
 
-function isReadOperation(operation: ModbusRtuOperation): boolean {
+function parseTimeout(value: string): number {
+  return parseModbusUnsignedInteger(
+    value,
+    "响应超时",
+    MAX_MODBUS_TRANSACTION_TIMEOUT_MS,
+    MIN_MODBUS_TRANSACTION_TIMEOUT_MS,
+  );
+}
+
+function isReadOperation(operation: ModbusRtuOperation): operation is ModbusRtuReadOperation {
   return operation.startsWith("read-");
+}
+
+function isReadRequest(request: ModbusRtuRequest): request is ModbusRtuReadRequest {
+  return isReadOperation(request.operation);
 }
 
 function isSingleWrite(operation: ModbusRtuOperation): boolean {
@@ -559,6 +705,37 @@ function terminalStatusLabel(status: ModbusRtuTransactionRecord["status"]): stri
     case "error":
       return "失败";
   }
+}
+
+function pollStatusLabel(status: ModbusPollSnapshot["status"]): string {
+  switch (status) {
+    case "running":
+      return "运行中";
+    case "stopping":
+      return "停止中";
+    case "stopped":
+      return "已停止";
+    case "error":
+      return "失败";
+    case "idle":
+      return "未运行";
+  }
+}
+
+function formatPollResult(
+  request: ModbusRtuReadRequest,
+  result: ModbusPollLatestResult,
+): string {
+  const maximumValues = result.kind === "bits" ? 16 : 12;
+  const values = result.values
+    .slice(0, maximumValues)
+    .map((value, index) =>
+      `${request.address + index}:${typeof value === "boolean" ? (value ? 1 : 0) : value}`,
+    )
+    .join("  ");
+  return result.values.length > maximumValues
+    ? `${values}  +${result.values.length - maximumValues}`
+    : values;
 }
 
 function operationLabel(operation: ModbusRtuOperation): string {

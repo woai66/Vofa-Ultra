@@ -39,19 +39,21 @@ export const MODBUS_RTU_OPERATION_OPTIONS: readonly ModbusRtuOperationOption[] =
   { value: "write-multiple-registers", functionCode: 0x10, label: "10 写多个寄存器" },
 ];
 
-type ModbusRtuReadOperation =
+export type ModbusRtuReadOperation =
   | "read-coils"
   | "read-discrete-inputs"
   | "read-holding-registers"
   | "read-input-registers";
 
+export interface ModbusRtuReadRequest {
+  operation: ModbusRtuReadOperation;
+  unitId: number;
+  address: number;
+  quantity: number;
+}
+
 export type ModbusRtuRequest =
-  | {
-      operation: ModbusRtuReadOperation;
-      unitId: number;
-      address: number;
-      quantity: number;
-    }
+  | ModbusRtuReadRequest
   | {
       operation: "write-single-coil";
       unitId: number;
@@ -149,7 +151,7 @@ const MODBUS_EXCEPTION_NAMES: Readonly<Record<number, string>> = {
 export function buildModbusRtuRequest(request: ModbusRtuRequest): Uint8Array {
   assertIntegerInRange(request.unitId, 0, MAX_MODBUS_RTU_UNIT_ID, "站号");
   assertIntegerInRange(request.address, 0, 0xffff, "地址");
-  if (request.unitId === 0 && isReadOperation(request.operation)) {
+  if (request.unitId === 0 && isModbusRtuReadOperation(request.operation)) {
     throw new Error("读取请求不能使用广播站号 0");
   }
 
@@ -210,7 +212,7 @@ export function parseModbusRtuResponse(
   response: Uint8Array,
 ): ModbusRtuTransactionResult {
   if (request.unitId === 0) {
-    if (isReadOperation(request.operation)) {
+    if (isModbusRtuReadOperation(request.operation)) {
       throw new Error("读取请求不能使用广播站号 0");
     }
     if (response.length !== 0) {
@@ -388,7 +390,9 @@ export function parseModbusRegisterValues(value: string): number[] {
   return tokens.map((token) => parseModbusUnsignedInteger(token, "寄存器值"));
 }
 
-function isReadOperation(operation: ModbusRtuOperation): operation is ModbusRtuReadOperation {
+export function isModbusRtuReadOperation(
+  operation: ModbusRtuOperation,
+): operation is ModbusRtuReadOperation {
   return operation.startsWith("read-");
 }
 

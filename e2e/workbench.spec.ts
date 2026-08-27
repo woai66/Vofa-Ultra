@@ -2465,7 +2465,7 @@ test("发送栏自动校验尾按帧顺序发送并随 v11 工作区往返", asy
   await expect(checksum).toHaveValue("crc16-modbus-le");
 });
 
-test("Modbus RTU 构帧和单事务主站经统一链路工作且窄屏可操作", async ({ page }, testInfo) => {
+test("Modbus RTU 构帧、单事务和只读轮询经统一链路工作且窄屏可操作", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -2502,12 +2502,31 @@ test("Modbus RTU 构帧和单事务主站经统一链路工作且窄屏可操作
 
   await page.getByRole("button", { name: "打开 Modbus RTU 构帧器" }).click();
   builder = page.getByRole("dialog", { name: "Modbus RTU 构帧器" });
-  await builder.getByRole("button", { name: "执行事务" }).click();
+  await builder.getByRole("button", { name: "执行一次" }).click();
   await expect(builder.getByText("完成")).toBeVisible();
   await expect(page.getByRole("button", { name: "命令历史，1 条" })).toBeVisible();
   await builder.getByText("完成").click();
   await expect(builder.getByText("0:0")).toBeVisible();
   await expect(builder.getByText("01 03 02 00 00 B8 44")).toBeVisible();
+
+  await builder.getByRole("spinbutton", { name: "Modbus 轮询间隔毫秒" }).fill("100");
+  await builder.getByRole("button", { name: "开始轮询" }).click();
+  const pollStatus = builder.getByLabel("Modbus RTU 只读轮询状态");
+  await expect(pollStatus).toContainText("成功 2");
+  await expect(pollStatus.getByText("0:0", { exact: true })).toBeVisible();
+  await builder.getByRole("button", { name: "停止轮询" }).click();
+  await expect(pollStatus).toContainText("已停止");
+  const completedTransactions = builder.locator(
+    '.modbus-transaction-result[data-status="completed"]',
+  );
+  expect(await completedTransactions.count()).toBeGreaterThanOrEqual(3);
+  for (const index of [0, 1]) {
+    await expect(completedTransactions.nth(index).getByText("TX", { exact: true })).toBeAttached();
+    await expect(completedTransactions.nth(index).getByText("RX", { exact: true })).toBeAttached();
+  }
+  const stoppedCounters = await pollStatus.locator("header > span").last().textContent();
+  await page.waitForTimeout(250);
+  await expect(pollStatus.locator("header > span").last()).toHaveText(stoppedCounters ?? "");
   await builder.getByRole("button", { name: "关闭 Modbus RTU 构帧器" }).click();
 
   await page.setViewportSize({ width: 320, height: 568 });

@@ -4778,7 +4778,8 @@ textarea:focus {
   color: var(--accent);
 }
 
-.file-send-activity-dot {
+.file-send-activity-dot,
+.modbus-poll-activity-dot {
   position: absolute;
   top: 3px;
   right: 3px;
@@ -5333,12 +5334,75 @@ textarea:focus {
   line-height: 16px;
 }
 
+.modbus-poll-status {
+  display: grid;
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-muted);
+  gap: 5px;
+}
+
+.modbus-poll-status > header,
+.modbus-poll-status > header > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.modbus-poll-status > header > div {
+  justify-content: flex-start;
+}
+
+.modbus-poll-status strong {
+  color: var(--text);
+  font-size: 9px;
+}
+
+.modbus-poll-status span,
+.modbus-poll-status p,
+.modbus-poll-status code {
+  font-size: 8px;
+  line-height: 14px;
+}
+
+.modbus-poll-status > header > div > span,
+.modbus-poll-status[data-status="running"] > header > div > span {
+  color: var(--accent);
+}
+
+.modbus-poll-status[data-status="stopping"] > header > div > span,
+.modbus-poll-status[data-status="stopped"] > header > div > span {
+  color: var(--amber);
+}
+
+.modbus-poll-status[data-status="error"] > header > div > span {
+  color: var(--danger);
+}
+
+.modbus-poll-status p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.modbus-poll-status code {
+  min-width: 0;
+  overflow-x: auto;
+  color: var(--cyan);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+}
+
 .modbus-builder-actions {
   display: grid;
   min-height: 54px;
   flex: 0 0 auto;
   align-items: center;
-  grid-template-columns: 150px minmax(0, 1fr);
+  grid-template-columns: 230px minmax(0, 1fr);
   padding: 7px 10px;
   gap: 8px;
 }
@@ -5354,6 +5418,13 @@ textarea:focus {
   min-width: 0;
   justify-content: flex-end;
   gap: 7px;
+}
+
+.modbus-timing-fields {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .modbus-timeout-field {
@@ -7434,6 +7505,10 @@ textarea:focus {
 
   .modbus-builder-action-buttons {
     display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  }
+
+  .modbus-timing-fields {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

@@ -14,12 +14,14 @@ import {
   createInitialAutoResponderSnapshot,
 } from "../core/autoResponder";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
+import { createInitialModbusPollSnapshot } from "../core/modbusPoller";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { AutomationPanel } from "./AutomationPanel";
 
 describe("AutomationPanel", () => {
   beforeEach(() => {
     useWorkbenchStore.getState().stopAutoResponder();
+    useWorkbenchStore.getState().stopModbusPolling();
     useWorkbenchStore.setState({
       source: "simulator",
       connectionStatus: "disconnected",
@@ -27,6 +29,7 @@ describe("AutomationPanel", () => {
       autoResponder: createInitialAutoResponderSnapshot(),
       serialControlLineOperation: "idle",
       commandTask: createInitialCommandTaskSnapshot(),
+      modbusPoll: createInitialModbusPollSnapshot(),
       isSendingCommand: false,
       commandSendOrigin: null,
       workspaceTransitionStatus: "idle",
@@ -40,6 +43,7 @@ describe("AutomationPanel", () => {
 
   afterEach(() => {
     useWorkbenchStore.getState().stopAutoResponder();
+    useWorkbenchStore.getState().stopModbusPolling();
     cleanup();
   });
 
@@ -122,6 +126,27 @@ describe("AutomationPanel", () => {
       connectionStatus: "connected",
       serialControlLineOperation: "dtr",
       autoResponderRules: [createDefaultAutoResponderRule("line-ready", "行结束")],
+    });
+
+    render(<AutomationPanel />);
+
+    expect(screen.getByRole("checkbox", { name: "启用自动应答" })).toBeDisabled();
+  });
+
+  it("Modbus 轮询期间禁用自动应答启动", () => {
+    useWorkbenchStore.setState({
+      connectionStatus: "connected",
+      autoResponderRules: [createDefaultAutoResponderRule("line-ready", "行结束")],
+      modbusPoll: {
+        ...createInitialModbusPollSnapshot(),
+        status: "running",
+        request: {
+          operation: "read-holding-registers",
+          unitId: 1,
+          address: 0,
+          quantity: 1,
+        },
+      },
     });
 
     render(<AutomationPanel />);

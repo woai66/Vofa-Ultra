@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
+import { createInitialModbusPollSnapshot } from "../core/modbusPoller";
 import {
   createInitialModbusRtuTransactionSnapshot,
   MAX_MODBUS_VALUE_TEXT_CHARACTERS,
@@ -42,6 +43,7 @@ const SEARCH_ENTRIES: TerminalEntry[] = [
 describe("TerminalPanel", () => {
   beforeEach(() => {
     localStorage.removeItem(TERMINAL_TIME_MODE_STORAGE_KEY);
+    useWorkbenchStore.getState().stopModbusPolling();
     useWorkbenchStore.getState().stopPeriodicSend();
     useWorkbenchStore.getState().clearTerminal();
     useWorkbenchStore.setState({
@@ -57,6 +59,7 @@ describe("TerminalPanel", () => {
       terminalEntries: [],
       commandHistory: [],
       quickCommands: [],
+      modbusPoll: createInitialModbusPollSnapshot(),
       modbusTransaction: createInitialModbusRtuTransactionSnapshot(),
       modbusTransactions: [],
       serialFileSend: {
@@ -85,6 +88,7 @@ describe("TerminalPanel", () => {
   });
 
   afterEach(() => {
+    useWorkbenchStore.getState().stopModbusPolling();
     useWorkbenchStore.getState().stopPeriodicSend();
     cleanup();
   });
@@ -963,7 +967,7 @@ describe("TerminalPanel", () => {
     render(<TerminalPanel />);
 
     await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
-    const builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+    const builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
     const operation = within(builder).getByRole("combobox", { name: "Modbus 功能" });
     expect(operation).toHaveFocus();
     expect(within(operation).getAllByRole("option")).toHaveLength(8);
@@ -1016,11 +1020,11 @@ describe("TerminalPanel", () => {
     render(<TerminalPanel />);
 
     await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
-    const builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+    const builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
     expect(within(builder).getByRole("spinbutton", { name: "Modbus 响应超时毫秒" })).toHaveValue(
       1000,
     );
-    await user.click(within(builder).getByRole("button", { name: "执行事务" }));
+    await user.click(within(builder).getByRole("button", { name: "执行一次" }));
 
     await waitFor(() => {
       expect(within(builder).getByText("完成")).toBeVisible();
@@ -1046,6 +1050,91 @@ describe("TerminalPanel", () => {
     expect(screen.getByRole("button", { name: "命令历史，0 条" })).toBeDisabled();
   });
 
+  it("运行只读轮询时冻结参数并允许关闭后重新打开停止", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.type(screen.getByRole("textbox", { name: "发送内容" }), "PING");
+    await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
+    let builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
+    const address = within(builder).getByRole("textbox", { name: "Modbus 起始地址" });
+    const quantity = within(builder).getByRole("textbox", { name: "Modbus 读取数量" });
+    const timeout = within(builder).getByRole("spinbutton", {
+      name: "Modbus 响应超时毫秒",
+    });
+    const interval = within(builder).getByRole("spinbutton", {
+      name: "Modbus 轮询间隔毫秒",
+    });
+    await user.clear(address);
+    await user.type(address, "7");
+    await user.clear(quantity);
+    await user.type(quantity, "2");
+    await user.clear(timeout);
+    await user.type(timeout, "500");
+    await user.clear(interval);
+    await user.type(interval, "100");
+    await user.click(within(builder).getByRole("button", { name: "开始轮询" }));
+
+    expect(within(builder).getByRole("combobox", { name: "Modbus 功能" })).toBeDisabled();
+    expect(within(builder).getByRole("textbox", { name: "Modbus 站号" })).toBeDisabled();
+    expect(address).toBeDisabled();
+    expect(quantity).toBeDisabled();
+    expect(timeout).toBeDisabled();
+    expect(interval).toBeDisabled();
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "展开周期发送设置" })).toBeDisabled();
+
+    await user.click(within(builder).getByRole("button", { name: "关闭 Modbus RTU 构帧器" }));
+    const trigger = screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" });
+    expect(trigger.querySelector(".modbus-poll-activity-dot")).not.toBeNull();
+    await user.click(trigger);
+    builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
+    expect(within(builder).getByRole("button", { name: "停止轮询" })).toBeEnabled();
+
+    await waitFor(() => {
+      expect(useWorkbenchStore.getState().modbusPoll.successCount).toBeGreaterThanOrEqual(2);
+    });
+    expect(within(builder).getByLabelText("Modbus RTU 只读轮询状态")).toHaveTextContent(
+      /7:7\s+8:8/,
+    );
+    await user.click(within(builder).getByRole("button", { name: "停止轮询" }));
+    const stoppedCount = useWorkbenchStore.getState().modbusPoll.successCount;
+    expect(useWorkbenchStore.getState().modbusPoll.status).toBe("stopped");
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 220));
+    expect(useWorkbenchStore.getState().modbusPoll.successCount).toBe(stoppedCount);
+
+    await user.click(within(builder).getByRole("button", { name: "关闭 Modbus RTU 构帧器" }));
+    await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
+    builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
+    expect(within(builder).getByRole("textbox", { name: "Modbus 起始地址" })).toHaveValue("7");
+    expect(within(builder).getByRole("textbox", { name: "Modbus 读取数量" })).toHaveValue("2");
+    expect(
+      within(builder).getByRole("spinbutton", { name: "Modbus 响应超时毫秒" }),
+    ).toHaveValue(500);
+    expect(
+      within(builder).getByRole("spinbutton", { name: "Modbus 轮询间隔毫秒" }),
+    ).toHaveValue(100);
+  });
+
+  it("写功能保留单事务执行但不允许启动轮询", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
+    const builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
+    await user.selectOptions(
+      within(builder).getByRole("combobox", { name: "Modbus 功能" }),
+      "write-single-register",
+    );
+
+    expect(within(builder).getByRole("button", { name: "执行一次" })).toBeEnabled();
+    expect(within(builder).getByRole("button", { name: "开始轮询" })).toBeDisabled();
+    expect(within(builder).getByRole("button", { name: "开始轮询" })).toHaveAttribute(
+      "title",
+      "轮询仅支持 01/02/03/04 读取功能",
+    );
+  });
+
   it("控制线操作期间禁用手动、周期和 Modbus RTU 发送", async () => {
     useWorkbenchStore.setState({ serialControlLineOperation: "dtr" });
     const user = userEvent.setup();
@@ -1056,8 +1145,8 @@ describe("TerminalPanel", () => {
     await user.click(screen.getByRole("button", { name: "展开周期发送设置" }));
     expect(screen.getByRole("button", { name: "启动" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
-    const builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
-    expect(within(builder).getByRole("button", { name: "执行事务" })).toBeDisabled();
+    const builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
+    expect(within(builder).getByRole("button", { name: "执行一次" })).toBeDisabled();
   });
 
   it("工作区切换期间关闭并禁用 Modbus RTU 构帧器", async () => {
@@ -1066,7 +1155,7 @@ describe("TerminalPanel", () => {
     const trigger = screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" });
 
     await user.click(trigger);
-    expect(screen.getByRole("dialog", { name: "Modbus RTU 构帧器" })).toBeVisible();
+    expect(await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" })).toBeVisible();
 
     useWorkbenchStore.setState({ workspaceTransitionStatus: "switching" });
 
@@ -1216,7 +1305,7 @@ describe("TerminalPanel", () => {
     render(<TerminalPanel />);
 
     await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
-    const builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+    const builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
     await user.selectOptions(
       within(builder).getByRole("combobox", { name: "Modbus 功能" }),
       "write-multiple-coils",
@@ -1243,7 +1332,7 @@ describe("TerminalPanel", () => {
     const trigger = screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" });
 
     await user.click(trigger);
-    let builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+    let builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
     await user.clear(within(builder).getByRole("textbox", { name: "Modbus 站号" }));
     await user.type(within(builder).getByRole("textbox", { name: "Modbus 站号" }), "0");
     expect(within(builder).getByRole("status")).toHaveTextContent(
@@ -1270,7 +1359,7 @@ describe("TerminalPanel", () => {
     expect(trigger).toHaveFocus();
 
     await user.click(trigger);
-    builder = screen.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+    builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
     expect(within(builder).getByRole("combobox", { name: "Modbus 功能" })).toHaveValue(
       "read-holding-registers",
     );

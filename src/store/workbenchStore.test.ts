@@ -6,6 +6,7 @@ import {
   createInitialAutoResponderSnapshot,
 } from "../core/autoResponder";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
+import { createInitialModbusPollSnapshot } from "../core/modbusPoller";
 import {
   buildModbusRtuRequest,
   createInitialModbusRtuTransactionSnapshot,
@@ -332,6 +333,7 @@ describe("workbenchStore", () => {
   beforeEach(async () => {
     useWorkbenchStore.getState().stopPeriodicSend();
     useWorkbenchStore.getState().stopAutoResponder();
+    useWorkbenchStore.getState().stopModbusPolling();
     await useWorkbenchStore.getState().cancelFileSend();
     await useWorkbenchStore.getState().cancelModbusTransaction();
     await useWorkbenchStore.getState().setSerialRecoveryEnabled(false);
@@ -422,6 +424,7 @@ describe("workbenchStore", () => {
       commandTask: createInitialCommandTaskSnapshot(),
       autoResponderRules: [],
       autoResponder: createInitialAutoResponderSnapshot(),
+      modbusPoll: createInitialModbusPollSnapshot(),
       modbusTransaction: createInitialModbusRtuTransactionSnapshot(),
       modbusTransactions: [],
       serialFileSend: serialFileSendState("idle"),
@@ -508,6 +511,7 @@ describe("workbenchStore", () => {
   });
 
   afterEach(() => {
+    useWorkbenchStore.getState().stopModbusPolling();
     vi.useRealTimers();
   });
 
@@ -978,6 +982,183 @@ describe("workbenchStore", () => {
       useWorkbenchStore.getState().terminalEntries.map((entry) => entry.direction),
     ).toEqual(["tx", "rx"]);
     expect(useWorkbenchStore.getState().stats).toMatchObject({ txBytes: 8, rxBytes: 9 });
+  });
+
+  it("模拟器只在上一轮完成并等待固定间隔后继续 Modbus 只读轮询", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    const request = {
+      operation: "read-input-registers" as const,
+      unitId: 2,
+      address: 20,
+      quantity: 2,
+    };
+
+    useWorkbenchStore.getState().startModbusPolling(request, 500, 100);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      modbusPoll: {
+        status: "running",
+        request,
+        activeTransactionId: expect.any(Number),
+        successCount: 0,
+      },
+      modbusTransaction: { status: "waiting" },
+    });
+
+    await vi.advanceTimersByTimeAsync(60);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      modbusPoll: {
+        status: "running",
+        activeTransactionId: 0,
+        successCount: 1,
+        failureCount: 0,
+        latestResult: { kind: "registers", values: [20, 21] },
+      },
+      modbusTransaction: { status: "idle" },
+    });
+    const firstTransactionId = useWorkbenchStore.getState().modbusTransactions[0]?.transactionId;
+
+    await vi.advanceTimersByTimeAsync(99);
+    expect(useWorkbenchStore.getState().modbusTransactions).toHaveLength(1);
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("idle");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("waiting");
+    expect(useWorkbenchStore.getState().modbusTransaction.transactionId).not.toBe(
+      firstTransactionId,
+    );
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(useWorkbenchStore.getState().modbusPoll).toMatchObject({
+      status: "running",
+      activeTransactionId: 0,
+      successCount: 2,
+      failureCount: 0,
+    });
+    expect(useWorkbenchStore.getState().modbusTransactions).toHaveLength(2);
+    expect(
+      useWorkbenchStore.getState().terminalEntries.map((entry) => entry.direction),
+    ).toEqual(["tx", "rx", "tx", "rx"]);
+
+    useWorkbenchStore.getState().stopModbusPolling();
+    expect(useWorkbenchStore.getState().modbusPoll).toMatchObject({
+      status: "stopped",
+      successCount: 2,
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(useWorkbenchStore.getState().modbusTransactions).toHaveLength(2);
+  });
+
+  it("Modbus 轮询仅接受读取功能并在等待下一轮时继续独占发送链路", async () => {
+    vi.useFakeTimers();
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "connected",
+    });
+    const readRequest = {
+      operation: "read-coils" as const,
+      unitId: 1,
+      address: 0,
+      quantity: 4,
+    };
+    const writeRequest = {
+      operation: "write-single-register" as const,
+      unitId: 1,
+      address: 0,
+      quantity: 1,
+    };
+
+    expect(() =>
+      useWorkbenchStore
+        .getState()
+        .startModbusPolling(writeRequest as unknown as typeof readRequest, 500, 100),
+    ).toThrow("只支持 Modbus RTU 01/02/03/04");
+
+    useWorkbenchStore.getState().startModbusPolling(readRequest, 500, 100);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("idle");
+    await expect(
+      useWorkbenchStore.getState().send("PING", "text", "none"),
+    ).rejects.toThrow("Modbus RTU 轮询运行中");
+    expect(() =>
+      useWorkbenchStore.getState().startPeriodicSend("PING", "text", "none", 20, 1),
+    ).toThrow("Modbus RTU 轮询运行中");
+    await expect(
+      useWorkbenchStore.getState().startModbusTransaction(readRequest, 500),
+    ).rejects.toThrow("Modbus RTU 轮询运行中");
+  });
+
+  it("连接丢失先将 Modbus 轮询置为 stopping，再由事务终态收尾", async () => {
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 7,
+      serialStateRevision: 1,
+    });
+    useWorkbenchStore.getState().startModbusPolling(
+      {
+        operation: "read-discrete-inputs",
+        unitId: 1,
+        address: 0,
+        quantity: 8,
+      },
+      500,
+      1_000,
+    );
+    await flushPromises();
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "disconnected",
+      portName: "COM3",
+      generation: 8,
+      revision: 2,
+      message: "设备已拔出",
+    });
+
+    expect(useWorkbenchStore.getState().modbusPoll).toMatchObject({
+      status: "stopped",
+      successCount: 0,
+      failureCount: 1,
+    });
+    expect(useWorkbenchStore.getState().modbusPoll.message).toContain("连接已中断");
+    expect(useWorkbenchStore.getState().modbusTransactions[0]).toMatchObject({
+      status: "error",
+      errorCode: "connection-lost",
+    });
+  });
+
+  it("轮询事务后端启动失败时清理活动事务并明确停机", async () => {
+    startSerialModbusTransactionMock.mockRejectedValueOnce(new Error("串口已被占用"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 3,
+    });
+
+    useWorkbenchStore.getState().startModbusPolling(
+      {
+        operation: "read-holding-registers",
+        unitId: 1,
+        address: 0,
+        quantity: 1,
+      },
+      500,
+      1_000,
+    );
+    await flushPromises();
+
+    expect(useWorkbenchStore.getState().modbusTransaction.status).toBe("idle");
+    expect(useWorkbenchStore.getState().modbusPoll).toMatchObject({
+      status: "error",
+      successCount: 0,
+      failureCount: 1,
+      lastError: "串口已被占用",
+    });
   });
 
   it("原生事务使用独立后端命令并按 generation 忽略迟到事件", async () => {
