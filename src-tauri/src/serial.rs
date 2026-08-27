@@ -62,6 +62,8 @@ struct SharedSerialState {
     message: Option<String>,
     error_code: Option<SerialErrorCode>,
     worker: Option<SerialWorker>,
+    control_line_sequence: u64,
+    active_control_line: Option<ActiveControlLine>,
     active_modbus: Option<ActiveModbusControl>,
     file_send_sequence: u64,
     file_send_revision: u64,
@@ -81,6 +83,8 @@ impl Default for SharedSerialState {
             message: None,
             error_code: None,
             worker: None,
+            control_line_sequence: 0,
+            active_control_line: None,
             active_modbus: None,
             file_send_sequence: 0,
             file_send_revision: 0,
@@ -140,36 +144,129 @@ impl SharedSerialState {
         }
     }
 
-    fn control_line_sender(
-        &self,
+    fn begin_control_line_operation(
+        &mut self,
         expected_generation: u64,
         line: SerialControlLine,
-    ) -> Result<mpsc::SyncSender<WorkerCommand>, String> {
+    ) -> Result<(u64, mpsc::SyncSender<WorkerCommand>), SerialControlLineErrorPayload> {
+        if self.status != SerialStatus::Connected {
+            return Err(SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::NotConnected,
+                "串口尚未连接",
+            ));
+        }
+        if self.generation != expected_generation {
+            return Err(SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::ConnectionChanged,
+                "串口连接已发生变化，请重试控制线操作",
+            ));
+        }
+        if self.active_modbus.is_some() {
+            return Err(SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::ModbusBusy,
+                "Modbus RTU 事务进行中，暂不能设置控制线",
+            ));
+        }
+        if self.active_file_send.is_some() {
+            return Err(SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::FileSendBusy,
+                "文件发送进行中，暂不能设置控制线",
+            ));
+        }
+        if self.active_control_line.is_some() {
+            return Err(SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::ControlLineBusy,
+                "已有串口控制线操作正在进行",
+            ));
+        }
+        let command_tx = {
+            let worker = self
+                .worker
+                .as_ref()
+                .filter(|worker| worker.generation == expected_generation)
+                .ok_or_else(|| {
+                    SerialControlLineErrorPayload::command(
+                        SerialControlLineCommandErrorCode::WorkerStopped,
+                        "串口工作线程未运行",
+                    )
+                })?;
+            if line == SerialControlLine::Rts && worker.hardware_flow_control {
+                return Err(SerialControlLineErrorPayload::command(
+                    SerialControlLineCommandErrorCode::RtsHardwareFlowControl,
+                    "硬件流控已接管 RTS，无法手动设置",
+                ));
+            }
+            worker.command_tx.as_ref().cloned().ok_or_else(|| {
+                SerialControlLineErrorPayload::command(
+                    SerialControlLineCommandErrorCode::WorkerStopped,
+                    "串口工作线程已停止",
+                )
+            })?
+        };
+        let operation_id = self.control_line_sequence.checked_add(1).ok_or_else(|| {
+            SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::OperationIdExhausted,
+                "串口控制线操作序号已耗尽，请重启应用",
+            )
+        })?;
+        self.control_line_sequence = operation_id;
+        self.active_control_line = Some(ActiveControlLine {
+            operation_id,
+            generation: expected_generation,
+        });
+        Ok((operation_id, command_tx))
+    }
+
+    fn finish_control_line_operation(&mut self, operation_id: u64, generation: u64) -> bool {
+        if !self.active_control_line.as_ref().is_some_and(|active| {
+            active.operation_id == operation_id && active.generation == generation
+        }) {
+            return false;
+        }
+        self.active_control_line = None;
+        true
+    }
+
+    fn clear_control_line_operation_for_generation(&mut self, generation: u64) {
+        if self
+            .active_control_line
+            .as_ref()
+            .is_some_and(|active| active.generation == generation)
+        {
+            self.active_control_line = None;
+        }
+    }
+
+    fn ensure_send_admission(&self) -> Result<(), String> {
         if self.status != SerialStatus::Connected {
             return Err("串口尚未连接".to_owned());
         }
-        if self.generation != expected_generation {
-            return Err("串口连接已发生变化，请重试控制线操作".to_owned());
+        if self.active_control_line.is_some() {
+            return Err("串口控制线操作进行中，暂不能发送数据".to_owned());
         }
         if self.active_modbus.is_some() {
-            return Err("Modbus RTU 事务进行中，暂不能设置控制线".to_owned());
+            return Err("Modbus RTU 事务进行中，暂不能发送其他数据".to_owned());
         }
         if self.active_file_send.is_some() {
-            return Err("文件发送进行中，暂不能设置控制线".to_owned());
+            return Err("文件发送进行中，暂不能发送其他数据".to_owned());
         }
-        let worker = self
-            .worker
-            .as_ref()
-            .filter(|worker| worker.generation == expected_generation)
-            .ok_or_else(|| "串口工作线程未运行".to_owned())?;
-        if line == SerialControlLine::Rts && worker.hardware_flow_control {
-            return Err("硬件流控已接管 RTS，无法手动设置".to_owned());
+        Ok(())
+    }
+
+    fn ensure_modbus_admission(&self) -> Result<(), String> {
+        if self.status != SerialStatus::Connected {
+            return Err("串口尚未连接".to_owned());
         }
-        worker
-            .command_tx
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| "串口工作线程已停止".to_owned())
+        if self.active_control_line.is_some() {
+            return Err("串口控制线操作进行中，暂不能启动 Modbus RTU 事务".to_owned());
+        }
+        if self.active_modbus.is_some() {
+            return Err("已有 Modbus RTU 事务正在运行".to_owned());
+        }
+        if self.active_file_send.is_some() {
+            return Err("文件发送进行中，暂不能启动 Modbus RTU 事务".to_owned());
+        }
+        Ok(())
     }
 
     fn file_send_payload(&self) -> SerialFileSendPayload {
@@ -200,6 +297,9 @@ impl SharedSerialState {
         }
         if self.active_modbus.is_some() {
             return Err("Modbus RTU 事务进行中，暂不能发送文件".to_owned());
+        }
+        if self.active_control_line.is_some() {
+            return Err("串口控制线操作进行中，暂不能发送文件".to_owned());
         }
         if self.active_file_send.is_some() {
             return Err("已有文件发送任务正在运行".to_owned());
@@ -433,6 +533,59 @@ impl SerialErrorCode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SerialControlLineCommandErrorCode {
+    InvalidControlLine,
+    NotConnected,
+    ConnectionChanged,
+    ModbusBusy,
+    FileSendBusy,
+    ControlLineBusy,
+    WorkerStopped,
+    RtsHardwareFlowControl,
+    OperationIdExhausted,
+    QueueFull,
+    ConnectionLost,
+    TaskFailed,
+    StateLockFailed,
+}
+
+impl SerialControlLineCommandErrorCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidControlLine => "invalid-control-line",
+            Self::NotConnected => "not-connected",
+            Self::ConnectionChanged => "connection-changed",
+            Self::ModbusBusy => "modbus-busy",
+            Self::FileSendBusy => "file-send-busy",
+            Self::ControlLineBusy => "control-line-busy",
+            Self::WorkerStopped => "worker-stopped",
+            Self::RtsHardwareFlowControl => "rts-hardware-flow-control",
+            Self::OperationIdExhausted => "operation-id-exhausted",
+            Self::QueueFull => "queue-full",
+            Self::ConnectionLost => "connection-lost",
+            Self::TaskFailed => "task-failed",
+            Self::StateLockFailed => "state-lock-failed",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialControlLineErrorPayload {
+    error_code: String,
+    message: String,
+}
+
+impl SerialControlLineErrorPayload {
+    fn command(code: SerialControlLineCommandErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            error_code: code.as_str().to_owned(),
+            message: message.into(),
+        }
+    }
+}
+
 struct SerialFailure {
     code: SerialErrorCode,
     message: String,
@@ -441,6 +594,15 @@ struct SerialFailure {
 impl SerialFailure {
     fn new(code: SerialErrorCode, message: String) -> Self {
         Self { code, message }
+    }
+}
+
+impl From<SerialFailure> for SerialControlLineErrorPayload {
+    fn from(failure: SerialFailure) -> Self {
+        Self {
+            error_code: failure.code.as_str().to_owned(),
+            message: failure.message,
+        }
     }
 }
 
@@ -461,6 +623,11 @@ struct SerialWorker {
     command_tx: Option<mpsc::SyncSender<WorkerCommand>>,
     cancel: Arc<AtomicBool>,
     join_handle: Option<JoinHandle<()>>,
+}
+
+struct ActiveControlLine {
+    operation_id: u64,
+    generation: u64,
 }
 
 struct ActiveModbusControl {
@@ -509,16 +676,20 @@ enum SerialControlLine {
 }
 
 impl SerialControlLine {
-    fn parse(value: &str) -> Result<Self, String> {
+    fn parse(value: &str) -> Result<Self, SerialControlLineErrorPayload> {
         match value {
             "dtr" => Ok(Self::Dtr),
             "rts" => Ok(Self::Rts),
-            _ => Err(format!("不支持的串口控制线: {value}")),
+            _ => Err(SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::InvalidControlLine,
+                format!("不支持的串口控制线: {value}"),
+            )),
         }
     }
 }
 
 struct ControlLineCommand {
+    operation_id: u64,
     line: SerialControlLine,
     asserted: bool,
     reply: mpsc::SyncSender<Result<(), SerialFailure>>,
@@ -1238,15 +1409,7 @@ pub fn send_serial(state: State<'_, SerialState>, data: Vec<u8>) -> Result<(), S
         .shared
         .lock()
         .map_err(|_| "串口状态锁已损坏".to_owned())?;
-    if shared.status != SerialStatus::Connected {
-        return Err("串口尚未连接".to_owned());
-    }
-    if shared.active_modbus.is_some() {
-        return Err("Modbus RTU 事务进行中，暂不能发送其他数据".to_owned());
-    }
-    if shared.active_file_send.is_some() {
-        return Err("文件发送进行中，暂不能发送其他数据".to_owned());
-    }
+    shared.ensure_send_admission()?;
 
     let worker = shared
         .worker
@@ -1272,42 +1435,66 @@ pub async fn set_serial_control_line(
     generation: u64,
     line: String,
     asserted: bool,
-) -> Result<(), String> {
+) -> Result<(), SerialControlLineErrorPayload> {
+    let line = SerialControlLine::parse(&line)?;
     let shared_state = Arc::clone(&state.shared);
-    tauri::async_runtime::spawn_blocking(move || {
-        set_serial_control_line_blocking(shared_state, generation, &line, asserted)
-    })
-    .await
-    .map_err(|error| format!("串口控制线任务异常退出: {error}"))?
-}
-
-fn set_serial_control_line_blocking(
-    shared_state: Arc<Mutex<SharedSerialState>>,
-    generation: u64,
-    line: &str,
-    asserted: bool,
-) -> Result<(), String> {
-    let line = SerialControlLine::parse(line)?;
-    let command_tx = shared_state
-        .lock()
-        .map_err(|_| "串口状态锁已损坏".to_owned())?
-        .control_line_sender(generation, line)?;
-    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-    command_tx
-        .try_send(WorkerCommand::SetControlLine(ControlLineCommand {
+    let (operation_id, reply_rx) = {
+        let mut shared = shared_state.lock().map_err(|_| {
+            SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::StateLockFailed,
+                "串口状态锁已损坏",
+            )
+        })?;
+        let (operation_id, command_tx) = shared.begin_control_line_operation(generation, line)?;
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        if let Err(error) = command_tx.try_send(WorkerCommand::SetControlLine(ControlLineCommand {
+            operation_id,
             line,
             asserted,
             reply: reply_tx,
-        }))
-        .map_err(|error| match error {
-            mpsc::TrySendError::Full(_) => "串口发送队列已满，请稍后重试控制线操作".to_owned(),
-            mpsc::TrySendError::Disconnected(_) => "串口工作线程已停止".to_owned(),
-        })?;
+        })) {
+            shared.finish_control_line_operation(operation_id, generation);
+            return Err(match error {
+                mpsc::TrySendError::Full(_) => SerialControlLineErrorPayload::command(
+                    SerialControlLineCommandErrorCode::QueueFull,
+                    "串口发送队列已满，请稍后重试控制线操作",
+                ),
+                mpsc::TrySendError::Disconnected(_) => SerialControlLineErrorPayload::command(
+                    SerialControlLineCommandErrorCode::WorkerStopped,
+                    "串口工作线程已停止",
+                ),
+            });
+        }
+        (operation_id, reply_rx)
+    };
 
-    reply_rx
-        .recv()
-        .map_err(|_| "串口连接已结束，控制线结果未知".to_owned())?
-        .map_err(|failure| failure.message)
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let result = reply_rx.recv().map_err(|_| {
+            SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::ConnectionLost,
+                "串口连接已结束，控制线结果未知",
+            )
+        })?;
+        result.map_err(SerialControlLineErrorPayload::from)
+    })
+    .await
+    .map_err(|error| {
+        SerialControlLineErrorPayload::command(
+            SerialControlLineCommandErrorCode::TaskFailed,
+            format!("串口控制线任务异常退出: {error}"),
+        )
+    })
+    .and_then(|result| result);
+    shared_state
+        .lock()
+        .map_err(|_| {
+            SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::StateLockFailed,
+                "串口状态锁已损坏",
+            )
+        })?
+        .finish_control_line_operation(operation_id, generation);
+    result
 }
 
 #[tauri::command]
@@ -1331,15 +1518,7 @@ pub fn start_modbus_transaction(
             .shared
             .lock()
             .map_err(|_| "串口状态锁已损坏".to_owned())?;
-        if shared.status != SerialStatus::Connected {
-            return Err("串口尚未连接".to_owned());
-        }
-        if shared.active_modbus.is_some() {
-            return Err("已有 Modbus RTU 事务正在运行".to_owned());
-        }
-        if shared.active_file_send.is_some() {
-            return Err("文件发送进行中，暂不能启动 Modbus RTU 事务".to_owned());
-        }
+        shared.ensure_modbus_admission()?;
         let generation = shared.generation;
         let command_tx = shared
             .worker
@@ -1436,11 +1615,16 @@ fn stop_current_worker(
     shared_state: &Arc<Mutex<SharedSerialState>>,
 ) -> Result<(), String> {
     let active_file_send = request_current_file_send_cancel(app, shared_state)?;
-    let worker = shared_state
-        .lock()
-        .map_err(|_| "串口状态锁已损坏".to_owned())?
-        .worker
-        .take();
+    let worker = {
+        let mut shared = shared_state
+            .lock()
+            .map_err(|_| "串口状态锁已损坏".to_owned())?;
+        let worker = shared.worker.take();
+        if let Some(worker) = worker.as_ref() {
+            shared.clear_control_line_operation_for_generation(worker.generation);
+        }
+        worker
+    };
 
     let Some(worker) = worker else {
         if let Some((job_id, generation)) = active_file_send {
@@ -2028,6 +2212,24 @@ fn flush_file_send_output<W: Write + ?Sized>(
     })
 }
 
+fn flush_pending_output_before_control_line<W: Write + ?Sized>(
+    output: &mut W,
+    output_needs_drain: &mut bool,
+    last_bus_activity: &mut Instant,
+) -> Result<(), SerialFailure> {
+    if !*output_needs_drain {
+        return Ok(());
+    }
+    flush_and_mark_bus_activity(output, last_bus_activity).map_err(|error| {
+        SerialFailure::new(
+            SerialErrorCode::WriteFailed,
+            format!("串口发送失败: 无法排空设置控制线前的发送数据: {error}"),
+        )
+    })?;
+    *output_needs_drain = false;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_serial_worker(
     app: AppHandle,
@@ -2294,6 +2496,23 @@ fn run_serial_worker(
                             });
                         }
                         Ok(WorkerCommand::SetControlLine(command)) => {
+                            if let Err(failure) = flush_pending_output_before_control_line(
+                                &mut *port,
+                                &mut output_needs_drain,
+                                &mut last_bus_activity,
+                            ) {
+                                if let Ok(mut shared) = shared_state.lock() {
+                                    shared.finish_control_line_operation(
+                                        command.operation_id,
+                                        generation,
+                                    );
+                                }
+                                let reply_failure =
+                                    SerialFailure::new(failure.code, failure.message.clone());
+                                let _ = command.reply.send(Err(reply_failure));
+                                terminal_error = Some(failure);
+                                break 'worker;
+                            }
                             let result = match command.line {
                                 SerialControlLine::Dtr => port
                                     .write_data_terminal_ready(command.asserted)
@@ -2312,6 +2531,12 @@ fn run_serial_worker(
                                         )
                                     }),
                             };
+                            if let Ok(mut shared) = shared_state.lock() {
+                                shared.finish_control_line_operation(
+                                    command.operation_id,
+                                    generation,
+                                );
+                            }
                             let _ = command.reply.send(result);
                             break;
                         }
@@ -2929,6 +3154,7 @@ fn finish_worker(
         let Ok(mut shared) = shared_state.lock() else {
             return;
         };
+        shared.clear_control_line_operation_for_generation(generation);
         if shared.generation != generation {
             return;
         }
@@ -3065,40 +3291,90 @@ mod tests {
     fn parses_control_lines_and_rejects_unknown_values() {
         assert_eq!(SerialControlLine::parse("dtr"), Ok(SerialControlLine::Dtr));
         assert_eq!(SerialControlLine::parse("rts"), Ok(SerialControlLine::Rts));
-        assert!(SerialControlLine::parse("cts").is_err());
+        let error = SerialControlLine::parse("cts").expect_err("必须拒绝未知控制线");
+        let json = serde_json::to_value(error).unwrap();
+        assert_eq!(json["errorCode"], "invalid-control-line");
+        assert_eq!(json["message"], "不支持的串口控制线: cts");
+        assert!(json.get("error_code").is_none());
     }
 
     #[test]
     fn control_line_admission_requires_current_connection_and_respects_hardware_flow() {
         let mut shared = SharedSerialState::default();
         assert!(shared
-            .control_line_sender(0, SerialControlLine::Dtr)
+            .begin_control_line_operation(0, SerialControlLine::Dtr)
             .is_err());
 
         shared.generation = 7;
         shared.status = SerialStatus::Connected;
         shared.worker = Some(test_worker(7));
         assert!(shared
-            .control_line_sender(6, SerialControlLine::Dtr)
+            .begin_control_line_operation(6, SerialControlLine::Dtr)
             .is_err());
+        let (operation_id, _) = shared
+            .begin_control_line_operation(7, SerialControlLine::Dtr)
+            .expect("当前连接应允许 DTR 操作");
         assert!(shared
-            .control_line_sender(7, SerialControlLine::Dtr)
-            .is_ok());
-        assert!(shared
-            .control_line_sender(7, SerialControlLine::Rts)
-            .is_ok());
+            .begin_control_line_operation(7, SerialControlLine::Rts)
+            .is_err());
+        assert!(shared.finish_control_line_operation(operation_id, 7));
 
         shared
             .worker
             .as_mut()
             .expect("测试 worker 应存在")
             .hardware_flow_control = true;
-        assert_eq!(
-            shared
-                .control_line_sender(7, SerialControlLine::Rts)
-                .expect_err("硬件流控必须拒绝手动 RTS"),
-            "硬件流控已接管 RTS，无法手动设置"
-        );
+        let error = shared
+            .begin_control_line_operation(7, SerialControlLine::Rts)
+            .expect_err("硬件流控必须拒绝手动 RTS");
+        assert_eq!(error.error_code, "rts-hardware-flow-control");
+        assert_eq!(error.message, "硬件流控已接管 RTS，无法手动设置");
+    }
+
+    #[test]
+    fn active_control_line_blocks_all_serial_transmit_admissions() {
+        let mut shared = SharedSerialState {
+            generation: 3,
+            status: SerialStatus::Connected,
+            worker: Some(test_worker(3)),
+            ..SharedSerialState::default()
+        };
+        let (operation_id, _) = shared
+            .begin_control_line_operation(3, SerialControlLine::Dtr)
+            .expect("应登记控制线操作");
+
+        assert!(shared.ensure_send_admission().is_err());
+        assert!(shared.ensure_modbus_admission().is_err());
+        assert!(shared.ensure_file_send_admission().is_err());
+
+        assert!(shared.finish_control_line_operation(operation_id, 3));
+        assert!(shared.ensure_send_admission().is_ok());
+        assert!(shared.ensure_modbus_admission().is_ok());
+        assert!(shared.ensure_file_send_admission().is_ok());
+    }
+
+    #[test]
+    fn stale_control_line_identity_cannot_clear_current_operation() {
+        let mut shared = SharedSerialState {
+            generation: 9,
+            status: SerialStatus::Connected,
+            worker: Some(test_worker(9)),
+            ..SharedSerialState::default()
+        };
+        let (operation_id, _) = shared
+            .begin_control_line_operation(9, SerialControlLine::Dtr)
+            .expect("应登记控制线操作");
+
+        assert!(!shared.finish_control_line_operation(operation_id + 1, 9));
+        assert!(!shared.finish_control_line_operation(operation_id, 8));
+        shared.clear_control_line_operation_for_generation(8);
+        assert!(shared.active_control_line.is_some());
+
+        shared.clear_control_line_operation_for_generation(9);
+        assert!(shared.active_control_line.is_none());
+        assert!(shared
+            .begin_control_line_operation(9, SerialControlLine::Dtr)
+            .is_ok());
     }
 
     #[test]
@@ -3247,6 +3523,59 @@ mod tests {
             (SerialErrorCode::WriteFailed, "write-failed"),
             (SerialErrorCode::WorkerPanic, "worker-panic"),
             (SerialErrorCode::Unknown, "unknown"),
+        ];
+
+        for (code, expected) in codes {
+            assert_eq!(code.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn control_line_command_error_codes_are_stable() {
+        let codes = [
+            (
+                SerialControlLineCommandErrorCode::InvalidControlLine,
+                "invalid-control-line",
+            ),
+            (
+                SerialControlLineCommandErrorCode::NotConnected,
+                "not-connected",
+            ),
+            (
+                SerialControlLineCommandErrorCode::ConnectionChanged,
+                "connection-changed",
+            ),
+            (SerialControlLineCommandErrorCode::ModbusBusy, "modbus-busy"),
+            (
+                SerialControlLineCommandErrorCode::FileSendBusy,
+                "file-send-busy",
+            ),
+            (
+                SerialControlLineCommandErrorCode::ControlLineBusy,
+                "control-line-busy",
+            ),
+            (
+                SerialControlLineCommandErrorCode::WorkerStopped,
+                "worker-stopped",
+            ),
+            (
+                SerialControlLineCommandErrorCode::RtsHardwareFlowControl,
+                "rts-hardware-flow-control",
+            ),
+            (
+                SerialControlLineCommandErrorCode::OperationIdExhausted,
+                "operation-id-exhausted",
+            ),
+            (SerialControlLineCommandErrorCode::QueueFull, "queue-full"),
+            (
+                SerialControlLineCommandErrorCode::ConnectionLost,
+                "connection-lost",
+            ),
+            (SerialControlLineCommandErrorCode::TaskFailed, "task-failed"),
+            (
+                SerialControlLineCommandErrorCode::StateLockFailed,
+                "state-lock-failed",
+            ),
         ];
 
         for (code, expected) in codes {
@@ -3610,9 +3939,70 @@ mod tests {
         assert_eq!(last_bus_activity, previous_activity);
     }
 
+    #[test]
+    fn control_line_flushes_pending_output_exactly_once() {
+        let mut output = FlushProbe::default();
+        let mut output_needs_drain = false;
+        let mut last_bus_activity = Instant::now() - Duration::from_secs(1);
+        let original_activity = last_bus_activity;
+
+        assert!(flush_pending_output_before_control_line(
+            &mut output,
+            &mut output_needs_drain,
+            &mut last_bus_activity,
+        )
+        .is_ok());
+        assert_eq!(output.flush_count, 0);
+        assert_eq!(last_bus_activity, original_activity);
+
+        output_needs_drain = true;
+        assert!(flush_pending_output_before_control_line(
+            &mut output,
+            &mut output_needs_drain,
+            &mut last_bus_activity,
+        )
+        .is_ok());
+        assert_eq!(output.flush_count, 1);
+        assert!(!output_needs_drain);
+        let drained_activity = last_bus_activity;
+
+        assert!(flush_pending_output_before_control_line(
+            &mut output,
+            &mut output_needs_drain,
+            &mut last_bus_activity,
+        )
+        .is_ok());
+        assert_eq!(output.flush_count, 1);
+        assert_eq!(last_bus_activity, drained_activity);
+    }
+
+    #[test]
+    fn failed_control_line_flush_preserves_pending_output_and_bus_activity() {
+        let mut output = FlushProbe {
+            fail: true,
+            ..FlushProbe::default()
+        };
+        let mut output_needs_drain = true;
+        let mut last_bus_activity = Instant::now() - Duration::from_secs(1);
+        let original_activity = last_bus_activity;
+
+        let failure = flush_pending_output_before_control_line(
+            &mut output,
+            &mut output_needs_drain,
+            &mut last_bus_activity,
+        )
+        .expect_err("flush 失败必须阻止控制线切换");
+
+        assert_eq!(failure.code, SerialErrorCode::WriteFailed);
+        assert_eq!(output.flush_count, 1);
+        assert!(output_needs_drain);
+        assert_eq!(last_bus_activity, original_activity);
+    }
+
     #[derive(Default)]
     struct FlushProbe {
         flushed_at: Option<Instant>,
+        flush_count: usize,
         fail: bool,
     }
 
@@ -3622,6 +4012,7 @@ mod tests {
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
+            self.flush_count += 1;
             self.flushed_at = Some(Instant::now());
             if self.fail {
                 Err(std::io::Error::other("flush failed"))

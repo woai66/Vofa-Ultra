@@ -25,6 +25,7 @@ describe("AutomationPanel", () => {
       connectionStatus: "disconnected",
       autoResponderRules: [],
       autoResponder: createInitialAutoResponderSnapshot(),
+      serialControlLineOperation: "idle",
       commandTask: createInitialCommandTaskSnapshot(),
       isSendingCommand: false,
       commandSendOrigin: null,
@@ -114,6 +115,18 @@ describe("AutomationPanel", () => {
     await user.click(screen.getByRole("checkbox", { name: "启用自动应答" }));
     expect(screen.getByText("已停止")).toBeInTheDocument();
     expect(screen.getByLabelText("规则名称")).toBeEnabled();
+  });
+
+  it("控制线操作期间禁用自动应答启动", () => {
+    useWorkbenchStore.setState({
+      connectionStatus: "connected",
+      serialControlLineOperation: "dtr",
+      autoResponderRules: [createDefaultAutoResponderRule("line-ready", "行结束")],
+    });
+
+    render(<AutomationPanel />);
+
+    expect(screen.getByRole("checkbox", { name: "启用自动应答" })).toBeDisabled();
   });
 
   it("支持独立停用和删除规则", async () => {

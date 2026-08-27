@@ -4072,8 +4072,11 @@ describe("workbenchStore", () => {
     });
   });
 
-  it("控制线失败时保留原值且不把连接改成故障", async () => {
-    setSerialControlLineMock.mockRejectedValue(new Error("驱动拒绝请求"));
+  it("控制线失败时保留原值并只记录有界错误码", async () => {
+    setSerialControlLineMock.mockRejectedValue({
+      errorCode: "rts-failed",
+      message: "驱动拒绝请求",
+    });
     useWorkbenchStore.setState((state) => ({
       isNativeRuntime: true,
       source: "serial",
@@ -4092,6 +4095,33 @@ describe("workbenchStore", () => {
       statusMessage: "设置 RTS 失败：驱动拒绝请求",
       connectionStatus: "connected",
     });
+    const events = useWorkbenchStore.getState().getSerialDiagnostics().events;
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: "control_line_failed",
+        generation: 7,
+        errorCode: "rts-failed",
+        outcome: "rts",
+      }),
+    );
+
+    setSerialControlLineMock.mockRejectedValueOnce({
+      errorCode: "path:C:\\private",
+      message: "另一次失败",
+    });
+    await expect(useWorkbenchStore.getState().setSerialControlLine("dtr", false)).resolves.toBe(
+      false,
+    );
+    const sanitizedEvents = useWorkbenchStore.getState().getSerialDiagnostics().events;
+    expect(sanitizedEvents).toContainEqual(
+      expect.objectContaining({
+        kind: "control_line_failed",
+        errorCode: "unknown",
+        outcome: "dtr",
+      }),
+    );
+    expect(JSON.stringify(sanitizedEvents)).not.toContain("private");
+    expect(JSON.stringify(sanitizedEvents)).not.toContain("另一次失败");
   });
 
   it("控制线请求在连接代次变化后丢弃迟到成功", async () => {
@@ -4147,6 +4177,59 @@ describe("workbenchStore", () => {
     expect(setSerialControlLineMock).toHaveBeenCalledTimes(1);
     control.resolve(undefined);
     await expect(first).resolves.toBe(true);
+  });
+
+  it("控制线操作完成前不启动依赖稳定串口状态的任务", async () => {
+    startCaptureMock.mockResolvedValue({
+      status: "recording",
+      sessionId: 7,
+      revision: 1,
+      formatVersion: 2,
+      path: "C:\\captures\\session.vucap",
+      startedAtUnixMs: 1_000,
+      dataBytes: 0,
+      recordCount: 0,
+      markerCount: 0,
+    });
+    startNumericLogMock.mockResolvedValue(numericLogState("recording"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      protocol: "firewater",
+      serialControlLineOperation: "dtr",
+    });
+
+    await expect(useWorkbenchStore.getState().startCapture()).resolves.toBe(false);
+    await expect(useWorkbenchStore.getState().startNumericLog()).resolves.toBe(false);
+    await expect(
+      useWorkbenchStore.getState().send("PING", "text", "none"),
+    ).rejects.toThrow("串口控制线操作进行中");
+    expect(() =>
+      useWorkbenchStore.getState().startPeriodicSend("PING", "text", "none", 100, 1),
+    ).toThrow("串口控制线操作进行中");
+    expect(() => useWorkbenchStore.getState().startAutoResponder()).toThrow(
+      "串口控制线操作进行中",
+    );
+    await expect(useWorkbenchStore.getState().startFileSend("C:\\firmware.bin")).rejects.toThrow(
+      "串口控制线操作进行中",
+    );
+    await expect(
+      useWorkbenchStore.getState().startModbusTransaction(
+        {
+          operation: "read-holding-registers",
+          unitId: 1,
+          address: 0,
+          quantity: 1,
+        },
+        500,
+      ),
+    ).rejects.toThrow("串口控制线操作进行中");
+    expect(startCaptureMock).not.toHaveBeenCalled();
+    expect(startNumericLogMock).not.toHaveBeenCalled();
+    expect(sendSerialMock).not.toHaveBeenCalled();
+    expect(startSerialFileSendMock).not.toHaveBeenCalled();
+    expect(startSerialModbusTransactionMock).not.toHaveBeenCalled();
   });
 
   it("开始录制时冻结数据源、协议和串口参数", async () => {

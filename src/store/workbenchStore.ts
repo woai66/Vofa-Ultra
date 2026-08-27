@@ -1181,13 +1181,29 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           getSerialRecoveryCoordinator().updateConfig(serialConfig);
           return true;
         } catch (error) {
+          const payload = isRecord(error) ? error : undefined;
+          const payloadMessage = payload?.message;
+          const payloadErrorCode = payload?.errorCode;
+          const message =
+            typeof payloadMessage === "string" && payloadMessage.trim()
+              ? payloadMessage
+              : getErrorMessage(error);
+          const errorCode =
+            typeof payloadErrorCode === "string" && /^[a-z-]{1,32}$/.test(payloadErrorCode)
+              ? payloadErrorCode
+              : "unknown";
+          getSerialRecoveryCoordinator().recordControlLineFailure(
+            line,
+            generation,
+            errorCode,
+          );
           const latest = get();
           if (
             operation === serialControlLineOperation &&
             latest.source === "serial" &&
             latest.serialGeneration === generation
           ) {
-            set({ statusMessage: `设置 ${label} 失败：${getErrorMessage(error)}` });
+            set({ statusMessage: `设置 ${label} 失败：${message}` });
           }
           return false;
         } finally {
@@ -2331,6 +2347,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           state.workspaceTransitionStatus !== "idle" ||
           state.runtimeTransitionStatus !== "idle" ||
           state.recordingDirectoryStatus !== "idle" ||
+          state.serialControlLineOperation !== "idle" ||
           isCaptureActive(state.captureStatus) ||
           hasReplaySession(state)
         ) {
@@ -2443,6 +2460,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           state.workspaceTransitionStatus !== "idle" ||
           state.runtimeTransitionStatus !== "idle" ||
           state.recordingDirectoryStatus !== "idle" ||
+          state.serialControlLineOperation !== "idle" ||
           isNumericLogActive(state.numericLogStatus) ||
           hasReplaySession(state)
         ) {
@@ -3978,6 +3996,9 @@ function assertCommandCanSend(state: WorkbenchStore): void {
   }
   if (state.connectionStatus !== "connected") {
     throw new Error("请先连接数据源");
+  }
+  if (state.serialControlLineOperation !== "idle") {
+    throw new Error("串口控制线操作进行中，请稍后重试");
   }
   if (isModbusTransactionActive(state.modbusTransaction)) {
     throw new Error("Modbus RTU 事务进行中，暂不能发送其他数据");
