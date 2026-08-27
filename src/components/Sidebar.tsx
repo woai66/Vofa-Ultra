@@ -75,11 +75,128 @@ const ExtensionPanel = lazy(() =>
   import("./ExtensionPanel").then(({ ExtensionPanel }) => ({ default: ExtensionPanel })),
 );
 
+const CUSTOM_BAUD_RATE_VALUE = "custom";
+const MIN_BAUD_RATE = 1;
+const MAX_BAUD_RATE = 12_000_000;
+
 interface SidebarProps {
   activePanel: SidebarPanel;
   themePreference: ThemePreference;
   onClose(): void;
   onThemePreferenceChange(theme: ThemePreference): void;
+}
+
+interface BaudRateFieldProps {
+  value: number;
+  disabled: boolean;
+  onChange(value: number): void;
+}
+
+function BaudRateField({ value, disabled, onChange }: BaudRateFieldProps) {
+  const [customMode, setCustomMode] = useState(() => !isPresetBaudRate(value));
+  const [customValue, setCustomValue] = useState(String(value));
+  const parsedCustomValue = parseBaudRate(customValue);
+
+  useEffect(() => {
+    setCustomValue(String(value));
+    setCustomMode(!isPresetBaudRate(value));
+  }, [value]);
+
+  const commitCustomValue = () => {
+    const parsed = parseBaudRate(customValue);
+    if (parsed === null) {
+      setCustomValue(String(value));
+      return;
+    }
+    if (isPresetBaudRate(parsed)) {
+      setCustomMode(false);
+    }
+    if (parsed !== value) {
+      onChange(parsed);
+    }
+  };
+
+  return (
+    <>
+      <label className="field-label" htmlFor="baud-rate-preset">
+        波特率
+      </label>
+      <select
+        id="baud-rate-preset"
+        value={customMode ? CUSTOM_BAUD_RATE_VALUE : String(value)}
+        disabled={disabled}
+        onChange={(event) => {
+          if (event.target.value === CUSTOM_BAUD_RATE_VALUE) {
+            setCustomValue(String(value));
+            setCustomMode(true);
+            return;
+          }
+          const baudRate = Number(event.target.value);
+          setCustomMode(false);
+          setCustomValue(String(baudRate));
+          onChange(baudRate);
+        }}
+      >
+        {BAUD_RATES.map((rate) => (
+          <option key={rate} value={rate}>
+            {rate}
+          </option>
+        ))}
+        <option value={CUSTOM_BAUD_RATE_VALUE}>自定义...</option>
+      </select>
+      {customMode && (
+        <label className="baud-rate-custom-field">
+          <span className="field-label">自定义波特率</span>
+          <input
+            aria-label="自定义波特率"
+            aria-describedby="baud-rate-custom-hint"
+            aria-invalid={parsedCustomValue === null}
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            maxLength={8}
+            autoFocus
+            autoComplete="off"
+            spellCheck={false}
+            value={customValue}
+            disabled={disabled}
+            onChange={(event) => setCustomValue(event.target.value)}
+            onBlur={commitCustomValue}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitCustomValue();
+              } else if (event.key === "Escape") {
+                setCustomValue(String(value));
+                if (isPresetBaudRate(value)) {
+                  setCustomMode(false);
+                }
+              }
+            }}
+          />
+          <span className="field-hint" id="baud-rate-custom-hint">
+            请输入 1 到 12000000 之间的整数
+          </span>
+        </label>
+      )}
+    </>
+  );
+}
+
+function isPresetBaudRate(value: number): boolean {
+  return BAUD_RATES.some((rate) => rate === value);
+}
+
+function parseBaudRate(value: string): number | null {
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) {
+    return null;
+  }
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed < MIN_BAUD_RATE || parsed > MAX_BAUD_RATE) {
+    return null;
+  }
+  return parsed;
 }
 
 export function Sidebar({
@@ -401,25 +518,11 @@ function ConnectionPanel() {
             </div>
           )}
 
-          <label className="field-label" htmlFor="baud-rate">
-            波特率
-          </label>
-          <input
-            id="baud-rate"
-            type="number"
-            min={1}
-            max={12_000_000}
-            step={1}
-            list="baud-rate-presets"
+          <BaudRateField
             value={config.baudRate}
             disabled={configDisabled}
-            onChange={(event) => updateConfig("baudRate", Number(event.target.value))}
+            onChange={(baudRate) => updateConfig("baudRate", baudRate)}
           />
-          <datalist id="baud-rate-presets">
-            {BAUD_RATES.map((rate) => (
-              <option key={rate} value={rate} />
-            ))}
-          </datalist>
 
           <div className="field-grid three-columns">
             <label>
