@@ -4541,7 +4541,7 @@ describe("workbenchStore", () => {
           resolvePorts = resolve;
         }),
     );
-    useWorkbenchStore.setState({ isNativeRuntime: true });
+    useWorkbenchStore.setState({ isNativeRuntime: true, source: "serial" });
 
     const firstRefresh = useWorkbenchStore.getState().refreshPorts();
     const secondRefresh = useWorkbenchStore.getState().refreshPorts();
@@ -4556,6 +4556,125 @@ describe("workbenchStore", () => {
       isRefreshingPorts: false,
       ports: [{ name: "COM7", kind: "usb" }],
       serialConfig: { portName: "COM7" },
+    });
+  });
+
+  it("手动刷新失败只在原串口空闲上下文中显示错误", async () => {
+    listSerialPortsMock.mockRejectedValue(new Error("串口驱动不可用"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      statusMessage: "等待连接",
+    });
+
+    await useWorkbenchStore.getState().refreshPorts();
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "error",
+      statusMessage: "串口驱动不可用",
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("手动刷新完成前连接成功时丢弃迟到端口结果", async () => {
+    const port_request = deferred<SerialPortInfo[]>();
+    listSerialPortsMock.mockReturnValue(port_request.promise);
+    connectSerialMock.mockResolvedValue({
+      status: "connected",
+      portName: "COM7",
+      generation: 1,
+      revision: 1,
+    });
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      statusMessage: "等待连接",
+      ports: [{ name: "COM7", kind: "usb" }],
+      serialConfig: { ...state.serialConfig, portName: "COM7" },
+    }));
+
+    const refresh = useWorkbenchStore.getState().refreshPorts();
+    expect(useWorkbenchStore.getState().isRefreshingPorts).toBe(true);
+    await useWorkbenchStore.getState().connect();
+    expect(useWorkbenchStore.getState().isRefreshingPorts).toBe(false);
+
+    port_request.resolve([{ name: "COM8", kind: "usb" }]);
+    await refresh;
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      source: "serial",
+      connectionStatus: "connected",
+      statusMessage: "COM7 已连接",
+      ports: [{ name: "COM7" }],
+      serialConfig: { portName: "COM7" },
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("手动刷新完成前切换并启动模拟器时丢弃迟到错误", async () => {
+    const port_request = deferred<SerialPortInfo[]>();
+    listSerialPortsMock.mockReturnValue(port_request.promise);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      statusMessage: "等待连接",
+      ports: [{ name: "COM7", kind: "usb" }],
+      serialConfig: { ...state.serialConfig, portName: "COM7" },
+    }));
+
+    const refresh = useWorkbenchStore.getState().refreshPorts();
+    await useWorkbenchStore.getState().setSource("simulator");
+    await useWorkbenchStore.getState().connect();
+    port_request.reject(new Error("迟到的驱动错误"));
+    await refresh;
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      source: "simulator",
+      connectionStatus: "connected",
+      statusMessage: "模拟数据正在运行",
+      ports: [{ name: "COM7" }],
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("运行时卸载使旧刷新失效且旧 finally 不清除新请求忙碌状态", async () => {
+    const old_request = deferred<SerialPortInfo[]>();
+    const new_request = deferred<SerialPortInfo[]>();
+    listSerialPortsMock
+      .mockReturnValueOnce(old_request.promise)
+      .mockReturnValueOnce(new_request.promise);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      statusMessage: "等待连接",
+      ports: [{ name: "COM7", kind: "usb" }],
+      serialConfig: { ...state.serialConfig, portName: "COM7" },
+    }));
+
+    const old_refresh = useWorkbenchStore.getState().refreshPorts();
+    disposeWorkbenchRuntime();
+    await flushPromises();
+    expect(useWorkbenchStore.getState().isRefreshingPorts).toBe(false);
+
+    const new_refresh = useWorkbenchStore.getState().refreshPorts();
+    expect(useWorkbenchStore.getState().isRefreshingPorts).toBe(true);
+    old_request.resolve([{ name: "COM8", kind: "usb" }]);
+    await old_refresh;
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      ports: [{ name: "COM7" }],
+      isRefreshingPorts: true,
+    });
+
+    new_request.resolve([{ name: "COM9", kind: "usb" }]);
+    await new_refresh;
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      ports: [{ name: "COM9" }],
+      serialConfig: { portName: "COM7" },
+      isRefreshingPorts: false,
     });
   });
 
