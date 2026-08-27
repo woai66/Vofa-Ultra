@@ -295,6 +295,9 @@ export function TerminalPanel() {
   const modbusTransaction = useWorkbenchStore((state) => state.modbusTransaction);
   const modbusTransactions = useWorkbenchStore((state) => state.modbusTransactions);
   const serialFileSend = useWorkbenchStore((state) => state.serialFileSend);
+  const serialControlLineOperation = useWorkbenchStore(
+    (state) => state.serialControlLineOperation,
+  );
   const isSendingCommand = useWorkbenchStore((state) => state.isSendingCommand);
   const commandSendOrigin = useWorkbenchStore((state) => state.commandSendOrigin);
   const terminalPaused = useWorkbenchStore((state) => state.terminalPaused);
@@ -425,6 +428,7 @@ export function TerminalPanel() {
   const modbusTransactionActive = modbusTransaction.status !== "idle";
   const fileSendActive = isFileSendActive(serialFileSend.status);
   const manualSendBlocked =
+    serialControlLineOperation !== "idle" ||
     fileSendActive ||
     modbusTransactionActive ||
     manualSendPending ||
@@ -438,11 +442,13 @@ export function TerminalPanel() {
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
     !autoResponderActive &&
+    serialControlLineOperation === "idle" &&
     !fileSendActive &&
     !modbusTransactionActive &&
     !taskActive;
   const canExecuteModbus =
     connectionStatus === "connected" &&
+    serialControlLineOperation === "idle" &&
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
     !autoResponderActive &&
@@ -453,6 +459,7 @@ export function TerminalPanel() {
     isNativeRuntime &&
     source === "serial" &&
     connectionStatus === "connected" &&
+    serialControlLineOperation === "idle" &&
     selectedFilePath.length > 0 &&
     !fileSelectionPending &&
     !fileStartPending &&

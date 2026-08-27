@@ -337,6 +337,15 @@ describe("CapturePanel replay controls", () => {
     expect(startNumericLogMock).toHaveBeenCalledOnce();
   });
 
+  it("控制线操作期间禁用原始录制和数值记录启动", async () => {
+    loadNumericLog("idle", { serialControlLineOperation: "dtr" });
+    render(<CapturePanel />);
+
+    expect(screen.getByRole("button", { name: "开始录制" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("tab", { name: "数值" }));
+    expect(screen.getByRole("button", { name: "开始数值记录" })).toBeDisabled();
+  });
+
   it("录制中可选择颜色并添加命名时间线标记", async () => {
     const user = userEvent.setup();
     useWorkbenchStore.setState({

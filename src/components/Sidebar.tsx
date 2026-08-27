@@ -383,6 +383,7 @@ function ConnectionPanel() {
                 checked={config.rts}
                 disabled={controlLineDisabled || config.flowControl === "hardware"}
                 aria-busy={serialControlLineOperation === "rts"}
+                aria-describedby={config.flowControl === "hardware" ? "rl" : undefined}
                 onChange={(event) => {
                   if (isConnected) {
                     void setSerialControlLine("rts", event.target.checked);
@@ -392,6 +393,11 @@ function ConnectionPanel() {
                 }}
               />
             </label>
+            {config.flowControl === "hardware" && (
+              <span id="rl" className="sr-only">
+                硬件流控已接管 RTS，无法手动设置
+              </span>
+            )}
           </div>
         </section>
       )}
@@ -485,7 +491,11 @@ function ConnectionPanel() {
       </section>
 
       <div className="connection-action-area">
-        <div className="connection-message" data-status={connectionStatus}>
+        <div
+          className="connection-message"
+          data-status={connectionStatus}
+          role="status"
+        >
           <span className="status-dot" />
           <span>{statusMessage}</span>
         </div>

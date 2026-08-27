@@ -17,6 +17,26 @@ export type SerialErrorCode =
   | "write-failed"
   | "worker-panic"
   | "unknown";
+export type SerialControlLineCommandErrorCode =
+  | "invalid-control-line"
+  | "not-connected"
+  | "connection-changed"
+  | "modbus-busy"
+  | "file-send-busy"
+  | "control-line-busy"
+  | "worker-stopped"
+  | "rts-hardware-flow-control"
+  | "operation-id-exhausted"
+  | "queue-full"
+  | "connection-lost"
+  | "task-failed"
+  | "state-lock-failed";
+export type SerialControlLineErrorCode = SerialErrorCode | SerialControlLineCommandErrorCode;
+
+export interface SerialControlLineErrorPayload {
+  errorCode: SerialControlLineErrorCode;
+  message: string;
+}
 export type SerialRecoveryPhase =
   | "off"
   | "idle"
@@ -142,7 +162,7 @@ export interface SerialDiagnosticEvent {
   delayMs?: number;
   generation?: number;
   revision?: number;
-  errorCode?: SerialErrorCode;
+  errorCode?: string;
   candidateCount?: number;
   outcome?: string;
 }

@@ -76,6 +76,9 @@ function clampCaptureMarkerLabel(value: string): string {
 export function CapturePanel() {
   const isNativeRuntime = useWorkbenchStore((state) => state.isNativeRuntime);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
+  const serialControlLineOperation = useWorkbenchStore(
+    (state) => state.serialControlLineOperation,
+  );
   const protocol = useWorkbenchStore((state) => state.protocol);
   const captureStatus = useWorkbenchStore((state) => state.captureStatus);
   const capturePath = useWorkbenchStore((state) => state.capturePath);
@@ -280,6 +283,7 @@ export function CapturePanel() {
   const canStartCapture =
     isNativeRuntime &&
     connectionStatus === "connected" &&
+    serialControlLineOperation === "idle" &&
     workspaceTransitionStatus === "idle" &&
     !runtimeBusy &&
     recordingDirectoryStatus === "idle" &&
@@ -288,6 +292,7 @@ export function CapturePanel() {
   const canStartNumericLog =
     isNativeRuntime &&
     connectionStatus === "connected" &&
+    serialControlLineOperation === "idle" &&
     protocol !== "raw" &&
     workspaceTransitionStatus === "idle" &&
     !runtimeBusy &&

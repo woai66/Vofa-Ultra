@@ -224,10 +224,11 @@ describe("Sidebar 串口恢复界面", () => {
     expect(refreshPorts).toHaveBeenCalledWith("background");
   });
 
-  it("连接后允许动态设置控制线并在硬件流控时锁定 RTS", () => {
+  it("连接后设置控制线并播报异步结果和 RTS 锁定原因", () => {
     const setSerialControlLine = vi.fn().mockResolvedValue(true);
     useWorkbenchStore.setState((state) => ({
       connectionStatus: "connected",
+      statusMessage: "DTR 已设为有效",
       serialRecovery: { ...state.serialRecovery, phase: "armed" },
       serialConfig: { ...state.serialConfig, dtr: true, rts: true, flowControl: "none" },
       setSerialControlLine,
@@ -260,7 +261,10 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
     expect(screen.getByRole("checkbox", { name: "DTR" })).toBeEnabled();
-    expect(screen.getByRole("checkbox", { name: "RTS" })).toBeDisabled();
+    const lockedRts = screen.getByRole("checkbox", { name: "RTS" });
+    expect(lockedRts).toBeDisabled();
+    expect(lockedRts).toHaveAccessibleDescription("硬件流控已接管 RTS，无法手动设置");
+    expect(screen.getByRole("status")).toHaveTextContent("DTR 已设为有效");
   });
 });
 
