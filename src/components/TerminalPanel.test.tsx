@@ -212,6 +212,26 @@ describe("TerminalPanel", () => {
     });
   });
 
+  it("只有未结束 RX 行时仍可清空聚合残片", async () => {
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    useWorkbenchStore.getState().setTerminalRxLineEnding("lf");
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("ABC"), 100);
+    expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
+
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const clear = screen.getByRole("button", { name: "清空终端" });
+    expect(clear).toBeEnabled();
+    await user.click(clear);
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("D\n"), 200);
+
+    await waitFor(() => {
+      expect(
+        useWorkbenchStore.getState().terminalEntries.map(({ hex, text }) => ({ hex, text })),
+      ).toEqual([{ hex: "44 0A", text: "D\\n" }]);
+    });
+  });
+
   it("显示未结束 RX 行的边界警示且不改变原始载荷", async () => {
     const viewportHeight = vi
       .spyOn(HTMLElement.prototype, "offsetHeight", "get")
