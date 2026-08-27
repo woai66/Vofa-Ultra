@@ -1001,6 +1001,10 @@ textarea:focus {
   gap: 7px;
 }
 
+.simulator-config-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .serial-port-summary {
   display: grid;
   min-width: 0;

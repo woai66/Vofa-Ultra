@@ -476,7 +476,9 @@ describe("内置协议贡献契约", () => {
       const frames = definition.createParser().push(bytes, 8_000);
       if (definition.id === "raw") {
         expect(frames).toEqual([]);
-        expect(new TextDecoder().decode(bytes)).toContain("sample=00012");
+        expect(new TextDecoder().decode(bytes)).toBe(
+          "sample=00012 ch1=1.50 ch2=-2.25 ch3=3.00\n",
+        );
       } else {
         expect(frames).toHaveLength(1);
         expectFrameContract(frames[0]);

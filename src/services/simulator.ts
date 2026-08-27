@@ -1,25 +1,22 @@
 import { getProtocolDefinition } from "../core/protocols";
+import { generateSimulatorValues, parseSimulatorConfig } from "../core/simulator";
 import type { ProtocolKind } from "../types/serial";
+import type { SimulatorConfig } from "../types/simulator";
 
 export function startSimulator(
   protocol: ProtocolKind,
+  config: SimulatorConfig,
   onData: (bytes: Uint8Array, timestamp: number) => void,
 ): () => void {
-  const startedAt = performance.now();
+  const frozenConfig = parseSimulatorConfig(config);
   let sampleIndex = 0;
 
   const timer = window.setInterval(() => {
-    const elapsed = (performance.now() - startedAt) / 1_000;
-    const values = [
-      Math.sin(elapsed * Math.PI * 1.2) * 3.2 + 12,
-      Math.cos(elapsed * Math.PI * 0.72) * 2.1 + 7,
-      9 + Math.sin(elapsed * Math.PI * 0.22) * 1.4 + Math.sin(sampleIndex * 0.91) * 0.12,
-    ];
-
+    const values = generateSimulatorValues(frozenConfig, sampleIndex);
     const bytes = getProtocolDefinition(protocol).encodeSimulatorSample(values, sampleIndex);
     onData(bytes, Date.now());
     sampleIndex += 1;
-  }, 40);
+  }, 1_000 / frozenConfig.sampleRate);
 
   return () => window.clearInterval(timer);
 }

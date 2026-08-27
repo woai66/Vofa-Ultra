@@ -31,6 +31,10 @@ import {
   type CommandChecksumMode,
 } from "../core/checksum";
 import {
+  cloneSimulatorConfig,
+  parseSimulatorConfig,
+} from "../core/simulator";
+import {
   cloneQuickCommands,
   parseQuickCommands,
 } from "../core/quickCommands";
@@ -216,6 +220,7 @@ import type {
   SerialStatePayload,
   SerialTxPayload,
 } from "../types/serial";
+import type { SimulatorConfig } from "../types/simulator";
 import { LEGACY_LINE_ENDINGS, LINE_ENDINGS } from "../types/serial";
 import type {
   AttitudeChannelValue,
@@ -247,7 +252,7 @@ import type {
   ChannelPresentationProtocol,
   ChannelPresentations,
   ChartWindowSeconds,
-  WorkspaceExportV11,
+  WorkspaceExportV12,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AutoResponderRule, AutoResponderSnapshot } from "../types/automation";
@@ -265,7 +270,7 @@ const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY =
   MAX_TERMINAL_UNTERMINATED_LINE_BYTES + MAX_TERMINAL_LINE_ENDING_BYTES;
 export const WORKBENCH_STORAGE_KEY = "vofa-ultra-workbench";
-export const WORKBENCH_STORAGE_VERSION = 11;
+export const WORKBENCH_STORAGE_VERSION = 12;
 export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [
   0,
   1,
@@ -278,6 +283,7 @@ export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [
   8,
   9,
   10,
+  11,
 ] as const;
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
@@ -384,6 +390,7 @@ export interface WorkbenchStore {
   ports: SerialPortInfo[];
   isRefreshingPorts: boolean;
   serialConfig: SerialConfig;
+  simulatorConfig: SimulatorConfig;
   serialControlLineOperation: "idle" | SerialControlLine;
   serialModemStatus: SerialModemStatusPayload;
   serialRecovery: SerialRecoverySnapshot;
@@ -504,6 +511,10 @@ export interface WorkbenchStore {
   setSource(source: DataSource): Promise<void>;
   setProtocol(protocol: ProtocolKind): void;
   updateSerialConfig<K extends keyof SerialConfig>(key: K, value: SerialConfig[K]): void;
+  updateSimulatorConfig<K extends keyof SimulatorConfig>(
+    key: K,
+    value: SimulatorConfig[K],
+  ): void;
   setSerialControlLine(line: SerialControlLine, asserted: boolean): Promise<boolean>;
   refreshPorts(mode?: "manual" | "background"): Promise<void>;
   connect(): Promise<void>;
@@ -610,7 +621,7 @@ export interface WorkbenchStore {
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
   deleteWorkspace(id: string): Promise<boolean>;
-  importWorkspace(workspace: WorkspaceExportV11): string;
+  importWorkspace(workspace: WorkspaceExportV12): string;
 }
 
 type PersistedWorkbenchState = Pick<
@@ -618,6 +629,7 @@ type PersistedWorkbenchState = Pick<
   | "source"
   | "protocol"
   | "serialConfig"
+  | "simulatorConfig"
   | "displayMode"
   | "sendMode"
   | "lineEnding"
@@ -650,6 +662,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       ports: [],
       isRefreshingPorts: false,
       serialConfig: { ...INITIAL_WORKSPACE_CONFIG.serialConfig },
+      simulatorConfig: cloneSimulatorConfig(INITIAL_WORKSPACE_CONFIG.simulatorConfig),
       serialControlLineOperation: "idle",
       serialModemStatus: createUnavailableSerialModemStatus(),
       serialRecovery: { ...INITIAL_SERIAL_RECOVERY },
@@ -1182,6 +1195,29 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         set((state) => ({
           serialConfig: { ...state.serialConfig, [key]: value },
         }));
+      },
+
+      updateSimulatorConfig: (key, value) => {
+        const state = get();
+        if (
+          state.connectionStatus !== "disconnected" ||
+          state.workspaceTransitionStatus !== "idle" ||
+          state.runtimeTransitionStatus !== "idle" ||
+          isSerialFileSendActive(state.serialFileSend.status) ||
+          isModbusPollActive(state.modbusPoll) ||
+          isModbusTransactionActive(state.modbusTransaction) ||
+          isRecoveryActivePhase(state.serialRecovery.phase) ||
+          isCaptureActive(state.captureStatus) ||
+          isNumericLogActive(state.numericLogStatus) ||
+          hasReplaySession(state)
+        ) {
+          return;
+        }
+        const simulatorConfig = parseSimulatorConfig({
+          ...state.simulatorConfig,
+          [key]: value,
+        });
+        set({ simulatorConfig });
       },
 
       setSerialControlLine: async (line, asserted) => {
@@ -3349,6 +3385,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         source: state.source,
         protocol: state.protocol,
         serialConfig: state.serialConfig,
+        simulatorConfig: state.simulatorConfig,
         displayMode: state.displayMode,
         sendMode: state.sendMode,
         lineEnding: state.lineEnding,
@@ -4767,6 +4804,7 @@ async function applyWorkspaceSnapshot(
     source: usesBrowserFallback ? "simulator" : config.source,
     protocol: config.protocol,
     serialConfig: config.serialConfig,
+    simulatorConfig: cloneSimulatorConfig(config.simulatorConfig),
     displayMode: config.displayMode,
     sendMode: config.sendMode,
     lineEnding: config.lineEnding,

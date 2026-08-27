@@ -35,6 +35,7 @@ import {
 export function useWorkbenchRuntime(): void {
   const source = useWorkbenchStore((state) => state.source);
   const protocol = useWorkbenchStore((state) => state.protocol);
+  const simulatorConfig = useWorkbenchStore((state) => state.simulatorConfig);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
   const setRuntimeAvailability = useWorkbenchStore((state) => state.setRuntimeAvailability);
   const initializeExtensionRuntime = useWorkbenchStore(
@@ -288,6 +289,6 @@ export function useWorkbenchRuntime(): void {
     if (source !== "simulator" || connectionStatus !== "connected") {
       return undefined;
     }
-    return startSimulator(protocol, ingestBytes);
-  }, [connectionStatus, ingestBytes, protocol, source]);
+    return startSimulator(protocol, simulatorConfig, ingestBytes);
+  }, [connectionStatus, ingestBytes, protocol, simulatorConfig, source]);
 }

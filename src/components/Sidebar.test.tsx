@@ -31,6 +31,11 @@ describe("Sidebar 串口恢复界面", () => {
         ...useWorkbenchStore.getState().serialConfig,
         portName: "COM3",
       },
+      simulatorConfig: {
+        signal: "sine",
+        channelCount: 3,
+        sampleRate: 25,
+      },
       serialControlLineOperation: "idle",
       serialModemStatus: {
         generation: 0,
@@ -235,6 +240,65 @@ describe("Sidebar 串口恢复界面", () => {
 
     expect(screen.getByRole("button", { name: "串口" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: "模拟器" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("配置十类模拟信号、通道数和固定采样率，并在连接后锁定", () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      connectionStatus: "disconnected",
+      serialRecovery: {
+        ...useWorkbenchStore.getState().serialRecovery,
+        phase: "off",
+      },
+    });
+    const { rerender } = render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const signal = screen.getByLabelText("信号类型") as HTMLSelectElement;
+    expect(Array.from(signal.options, (option) => option.textContent)).toEqual([
+      "正弦波",
+      "方波",
+      "三角波",
+      "锯齿波",
+      "直流",
+      "阶跃",
+      "扫频",
+      "多音",
+      "均匀随机",
+      "白噪声",
+    ]);
+    fireEvent.change(signal, { target: { value: "white-noise" } });
+    fireEvent.change(screen.getByLabelText("模拟器通道数"), {
+      target: { value: "16" },
+    });
+    fireEvent.change(screen.getByLabelText("模拟器采样率"), {
+      target: { value: "200" },
+    });
+
+    expect(useWorkbenchStore.getState().simulatorConfig).toEqual({
+      signal: "white-noise",
+      channelCount: 16,
+      sampleRate: 200,
+    });
+
+    useWorkbenchStore.setState({ connectionStatus: "connected" });
+    rerender(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("信号类型")).toBeDisabled();
+    expect(screen.getByLabelText("模拟器通道数")).toBeDisabled();
+    expect(screen.getByLabelText("模拟器采样率")).toBeDisabled();
   });
 
   it("端口选项按名称自然排序并包含设备摘要", () => {
@@ -631,7 +695,7 @@ describe("Sidebar 通道展示配置", () => {
     useWorkbenchStore.setState({
       workspaceTransitionStatus: "idle",
       workspaceStorageStatus: "newer-version",
-      incompatibleStorageVersion: 11,
+      incompatibleStorageVersion: 13,
     });
     rerender(<Sidebar {...props} />);
     expect(screen.getByRole("button", { name: "编辑通道 voltage" })).toBeDisabled();
