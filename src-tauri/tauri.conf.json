@@ -28,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "publisher": "Vofa-Ultra contributors",
     "icon": [
       "icons/32x32.png",
@@ -44,7 +44,7 @@
       "gen/supply-chain/*": "supply-chain/"
     },
     "category": "DeveloperTool",
-    "shortDescription": "A modern cross-platform serial workbench",
-    "longDescription": "Vofa-Ultra is a bounded and diagnosable serial workbench for embedded development."
+    "shortDescription": "A modern Windows serial and waveform workbench",
+    "longDescription": "Vofa-Ultra is a bounded and diagnosable Windows serial and waveform workbench for embedded development."
   }
 }

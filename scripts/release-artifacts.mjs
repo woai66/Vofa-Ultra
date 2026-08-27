@@ -17,6 +17,7 @@ import {
   build_environment_file_name,
   bundle_filename_has_version,
   parse_and_validate_build_environment,
+  WINDOWS_BETA_TARGET,
 } from "./package-artifacts.mjs";
 import { verify_supply_chain_artifacts } from "./supply-chain.mjs";
 
@@ -30,23 +31,9 @@ const RELEASE_BUILD_INFO_NAME = "RELEASE_BUILD_INFO.json";
 const SOURCE_SUPPLY_CHECKSUM_NAME = "SUPPLY_CHAIN_SHA256SUMS";
 
 export const RELEASE_PLATFORMS = Object.freeze({
-  linux: Object.freeze({
-    target_triple: "x86_64-unknown-linux-gnu",
-    installers: Object.freeze([
-      Object.freeze({ label: "Debian package", suffix: ".deb" }),
-      Object.freeze({ label: "AppImage", suffix: ".appimage" }),
-    ]),
-  }),
-  macos: Object.freeze({
-    target_triple: "x86_64-apple-darwin",
-    installers: Object.freeze([
-      Object.freeze({ label: "macOS disk image", suffix: ".dmg" }),
-    ]),
-  }),
   windows: Object.freeze({
-    target_triple: "x86_64-pc-windows-msvc",
+    target_triple: WINDOWS_BETA_TARGET,
     installers: Object.freeze([
-      Object.freeze({ label: "Windows Installer package", suffix: ".msi" }),
       Object.freeze({ label: "NSIS installer", suffix: ".exe" }),
     ]),
   }),
@@ -418,7 +405,7 @@ export async function stage_release_artifacts(options) {
   const input_names = input_entries.map((entry) => entry.name).sort(compare_stable);
   if (input_entries.some((entry) => !entry.isDirectory())
     || JSON.stringify(input_names) !== JSON.stringify(expected_directories)) {
-    fail("Downloaded artifact root must contain exactly the three current-run platform artifacts");
+    fail("Downloaded artifact root must contain exactly the current-run Windows artifact");
   }
 
   await mkdir(output_root, { recursive: true });

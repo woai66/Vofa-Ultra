@@ -32,6 +32,7 @@ export const BUILD_ENVIRONMENT_MAX_BYTES = 32 * 1024;
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const RUST_TARGET_PATTERN = /^[a-z0-9_.-]+$/;
 const SOURCE_COMMIT_PATTERN = /^[0-9a-f]{40}$/;
+export const WINDOWS_BETA_TARGET = "x86_64-pc-windows-msvc";
 
 export const PROJECT_RELEASE_COORDINATES = Object.freeze({
   npm_repository: "https://github.com/woai66/Vofa-Ultra.git",
@@ -57,9 +58,9 @@ export const BUILD_PLATFORMS = Object.freeze({
     target_triple: "x86_64-apple-darwin",
   }),
   windows: Object.freeze({
-    runner_hosts: Object.freeze({ X64: "x86_64-pc-windows-msvc" }),
+    runner_hosts: Object.freeze({ X64: WINDOWS_BETA_TARGET }),
     runner_os: "Windows",
-    target_triple: "x86_64-pc-windows-msvc",
+    target_triple: WINDOWS_BETA_TARGET,
   }),
 });
 
@@ -71,34 +72,7 @@ export const LINUX_BUILD_PACKAGES = Object.freeze([
 ]);
 
 const PLATFORM_ARTIFACTS = {
-  linux: [
-    {
-      label: "Debian package",
-      matches: (file_path, bundle_root) =>
-        has_parent(bundle_root, file_path, "deb")
-          && file_path.toLowerCase().endsWith(".deb"),
-    },
-    {
-      label: "AppImage",
-      matches: (file_path, bundle_root) =>
-        has_parent(bundle_root, file_path, "appimage") && file_path.endsWith(".AppImage"),
-    },
-  ],
-  macos: [
-    {
-      label: "macOS disk image",
-      matches: (file_path, bundle_root) =>
-        has_parent(bundle_root, file_path, "dmg")
-          && file_path.toLowerCase().endsWith(".dmg"),
-    },
-  ],
   windows: [
-    {
-      label: "Windows Installer package",
-      matches: (file_path, bundle_root) =>
-        has_parent(bundle_root, file_path, "msi")
-          && file_path.toLowerCase().endsWith(".msi"),
-    },
     {
       label: "NSIS installer",
       matches: (file_path, bundle_root) =>
@@ -140,6 +114,12 @@ export function bundle_root_for_target(target_triple, uses_target_directory) {
     "release",
     "bundle",
   );
+}
+
+export function validate_collect_target(platform_name, target_triple) {
+  if (platform_name !== "windows" || target_triple !== WINDOWS_BETA_TARGET) {
+    fail(`Windows Beta packages require target ${WINDOWS_BETA_TARGET}`);
+  }
 }
 
 export function bundle_filename_has_version(file_name, version) {
@@ -792,8 +772,10 @@ function verify_package_metadata() {
     fail("Tauri bundling must be active");
   }
 
-  if (tauri_config.bundle.targets !== "all") {
-    fail('Tauri bundle targets must be "all"; the build command narrows targets per platform');
+  if (!Array.isArray(tauri_config.bundle.targets)
+    || tauri_config.bundle.targets.length !== 1
+    || tauri_config.bundle.targets[0] !== "nsis") {
+    fail('Tauri bundle targets must contain only "nsis" for the Windows Beta');
   }
 
   if (tauri_config.build?.beforeBuildCommand !== "pnpm build:desktop") {
@@ -908,6 +890,7 @@ async function collect_artifacts(platform_name, explicit_target) {
 
   const version = verify_package_metadata();
   const target_triple = resolve_target_triple(explicit_target);
+  validate_collect_target(platform_name, target_triple);
   const configured_target = explicit_target
     ?? process.env.TAURI_ENV_TARGET_TRIPLE
     ?? process.env.CARGO_BUILD_TARGET;
@@ -1031,7 +1014,7 @@ async function main() {
 
   fail(
     "Usage: package-artifacts.mjs verify "
-      + "| collect <linux|macos|windows> [target-triple]",
+      + "| collect windows [x86_64-pc-windows-msvc]",
   );
 }
 

@@ -15,7 +15,6 @@ import { fileURLToPath } from "node:url";
 import {
   BUILD_ENVIRONMENT_MAX_BYTES,
   BUILD_PLATFORMS,
-  LINUX_BUILD_PACKAGES,
   build_environment_file_name,
   serialize_build_environment,
 } from "./package-artifacts.mjs";
@@ -66,20 +65,8 @@ function supply_chain_names(target_triple) {
   ].sort();
 }
 
-function installer_names(platform_name) {
-  if (platform_name === "linux") {
-    return [
-      `Vofa-Ultra_${VERSION}_amd64.AppImage`,
-      `Vofa-Ultra_${VERSION}_amd64.deb`,
-    ];
-  }
-  if (platform_name === "macos") {
-    return [`Vofa-Ultra_${VERSION}_x64.dmg`];
-  }
-  return [
-    `Vofa-Ultra_${VERSION}_x64-setup.exe`,
-    `Vofa-Ultra_${VERSION}_x64_en-US.msi`,
-  ];
+function installer_names() {
+  return [`Vofa-Ultra_${VERSION}_x64-setup.exe`];
 }
 
 function build_environment_record(platform_name) {
@@ -96,7 +83,7 @@ function build_environment_record(platform_name) {
       os: BUILD_PLATFORMS[platform_name].runner_os,
       arch: "X64",
       environment: "github-hosted",
-      image_os: platform_name === "linux" ? "ubuntu22" : `${platform_name}15`,
+      image_os: "windows2025",
       image_version: "20260818.1.0",
     },
     toolchain: {
@@ -117,13 +104,7 @@ function build_environment_record(platform_name) {
         llvm_version: "22.1.8",
       },
     },
-    declared_system_packages: platform_name === "linux"
-      ? LINUX_BUILD_PACKAGES.map((name) => ({
-        name,
-        architecture: "amd64",
-        version: "1.0.0-1ubuntu1",
-      }))
-      : [],
+    declared_system_packages: [],
   };
 }
 
@@ -147,7 +128,7 @@ function create_download_tree(
       `vofa-ultra-${platform_name}-${run_number}-${run_attempt}`,
     );
     mkdirSync(artifact_directory, { recursive: true });
-    for (const installer_name of installer_names(platform_name)) {
+    for (const installer_name of installer_names()) {
       writeFileSync(
         path.join(artifact_directory, installer_name),
         `${platform_name}:${installer_name}\n`,
@@ -355,7 +336,7 @@ test("dispatches release CLI commands with injected workspace dependencies", asy
   );
 });
 
-test("stages deterministic flat assets from exactly three verified platforms", async () => {
+test("stages deterministic flat assets from one verified Windows package", async () => {
   const temporary_root = mkdtempSync(path.join(tmpdir(), "vofa-ultra-release-stage-test-"));
   try {
     const input_root = path.join(temporary_root, "downloaded");
@@ -384,7 +365,7 @@ test("stages deterministic flat assets from exactly three verified platforms", a
       verify_supply_chain: verify_fixture_supply_chain,
     });
 
-    assert.equal(first.file_names.length, 21);
+    assert.equal(first.file_names.length, 9);
     assert.deepEqual(first.file_names, second.file_names);
     assert.equal(first.prerelease, is_prerelease_version(VERSION));
     assert.equal(first.file_names.includes("SUPPLY_CHAIN_SHA256SUMS"), false);
@@ -441,7 +422,7 @@ test("rejects source artifacts that do not match their checksum manifest", async
     const installer_path = path.join(
       input_root,
       `vofa-ultra-windows-${RUN_NUMBER}-${RUN_ATTEMPT}`,
-      `Vofa-Ultra_${VERSION}_x64_en-US.msi`,
+      `Vofa-Ultra_${VERSION}_x64-setup.exe`,
     );
     writeFileSync(installer_path, "tampered\n");
     await assert.rejects(
@@ -462,6 +443,38 @@ test("rejects source artifacts that do not match their checksum manifest", async
   }
 });
 
+test("rejects an additional MSI from the Windows Beta package", async () => {
+  const temporary_root = mkdtempSync(path.join(tmpdir(), "vofa-ultra-release-msi-test-"));
+  try {
+    const input_root = path.join(temporary_root, "downloaded");
+    create_download_tree(input_root);
+    const windows_directory = path.join(
+      input_root,
+      `vofa-ultra-windows-${RUN_NUMBER}-${RUN_ATTEMPT}`,
+    );
+    writeFileSync(
+      path.join(windows_directory, `Vofa-Ultra_${VERSION}_x64_en-US.msi`),
+      "unexpected MSI\n",
+    );
+    write_checksum_manifest(windows_directory);
+    await assert.rejects(
+      stage_fixture({
+        input_root,
+        output_root: path.join(temporary_root, "release"),
+        run_attempt: RUN_ATTEMPT,
+        run_id: RUN_ID,
+        run_number: RUN_NUMBER,
+        source_commit: SOURCE_COMMIT,
+        tag_name: `v${VERSION}`,
+        verify_supply_chain: verify_fixture_supply_chain,
+      }),
+      /unexpected file for windows/,
+    );
+  } finally {
+    rmSync(temporary_root, { recursive: true, force: true });
+  }
+});
+
 test("rejects semantically invalid build environments after checksum verification", async () => {
   const temporary_root = mkdtempSync(path.join(tmpdir(), "vofa-ultra-build-environment-test-"));
   try {
@@ -476,14 +489,14 @@ test("rejects semantically invalid build environments after checksum verificatio
       {
         name: "wrong-target",
         mutate: (record) => {
-          record.rust_target = "x86_64-pc-windows-msvc";
+          record.rust_target = "x86_64-unknown-linux-gnu";
         },
         pattern: /target does not match/,
       },
       {
         name: "wrong-runner",
         mutate: (record) => {
-          record.runner.os = "Windows";
+          record.runner.os = "Linux";
         },
         pattern: /runner does not match/,
       },
@@ -514,13 +527,13 @@ test("rejects semantically invalid build environments after checksum verificatio
     for (const test_case of cases) {
       const input_root = path.join(temporary_root, `input-${test_case.name}`);
       create_download_tree(input_root);
-      const linux_directory = path.join(
+      const windows_directory = path.join(
         input_root,
-        `vofa-ultra-linux-${RUN_NUMBER}-${RUN_ATTEMPT}`,
+        `vofa-ultra-windows-${RUN_NUMBER}-${RUN_ATTEMPT}`,
       );
       const environment_path = path.join(
-        linux_directory,
-        build_environment_file_name(RELEASE_PLATFORMS.linux.target_triple),
+        windows_directory,
+        build_environment_file_name(RELEASE_PLATFORMS.windows.target_triple),
       );
       const record = JSON.parse(readFileSync(environment_path, "utf8"));
       test_case.mutate(record);
@@ -528,7 +541,7 @@ test("rejects semantically invalid build environments after checksum verificatio
         environment_path,
         test_case.render ? test_case.render(record) : `${JSON.stringify(record, null, 2)}\n`,
       );
-      write_checksum_manifest(linux_directory);
+      write_checksum_manifest(windows_directory);
       await assert.rejects(
         stage_fixture({
           input_root,
@@ -604,7 +617,7 @@ test("rejects stale runs, reused outputs, wrong tags, and changed project licens
         tag_name: `v${VERSION}`,
         verify_supply_chain: verify_fixture_supply_chain,
       }),
-      /exactly the three current-run platform artifacts/,
+      /exactly the current-run Windows artifact/,
     );
     await assert.rejects(
       stage_fixture({
@@ -617,7 +630,7 @@ test("rejects stale runs, reused outputs, wrong tags, and changed project licens
         tag_name: `v${VERSION}`,
         verify_supply_chain: verify_fixture_supply_chain,
       }),
-      /exactly the three current-run platform artifacts/,
+      /exactly the current-run Windows artifact/,
     );
     await assert.rejects(
       stage_fixture({
@@ -650,12 +663,12 @@ test("rejects stale runs, reused outputs, wrong tags, and changed project licens
       /output directory is not empty/,
     );
 
-    const linux_directory = path.join(
+    const windows_directory = path.join(
       input_root,
-      `vofa-ultra-linux-${RUN_NUMBER}-${RUN_ATTEMPT}`,
+      `vofa-ultra-windows-${RUN_NUMBER}-${RUN_ATTEMPT}`,
     );
-    writeFileSync(path.join(linux_directory, "LICENSE"), "different license\n");
-    write_checksum_manifest(linux_directory);
+    writeFileSync(path.join(windows_directory, "LICENSE"), "different license\n");
+    write_checksum_manifest(windows_directory);
     await assert.rejects(
       stage_fixture({
         input_root,
