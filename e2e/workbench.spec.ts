@@ -1954,7 +1954,7 @@ test("通道展示配置按协议隔离并随 v11 工作区往返", async ({ pag
   }
 });
 
-test("处理图转换节点生成派生通道并随 v11 工作区往返", async ({ page }, testInfo) => {
+test("处理图预设与转换节点生成派生通道并随 v11 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -1967,15 +1967,18 @@ test("处理图转换节点生成派生通道并随 v11 工作区往返", async 
   await page.getByRole("button", { name: "处理", exact: true }).click();
   await expect(page.getByRole("heading", { name: "数据处理" })).toBeVisible();
 
+  await page.getByRole("combobox", { name: "处理链预设" }).selectOption("scale-output");
+  await page.getByRole("button", { name: "添加处理预设" }).click();
+  await expect(page.locator(".processing-node")).toHaveCount(3);
+
   const kindSelect = page.getByRole("combobox", { name: "新增节点类型" });
   const addButton = page.getByRole("button", { name: "添加处理节点" });
-  await addButton.click();
   await kindSelect.selectOption("number_to_byte");
   await addButton.click();
-  await page.getByRole("combobox", { name: "node-2 数值类型" }).selectOption("f32");
+  await page.getByRole("combobox", { name: "node-4 数值类型" }).selectOption("f32");
   await kindSelect.selectOption("bytes_to_number");
   await addButton.click();
-  await page.getByRole("combobox", { name: "node-3 数值类型" }).selectOption("u8");
+  await page.getByRole("combobox", { name: "node-5 数值类型" }).selectOption("u8");
   await kindSelect.selectOption("output");
   await addButton.click();
   await page.getByRole("checkbox", { name: "启用处理图" }).check();
@@ -1994,8 +1997,10 @@ test("处理图转换节点生成派生通道并随 v11 工作区往返", async 
 
   await page.getByRole("button", { name: "通道" }).click();
   await expect(page.getByText(/基础 [1-9]\d*/)).toBeVisible();
-  await expect(page.getByText("派生 1", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("数据通道列表").locator(".channel-row").filter({ hasText: "OUT 1" }))
+  await expect(page.getByText("派生 2", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("数据通道列表").locator(".channel-row").filter({ hasText: "缩放 1" }))
+    .toHaveCount(1);
+  await expect(page.getByLabel("数据通道列表").locator(".channel-row").filter({ hasText: "OUT 2" }))
     .toHaveCount(1);
 
   await page.getByRole("button", { name: "工作区" }).click();
@@ -2017,9 +2022,11 @@ test("处理图转换节点生成派生通道并随 v11 工作区往返", async 
     enabled: true,
     nodes: [
       { id: "node-1", kind: "input" },
-      { id: "node-2", kind: "number_to_byte", numericType: "f32" },
-      { id: "node-3", kind: "bytes_to_number", numericType: "u8" },
-      { id: "node-4", kind: "output", name: "OUT 1" },
+      { id: "node-2", kind: "affine", gain: 1, offset: 0 },
+      { id: "node-3", kind: "output", name: "缩放 1" },
+      { id: "node-4", kind: "number_to_byte", numericType: "f32" },
+      { id: "node-5", kind: "bytes_to_number", numericType: "u8" },
+      { id: "node-6", kind: "output", name: "OUT 2" },
     ],
   });
 
@@ -2033,7 +2040,7 @@ test("处理图转换节点生成派生通道并随 v11 工作区往返", async 
   await expect(page.locator(".workspace-title span")).toContainText("处理图基准 (2)");
   await page.getByRole("button", { name: "处理", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "启用处理图" })).toBeChecked();
-  await expect(page.locator(".processing-node")).toHaveCount(4);
+  await expect(page.locator(".processing-node")).toHaveCount(6);
   expect(pageErrors).toEqual([]);
 });
 

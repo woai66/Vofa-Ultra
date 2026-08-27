@@ -158,7 +158,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "处理" }));
 
-    expect(screen.getByRole("heading", { name: "数据处理" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "数据处理" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "启用处理图" })).not.toBeChecked();
     expect(screen.getByRole("button", { name: "添加处理节点" })).toBeEnabled();
   });

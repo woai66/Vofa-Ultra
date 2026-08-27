@@ -64,6 +64,44 @@ describe("ProcessingPanel", () => {
     expect(screen.getByRole("spinbutton", { name: "node-2 增益" })).toBeInTheDocument();
   });
 
+  it("一键追加可继续编辑的固定处理预设", async () => {
+    const user = userEvent.setup();
+    render(<ProcessingPanel />);
+
+    const presetSelect = screen.getByRole("combobox", { name: "处理链预设" });
+    const addPresetButton = screen.getByRole("button", { name: "添加处理预设" });
+    await user.click(addPresetButton);
+    await user.selectOptions(presetSelect, "smooth-output");
+    await user.click(addPresetButton);
+    await user.selectOptions(presetSelect, "decode-u16-le");
+    await user.click(addPresetButton);
+
+    expect(useWorkbenchStore.getState().processingGraph).toMatchObject({
+      enabled: false,
+      nodes: [
+        { id: "node-1", kind: "input", channelIndex: 0 },
+        { id: "node-2", kind: "affine", input: "node-1" },
+        { id: "node-3", kind: "output", input: "node-2", name: "缩放 1" },
+        { id: "node-4", kind: "input", channelIndex: 1 },
+        { id: "node-5", kind: "moving_average", input: "node-4", windowSize: 8 },
+        { id: "node-6", kind: "output", input: "node-5", name: "平滑 2" },
+        { id: "node-7", kind: "input", channelIndex: 2 },
+        { id: "node-8", kind: "input", channelIndex: 3 },
+        {
+          id: "node-9",
+          kind: "bytes_to_number",
+          inputs: ["node-7", "node-8"],
+          numericType: "u16",
+          endianness: "le",
+        },
+        { id: "node-10", kind: "output", input: "node-9", name: "U16 LE 3" },
+      ],
+    });
+    expect(screen.getByRole("spinbutton", { name: "node-2 增益" })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "node-5 窗口" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "node-9 数值类型" })).toHaveValue("u16");
+  });
+
   it("尚无实时样本时也在输入节点显示保存的协议别名", () => {
     useWorkbenchStore.setState({
       channelPresentations: {
@@ -253,6 +291,8 @@ describe("ProcessingPanel", () => {
     rerender(<ProcessingPanel />);
 
     expect(screen.getByRole("checkbox", { name: "启用处理图" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "处理链预设" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "添加处理预设" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "添加处理节点" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "重试处理图" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "删除节点 node-1" })).toBeDisabled();

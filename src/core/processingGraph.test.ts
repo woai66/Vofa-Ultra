@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ProcessingGraphConfig, ProcessingNode } from "../types/processingGraph";
 import {
+  appendProcessingPreset,
   cloneProcessingGraph,
   compileProcessingGraph,
   createDefaultProcessingGraph,
   MAX_PROCESSING_EVALUATIONS_PER_BATCH,
+  processingPresetNodeCount,
   parseLegacyProcessingGraphConfig,
   parseProcessingGraphConfig,
   ProcessingGraphRuntime,
@@ -152,6 +154,130 @@ describe("处理图配置", () => {
     expect(compiledInputs).toEqual(["high", "low"]);
     expect(Object.isFrozen(compiledInputs)).toBe(true);
     expect(() => parseLegacyProcessingGraphConfig(config)).toThrow("kind");
+  });
+});
+
+describe("处理图预设", () => {
+  it("原子追加缩放与平滑链并避开现有节点 ID 和输入通道", () => {
+    const source: ProcessingGraphConfig = {
+      enabled: false,
+      nodes: [
+        { id: "node-1", kind: "input", channelIndex: 0 },
+        {
+          id: "published",
+          kind: "output",
+          input: "node-1",
+          name: "现有输出",
+          color: "#123456",
+        },
+      ],
+    };
+
+    const scaled = appendProcessingPreset(source, "scale-output");
+    const smoothed = appendProcessingPreset(scaled, "smooth-output");
+
+    expect(source.nodes).toHaveLength(2);
+    expect(scaled.enabled).toBe(false);
+    expect(scaled.nodes.slice(2)).toEqual([
+      { id: "node-2", kind: "input", channelIndex: 1 },
+      { id: "node-3", kind: "affine", input: "node-2", gain: 1, offset: 0 },
+      {
+        id: "node-4",
+        kind: "output",
+        input: "node-3",
+        name: "缩放 2",
+        color: "#55bde8",
+      },
+    ]);
+    expect(smoothed.nodes.slice(5)).toEqual([
+      { id: "node-5", kind: "input", channelIndex: 2 },
+      { id: "node-6", kind: "moving_average", input: "node-5", windowSize: 8 },
+      {
+        id: "node-7",
+        kind: "output",
+        input: "node-6",
+        name: "平滑 3",
+        color: "#f0b35a",
+      },
+    ]);
+    expect(() => compileProcessingGraph(smoothed)).not.toThrow();
+    expect(processingPresetNodeCount("scale-output")).toBe(3);
+    expect(processingPresetNodeCount("smooth-output")).toBe(3);
+  });
+
+  it("生成可直接执行的 U16 小端字节解码链", () => {
+    const graph = appendProcessingPreset(
+      { enabled: true, nodes: [] },
+      "decode-u16-le",
+    );
+    const runtime = new ProcessingGraphRuntime(graph);
+
+    expect(graph.nodes).toEqual([
+      { id: "node-1", kind: "input", channelIndex: 0 },
+      { id: "node-2", kind: "input", channelIndex: 1 },
+      {
+        id: "node-3",
+        kind: "bytes_to_number",
+        inputs: ["node-1", "node-2"],
+        numericType: "u16",
+        endianness: "le",
+      },
+      {
+        id: "node-4",
+        kind: "output",
+        input: "node-3",
+        name: "U16 LE 1",
+        color: "#46d89c",
+      },
+    ]);
+    expect(outputValues(runtime, [0x34, 0x12])).toEqual([0x1234]);
+    expect(processingPresetNodeCount("decode-u16-le")).toBe(4);
+  });
+
+  it("容量或编译预算不足时拒绝整条预设且不修改原图", () => {
+    const nodeLimited: ProcessingGraphConfig = {
+      enabled: false,
+      nodes: Array.from({ length: 62 }, (_, index) => ({
+        id: `input-${index}`,
+        kind: "input" as const,
+        channelIndex: index % 16,
+      })),
+    };
+    const outputLimited: ProcessingGraphConfig = {
+      enabled: false,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        ...Array.from({ length: 16 }, (_, index) => ({
+          id: `output-${index}`,
+          kind: "output" as const,
+          input: "source",
+          name: `输出 ${index}`,
+          color: "#123456",
+        })),
+      ],
+    };
+    const windowLimited: ProcessingGraphConfig = {
+      enabled: false,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        ...Array.from({ length: 32 }, (_, index) => ({
+          id: `average-${index}`,
+          kind: "moving_average" as const,
+          input: "source",
+          windowSize: 256,
+        })),
+      ],
+    };
+    const nodeSnapshot = structuredClone(nodeLimited);
+    const outputSnapshot = structuredClone(outputLimited);
+    const windowSnapshot = structuredClone(windowLimited);
+
+    expect(() => appendProcessingPreset(nodeLimited, "scale-output")).toThrow("需要 3 个节点");
+    expect(() => appendProcessingPreset(outputLimited, "scale-output")).toThrow("16 个输出节点");
+    expect(() => appendProcessingPreset(windowLimited, "smooth-output")).toThrow("8192");
+    expect(nodeLimited).toEqual(nodeSnapshot);
+    expect(outputLimited).toEqual(outputSnapshot);
+    expect(windowLimited).toEqual(windowSnapshot);
   });
 });
 
