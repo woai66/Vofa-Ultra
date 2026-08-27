@@ -676,6 +676,122 @@ test("工作台分栏支持拖拽、键盘、持久化、专注模式和窄屏�
   expect(pageErrors).toEqual([]);
 });
 
+test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离", async ({ page }, testInfo) => {
+  const viewports = [
+    { width: 1_280, height: 800 },
+    { width: 1_200, height: 800 },
+    { width: 1_100, height: 680 },
+    { width: 1_024, height: 680 },
+  ];
+  await page.setViewportSize(viewports[0]);
+  await page.goto("/");
+
+  const app_shell = page.locator(".app-shell");
+  const sidebar = page.locator(".sidebar");
+  const send_row = page.locator(".send-main-row");
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    await expect(app_shell).toHaveAttribute("data-sidebar-open", "true");
+    await expect(sidebar).toBeVisible();
+    const layout = await send_row.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const controls = [...element.querySelectorAll<HTMLElement>("button, select, textarea")]
+        .filter((control) => {
+          const control_rect = control.getBoundingClientRect();
+          return control_rect.width > 0 && control_rect.height > 0;
+        })
+        .map((control) => {
+          const control_rect = control.getBoundingClientRect();
+          return {
+            name: control.getAttribute("aria-label") ?? control.textContent?.trim() ?? "",
+            left: control_rect.left,
+            top: control_rect.top,
+            right: control_rect.right,
+            bottom: control_rect.bottom,
+          };
+        });
+      const overlaps: string[] = [];
+      for (let left_index = 0; left_index < controls.length; left_index += 1) {
+        for (let right_index = left_index + 1; right_index < controls.length; right_index += 1) {
+          const left = controls[left_index];
+          const right = controls[right_index];
+          if (
+            left &&
+            right &&
+            Math.min(left.right, right.right) - Math.max(left.left, right.left) > 0.5 &&
+            Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 0.5
+          ) {
+            overlaps.push(`${left.name} / ${right.name}`);
+          }
+        }
+      }
+      return {
+        overflow: element.scrollWidth - element.clientWidth,
+        document_width: document.documentElement.scrollWidth,
+        outside: controls.filter(
+          (control) => control.left < rect.left - 1 || control.right > rect.right + 1,
+        ),
+        overlaps,
+      };
+    });
+    expect(layout.document_width).toBeLessThanOrEqual(viewport.width);
+    expect(layout.overflow).toBeLessThanOrEqual(1);
+    expect(layout.outside).toEqual([]);
+    expect(layout.overlaps).toEqual([]);
+  }
+
+  const message = page.getByRole("textbox", { name: "发送内容" });
+  await message.fill("PING");
+  await page.getByRole("button", { name: "展开周期发送设置" }).click();
+  const vertical_layout = await page.locator("#workspace-terminal-panel").evaluate((element) => {
+    const panel_rect = element.getBoundingClientRect();
+    const composer_rect = element.querySelector<HTMLElement>(".send-composer")?.getBoundingClientRect();
+    const log_rect = element.querySelector<HTMLElement>(".terminal-log-shell")?.getBoundingClientRect();
+    const status_rect = document.querySelector<HTMLElement>(".status-bar")?.getBoundingClientRect();
+    return {
+      composer_bottom: composer_rect?.bottom ?? Number.POSITIVE_INFINITY,
+      log_height: log_rect?.height ?? 0,
+      panel_bottom: panel_rect.bottom,
+      status_top: status_rect?.top ?? 0,
+      document_height: document.documentElement.scrollHeight,
+    };
+  });
+  expect(vertical_layout.composer_bottom).toBeLessThanOrEqual(vertical_layout.panel_bottom + 1);
+  expect(vertical_layout.panel_bottom).toBeLessThanOrEqual(vertical_layout.status_top + 1);
+  expect(vertical_layout.log_height).toBeGreaterThanOrEqual(20);
+  expect(vertical_layout.document_height).toBeLessThanOrEqual(680);
+
+  await page.getByRole("group", { name: "波形视图" }).getByRole("button", { name: "频谱" }).click();
+  const spectrum = page.getByLabel("频谱设置", { exact: true });
+  await expect(spectrum).toBeVisible();
+  const spectrum_layout = await spectrum.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const controls = [...element.querySelectorAll<HTMLElement>("button, select, input")].map(
+      (control) => {
+        const control_rect = control.getBoundingClientRect();
+        return {
+          left: control_rect.left,
+          right: control_rect.right,
+          top: control_rect.top,
+          bottom: control_rect.bottom,
+        };
+      },
+    );
+    return {
+      overflow: element.scrollWidth - element.clientWidth,
+      outside: controls.filter(
+        (control) => control.left < rect.left - 1 || control.right > rect.right + 1,
+      ),
+    };
+  });
+  expect(spectrum_layout.overflow).toBeLessThanOrEqual(1);
+  expect(spectrum_layout.outside).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("windows-minimum-responsive-layout.png"),
+    fullPage: true,
+  });
+});
+
 test("终端上滚挂起跟随并可回到最新", async ({ page }) => {
   await page.goto("/");
   const entries = Array.from(
