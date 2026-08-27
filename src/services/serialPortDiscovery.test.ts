@@ -33,8 +33,16 @@ describe("serialPortDiscovery", () => {
     await Promise.resolve();
     expect(refresh).toHaveBeenCalledOnce();
 
-    dispose();
     window.dispatchEvent(new Event("focus"));
+    await Promise.resolve();
+    expect(refresh).toHaveBeenCalledOnce();
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    window.dispatchEvent(new Event("focus"));
+    dispose();
     await Promise.resolve();
     expect(refresh).toHaveBeenCalledOnce();
   });

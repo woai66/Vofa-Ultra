@@ -1,15 +1,23 @@
 export function subscribeToSerialPortDiscoveryRefresh(refresh: () => void): () => void {
   let refreshQueued = false;
+  let disposed = false;
 
   const queueRefresh = () => {
-    if (refreshQueued) {
+    if (refreshQueued || disposed) {
       return;
     }
     refreshQueued = true;
     queueMicrotask(() => {
       refreshQueued = false;
-      refresh();
+      if (!disposed) {
+        refresh();
+      }
     });
+  };
+  const handleFocus = () => {
+    if (document.visibilityState === "visible") {
+      queueRefresh();
+    }
   };
   const handleVisibilityChange = () => {
     if (document.visibilityState === "visible") {
@@ -17,11 +25,12 @@ export function subscribeToSerialPortDiscoveryRefresh(refresh: () => void): () =
     }
   };
 
-  window.addEventListener("focus", queueRefresh);
+  window.addEventListener("focus", handleFocus);
   document.addEventListener("visibilitychange", handleVisibilityChange);
 
   return () => {
-    window.removeEventListener("focus", queueRefresh);
+    disposed = true;
+    window.removeEventListener("focus", handleFocus);
     document.removeEventListener("visibilitychange", handleVisibilityChange);
   };
 }

@@ -4001,7 +4001,7 @@ describe("workbenchStore", () => {
     });
   });
 
-  it("后台枚举完成前生命周期变化时丢弃迟到结果", async () => {
+  it("后台枚举完成前生命周期变化后即使回到空闲也丢弃迟到结果", async () => {
     let resolvePorts: ((ports: SerialPortInfo[]) => void) | undefined;
     listSerialPortsMock.mockImplementation(
       () => new Promise((resolve) => {
@@ -4012,6 +4012,7 @@ describe("workbenchStore", () => {
       isNativeRuntime: true,
       source: "serial",
       connectionStatus: "disconnected",
+      serialStateRevision: 5,
       statusMessage: "等待连接",
       ports: [{ name: "COM7", kind: "usb" }],
       serialConfig: { ...state.serialConfig, portName: "COM7" },
@@ -4019,8 +4020,14 @@ describe("workbenchStore", () => {
 
     const refresh = useWorkbenchStore.getState().refreshPorts("background");
     useWorkbenchStore.setState({
-      connectionStatus: "connected",
-      statusMessage: "COM7 已连接",
+      connectionStatus: "connecting",
+      serialStateRevision: 6,
+      statusMessage: "正在连接 COM7",
+    });
+    useWorkbenchStore.setState({
+      connectionStatus: "disconnected",
+      serialStateRevision: 7,
+      statusMessage: "连接已取消",
     });
     resolvePorts?.([{ name: "COM8", kind: "usb" }]);
     await refresh;
@@ -4028,8 +4035,9 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState()).toMatchObject({
       ports: [{ name: "COM7" }],
       serialConfig: { portName: "COM7" },
-      connectionStatus: "connected",
-      statusMessage: "COM7 已连接",
+      connectionStatus: "disconnected",
+      serialStateRevision: 7,
+      statusMessage: "连接已取消",
       isRefreshingPorts: false,
     });
   });
