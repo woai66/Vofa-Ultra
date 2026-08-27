@@ -148,41 +148,67 @@ impl SharedSerialState {
         &mut self,
         expected_generation: u64,
         line: SerialControlLine,
-    ) -> Result<(u64, mpsc::SyncSender<WorkerCommand>), String> {
+    ) -> Result<(u64, mpsc::SyncSender<WorkerCommand>), SerialControlLineErrorPayload> {
         if self.status != SerialStatus::Connected {
-            return Err("串口尚未连接".to_owned());
+            return Err(SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::NotConnected,
+                "串口尚未连接",
+            ));
         }
         if self.generation != expected_generation {
-            return Err("串口连接已发生变化，请重试控制线操作".to_owned());
+            return Err(SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::ConnectionChanged,
+                "串口连接已发生变化，请重试控制线操作",
+            ));
         }
         if self.active_modbus.is_some() {
-            return Err("Modbus RTU 事务进行中，暂不能设置控制线".to_owned());
+            return Err(SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::ModbusBusy,
+                "Modbus RTU 事务进行中，暂不能设置控制线",
+            ));
         }
         if self.active_file_send.is_some() {
-            return Err("文件发送进行中，暂不能设置控制线".to_owned());
+            return Err(SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::FileSendBusy,
+                "文件发送进行中，暂不能设置控制线",
+            ));
         }
         if self.active_control_line.is_some() {
-            return Err("已有串口控制线操作正在进行".to_owned());
+            return Err(SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::ControlLineBusy,
+                "已有串口控制线操作正在进行",
+            ));
         }
         let command_tx = {
             let worker = self
                 .worker
                 .as_ref()
                 .filter(|worker| worker.generation == expected_generation)
-                .ok_or_else(|| "串口工作线程未运行".to_owned())?;
+                .ok_or_else(|| {
+                    SerialControlLineErrorPayload::command(
+                        SerialControlLineCommandErrorCode::WorkerStopped,
+                        "串口工作线程未运行",
+                    )
+                })?;
             if line == SerialControlLine::Rts && worker.hardware_flow_control {
-                return Err("硬件流控已接管 RTS，无法手动设置".to_owned());
+                return Err(SerialControlLineErrorPayload::command(
+                    SerialControlLineCommandErrorCode::RtsHardwareFlowControl,
+                    "硬件流控已接管 RTS，无法手动设置",
+                ));
             }
-            worker
-                .command_tx
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| "串口工作线程已停止".to_owned())?
+            worker.command_tx.as_ref().cloned().ok_or_else(|| {
+                SerialControlLineErrorPayload::command(
+                    SerialControlLineCommandErrorCode::WorkerStopped,
+                    "串口工作线程已停止",
+                )
+            })?
         };
-        let operation_id = self
-            .control_line_sequence
-            .checked_add(1)
-            .ok_or_else(|| "串口控制线操作序号已耗尽，请重启应用".to_owned())?;
+        let operation_id = self.control_line_sequence.checked_add(1).ok_or_else(|| {
+            SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::OperationIdExhausted,
+                "串口控制线操作序号已耗尽，请重启应用",
+            )
+        })?;
         self.control_line_sequence = operation_id;
         self.active_control_line = Some(ActiveControlLine {
             operation_id,
@@ -507,6 +533,59 @@ impl SerialErrorCode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SerialControlLineCommandErrorCode {
+    InvalidControlLine,
+    NotConnected,
+    ConnectionChanged,
+    ModbusBusy,
+    FileSendBusy,
+    ControlLineBusy,
+    WorkerStopped,
+    RtsHardwareFlowControl,
+    OperationIdExhausted,
+    QueueFull,
+    ConnectionLost,
+    TaskFailed,
+    StateLockFailed,
+}
+
+impl SerialControlLineCommandErrorCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidControlLine => "invalid-control-line",
+            Self::NotConnected => "not-connected",
+            Self::ConnectionChanged => "connection-changed",
+            Self::ModbusBusy => "modbus-busy",
+            Self::FileSendBusy => "file-send-busy",
+            Self::ControlLineBusy => "control-line-busy",
+            Self::WorkerStopped => "worker-stopped",
+            Self::RtsHardwareFlowControl => "rts-hardware-flow-control",
+            Self::OperationIdExhausted => "operation-id-exhausted",
+            Self::QueueFull => "queue-full",
+            Self::ConnectionLost => "connection-lost",
+            Self::TaskFailed => "task-failed",
+            Self::StateLockFailed => "state-lock-failed",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialControlLineErrorPayload {
+    error_code: String,
+    message: String,
+}
+
+impl SerialControlLineErrorPayload {
+    fn command(code: SerialControlLineCommandErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            error_code: code.as_str().to_owned(),
+            message: message.into(),
+        }
+    }
+}
+
 struct SerialFailure {
     code: SerialErrorCode,
     message: String,
@@ -515,6 +594,15 @@ struct SerialFailure {
 impl SerialFailure {
     fn new(code: SerialErrorCode, message: String) -> Self {
         Self { code, message }
+    }
+}
+
+impl From<SerialFailure> for SerialControlLineErrorPayload {
+    fn from(failure: SerialFailure) -> Self {
+        Self {
+            error_code: failure.code.as_str().to_owned(),
+            message: failure.message,
+        }
     }
 }
 
@@ -588,11 +676,14 @@ enum SerialControlLine {
 }
 
 impl SerialControlLine {
-    fn parse(value: &str) -> Result<Self, String> {
+    fn parse(value: &str) -> Result<Self, SerialControlLineErrorPayload> {
         match value {
             "dtr" => Ok(Self::Dtr),
             "rts" => Ok(Self::Rts),
-            _ => Err(format!("不支持的串口控制线: {value}")),
+            _ => Err(SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::InvalidControlLine,
+                format!("不支持的串口控制线: {value}"),
+            )),
         }
     }
 }
@@ -1344,13 +1435,16 @@ pub async fn set_serial_control_line(
     generation: u64,
     line: String,
     asserted: bool,
-) -> Result<(), String> {
+) -> Result<(), SerialControlLineErrorPayload> {
     let line = SerialControlLine::parse(&line)?;
     let shared_state = Arc::clone(&state.shared);
     let (operation_id, reply_rx) = {
-        let mut shared = shared_state
-            .lock()
-            .map_err(|_| "串口状态锁已损坏".to_owned())?;
+        let mut shared = shared_state.lock().map_err(|_| {
+            SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::StateLockFailed,
+                "串口状态锁已损坏",
+            )
+        })?;
         let (operation_id, command_tx) = shared.begin_control_line_operation(generation, line)?;
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         if let Err(error) = command_tx.try_send(WorkerCommand::SetControlLine(ControlLineCommand {
@@ -1361,25 +1455,44 @@ pub async fn set_serial_control_line(
         })) {
             shared.finish_control_line_operation(operation_id, generation);
             return Err(match error {
-                mpsc::TrySendError::Full(_) => "串口发送队列已满，请稍后重试控制线操作".to_owned(),
-                mpsc::TrySendError::Disconnected(_) => "串口工作线程已停止".to_owned(),
+                mpsc::TrySendError::Full(_) => SerialControlLineErrorPayload::command(
+                    SerialControlLineCommandErrorCode::QueueFull,
+                    "串口发送队列已满，请稍后重试控制线操作",
+                ),
+                mpsc::TrySendError::Disconnected(_) => SerialControlLineErrorPayload::command(
+                    SerialControlLineCommandErrorCode::WorkerStopped,
+                    "串口工作线程已停止",
+                ),
             });
         }
         (operation_id, reply_rx)
     };
 
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let result = reply_rx
-            .recv()
-            .map_err(|_| "串口连接已结束，控制线结果未知".to_owned())?;
-        result.map_err(|failure| failure.message)
+        let result = reply_rx.recv().map_err(|_| {
+            SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::ConnectionLost,
+                "串口连接已结束，控制线结果未知",
+            )
+        })?;
+        result.map_err(SerialControlLineErrorPayload::from)
     })
     .await
-    .map_err(|error| format!("串口控制线任务异常退出: {error}"))
+    .map_err(|error| {
+        SerialControlLineErrorPayload::command(
+            SerialControlLineCommandErrorCode::TaskFailed,
+            format!("串口控制线任务异常退出: {error}"),
+        )
+    })
     .and_then(|result| result);
     shared_state
         .lock()
-        .map_err(|_| "串口状态锁已损坏".to_owned())?
+        .map_err(|_| {
+            SerialControlLineErrorPayload::command(
+                SerialControlLineCommandErrorCode::StateLockFailed,
+                "串口状态锁已损坏",
+            )
+        })?
         .finish_control_line_operation(operation_id, generation);
     result
 }
@@ -3178,7 +3291,11 @@ mod tests {
     fn parses_control_lines_and_rejects_unknown_values() {
         assert_eq!(SerialControlLine::parse("dtr"), Ok(SerialControlLine::Dtr));
         assert_eq!(SerialControlLine::parse("rts"), Ok(SerialControlLine::Rts));
-        assert!(SerialControlLine::parse("cts").is_err());
+        let error = SerialControlLine::parse("cts").expect_err("必须拒绝未知控制线");
+        let json = serde_json::to_value(error).unwrap();
+        assert_eq!(json["errorCode"], "invalid-control-line");
+        assert_eq!(json["message"], "不支持的串口控制线: cts");
+        assert!(json.get("error_code").is_none());
     }
 
     #[test]
@@ -3207,12 +3324,11 @@ mod tests {
             .as_mut()
             .expect("测试 worker 应存在")
             .hardware_flow_control = true;
-        assert_eq!(
-            shared
-                .begin_control_line_operation(7, SerialControlLine::Rts)
-                .expect_err("硬件流控必须拒绝手动 RTS"),
-            "硬件流控已接管 RTS，无法手动设置"
-        );
+        let error = shared
+            .begin_control_line_operation(7, SerialControlLine::Rts)
+            .expect_err("硬件流控必须拒绝手动 RTS");
+        assert_eq!(error.error_code, "rts-hardware-flow-control");
+        assert_eq!(error.message, "硬件流控已接管 RTS，无法手动设置");
     }
 
     #[test]
@@ -3407,6 +3523,59 @@ mod tests {
             (SerialErrorCode::WriteFailed, "write-failed"),
             (SerialErrorCode::WorkerPanic, "worker-panic"),
             (SerialErrorCode::Unknown, "unknown"),
+        ];
+
+        for (code, expected) in codes {
+            assert_eq!(code.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn control_line_command_error_codes_are_stable() {
+        let codes = [
+            (
+                SerialControlLineCommandErrorCode::InvalidControlLine,
+                "invalid-control-line",
+            ),
+            (
+                SerialControlLineCommandErrorCode::NotConnected,
+                "not-connected",
+            ),
+            (
+                SerialControlLineCommandErrorCode::ConnectionChanged,
+                "connection-changed",
+            ),
+            (SerialControlLineCommandErrorCode::ModbusBusy, "modbus-busy"),
+            (
+                SerialControlLineCommandErrorCode::FileSendBusy,
+                "file-send-busy",
+            ),
+            (
+                SerialControlLineCommandErrorCode::ControlLineBusy,
+                "control-line-busy",
+            ),
+            (
+                SerialControlLineCommandErrorCode::WorkerStopped,
+                "worker-stopped",
+            ),
+            (
+                SerialControlLineCommandErrorCode::RtsHardwareFlowControl,
+                "rts-hardware-flow-control",
+            ),
+            (
+                SerialControlLineCommandErrorCode::OperationIdExhausted,
+                "operation-id-exhausted",
+            ),
+            (SerialControlLineCommandErrorCode::QueueFull, "queue-full"),
+            (
+                SerialControlLineCommandErrorCode::ConnectionLost,
+                "connection-lost",
+            ),
+            (SerialControlLineCommandErrorCode::TaskFailed, "task-failed"),
+            (
+                SerialControlLineCommandErrorCode::StateLockFailed,
+                "state-lock-failed",
+            ),
         ];
 
         for (code, expected) in codes {

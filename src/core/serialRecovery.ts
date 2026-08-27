@@ -1,6 +1,7 @@
 import type {
   ConnectionStatus,
   SerialConfig,
+  SerialControlLine,
   SerialDiagnosticEvent,
   SerialDiagnosticsReport,
   SerialErrorCode,
@@ -65,7 +66,7 @@ interface DiagnosticInput {
   delayMs?: number;
   generation?: number;
   revision?: number;
-  errorCode?: SerialErrorCode;
+  errorCode?: string;
   candidateCount?: number;
   outcome?: string;
 }
@@ -173,6 +174,19 @@ export class SerialReconnectCoordinator {
     if (this.config) {
       this.config = { ...config };
     }
+  }
+
+  recordControlLineFailure(
+    line: SerialControlLine,
+    generation: number,
+    errorCode: string,
+  ): void {
+    this.record({
+      kind: "control_line_failed",
+      generation,
+      errorCode,
+      outcome: line,
+    });
   }
 
   observeState(payload: SerialStatePayload, previousStatus: ConnectionStatus): boolean {

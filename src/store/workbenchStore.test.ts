@@ -4072,8 +4072,11 @@ describe("workbenchStore", () => {
     });
   });
 
-  it("控制线失败时保留原值且不把连接改成故障", async () => {
-    setSerialControlLineMock.mockRejectedValue(new Error("驱动拒绝请求"));
+  it("控制线失败时保留原值并只记录有界错误码", async () => {
+    setSerialControlLineMock.mockRejectedValue({
+      errorCode: "rts-failed",
+      message: "驱动拒绝请求",
+    });
     useWorkbenchStore.setState((state) => ({
       isNativeRuntime: true,
       source: "serial",
@@ -4092,6 +4095,33 @@ describe("workbenchStore", () => {
       statusMessage: "设置 RTS 失败：驱动拒绝请求",
       connectionStatus: "connected",
     });
+    const events = useWorkbenchStore.getState().getSerialDiagnostics().events;
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: "control_line_failed",
+        generation: 7,
+        errorCode: "rts-failed",
+        outcome: "rts",
+      }),
+    );
+
+    setSerialControlLineMock.mockRejectedValueOnce({
+      errorCode: "path:C:\\private",
+      message: "另一次失败",
+    });
+    await expect(useWorkbenchStore.getState().setSerialControlLine("dtr", false)).resolves.toBe(
+      false,
+    );
+    const sanitizedEvents = useWorkbenchStore.getState().getSerialDiagnostics().events;
+    expect(sanitizedEvents).toContainEqual(
+      expect.objectContaining({
+        kind: "control_line_failed",
+        errorCode: "unknown",
+        outcome: "dtr",
+      }),
+    );
+    expect(JSON.stringify(sanitizedEvents)).not.toContain("private");
+    expect(JSON.stringify(sanitizedEvents)).not.toContain("另一次失败");
   });
 
   it("控制线请求在连接代次变化后丢弃迟到成功", async () => {

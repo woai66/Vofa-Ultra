@@ -1181,13 +1181,29 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           getSerialRecoveryCoordinator().updateConfig(serialConfig);
           return true;
         } catch (error) {
+          const payload = isRecord(error) ? error : undefined;
+          const payloadMessage = payload?.message;
+          const payloadErrorCode = payload?.errorCode;
+          const message =
+            typeof payloadMessage === "string" && payloadMessage.trim()
+              ? payloadMessage
+              : getErrorMessage(error);
+          const errorCode =
+            typeof payloadErrorCode === "string" && /^[a-z-]{1,32}$/.test(payloadErrorCode)
+              ? payloadErrorCode
+              : "unknown";
+          getSerialRecoveryCoordinator().recordControlLineFailure(
+            line,
+            generation,
+            errorCode,
+          );
           const latest = get();
           if (
             operation === serialControlLineOperation &&
             latest.source === "serial" &&
             latest.serialGeneration === generation
           ) {
-            set({ statusMessage: `设置 ${label} 失败：${getErrorMessage(error)}` });
+            set({ statusMessage: `设置 ${label} 失败：${message}` });
           }
           return false;
         } finally {
