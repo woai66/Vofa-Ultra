@@ -340,7 +340,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "记录" }));
 
-    expect(screen.getByRole("heading", { name: "会话记录" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "会话记录" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开始录制" })).toBeDisabled();
     expect(screen.getByText("仅桌面应用支持文件录制")).toBeInTheDocument();
 

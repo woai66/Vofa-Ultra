@@ -54,6 +54,7 @@ import {
   cancelSerialConnect,
   connectSerial,
   disconnectSerial,
+  getSerialState,
   listSerialPorts,
   sendSerial,
   setSerialControlLine,
@@ -96,6 +97,7 @@ vi.mock("../services/serialClient", async (importOriginal) => {
     cancelSerialModbusTransaction: vi.fn(),
     connectSerial: vi.fn(),
     disconnectSerial: vi.fn(),
+    getSerialState: vi.fn(),
     listSerialPorts: vi.fn(),
     sendSerial: vi.fn(),
     setSerialControlLine: vi.fn(),
@@ -150,6 +152,7 @@ const cancelSerialConnectMock = vi.mocked(cancelSerialConnect);
 const cancelSerialModbusTransactionMock = vi.mocked(cancelSerialModbusTransaction);
 const connectSerialMock = vi.mocked(connectSerial);
 const disconnectSerialMock = vi.mocked(disconnectSerial);
+const getSerialStateMock = vi.mocked(getSerialState);
 const listSerialPortsMock = vi.mocked(listSerialPorts);
 const sendSerialMock = vi.mocked(sendSerial);
 const setSerialControlLineMock = vi.mocked(setSerialControlLine);
@@ -353,6 +356,12 @@ describe("workbenchStore", () => {
       generation: 0,
       revision: 0,
     });
+    getSerialStateMock.mockReset().mockResolvedValue({
+      status: "disconnected",
+      portName: "",
+      generation: 0,
+      revision: 0,
+    });
     listSerialPortsMock.mockReset();
     sendSerialMock.mockReset().mockResolvedValue(undefined);
     setSerialControlLineMock.mockReset().mockResolvedValue(undefined);
@@ -394,6 +403,7 @@ describe("workbenchStore", () => {
       connectionStatus: "disconnected",
       serialGeneration: 0,
       serialStateRevision: 0,
+      serialRuntimeError: "",
       statusMessage: "等待连接",
       ports: [],
       isRefreshingPorts: false,
@@ -2572,6 +2582,143 @@ describe("workbenchStore", () => {
     });
   });
 
+  it("错误事件先于连接 Promise 失败时只记录一次手动连接故障", async () => {
+    const pending_connection = deferred<SerialStatePayload>();
+    const port: SerialPortInfo = {
+      name: "COM3",
+      kind: "usb",
+      serialNumber: "DEVICE-001",
+      vendorId: 0x1234,
+      productId: 0x5678,
+    };
+    connectSerialMock.mockReturnValue(pending_connection.promise);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      ports: [port],
+      serialConfig: { ...state.serialConfig, portName: port.name },
+    }));
+
+    const connecting = useWorkbenchStore.getState().connect();
+    await vi.waitFor(() => {
+      expect(useWorkbenchStore.getState().connectionStatus).toBe("connecting");
+    });
+    useWorkbenchStore.getState().handleSerialState({
+      status: "error",
+      portName: port.name,
+      message: "串口被占用",
+      errorCode: "open-failed",
+      generation: 1,
+      revision: 1,
+    });
+    pending_connection.reject(new Error("打开串口失败"));
+    await connecting;
+
+    expect(getSerialStateMock).not.toHaveBeenCalled();
+    expect(
+      useWorkbenchStore
+        .getState()
+        .getSerialDiagnostics()
+        .events.filter((event) => event.kind === "manual_connect_failed"),
+    ).toEqual([
+      expect.objectContaining({
+        generation: 1,
+        revision: 1,
+        errorCode: "open-failed",
+      }),
+    ]);
+  });
+
+  it("连接 Promise 先失败时读取真实状态并忽略迟到的重复事件", async () => {
+    const port: SerialPortInfo = {
+      name: "COM3",
+      kind: "usb",
+      serialNumber: "DEVICE-001",
+      vendorId: 0x1234,
+      productId: 0x5678,
+    };
+    const failure: SerialStatePayload = {
+      status: "error",
+      portName: port.name,
+      message: "串口被占用",
+      errorCode: "open-failed",
+      generation: 1,
+      revision: 1,
+    };
+    connectSerialMock.mockRejectedValue(new Error("打开串口失败"));
+    getSerialStateMock.mockResolvedValue(failure);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      ports: [port],
+      serialConfig: { ...state.serialConfig, portName: port.name },
+    }));
+
+    await useWorkbenchStore.getState().connect();
+    useWorkbenchStore.getState().handleSerialState(failure);
+
+    expect(getSerialStateMock).toHaveBeenCalledOnce();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "error",
+      statusMessage: "串口被占用",
+      serialGeneration: 1,
+      serialStateRevision: 1,
+    });
+    expect(
+      useWorkbenchStore
+        .getState()
+        .getSerialDiagnostics()
+        .events.filter((event) => event.kind === "manual_connect_failed"),
+    ).toEqual([
+      expect.objectContaining({
+        generation: 1,
+        revision: 1,
+        errorCode: "open-failed",
+      }),
+    ]);
+  });
+
+  it("连接状态快照也失败时记录一次未知故障并接受迟到状态", async () => {
+    const port: SerialPortInfo = {
+      name: "COM3",
+      kind: "usb",
+      serialNumber: "DEVICE-001",
+      vendorId: 0x1234,
+      productId: 0x5678,
+    };
+    connectSerialMock.mockRejectedValue(new Error("IPC 请求失败"));
+    getSerialStateMock.mockRejectedValue(new Error("状态读取失败"));
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      ports: [port],
+      serialConfig: { ...state.serialConfig, portName: port.name },
+    }));
+
+    await useWorkbenchStore.getState().connect();
+    useWorkbenchStore.getState().handleSerialState({
+      status: "error",
+      portName: port.name,
+      message: "串口被占用",
+      errorCode: "open-failed",
+      generation: 1,
+      revision: 1,
+    });
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "error",
+      statusMessage: "串口被占用",
+      serialGeneration: 1,
+      serialStateRevision: 1,
+    });
+    expect(
+      useWorkbenchStore
+        .getState()
+        .getSerialDiagnostics()
+        .events.filter((event) => event.kind === "manual_connect_failed"),
+    ).toEqual([expect.objectContaining({ errorCode: "unknown" })]);
+  });
+
   it("后端尚未发布连接状态时用相同 revision 的取消快照纠正乐观状态", async () => {
     const pendingConnection = deferred<SerialStatePayload>();
     const port: SerialPortInfo = {
@@ -4559,7 +4706,7 @@ describe("workbenchStore", () => {
     });
   });
 
-  it("手动刷新失败只在原串口空闲上下文中显示错误", async () => {
+  it("手动刷新失败显示错误但不伪造连接故障且后续可恢复", async () => {
     listSerialPortsMock.mockRejectedValue(new Error("串口驱动不可用"));
     useWorkbenchStore.setState({
       isNativeRuntime: true,
@@ -4571,9 +4718,39 @@ describe("workbenchStore", () => {
     await useWorkbenchStore.getState().refreshPorts();
 
     expect(useWorkbenchStore.getState()).toMatchObject({
-      connectionStatus: "error",
+      connectionStatus: "disconnected",
       statusMessage: "串口驱动不可用",
       isRefreshingPorts: false,
+    });
+
+    listSerialPortsMock.mockResolvedValue([{ name: "COM7", kind: "usb" }]);
+    await useWorkbenchStore.getState().refreshPorts();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "disconnected",
+      statusMessage: "发现 1 个串口设备",
+      ports: [{ name: "COM7" }],
+    });
+  });
+
+  it("串口核心监听故障时拒绝连接并保留可见原因", async () => {
+    const runtime_error = "串口核心事件监听初始化失败：事件插件不可用";
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      serialRuntimeError: runtime_error,
+      statusMessage: runtime_error,
+      ports: [{ name: "COM7", kind: "usb" }],
+      serialConfig: { ...state.serialConfig, portName: "COM7" },
+    }));
+
+    await useWorkbenchStore.getState().connect();
+
+    expect(connectSerialMock).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "disconnected",
+      runtimeTransitionStatus: "idle",
+      statusMessage: runtime_error,
     });
   });
 

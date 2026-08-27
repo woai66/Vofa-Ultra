@@ -894,9 +894,47 @@ test("波特率可直接输入且常用值始终可选", async ({ page }) => {
 
   await baud_rate.fill("12000001");
   await expect(baud_rate).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByRole("button", { name: "连接设备" })).toBeDisabled();
   await baud_rate.press("Escape");
   await expect(baud_rate).toHaveValue("250000");
   await expect(baud_rate).toHaveAttribute("aria-invalid", "false");
+  await expect(page.getByRole("button", { name: "连接设备" })).toBeEnabled();
+});
+
+test("串口核心事件监听失败时显示故障并阻止连接", async ({ page }) => {
+  await installTauriSerialMock(page, "serial://state");
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+
+  await expect(page.getByText(/串口核心事件监听初始化失败/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "刷新串口列表" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "连接设备" })).toBeDisabled();
+});
+
+test("可选串口状态读取失败时仍允许核心连接", async ({ page }) => {
+  await installTauriSerialMock(page, undefined, "get_serial_file_send_state");
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+
+  await expect(page.getByRole("button", { name: "刷新串口列表" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "连接设备" })).toBeEnabled();
+  await expect(page.getByText(/串口核心事件监听初始化失败/)).toHaveCount(0);
+});
+
+test("串口初始状态读取失败后仍可刷新并连接", async ({ page }) => {
+  await installTauriSerialMock(page, undefined, "get_serial_state");
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+
+  const refresh_button = page.getByRole("button", { name: "刷新串口列表" });
+  const connect_button = page.getByRole("button", { name: "连接设备" });
+  await expect(refresh_button).toBeEnabled();
+  await expect(connect_button).toBeEnabled();
+  await refresh_button.click();
+  await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
+  await connect_button.click();
+  await expect(page.getByText("COM3 已连接")).toBeVisible();
+  await expect(page.getByText(/串口核心事件监听初始化失败/)).toHaveCount(0);
 });
 
 test("终端上滚挂起跟随并可回到最新", async ({ page }) => {
@@ -4517,8 +4555,12 @@ async function installTauriReplayMock(
   }, { replayProtocol: protocol, replaySeekSnapUs: seekSnapUs });
 }
 
-async function installTauriSerialMock(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+async function installTauriSerialMock(
+  page: Page,
+  failedEvent?: string,
+  failedCommand?: string,
+): Promise<void> {
+  await page.addInitScript(({ eventToFail, commandToFail }) => {
     type Callback = (data: unknown) => unknown;
     type InvokeArgs = Record<string, unknown> | undefined;
     const callbacks = new Map<number, Callback>();
@@ -4601,6 +4643,9 @@ async function installTauriSerialMock(page: Page): Promise<void> {
     const invoke = async (command: string, args: InvokeArgs): Promise<unknown> => {
       if (command === "plugin:event|listen") {
         const event = String(args?.event);
+        if (event === eventToFail) {
+          throw new Error(`${event} 监听注册失败`);
+        }
         const handler = Number(args?.handler);
         listeners.set(event, [...(listeners.get(event) ?? []), handler]);
         return handler;
@@ -4613,6 +4658,9 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           (listeners.get(event) ?? []).filter((id) => id !== eventId),
         );
         return undefined;
+      }
+      if (command === commandToFail) {
+        throw new Error(`${command} 调用失败`);
       }
       if (command === "plugin:window|destroy") {
         closeOperations.push("destroy");
@@ -4984,5 +5032,5 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         ];
       },
     };
-  });
+  }, { eventToFail: failedEvent ?? null, commandToFail: failedCommand ?? null });
 }

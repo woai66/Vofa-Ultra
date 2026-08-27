@@ -64,9 +64,11 @@ import {
   type SimulatorSignalType,
 } from "../types/simulator";
 import type { SidebarPanel } from "./ActivityRail";
-import { CapturePanel } from "./CapturePanel";
 import { WorkspacePanel } from "./WorkspacePanel";
 
+const CapturePanel = lazy(() =>
+  import("./CapturePanel").then(({ CapturePanel }) => ({ default: CapturePanel })),
+);
 const AutomationPanel = lazy(() =>
   import("./AutomationPanel").then(({ AutomationPanel }) => ({ default: AutomationPanel })),
 );
@@ -91,23 +93,26 @@ interface BaudRateFieldProps {
   value: number;
   disabled: boolean;
   onChange(value: number): void;
+  onValidityChange(valid: boolean): void;
 }
 
-function BaudRateField({ value, disabled, onChange }: BaudRateFieldProps) {
+function BaudRateField({ value, disabled, onChange, onValidityChange }: BaudRateFieldProps) {
   const [draftValue, setDraftValue] = useState(String(value));
   const parsedDraftValue = parseBaudRate(draftValue);
 
   useEffect(() => {
     setDraftValue(String(value));
-  }, [value]);
+    onValidityChange(true);
+  }, [onValidityChange, value]);
 
   const commitDraftValue = () => {
     const parsed = parseBaudRate(draftValue);
     if (parsed === null) {
-      setDraftValue(String(value));
+      onValidityChange(false);
       return;
     }
     setDraftValue(String(parsed));
+    onValidityChange(true);
     if (parsed !== value) {
       onChange(parsed);
     }
@@ -132,7 +137,11 @@ function BaudRateField({ value, disabled, onChange }: BaudRateFieldProps) {
           spellCheck={false}
           value={draftValue}
           disabled={disabled}
-          onChange={(event) => setDraftValue(event.target.value)}
+          onChange={(event) => {
+            const nextValue = event.target.value;
+            setDraftValue(nextValue);
+            onValidityChange(parseBaudRate(nextValue) !== null);
+          }}
           onBlur={commitDraftValue}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
@@ -141,6 +150,7 @@ function BaudRateField({ value, disabled, onChange }: BaudRateFieldProps) {
             } else if (event.key === "Escape") {
               event.preventDefault();
               setDraftValue(String(value));
+              onValidityChange(true);
             }
           }}
         />
@@ -155,6 +165,7 @@ function BaudRateField({ value, disabled, onChange }: BaudRateFieldProps) {
             onChange={(event) => {
               const baudRate = Number(event.target.value);
               setDraftValue(String(baudRate));
+              onValidityChange(true);
               if (baudRate !== value) {
                 onChange(baudRate);
               }
@@ -244,7 +255,13 @@ export function Sidebar({
           <AutomationPanel />
         </Suspense>
       )}
-      {activePanel === "capture" && <CapturePanel />}
+      {activePanel === "capture" && (
+        <Suspense
+          fallback={<div className="sidebar-panel" aria-label="加载中" aria-busy="true" />}
+        >
+          <CapturePanel />
+        </Suspense>
+      )}
       <div className="workspace-panel-host" hidden={activePanel !== "workspaces"}>
         <WorkspacePanel />
       </div>
@@ -281,6 +298,7 @@ function ConnectionPanel() {
   const isCancellingSerialConnection = useWorkbenchStore(
     (state) => state.isCancellingSerialConnection,
   );
+  const serialRuntimeError = useWorkbenchStore((state) => state.serialRuntimeError);
   const setSource = useWorkbenchStore((state) => state.setSource);
   const setProtocol = useWorkbenchStore((state) => state.setProtocol);
   const updateConfig = useWorkbenchStore((state) => state.updateSerialConfig);
@@ -313,6 +331,7 @@ function ConnectionPanel() {
   const numericLogStatus = useWorkbenchStore((state) => state.numericLogStatus);
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
   const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
+  const [baudRateDraftValid, setBaudRateDraftValid] = useState(true);
 
   const isConnected = connectionStatus === "connected";
   const isTransitioning = workspaceTransitionStatus !== "idle";
@@ -351,7 +370,8 @@ function ConnectionPanel() {
     return selectedPort ? presentSerialPort(selectedPort) : null;
   }, [config.portName, ports]);
   const serialConnectUnavailable =
-    source === "serial" && selectedPortPresentation === null;
+    source === "serial" &&
+    (selectedPortPresentation === null || !baudRateDraftValid || Boolean(serialRuntimeError));
   const primaryActionDisabled =
     isCancellingSerialConnection ||
     (!canCancelConnection &&
@@ -484,7 +504,7 @@ function ConnectionPanel() {
               type="button"
               aria-label="刷新串口列表"
               title="刷新串口列表"
-              disabled={isRefreshingPorts || configDisabled}
+              disabled={isRefreshingPorts || configDisabled || Boolean(serialRuntimeError)}
               onClick={() => void refreshPorts()}
             >
               <RefreshCw size={15} className={isRefreshingPorts ? "spin" : undefined} />
@@ -534,6 +554,7 @@ function ConnectionPanel() {
             value={config.baudRate}
             disabled={configDisabled}
             onChange={(baudRate) => updateConfig("baudRate", baudRate)}
+            onValidityChange={setBaudRateDraftValid}
           />
 
           <div className="field-grid three-columns">
@@ -686,7 +707,7 @@ function ConnectionPanel() {
               name="serial-auto-reconnect"
               type="checkbox"
               checked={serialRecovery.enabled}
-              disabled={isCancellingSerialConnection}
+              disabled={isCancellingSerialConnection || Boolean(serialRuntimeError)}
               onChange={(event) => void setSerialRecoveryEnabled(event.target.checked)}
             />
           </label>
@@ -771,11 +792,11 @@ function ConnectionPanel() {
       <div className="connection-action-area">
         <div
           className="connection-message"
-          data-status={connectionStatus}
+          data-status={serialRuntimeError ? "error" : connectionStatus}
           role="status"
         >
           <span className="status-dot" />
-          <span>{statusMessage}</span>
+          <span>{serialRuntimeError || statusMessage}</span>
         </div>
         <button
           className="primary-button connect-button"
@@ -784,9 +805,12 @@ function ConnectionPanel() {
           disabled={primaryActionDisabled}
           title={
             !isConnected && !canCancelConnection && serialConnectUnavailable
-              ? config.portName
-                ? `${config.portName} 当前不可用，请刷新或选择其他串口`
-                : "未发现可用串口，请连接设备后刷新"
+              ? serialRuntimeError ||
+                (!baudRateDraftValid
+                  ? "请先输入有效波特率"
+                  : config.portName
+                    ? `${config.portName} 当前不可用，请刷新或选择其他串口`
+                    : "未发现可用串口，请连接设备后刷新")
               : undefined
           }
           onClick={() =>

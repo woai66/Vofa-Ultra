@@ -16,6 +16,7 @@ describe("Sidebar 串口恢复界面", () => {
       isNativeRuntime: true,
       source: "serial",
       connectionStatus: "error",
+      serialRuntimeError: "",
       statusMessage: "设备已移除",
       ports: [
         {
@@ -461,7 +462,7 @@ describe("Sidebar 串口恢复界面", () => {
     expect(baud_rate).toHaveValue("115200");
   });
 
-  it("失焦时拒绝非法自定义波特率并恢复当前配置", () => {
+  it("非法波特率失焦后保持错误并阻止连接", () => {
     useWorkbenchStore.setState((state) => ({
       connectionStatus: "disconnected",
       serialConfig: { ...state.serialConfig, baudRate: 250_000 },
@@ -477,13 +478,46 @@ describe("Sidebar 串口恢复界面", () => {
     );
 
     const baud_rate = screen.getByRole("textbox", { name: "波特率" });
+    const connect_button = screen.getByRole("button", { name: "连接设备" });
     fireEvent.change(baud_rate, { target: { value: "0" } });
     expect(baud_rate).toHaveAttribute("aria-invalid", "true");
+    expect(connect_button).toBeDisabled();
     fireEvent.blur(baud_rate);
 
-    expect(baud_rate).toHaveValue("250000");
-    expect(baud_rate).toHaveAttribute("aria-invalid", "false");
+    expect(baud_rate).toHaveValue("0");
+    expect(baud_rate).toHaveAttribute("aria-invalid", "true");
+    expect(connect_button).toBeDisabled();
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(250_000);
+
+    fireEvent.keyDown(baud_rate, { key: "Escape" });
+    expect(baud_rate).toHaveValue("250000");
+    expect(connect_button).toBeEnabled();
+  });
+
+  it("串口核心监听故障时显示原因并阻止刷新和连接", () => {
+    const runtime_error = "串口核心事件监听初始化失败：事件插件不可用";
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      serialRuntimeError: runtime_error,
+      statusMessage: runtime_error,
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "刷新串口列表" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "连接设备" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "连接设备" })).toHaveAttribute(
+      "title",
+      runtime_error,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(runtime_error);
   });
 
   it("连接期间同时锁定波特率输入和常用值下拉", () => {

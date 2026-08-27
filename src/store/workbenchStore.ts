@@ -150,6 +150,7 @@ import {
   cancelSerialConnect,
   connectSerial,
   disconnectSerial,
+  getSerialState,
   isTauriRuntime,
   listSerialPorts,
   sendSerial,
@@ -391,6 +392,7 @@ export interface WorkbenchStore {
   connectionStatus: ConnectionStatus;
   serialGeneration: number;
   serialStateRevision: number;
+  serialRuntimeError: string;
   statusMessage: string;
   ports: SerialPortInfo[];
   isRefreshingPorts: boolean;
@@ -514,6 +516,8 @@ export interface WorkbenchStore {
   replayNextSequence: number;
   replayMessage: string;
   setRuntimeAvailability(nativeRuntime: boolean): void;
+  setSerialRuntimeError(message: string): void;
+  reportSerialRuntimeWarning(message: string): void;
   setSource(source: DataSource): Promise<void>;
   setProtocol(protocol: ProtocolKind): void;
   updateSerialConfig<K extends keyof SerialConfig>(key: K, value: SerialConfig[K]): void;
@@ -666,6 +670,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       connectionStatus: "disconnected",
       serialGeneration: 0,
       serialStateRevision: 0,
+      serialRuntimeError: "",
       statusMessage: "等待连接",
       ports: [],
       isRefreshingPorts: false,
@@ -1092,11 +1097,25 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           serialModemStatus: availabilityChanged
             ? createUnavailableSerialModemStatus(latest.serialGeneration)
             : latest.serialModemStatus,
+          serialRuntimeError: nativeRuntime ? latest.serialRuntimeError : "",
           terminalEntries,
           statusMessage: nativeRuntime
             ? latest.statusMessage
             : "浏览器预览模式，仅使用模拟数据",
         }));
+      },
+
+      setSerialRuntimeError: (message) => {
+        set((state) => ({
+          serialRuntimeError: message,
+          statusMessage: message || state.statusMessage,
+        }));
+      },
+
+      reportSerialRuntimeWarning: (message) => {
+        set((state) =>
+          state.serialRuntimeError ? state : { statusMessage: message },
+        );
       },
 
       setSource: async (source) => {
@@ -1351,7 +1370,6 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           }
           if (mode === "manual") {
             set({
-              connectionStatus: "error",
               statusMessage: getErrorMessage(error),
               serialModemStatus: createUnavailableSerialModemStatus(
                 get().serialGeneration,
@@ -1368,6 +1386,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       connect: async () => {
         if (get().isCancellingSerialConnection) {
+          return;
+        }
+        const runtimeError = get().serialRuntimeError;
+        if (get().source === "serial" && runtimeError) {
+          set({ statusMessage: runtimeError });
           return;
         }
         if (!beginRuntimeTransition(get, set, "connecting")) {
@@ -1456,13 +1479,39 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             get().handleSerialState(payload);
             set({ stats: { ...emptyStats(), startedAt: Date.now() } });
           } catch (error) {
+            if (operation !== serialConnectOperation) {
+              return;
+            }
+            let failureSnapshot: SerialStatePayload | undefined;
+            if (get().connectionStatus === "connecting") {
+              try {
+                const snapshot = await getSerialState();
+                if (snapshot.status === "error") {
+                  failureSnapshot = snapshot;
+                }
+                if (
+                  operation === serialConnectOperation &&
+                  get().connectionStatus === "connecting"
+                ) {
+                  get().handleSerialState(snapshot);
+                }
+              } catch {
+                // 保留原始连接错误作为面向用户的原因。
+              }
+            }
             if (
               operation === serialConnectOperation &&
               get().connectionStatus === "connecting"
             ) {
+              const latest = get();
+              getSerialRecoveryCoordinator().recordManualConnectionFailure({
+                generation: failureSnapshot?.generation ?? latest.serialGeneration,
+                revision: failureSnapshot?.revision ?? latest.serialStateRevision,
+                errorCode: failureSnapshot?.errorCode ?? "unknown",
+              });
               set({
                 connectionStatus: "error",
-                statusMessage: getErrorMessage(error),
+                statusMessage: failureSnapshot?.message ?? getErrorMessage(error),
                 serialModemStatus: createUnavailableSerialModemStatus(
                   get().serialGeneration,
                 ),

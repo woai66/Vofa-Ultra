@@ -38,6 +38,10 @@ export function useWorkbenchRuntime(): void {
   const simulatorConfig = useWorkbenchStore((state) => state.simulatorConfig);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
   const setRuntimeAvailability = useWorkbenchStore((state) => state.setRuntimeAvailability);
+  const setSerialRuntimeError = useWorkbenchStore((state) => state.setSerialRuntimeError);
+  const reportSerialRuntimeWarning = useWorkbenchStore(
+    (state) => state.reportSerialRuntimeWarning,
+  );
   const initializeExtensionRuntime = useWorkbenchStore(
     (state) => state.initializeExtensionRuntime,
   );
@@ -86,6 +90,40 @@ export function useWorkbenchRuntime(): void {
     let dispose: () => void = () => undefined;
     setRuntimeAvailability(nativeRuntime);
 
+    const initializeSerialSnapshots = async () => {
+      const [serialStateResult, fileSendStateResult, modemStatusResult] =
+        await Promise.allSettled([
+          getSerialState(),
+          getSerialFileSendState(),
+          getSerialModemStatus(),
+        ]);
+      if (cancelled) {
+        return;
+      }
+      if (serialStateResult.status === "fulfilled") {
+        handleSerialState(serialStateResult.value);
+      } else {
+        const detail =
+          serialStateResult.reason instanceof Error
+            ? serialStateResult.reason.message
+            : String(serialStateResult.reason);
+        reportSerialRuntimeWarning(`串口初始状态读取失败：${detail}`);
+        console.error("读取串口初始状态失败", serialStateResult.reason);
+      }
+      if (fileSendStateResult.status === "fulfilled") {
+        handleSerialFileSend(fileSendStateResult.value);
+      }
+      if (modemStatusResult.status === "fulfilled") {
+        handleSerialModemStatus(modemStatusResult.value);
+      }
+      const optionalFailures = [fileSendStateResult, modemStatusResult].filter(
+        (result) => result.status === "rejected",
+      );
+      if (optionalFailures.length > 0) {
+        console.warn(`有 ${optionalFailures.length} 项可选串口状态无法读取`);
+      }
+    };
+
     void subscribeToSerialEvents({
       onData: handleSerialData,
       onState: handleSerialState,
@@ -93,33 +131,33 @@ export function useWorkbenchRuntime(): void {
       onTx: handleSerialTx,
       onFileSend: handleSerialFileSend,
       onModbusTransaction: handleModbusTransaction,
-    })
-      .then(async (unlisten) => {
+    }).then(
+      (unlisten) => {
         if (cancelled) {
           unlisten();
           return;
         }
 
         dispose = unlisten;
+        setSerialRuntimeError("");
         if (nativeRuntime) {
-          const [snapshot, fileSendSnapshot] = await Promise.all([
-            getSerialState(),
-            getSerialFileSendState(),
-          ]);
-          if (cancelled) {
-            return;
-          }
-          handleSerialState(snapshot);
-          handleSerialFileSend(fileSendSnapshot);
-          const modemStatus = await getSerialModemStatus();
-          if (!cancelled) {
-            handleSerialModemStatus(modemStatus);
-          }
+          void initializeSerialSnapshots().catch((error: unknown) => {
+            if (!cancelled) {
+              const detail = error instanceof Error ? error.message : String(error);
+              reportSerialRuntimeWarning(`应用串口初始状态失败：${detail}`);
+            }
+            console.error("应用串口初始状态失败", error);
+          });
         }
-      })
-      .catch((error: unknown) => {
+      },
+      (error: unknown) => {
+        if (!cancelled && nativeRuntime) {
+          const detail = error instanceof Error ? error.message : String(error);
+          setSerialRuntimeError(`串口核心事件监听初始化失败：${detail}`);
+        }
         console.error("初始化串口事件监听失败", error);
-      });
+      },
+    );
 
     if (nativeRuntime) {
       void refreshPorts("background");
@@ -140,7 +178,9 @@ export function useWorkbenchRuntime(): void {
     handleSerialTx,
     initializeExtensionRuntime,
     refreshPorts,
+    reportSerialRuntimeWarning,
     setRuntimeAvailability,
+    setSerialRuntimeError,
   ]);
 
   useEffect(() => {
