@@ -136,6 +136,8 @@ export function AttitudeScene({
     const device = createDeviceModel(theme);
     const initialOrientation = toThreeQuaternion(orientationRef.current);
     device.quaternion.copy(initialOrientation);
+    let renderedOrientationSignature = quaternionSignature(initialOrientation);
+    container.dataset.renderedOrientation = renderedOrientationSignature;
     scene.add(device);
 
     const resetCamera = () => {
@@ -168,6 +170,11 @@ export function AttitudeScene({
       const blend = reducedMotion ? 1 : 1 - Math.exp(-12 * elapsedSeconds);
       currentOrientation.slerp(targetOrientation, blend);
       device.quaternion.copy(currentOrientation);
+      const nextOrientationSignature = quaternionSignature(currentOrientation);
+      if (nextOrientationSignature !== renderedOrientationSignature) {
+        renderedOrientationSignature = nextOrientationSignature;
+        container.dataset.renderedOrientation = renderedOrientationSignature;
+      }
       controls.update();
       renderer.render(scene, camera);
       animationFrame = requestAnimationFrame(renderFrame);
@@ -289,6 +296,10 @@ function scenePalette(theme: ThemeMode) {
 
 function toThreeQuaternion(value: AttitudeQuaternion): Quaternion {
   return new Quaternion(value.x, value.y, value.z, value.w).normalize();
+}
+
+function quaternionSignature(value: Quaternion): string {
+  return value.toArray().map((component) => component.toFixed(6)).join(",");
 }
 
 function disposeScene(scene: Scene): void {

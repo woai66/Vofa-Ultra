@@ -3,6 +3,7 @@ export type DataSource = "serial" | "simulator";
 export const PROTOCOL_IDS = ["firewater", "justfloat", "raw"] as const;
 export type ProtocolKind = (typeof PROTOCOL_IDS)[number];
 export type DisplayMode = "text" | "hex";
+export type SerialControlLine = "dtr" | "rts";
 export const LINE_ENDINGS = ["none", "lf", "cr", "crlf"] as const;
 export const LEGACY_LINE_ENDINGS = ["none", "lf", "crlf"] as const;
 export type LineEnding = (typeof LINE_ENDINGS)[number];
@@ -16,6 +17,26 @@ export type SerialErrorCode =
   | "write-failed"
   | "worker-panic"
   | "unknown";
+export type SerialControlLineCommandErrorCode =
+  | "invalid-control-line"
+  | "not-connected"
+  | "connection-changed"
+  | "modbus-busy"
+  | "file-send-busy"
+  | "control-line-busy"
+  | "worker-stopped"
+  | "rts-hardware-flow-control"
+  | "operation-id-exhausted"
+  | "queue-full"
+  | "connection-lost"
+  | "task-failed"
+  | "state-lock-failed";
+export type SerialControlLineErrorCode = SerialErrorCode | SerialControlLineCommandErrorCode;
+
+export interface SerialControlLineErrorPayload {
+  errorCode: SerialControlLineErrorCode;
+  message: string;
+}
 export type SerialRecoveryPhase =
   | "off"
   | "idle"
@@ -115,6 +136,15 @@ export interface SerialStatePayload {
   revision: number;
 }
 
+export interface SerialModemStatusPayload {
+  generation: number;
+  revision: number;
+  cts: boolean | null;
+  dsr: boolean | null;
+  ri: boolean | null;
+  dcd: boolean | null;
+}
+
 export interface SerialReconnectTarget {
   kind: "usb";
   vendorId: number;
@@ -141,7 +171,7 @@ export interface SerialDiagnosticEvent {
   delayMs?: number;
   generation?: number;
   revision?: number;
-  errorCode?: SerialErrorCode;
+  errorCode?: string;
   candidateCount?: number;
   outcome?: string;
 }

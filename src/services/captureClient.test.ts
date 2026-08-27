@@ -51,6 +51,7 @@ describe("captureClient", () => {
         dtr: true,
         rts: true,
       },
+      destinationDirectory: "D:\\sessions",
     };
 
     await expect(startCapture(request)).resolves.toEqual(payload);

@@ -1,5 +1,11 @@
+#[cfg(unix)]
+use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, ErrorKind, Write};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -9,6 +15,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+use crate::recording_directory::resolve_custom_recording_directory;
 
 const CSV_HEADER: &str = concat!(
     "sample_index,timestamp_unix_us,elapsed_us,channel_kind,channel_id,",
@@ -52,6 +62,7 @@ impl NumericChannelKind {
 pub struct NumericLogStartRequest {
     source: String,
     protocol: String,
+    destination_directory: Option<String>,
 }
 
 impl NumericLogStartRequest {
@@ -756,17 +767,22 @@ fn start_numeric_log_blocking(
             .ok_or_else(|| "数值日志会话标识已耗尽，请重启应用".to_owned())?
     };
 
-    let (file, part_path, final_path) =
-        create_numeric_log_file(&app, started_at_unix_ms, session_id).inspect_err(|message| {
-            publish_start_error(
-                &app,
-                &state.core,
-                session_id,
-                started_at_unix_ms,
-                String::new(),
-                message.clone(),
-            );
-        })?;
+    let (file, part_path, final_path) = create_numeric_log_file(
+        &app,
+        request.destination_directory.as_deref(),
+        started_at_unix_ms,
+        session_id,
+    )
+    .inspect_err(|message| {
+        publish_start_error(
+            &app,
+            &state.core,
+            session_id,
+            started_at_unix_ms,
+            String::new(),
+            message.clone(),
+        );
+    })?;
     let part_path_text = part_path.to_string_lossy().into_owned();
     let (sender, receiver) = mpsc::sync_channel(WRITER_QUEUE_BATCHES);
     let (ready_sender, ready_receiver) = mpsc::channel();
@@ -1088,9 +1104,93 @@ fn run_numeric_log_writer(
     );
 }
 
+#[cfg(target_os = "linux")]
 fn commit_part_file(part_path: &Path, final_path: &Path) -> Result<(), String> {
-    fs::rename(part_path, final_path)
-        .map_err(|error| format!("提交数值日志文件 {} 失败: {error}", final_path.display()))
+    let part_path_c = unix_path_to_c_string(part_path)?;
+    let final_path_c = unix_path_to_c_string(final_path)?;
+
+    // 直接调用系统调用，避免引入较新 glibc 符号，同时让碰撞检测与移动保持原子。
+    let renamed = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            part_path_c.as_ptr(),
+            libc::AT_FDCWD,
+            final_path_c.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if renamed == -1 {
+        return Err(commit_file_error(final_path));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn commit_part_file(part_path: &Path, final_path: &Path) -> Result<(), String> {
+    let part_path_c = unix_path_to_c_string(part_path)?;
+    let final_path_c = unix_path_to_c_string(final_path)?;
+
+    // RENAME_EXCL 让目标存在检查与移动由内核作为同一个原子操作完成。
+    let renamed = unsafe {
+        libc::renamex_np(
+            part_path_c.as_ptr(),
+            final_path_c.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if renamed == -1 {
+        return Err(commit_file_error(final_path));
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn commit_part_file(part_path: &Path, final_path: &Path) -> Result<(), String> {
+    fs::hard_link(part_path, final_path)
+        .map_err(|error| format!("提交数值日志文件 {} 失败: {error}", final_path.display()))?;
+    fs::remove_file(part_path).map_err(|error| {
+        format!(
+            "移除数值日志临时文件 {} 失败: {error}；已保留最终文件 {}",
+            part_path.display(),
+            final_path.display()
+        )
+    })
+}
+
+#[cfg(windows)]
+fn commit_part_file(part_path: &Path, final_path: &Path) -> Result<(), String> {
+    let part_path_wide = part_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let final_path_wide = final_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+
+    // 不传 MOVEFILE_REPLACE_EXISTING，确保提交与碰撞检测是同一个原子操作。
+    let moved = unsafe { MoveFileExW(part_path_wide.as_ptr(), final_path_wide.as_ptr(), 0) };
+    if moved == 0 {
+        return Err(commit_file_error(final_path));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn unix_path_to_c_string(path: &Path) -> Result<CString, String> {
+    CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("数值日志文件路径包含 NUL 字节: {}", path.display()))
+}
+
+fn commit_file_error(final_path: &Path) -> String {
+    format!(
+        "提交数值日志文件 {} 失败: {}",
+        final_path.display(),
+        io::Error::last_os_error()
+    )
 }
 
 fn write_csv_preamble<W: Write>(writer: &mut W) -> io::Result<u64> {
@@ -1190,9 +1290,15 @@ fn estimate_batch_bytes(samples: &[NumericLogSample], allocation_capacity: usize
 
 fn create_numeric_log_file(
     app: &AppHandle,
+    destination_directory: Option<&str>,
     started_at_unix_ms: u64,
     session_id: u64,
 ) -> Result<(File, PathBuf, PathBuf), String> {
+    if let Some(directory) = resolve_custom_recording_directory(destination_directory)? {
+        return create_file_in_existing_directory(&directory, started_at_unix_ms, session_id)
+            .map_err(|error| format!("自定义记录目录不可用: {error}"));
+    }
+
     let mut errors = Vec::new();
     match app.path().download_dir() {
         Ok(path) => {
@@ -1224,6 +1330,21 @@ fn create_file_in_directory(
 ) -> Result<(File, PathBuf, PathBuf), String> {
     fs::create_dir_all(directory)
         .map_err(|error| format!("创建目录 {} 失败: {error}", directory.display()))?;
+
+    create_file_in_existing_directory(directory, started_at_unix_ms, session_id)
+}
+
+fn create_file_in_existing_directory(
+    directory: &Path,
+    started_at_unix_ms: u64,
+    session_id: u64,
+) -> Result<(File, PathBuf, PathBuf), String> {
+    if !directory.is_dir() {
+        return Err(format!(
+            "记录目录不存在或不是文件夹: {}",
+            directory.display()
+        ));
+    }
     for suffix in 0..100_u16 {
         let stem = if suffix == 0 {
             format!("numeric-{started_at_unix_ms}-{session_id}")
@@ -1448,17 +1569,20 @@ mod tests {
         let valid = NumericLogStartRequest {
             source: "serial".to_owned(),
             protocol: "firewater".to_owned(),
+            destination_directory: Some("/captures".to_owned()),
         };
         assert!(valid.validate().is_ok());
         assert!(NumericLogStartRequest {
             source: "network".to_owned(),
             protocol: "firewater".to_owned(),
+            destination_directory: None,
         }
         .validate()
         .is_err());
         assert!(NumericLogStartRequest {
             source: "simulator".to_owned(),
             protocol: "raw".to_owned(),
+            destination_directory: None,
         }
         .validate()
         .is_err());
@@ -1472,6 +1596,23 @@ mod tests {
             }"#,
         )
         .is_err());
+    }
+
+    #[test]
+    fn start_request_reads_optional_camel_case_directory() {
+        let request: NumericLogStartRequest = serde_json::from_str(
+            r#"{
+                "source":"serial",
+                "protocol":"firewater",
+                "destinationDirectory":"/captures"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(request.destination_directory.as_deref(), Some("/captures"));
+
+        let request: NumericLogStartRequest =
+            serde_json::from_str(r#"{"source":"serial","protocol":"firewater"}"#).unwrap();
+        assert_eq!(request.destination_directory, None);
     }
 
     #[test]
@@ -1553,7 +1694,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_renames_part_and_failure_preserves_part() {
+    fn commit_publishes_part_and_failure_preserves_part() {
         let directory = TestDirectory::new("commit");
         let part_path = directory.join("session.csv.part");
         let final_path = directory.join("session.csv");
@@ -1570,6 +1711,49 @@ mod tests {
         assert!(commit_part_file(&failed_part, &failed_final).is_err());
         assert_eq!(fs::read(&failed_part).unwrap(), b"partial");
         assert!(!failed_final.exists());
+    }
+
+    #[test]
+    fn commit_never_replaces_a_final_file_created_after_start() {
+        let directory = TestDirectory::new("late-collision");
+        let part_path = directory.join("session.csv.part");
+        let final_path = directory.join("session.csv");
+        fs::write(&part_path, b"complete-log").unwrap();
+        fs::write(&final_path, b"external-file").unwrap();
+
+        assert!(commit_part_file(&part_path, &final_path).is_err());
+        assert_eq!(fs::read(&part_path).unwrap(), b"complete-log");
+        assert_eq!(fs::read(&final_path).unwrap(), b"external-file");
+    }
+
+    #[test]
+    fn numeric_file_creation_avoids_existing_final_and_part_files() {
+        let directory = TestDirectory::new("collision");
+        let first_final = directory.join("numeric-1000-7.csv");
+        let second_part = directory.join("numeric-1000-7-1.csv.part");
+        fs::write(&first_final, b"existing-final").unwrap();
+        fs::write(&second_part, b"existing-part").unwrap();
+
+        let (file, part_path, final_path) =
+            create_file_in_directory(&directory.path, 1000, 7).unwrap();
+        drop(file);
+
+        assert_eq!(part_path, directory.join("numeric-1000-7-2.csv.part"));
+        assert_eq!(final_path, directory.join("numeric-1000-7-2.csv"));
+        assert_eq!(fs::read(first_final).unwrap(), b"existing-final");
+        assert_eq!(fs::read(second_part).unwrap(), b"existing-part");
+    }
+
+    #[test]
+    fn explicit_numeric_directory_is_not_recreated_after_validation() {
+        let directory = TestDirectory::new("removed");
+        let resolved = resolve_custom_recording_directory(directory.path.to_str())
+            .unwrap()
+            .unwrap();
+        fs::remove_dir_all(&directory.path).unwrap();
+
+        assert!(create_file_in_existing_directory(&resolved, 1000, 7).is_err());
+        assert!(!resolved.exists());
     }
 
     #[test]

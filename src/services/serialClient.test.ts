@@ -3,7 +3,9 @@ import {
   cancelSerialFileSend,
   cancelSerialModbusTransaction,
   getSerialFileSendState,
+  getSerialModemStatus,
   selectSerialFilePath,
+  setSerialControlLine,
   startSerialFileSend,
   startSerialModbusTransaction,
   subscribeToSerialEvents,
@@ -80,7 +82,34 @@ describe("serialClient", () => {
     ]);
   });
 
-  it("统一订阅串口数据、状态、TX、文件发送和 Modbus 事务并完整释放", async () => {
+  it("控制线命令携带连接代次且等待后端完成", async () => {
+    invokeMock.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined);
+
+    await setSerialControlLine(7, "dtr", false);
+    await setSerialControlLine(7, "rts", true);
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["set_serial_control_line", { generation: 7, line: "dtr", asserted: false }],
+      ["set_serial_control_line", { generation: 7, line: "rts", asserted: true }],
+    ]);
+  });
+
+  it("通过独立命令查询输入握手线快照", async () => {
+    const snapshot = {
+      generation: 7,
+      revision: 3,
+      cts: true,
+      dsr: false,
+      ri: null,
+      dcd: true,
+    };
+    invokeMock.mockResolvedValueOnce(snapshot);
+
+    await expect(getSerialModemStatus()).resolves.toEqual(snapshot);
+    expect(invokeMock).toHaveBeenCalledWith("get_serial_modem_status");
+  });
+
+  it("统一订阅六路串口事件并完整释放", async () => {
     const callbacks = new Map<string, (event: { payload: unknown }) => void>();
     const disposers = new Map<string, ReturnType<typeof vi.fn>>();
     listenMock.mockImplementation(
@@ -94,6 +123,7 @@ describe("serialClient", () => {
     const handlers = {
       onData: vi.fn(),
       onState: vi.fn(),
+      onModemStatus: vi.fn(),
       onTx: vi.fn(),
       onFileSend: vi.fn(),
       onModbusTransaction: vi.fn(),
@@ -121,19 +151,55 @@ describe("serialClient", () => {
       message: "正在发送",
     };
     callbacks.get("serial://file-send")?.({ payload: fileSendPayload });
+    const modemPayload = {
+      generation: 3,
+      revision: 2,
+      cts: true,
+      dsr: false,
+      ri: null,
+      dcd: true,
+    };
+    callbacks.get("serial://modem-status")?.({ payload: modemPayload });
     dispose();
 
     expect(handlers.onModbusTransaction).toHaveBeenCalledWith(modbusPayload);
     expect(handlers.onFileSend).toHaveBeenCalledWith(fileSendPayload);
+    expect(handlers.onModemStatus).toHaveBeenCalledWith(modemPayload);
     expect([...disposers.values()].every((unlisten) => unlisten.mock.calls.length === 1)).toBe(
       true,
     );
     expect([...callbacks.keys()]).toEqual([
       "serial://data",
       "serial://state",
+      "serial://modem-status",
       "serial://tx",
       "serial://file-send",
       "serial://modbus-transaction",
     ]);
+  });
+
+  it("任一路事件注册失败时释放其他已注册监听", async () => {
+    const registrationError = new Error("状态监听注册失败");
+    const disposers: ReturnType<typeof vi.fn>[] = [];
+    listenMock.mockImplementation((event: string) => {
+      if (event === "serial://state") {
+        return Promise.reject(registrationError);
+      }
+      const dispose = vi.fn();
+      disposers.push(dispose);
+      return Promise.resolve(dispose);
+    });
+    const handlers = {
+      onData: vi.fn(),
+      onState: vi.fn(),
+      onModemStatus: vi.fn(),
+      onTx: vi.fn(),
+      onFileSend: vi.fn(),
+      onModbusTransaction: vi.fn(),
+    };
+
+    await expect(subscribeToSerialEvents(handlers)).rejects.toBe(registrationError);
+    expect(disposers).toHaveLength(5);
+    expect(disposers.every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
   });
 });

@@ -1,4 +1,5 @@
 import type { DisplayMode, LineEnding } from "./serial";
+import type { CommandChecksumMode } from "../core/checksum";
 
 export const TERMINAL_RX_RECORD_MODES = ["chunk", "line"] as const;
 export type TerminalRxRecordMode = (typeof TERMINAL_RX_RECORD_MODES)[number];
@@ -65,6 +66,7 @@ export interface CommandHistoryEntry {
   value: string;
   mode: DisplayMode;
   lineEnding: LineEnding;
+  checksumMode: CommandChecksumMode;
   payloadBytes: number;
   encodedBytes: number;
   variableCount: number;

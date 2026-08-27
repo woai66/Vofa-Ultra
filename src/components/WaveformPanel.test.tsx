@@ -10,10 +10,29 @@ import type { ChannelSeries } from "../types/workbench";
 import { WaveformPanel } from "./WaveformPanel";
 
 interface UPlotMockInstance {
+  readonly options: UPlotMockOptions;
   readonly setData: ReturnType<typeof vi.fn>;
+  readonly setScale: ReturnType<typeof vi.fn>;
+  readonly scales: Record<string, { min?: number; max?: number }>;
+  readonly valToPosScaleKeys: string[];
   simulateScale(scaleKey: string): void;
   simulateSelection(): void;
   simulateXZoom(): Promise<void>;
+}
+
+interface UPlotMockOptions {
+  width: number;
+  height: number;
+  scales?: Record<
+    string,
+    { auto?: boolean; time?: boolean; range?: [number, number] }
+  >;
+  axes?: Array<{ scale?: string; stroke?: string }>;
+  series?: Array<{ label?: string; scale?: string; show?: boolean; stroke?: string }>;
+  hooks?: {
+    setScale?: Array<(chart: unknown, scaleKey: string) => void>;
+    setSelect?: Array<(chart: unknown) => void>;
+  };
 }
 
 const uPlotMockInstances = vi.hoisted(() => [] as UPlotMockInstance[]);
@@ -23,6 +42,17 @@ vi.mock("uplot", () => ({
     readonly over = document.createElement("div");
     readonly select = { left: 0, top: 0, width: 0, height: 0 };
     readonly setData = vi.fn();
+    readonly scales: Record<string, { min?: number; max?: number }> = {
+      x: { min: 1, max: 5 },
+    };
+    readonly setScale = vi.fn(
+      (scaleKey: string, range: { min?: number; max?: number }) => {
+        this.scales[scaleKey] = { ...range };
+        this.hooks.setScale?.forEach((hook) => hook(this, scaleKey));
+      },
+    );
+    readonly valToPosScaleKeys: string[] = [];
+    readonly options: UPlotMockOptions;
     width: number;
     height: number;
     private readonly hooks: {
@@ -31,19 +61,13 @@ vi.mock("uplot", () => ({
     };
 
     constructor(
-      options: {
-        width: number;
-        height: number;
-        hooks?: {
-          setScale?: Array<(chart: unknown, scaleKey: string) => void>;
-          setSelect?: Array<(chart: unknown) => void>;
-        };
-      },
+      options: UPlotMockOptions,
       _data: unknown,
       target: HTMLElement,
     ) {
       this.width = options.width;
       this.height = options.height;
+      this.options = options;
       this.hooks = options.hooks ?? {};
       this.over.className = "u-over";
       target.append(this.over);
@@ -59,7 +83,8 @@ vi.mock("uplot", () => ({
       return position;
     }
 
-    valToPos(value: number): number {
+    valToPos(value: number, scaleKey: string): number {
+      this.valToPosScaleKeys.push(scaleKey);
       return value;
     }
 
@@ -75,6 +100,7 @@ vi.mock("uplot", () => ({
     async simulateXZoom(): Promise<void> {
       this.simulateSelection();
       await Promise.resolve();
+      this.scales.x = { min: 2, max: 4 };
       this.simulateScale("x");
     }
 
@@ -138,6 +164,10 @@ describe("WaveformPanel 波形测量", () => {
       replayStatus: "idle",
       runtimeTransitionStatus: "idle",
       workspaceTransitionStatus: "idle",
+      protocol: "firewater",
+      replaySessionId: 0,
+      replayHeader: undefined,
+      channelPresentations: { firewater: {}, justfloat: {} },
     });
   });
 
@@ -150,6 +180,437 @@ describe("WaveformPanel 波形测量", () => {
     render(<WaveformPanel theme="dark" />);
 
     expect(screen.getByRole("button", { name: "开启波形测量" })).toBeDisabled();
+  });
+
+  it("在读数、触发和测量中应用别名、单位与颜色且保留原始序列标签", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState({
+      channelPresentations: {
+        firewater: {
+          "channel-0": {
+            alias: "母线电压",
+            unit: "V",
+            color: "#abcdef",
+          },
+        },
+        justfloat: {},
+      },
+    });
+    const { container } = render(<WaveformPanel theme="dark" />);
+
+    const firstReadout = container.querySelector(".channel-readout");
+    expect(firstReadout).toHaveTextContent("母线电压50.000V");
+    expect(firstReadout?.querySelector(":scope > span")).toHaveStyle({
+      backgroundColor: "#abcdef",
+    });
+    expect(latestUPlotMock().options.series?.[1]).toMatchObject({
+      label: "电压",
+      stroke: "#abcdef",
+    });
+    expect(useWorkbenchStore.getState().channels[0]).toMatchObject({
+      name: "电压",
+      color: "#46d89c",
+      lastValue: 50,
+    });
+
+    await user.click(screen.getByRole("button", { name: "打开触发设置" }));
+    expect(screen.getByRole("combobox", { name: "触发通道" })).toHaveTextContent(
+      "母线电压",
+    );
+    expect(screen.getByText("阈值 (V)")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭触发设置" }));
+
+    await user.click(screen.getByRole("button", { name: "开启波形测量" }));
+    expect(await screen.findByRole("combobox", { name: "测量通道" })).toHaveTextContent(
+      "母线电压",
+    );
+    const yA = screen.getByText("yA").parentElement;
+    const yB = screen.getByText("yB").parentElement;
+    const deltaY = screen.getByText("Δy").parentElement;
+    expect(yA).toHaveTextContent(/V/);
+    expect(yB).toHaveTextContent(/V/);
+    expect(deltaY).toHaveTextContent(/V/);
+    const statistics = screen.getByLabelText("A/B 区间统计");
+    expect(within(statistics).getByText("样本数").parentElement).toHaveTextContent("3");
+    expect(within(statistics).getByText("最小值").parentElement).toHaveTextContent("20.000 V");
+    expect(within(statistics).getByText("最大值").parentElement).toHaveTextContent("40.000 V");
+    expect(within(statistics).getByText("均值").parentElement).toHaveTextContent("30.000 V");
+    expect(within(statistics).getByText("RMS").parentElement).toHaveTextContent("31.091 V");
+    expect(within(statistics).getByText("峰峰值").parentElement).toHaveTextContent("20.000 V");
+    expect(
+      container
+        .querySelector<HTMLElement>('.waveform-measurement-cursor[data-cursor="A"]')
+        ?.style.getPropertyValue("--measurement-channel-color"),
+    ).toBe("#abcdef");
+
+    const chartCount = uPlotMockInstances.length;
+    act(() => {
+      useWorkbenchStore.getState().setChannelPresentation("firewater", "channel-0", {
+        alias: "电源电压",
+        unit: "V",
+        color: "#abcdef",
+      });
+    });
+    expect(screen.getByRole("button", { name: "关闭波形测量" })).toBeEnabled();
+    expect(screen.getByRole("combobox", { name: "测量通道" })).toHaveTextContent(
+      "电源电压",
+    );
+    expect(uPlotMockInstances).toHaveLength(chartCount);
+  });
+
+  it("默认为共享量程并为独立量程分配通道 scale 与焦点轴", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<WaveformPanel theme="dark" />);
+
+    const sharedChart = latestUPlotMock();
+    expect(Object.keys(sharedChart.options.scales ?? {})).toEqual(["x", "y"]);
+    expect(sharedChart.options.series?.slice(1).map((series) => series.scale)).toEqual([
+      "y",
+      "y",
+    ]);
+    expect(sharedChart.options.axes?.map((axis) => axis.scale)).toEqual(["x", "y"]);
+    expect(screen.getByRole("button", { name: "共享" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.click(screen.getByRole("button", { name: "独立" }));
+    const independentChart = latestUPlotMock();
+    expect(Object.keys(independentChart.options.scales ?? {})).toEqual([
+      "x",
+      "channel:channel-0",
+      "channel:channel-1",
+    ]);
+    expect(independentChart.options.series?.slice(1).map((series) => series.scale)).toEqual([
+      "channel:channel-0",
+      "channel:channel-1",
+    ]);
+    expect(independentChart.options.axes?.map((axis) => axis.scale)).toEqual([
+      "x",
+      "channel:channel-0",
+    ]);
+    expect(independentChart.options.axes?.[1]?.stroke).toBe(TEST_CHANNELS[0]?.color);
+    expect(container.querySelector('.channel-readout[data-focused="true"] small')).toHaveTextContent(
+      "电压",
+    );
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "独立量程焦点通道" }),
+      "channel-1",
+    );
+    const focusedChart = latestUPlotMock();
+    expect(focusedChart.options.axes?.map((axis) => axis.scale)).toEqual([
+      "x",
+      "channel:channel-1",
+    ]);
+    expect(focusedChart.options.axes?.[1]?.stroke).toBe(TEST_CHANNELS[1]?.color);
+    expect(container.querySelector('.channel-readout[data-focused="true"] small')).toHaveTextContent(
+      "电流",
+    );
+  });
+
+  it("固定共享 Y 轴并显式恢复自动量程", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<WaveformPanel theme="dark" />);
+
+    expect(container.querySelector(".waveform-panel")).toHaveAttribute(
+      "data-y-range-mode",
+      "auto",
+    );
+    expect(latestUPlotMock().options.scales?.y).toEqual({ auto: true });
+
+    await user.click(screen.getByRole("button", { name: "设置 Y 轴量程" }));
+    const rangeForm = screen.getByRole("form", { name: "Y 轴量程设置" });
+    expect(within(rangeForm).getByText("共享 Y 轴")).toBeVisible();
+    expect(within(rangeForm).getByText("AUTO")).toBeVisible();
+    const minimum = within(rangeForm).getByRole("spinbutton", { name: "Y 轴下限" });
+    const maximum = within(rangeForm).getByRole("spinbutton", { name: "Y 轴上限" });
+    await user.clear(minimum);
+    await user.type(minimum, "0");
+    await user.clear(maximum);
+    await user.type(maximum, "100");
+    await user.click(within(rangeForm).getByRole("button", { name: "固定" }));
+
+    expect(container.querySelector(".waveform-panel")).toHaveAttribute(
+      "data-y-range-mode",
+      "fixed",
+    );
+    expect(container.querySelector(".waveform-panel")).toHaveAttribute(
+      "data-y-range-min",
+      "0",
+    );
+    expect(container.querySelector(".waveform-panel")).toHaveAttribute(
+      "data-y-range-max",
+      "100",
+    );
+    expect(latestUPlotMock().options.scales?.y).toEqual({
+      auto: false,
+      range: [0, 100],
+    });
+    expect(screen.getByRole("button", { name: "设置 Y 轴量程" })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "设置 Y 轴量程" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.click(screen.getByRole("button", { name: "设置 Y 轴量程" }));
+    await user.click(screen.getByRole("button", { name: "自动" }));
+    expect(container.querySelector(".waveform-panel")).toHaveAttribute(
+      "data-y-range-mode",
+      "auto",
+    );
+    expect(latestUPlotMock().options.scales?.y).toEqual({ auto: true });
+  });
+
+  it("拒绝非递增范围且保留已应用范围", async () => {
+    const user = userEvent.setup();
+    render(<WaveformPanel theme="dark" />);
+
+    await user.click(screen.getByRole("button", { name: "设置 Y 轴量程" }));
+    let rangeForm = screen.getByRole("form", { name: "Y 轴量程设置" });
+    const initialMinimum = within(rangeForm).getByRole("spinbutton", {
+      name: "Y 轴下限",
+    });
+    const initialMaximum = within(rangeForm).getByRole("spinbutton", {
+      name: "Y 轴上限",
+    });
+    await user.clear(initialMinimum);
+    await user.type(initialMinimum, "-10");
+    await user.clear(initialMaximum);
+    await user.type(initialMaximum, "10");
+    await user.click(within(rangeForm).getByRole("button", { name: "固定" }));
+
+    await user.click(screen.getByRole("button", { name: "设置 Y 轴量程" }));
+    rangeForm = screen.getByRole("form", { name: "Y 轴量程设置" });
+    const minimum = within(rangeForm).getByRole("spinbutton", { name: "Y 轴下限" });
+    const maximum = within(rangeForm).getByRole("spinbutton", { name: "Y 轴上限" });
+    await user.clear(minimum);
+    await user.type(minimum, "10");
+    await user.clear(maximum);
+    await user.type(maximum, "10");
+
+    expect(within(rangeForm).getByRole("alert")).toHaveTextContent(
+      "下限必须小于上限",
+    );
+    expect(within(rangeForm).getByRole("button", { name: "固定" })).toBeDisabled();
+    expect(latestUPlotMock().options.scales?.y?.range).toEqual([-10, 10]);
+  });
+
+  it("为独立通道保存隔离的固定范围并保留共享范围", async () => {
+    const user = userEvent.setup();
+    render(<WaveformPanel theme="dark" />);
+
+    await user.click(screen.getByRole("button", { name: "设置 Y 轴量程" }));
+    let rangeForm = screen.getByRole("form", { name: "Y 轴量程设置" });
+    await user.clear(within(rangeForm).getByRole("spinbutton", { name: "Y 轴下限" }));
+    await user.type(
+      within(rangeForm).getByRole("spinbutton", { name: "Y 轴下限" }),
+      "-100",
+    );
+    await user.clear(within(rangeForm).getByRole("spinbutton", { name: "Y 轴上限" }));
+    await user.type(
+      within(rangeForm).getByRole("spinbutton", { name: "Y 轴上限" }),
+      "100",
+    );
+    await user.click(within(rangeForm).getByRole("button", { name: "固定" }));
+
+    await user.click(screen.getByRole("button", { name: "独立" }));
+    await user.click(screen.getByRole("button", { name: "设置 Y 轴量程" }));
+    rangeForm = screen.getByRole("form", { name: "Y 轴量程设置" });
+    await user.clear(within(rangeForm).getByRole("spinbutton", { name: "Y 轴下限" }));
+    await user.type(
+      within(rangeForm).getByRole("spinbutton", { name: "Y 轴下限" }),
+      "0",
+    );
+    await user.clear(within(rangeForm).getByRole("spinbutton", { name: "Y 轴上限" }));
+    await user.type(
+      within(rangeForm).getByRole("spinbutton", { name: "Y 轴上限" }),
+      "60",
+    );
+    await user.click(within(rangeForm).getByRole("button", { name: "固定" }));
+    expect(latestUPlotMock().options.scales?.["channel:channel-0"]).toEqual({
+      auto: false,
+      range: [0, 60],
+    });
+    expect(latestUPlotMock().options.scales?.["channel:channel-1"]).toEqual({
+      auto: true,
+    });
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "独立量程焦点通道" }),
+      "channel-1",
+    );
+    await user.click(screen.getByRole("button", { name: "设置 Y 轴量程" }));
+    rangeForm = screen.getByRole("form", { name: "Y 轴量程设置" });
+    await user.clear(within(rangeForm).getByRole("spinbutton", { name: "Y 轴下限" }));
+    await user.type(
+      within(rangeForm).getByRole("spinbutton", { name: "Y 轴下限" }),
+      "-5",
+    );
+    await user.clear(within(rangeForm).getByRole("spinbutton", { name: "Y 轴上限" }));
+    await user.type(
+      within(rangeForm).getByRole("spinbutton", { name: "Y 轴上限" }),
+      "5",
+    );
+    await user.click(within(rangeForm).getByRole("button", { name: "固定" }));
+    expect(latestUPlotMock().options.scales?.["channel:channel-0"]?.range).toEqual([
+      0,
+      60,
+    ]);
+    expect(latestUPlotMock().options.scales?.["channel:channel-1"]?.range).toEqual([
+      -5,
+      5,
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "共享" }));
+    expect(latestUPlotMock().options.scales?.y?.range).toEqual([-100, 100]);
+
+    await user.click(screen.getByRole("button", { name: "独立" }));
+    act(() => {
+      useWorkbenchStore.setState({ channels: [TEST_CHANNELS[0]!] });
+    });
+    act(() => {
+      useWorkbenchStore.setState({ channels: TEST_CHANNELS });
+    });
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "独立量程焦点通道" }),
+      "channel-1",
+    );
+    expect(latestUPlotMock().options.scales?.["channel:channel-1"]).toEqual({
+      auto: true,
+    });
+  });
+
+  it("固定范围跨视图操作保留并在数据修订或清图时恢复自动", async () => {
+    const user = userEvent.setup();
+    render(<WaveformPanel theme="dark" />);
+
+    await user.click(screen.getByRole("button", { name: "设置 Y 轴量程" }));
+    const rangeForm = screen.getByRole("form", { name: "Y 轴量程设置" });
+    const minimum = within(rangeForm).getByRole("spinbutton", { name: "Y 轴下限" });
+    const maximum = within(rangeForm).getByRole("spinbutton", { name: "Y 轴上限" });
+    await user.clear(minimum);
+    await user.type(minimum, "0");
+    await user.clear(maximum);
+    await user.type(maximum, "100");
+    await user.click(within(rangeForm).getByRole("button", { name: "固定" }));
+
+    const zoomedChart = latestUPlotMock();
+    await act(async () => zoomedChart.simulateXZoom());
+    expect(screen.getByRole("button", { name: "回到实时波形" })).toBeVisible();
+    expect(zoomedChart.scales.x).toEqual({ min: 2, max: 4 });
+
+    await user.click(screen.getByRole("button", { name: "设置 Y 轴量程" }));
+    const updatedRangeForm = screen.getByRole("form", { name: "Y 轴量程设置" });
+    const updatedMaximum = within(updatedRangeForm).getByRole("spinbutton", {
+      name: "Y 轴上限",
+    });
+    await user.clear(updatedMaximum);
+    await user.type(updatedMaximum, "200");
+    await user.click(within(updatedRangeForm).getByRole("button", { name: "固定" }));
+    expect(latestUPlotMock()).not.toBe(zoomedChart);
+    expect(latestUPlotMock().scales.x).toEqual({ min: 2, max: 4 });
+    expect(screen.getByRole("button", { name: "回到实时波形" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "15s" }));
+    await user.click(screen.getByRole("button", { name: "暂停波形显示" }));
+    await user.click(screen.getByRole("button", { name: "开启波形测量" }));
+    expect(latestUPlotMock().options.scales?.y?.range).toEqual([0, 200]);
+
+    act(() => {
+      useWorkbenchStore.setState({ chartDataRevision: 1 });
+    });
+    expect(latestUPlotMock().options.scales?.y).toEqual({ auto: true });
+    expect(screen.getByRole("button", { name: "设置 Y 轴量程" })).toHaveAttribute(
+      "data-active",
+      "false",
+    );
+
+    await user.click(screen.getByRole("button", { name: "设置 Y 轴量程" }));
+    const nextForm = screen.getByRole("form", { name: "Y 轴量程设置" });
+    await user.type(
+      within(nextForm).getByRole("spinbutton", { name: "Y 轴下限" }),
+      "0",
+    );
+    await user.type(
+      within(nextForm).getByRole("spinbutton", { name: "Y 轴上限" }),
+      "100",
+    );
+    await user.click(within(nextForm).getByRole("button", { name: "固定" }));
+    await user.click(screen.getByRole("button", { name: "清空波形" }));
+    expect(screen.queryByRole("button", { name: "设置 Y 轴量程" })).not.toBeInTheDocument();
+  });
+
+  it("独立量程在焦点通道隐藏后回退并允许所有通道隐藏", async () => {
+    const user = userEvent.setup();
+    render(<WaveformPanel theme="dark" />);
+    await user.click(screen.getByRole("button", { name: "独立" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "独立量程焦点通道" }),
+      "channel-1",
+    );
+
+    act(() => {
+      useWorkbenchStore.setState({
+        channels: TEST_CHANNELS.map((channel) =>
+          channel.id === "channel-1" ? { ...channel, visible: false } : channel,
+        ),
+      });
+    });
+    expect(screen.getByRole("combobox", { name: "独立量程焦点通道" })).toHaveValue(
+      "channel-0",
+    );
+    expect(latestUPlotMock().options.axes?.map((axis) => axis.scale)).toEqual([
+      "x",
+      "channel:channel-0",
+    ]);
+
+    act(() => {
+      useWorkbenchStore.setState({
+        channels: TEST_CHANNELS.map((channel) => ({ ...channel, visible: false })),
+      });
+    });
+    expect(screen.getByRole("combobox", { name: "独立量程焦点通道" })).toBeDisabled();
+    expect(latestUPlotMock().options.axes?.map((axis) => axis.scale)).toEqual(["x"]);
+    expect(screen.getByRole("button", { name: "开启波形测量" })).toBeDisabled();
+  });
+
+  it("独立量程测量使用被测通道 scale 并同步焦点轴", async () => {
+    const user = userEvent.setup();
+    render(<WaveformPanel theme="dark" />);
+    await user.click(screen.getByRole("button", { name: "独立" }));
+    await user.click(screen.getByRole("button", { name: "开启波形测量" }));
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "测量通道" }), "channel-1");
+
+    const measuredChart = latestUPlotMock();
+    expect(measuredChart.valToPosScaleKeys.slice(-4)).toEqual([
+      "x",
+      "x",
+      "channel:channel-1",
+      "channel:channel-1",
+    ]);
+    expect(screen.getByRole("combobox", { name: "独立量程焦点通道" })).toHaveValue(
+      "channel-1",
+    );
+    expect(latestUPlotMock().options.axes?.map((axis) => axis.scale)).toEqual([
+      "x",
+      "channel:channel-1",
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "关闭波形测量" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "独立量程焦点通道" }),
+      "channel-0",
+    );
+    await user.click(screen.getByRole("button", { name: "开启波形测量" }));
+    expect(screen.getByRole("combobox", { name: "测量通道" })).toHaveValue("channel-1");
+    expect(screen.getByRole("combobox", { name: "独立量程焦点通道" })).toHaveValue(
+      "channel-1",
+    );
   });
 
   it("触发只列出基础和派生通道并可布防解除", async () => {
@@ -241,18 +702,25 @@ describe("WaveformPanel 波形测量", () => {
     await user.click(screen.getByRole("button", { name: "开启波形测量" }));
     expect(useWorkbenchStore.getState().chartPaused).toBe(true);
     expect(screen.getByText("HISTORY")).toBeVisible();
-    const results = screen.getByLabelText("波形测量结果");
+    const results = await screen.findByLabelText("波形测量结果");
     expect(within(results).getByText("yA").parentElement).toHaveTextContent("20.000");
     expect(within(results).getByText("yB").parentElement).toHaveTextContent("40.000");
+    const statistics = screen.getByLabelText("A/B 区间统计");
+    expect(within(statistics).getByText("样本数").parentElement).toHaveTextContent("3");
+    expect(within(statistics).getByText("均值").parentElement).toHaveTextContent("30.000");
 
     fireEvent.change(screen.getByRole("slider", { name: "游标 A 采样点" }), {
       target: { value: "2" },
     });
     expect(within(results).getByText("yA").parentElement).toHaveTextContent("30.000");
+    expect(within(statistics).getByText("样本数").parentElement).toHaveTextContent("2");
+    expect(within(statistics).getByText("均值").parentElement).toHaveTextContent("35.000");
 
     await user.selectOptions(screen.getByRole("combobox", { name: "测量通道" }), "channel-1");
     expect(within(results).getByText("yA").parentElement).toHaveTextContent("2.000");
     expect(within(results).getByText("yB").parentElement).toHaveTextContent("4.000");
+    expect(within(statistics).getByText("样本数").parentElement).toHaveTextContent("3");
+    expect(within(statistics).getByText("均值").parentElement).toHaveTextContent("3.000");
   });
 
   it("关闭测量时只恢复由测量触发的暂停", async () => {
