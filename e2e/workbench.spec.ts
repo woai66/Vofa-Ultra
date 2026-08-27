@@ -332,7 +332,7 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
 
   await page.setViewportSize({ width: 1_280, height: 800 });
   await page.goto("/");
-  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
   await page.getByRole("radio", { name: /Raw Data/ }).click();
 
   const signal = page.getByLabel("信号类型");
@@ -376,7 +376,7 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   await page.getByRole("button", { name: "断开连接" }).click();
 
   await page.setViewportSize({ width: 320, height: 700 });
-  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
   const simulatorPanel = page.getByRole("region", { name: "模拟器配置" });
   await expect(simulatorPanel).toBeVisible();
   await expect
