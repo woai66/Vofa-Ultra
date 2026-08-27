@@ -251,6 +251,23 @@ textarea:disabled {
   overflow-y: auto;
 }
 
+.connection-panel {
+  overflow: hidden;
+}
+
+.connection-panel > .sidebar-heading,
+.connection-action-area {
+  flex: 0 0 auto;
+}
+
+.connection-panel-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .workspace-panel-host {
   width: 100%;
   height: 100%;
@@ -1644,7 +1661,6 @@ textarea:focus {
 .connection-action-area {
   display: flex;
   flex-direction: column;
-  margin-top: auto;
   padding: 14px 16px 16px;
   border-top: 1px solid var(--border);
   background: var(--surface-0);
