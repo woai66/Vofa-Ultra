@@ -33,24 +33,34 @@ export function encodeLineEnding(lineEnding: LineEnding): Uint8Array {
 }
 
 export function parseHex(value: string): Uint8Array {
-  const normalized = value
-    .replace(/0x/gi, "")
-    .replace(/[\s,;:_-]+/g, "")
-    .trim();
-
-  if (!normalized) {
+  const tokens = value.split(/[\s,;:_-]+/).filter(Boolean);
+  if (tokens.length === 0) {
     return new Uint8Array();
   }
-  if (!/^[0-9a-f]+$/i.test(normalized)) {
-    throw new Error("HEX 数据只能包含 0-9 和 A-F");
-  }
-  if (normalized.length % 2 !== 0) {
-    throw new Error("HEX 数据必须由完整字节组成");
-  }
 
-  const bytes = new Uint8Array(normalized.length / 2);
-  for (let index = 0; index < bytes.length; index += 1) {
-    bytes[index] = Number.parseInt(normalized.slice(index * 2, index * 2 + 2), 16);
+  let byteLength = 0;
+  const normalizedTokens = tokens.map((token) => {
+    const digits = /^0x/i.test(token) ? token.slice(2) : token;
+    if (digits.length === 0) {
+      throw new Error("HEX 数据必须由完整字节组成");
+    }
+    if (!/^[0-9a-f]+$/i.test(digits)) {
+      throw new Error("HEX 数据只能包含 0-9 和 A-F");
+    }
+    if (digits.length % 2 !== 0) {
+      throw new Error("HEX 数据必须由完整字节组成");
+    }
+    byteLength += digits.length / 2;
+    return digits;
+  });
+
+  const bytes = new Uint8Array(byteLength);
+  let byteOffset = 0;
+  for (const token of normalizedTokens) {
+    for (let index = 0; index < token.length; index += 2) {
+      bytes[byteOffset] = Number.parseInt(token.slice(index, index + 2), 16);
+      byteOffset += 1;
+    }
   }
   return bytes;
 }
