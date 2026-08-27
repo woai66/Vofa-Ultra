@@ -45,6 +45,22 @@ export const MAX_MOVING_AVERAGE_WINDOW = 256;
 export const MAX_TOTAL_MOVING_AVERAGE_CAPACITY = 8_192;
 export const MAX_PROCESSING_EVALUATIONS_PER_BATCH = 1_000_000;
 export const MAX_PROCESSING_PARAMETER_ABS = 1_000_000_000_000;
+export const PROCESSING_OUTPUT_COLORS = [
+  "#46d89c",
+  "#55bde8",
+  "#f0b35a",
+  "#f06d76",
+  "#b69cf6",
+  "#8bd450",
+] as const;
+
+export type ProcessingPresetId = "scale-output" | "smooth-output" | "decode-u16-le";
+
+const PROCESSING_PRESET_NODE_COUNTS: Readonly<Record<ProcessingPresetId, number>> = {
+  "scale-output": 3,
+  "smooth-output": 3,
+  "decode-u16-le": 4,
+};
 
 const PROCESSING_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const PROCESSING_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
@@ -135,6 +151,140 @@ export function cloneProcessingGraphConfig(
 }
 
 export const cloneProcessingGraph = cloneProcessingGraphConfig;
+
+export function processingPresetNodeCount(presetId: ProcessingPresetId): number {
+  const count = PROCESSING_PRESET_NODE_COUNTS[presetId];
+  if (count === undefined) {
+    throw new Error("未知处理图预设");
+  }
+  return count;
+}
+
+export function appendProcessingPreset(
+  config: ProcessingGraphConfig,
+  presetId: ProcessingPresetId,
+): ProcessingGraphConfig {
+  const current = parseProcessingGraphConfig(config);
+  const requiredNodeCount = processingPresetNodeCount(presetId);
+  if (current.nodes.length + requiredNodeCount > MAX_PROCESSING_NODES) {
+    throw new Error(`处理图剩余容量不足，预设需要 ${requiredNodeCount} 个节点`);
+  }
+
+  const outputCount = current.nodes.filter((node) => node.kind === "output").length;
+  if (outputCount >= MAX_PROCESSING_OUTPUTS) {
+    throw new Error(`处理图最多包含 ${MAX_PROCESSING_OUTPUTS} 个输出节点`);
+  }
+
+  const ids = allocatePresetNodeIds(current.nodes, requiredNodeCount);
+  const inputChannels = nextPresetInputChannels(
+    current.nodes,
+    presetId === "decode-u16-le" ? 2 : 1,
+  );
+  const outputColor =
+    PROCESSING_OUTPUT_COLORS[outputCount % PROCESSING_OUTPUT_COLORS.length] ?? "#46d89c";
+  const presetNodes = createPresetNodes(presetId, ids, inputChannels, outputCount, outputColor);
+
+  return parseProcessingGraphConfig({
+    enabled: current.enabled,
+    nodes: [...current.nodes, ...presetNodes],
+  });
+}
+
+function allocatePresetNodeIds(nodes: readonly ProcessingNode[], count: number): string[] {
+  const usedIds = new Set(nodes.map((node) => node.id));
+  const ids: string[] = [];
+  for (let index = 1; ids.length < count; index += 1) {
+    if (index > MAX_PROCESSING_NODES + count) {
+      throw new Error("无法为处理图预设分配节点 ID");
+    }
+    const id = `node-${index}`;
+    if (!usedIds.has(id)) {
+      ids.push(id);
+      usedIds.add(id);
+    }
+  }
+  return ids;
+}
+
+function nextPresetInputChannels(nodes: readonly ProcessingNode[], count: number): number[] {
+  const usedChannels = new Set(
+    nodes.filter((node) => node.kind === "input").map((node) => node.channelIndex),
+  );
+  const channels = Array.from({ length: 16 }, (_, index) => index);
+  return [
+    ...channels.filter((channel) => !usedChannels.has(channel)),
+    ...channels.filter((channel) => usedChannels.has(channel)),
+  ].slice(0, count);
+}
+
+function createPresetNodes(
+  presetId: ProcessingPresetId,
+  ids: readonly string[],
+  inputChannels: readonly number[],
+  outputCount: number,
+  outputColor: string,
+): ProcessingNode[] {
+  const inputId = requirePresetValue(ids, 0);
+  const transformId = requirePresetValue(ids, presetId === "decode-u16-le" ? 2 : 1);
+  const outputId = requirePresetValue(ids, presetId === "decode-u16-le" ? 3 : 2);
+  const outputNumber = outputCount + 1;
+
+  switch (presetId) {
+    case "scale-output":
+      return [
+        { id: inputId, kind: "input", channelIndex: requirePresetValue(inputChannels, 0) },
+        { id: transformId, kind: "affine", input: inputId, gain: 1, offset: 0 },
+        {
+          id: outputId,
+          kind: "output",
+          input: transformId,
+          name: `缩放 ${outputNumber}`,
+          color: outputColor,
+        },
+      ];
+    case "smooth-output":
+      return [
+        { id: inputId, kind: "input", channelIndex: requirePresetValue(inputChannels, 0) },
+        { id: transformId, kind: "moving_average", input: inputId, windowSize: 8 },
+        {
+          id: outputId,
+          kind: "output",
+          input: transformId,
+          name: `平滑 ${outputNumber}`,
+          color: outputColor,
+        },
+      ];
+    case "decode-u16-le": {
+      const highInputId = requirePresetValue(ids, 1);
+      return [
+        { id: inputId, kind: "input", channelIndex: requirePresetValue(inputChannels, 0) },
+        { id: highInputId, kind: "input", channelIndex: requirePresetValue(inputChannels, 1) },
+        {
+          id: transformId,
+          kind: "bytes_to_number",
+          inputs: [inputId, highInputId],
+          numericType: "u16",
+          endianness: "le",
+        },
+        {
+          id: outputId,
+          kind: "output",
+          input: transformId,
+          name: `U16 LE ${outputNumber}`,
+          color: outputColor,
+        },
+      ];
+    }
+  }
+}
+
+function requirePresetValue<T>(values: readonly T[], index: number): T {
+  const value = values[index];
+  if (value === undefined) {
+    throw new Error("处理图预设定义不完整");
+  }
+  return value;
+}
 
 export function cloneLegacyProcessingGraphConfig(
   config: LegacyProcessingGraphConfig,

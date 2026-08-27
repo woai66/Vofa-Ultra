@@ -56,9 +56,11 @@ import type { ProtocolHealthSnapshot } from "../types/workbench";
 import type { SidebarPanel } from "./ActivityRail";
 import { CapturePanel } from "./CapturePanel";
 import { AutomationPanel } from "./AutomationPanel";
-import { ProcessingPanel } from "./ProcessingPanel";
 import { WorkspacePanel } from "./WorkspacePanel";
 
+const ProcessingPanel = lazy(() =>
+  import("./ProcessingPanel").then(({ ProcessingPanel }) => ({ default: ProcessingPanel })),
+);
 const ExtensionPanel = lazy(() =>
   import("./ExtensionPanel").then(({ ExtensionPanel }) => ({ default: ExtensionPanel })),
 );
@@ -89,7 +91,15 @@ export function Sidebar({
       </button>
       {activePanel === "connection" && <ConnectionPanel />}
       {activePanel === "channels" && <ChannelPanel />}
-      {activePanel === "processing" && <ProcessingPanel />}
+      {activePanel === "processing" && (
+        <Suspense
+          fallback={
+            <div className="sidebar-panel" aria-label="加载中" aria-busy="true" />
+          }
+        >
+          <ProcessingPanel />
+        </Suspense>
+      )}
       {activePanel === "extensions" && (
         <Suspense
           fallback={

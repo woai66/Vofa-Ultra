@@ -2387,16 +2387,22 @@ textarea:focus {
 }
 
 .processing-add-bar {
-  display: grid;
+  display: flex;
   flex: 0 0 auto;
-  grid-template-columns: minmax(0, 1fr) 34px;
+  flex-direction: column;
   padding: 10px 16px;
   border-top: 1px solid var(--border);
   background: var(--surface-0);
   gap: 8px;
 }
 
-.processing-add-bar .icon-button {
+.processing-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 8px;
+}
+
+.processing-add-row .icon-button {
   width: 34px;
   height: 34px;
   border-color: var(--border);
@@ -6735,11 +6741,11 @@ textarea:focus {
     grid-template-columns: minmax(0, 1fr) auto 44px;
   }
 
-  .processing-add-bar {
+  .processing-add-row {
     grid-template-columns: minmax(0, 1fr) 44px;
   }
 
-  .processing-add-bar .icon-button {
+  .processing-add-row .icon-button {
     width: 44px;
     height: 44px;
   }

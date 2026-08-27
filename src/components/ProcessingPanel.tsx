@@ -1,11 +1,15 @@
 import { useEffect, useState } from "react";
-import { Plus, RotateCcw, Trash2, Workflow } from "lucide-react";
+import { ListPlus, Plus, RotateCcw, Trash2, Workflow } from "lucide-react";
 import { getChannelPresentationOverride } from "../core/channelPresentation";
 import {
+  appendProcessingPreset,
   MAX_PROCESSING_NODES,
   MAX_PROCESSING_OUTPUTS,
+  PROCESSING_OUTPUT_COLORS,
+  processingPresetNodeCount,
   type ProcessingGraphConfig,
   type ProcessingNode,
+  type ProcessingPresetId,
 } from "../core/processingGraph";
 import {
   DATA_NUMERIC_TYPE_OPTIONS,
@@ -32,14 +36,11 @@ const NODE_KINDS: readonly { kind: NodeKind; label: string }[] = [
   { kind: "output", label: "输出路由" },
 ];
 
-const OUTPUT_COLORS = [
-  "#46d89c",
-  "#55bde8",
-  "#f0b35a",
-  "#f06d76",
-  "#b69cf6",
-  "#8bd450",
-] as const;
+const PROCESSING_PRESETS: readonly { id: ProcessingPresetId; label: string }[] = [
+  { id: "scale-output", label: "缩放 → 输出" },
+  { id: "smooth-output", label: "移动平均 → 输出" },
+  { id: "decode-u16-le", label: "U16 LE → 输出" },
+];
 
 export function ProcessingPanel() {
   const graph = useWorkbenchStore((state) => state.processingGraph);
@@ -53,6 +54,7 @@ export function ProcessingPanel() {
     (state) => state.workspaceTransitionStatus !== "idle",
   );
   const [nodeKind, setNodeKind] = useState<NodeKind>("input");
+  const [presetId, setPresetId] = useState<ProcessingPresetId>("scale-output");
   const [editError, setEditError] = useState("");
   const outputCount = graph.nodes.filter((node) => node.kind === "output").length;
   const visibleError = editError || status.lastError || "";
@@ -68,6 +70,10 @@ export function ProcessingPanel() {
     isTransitioning ||
     graph.nodes.length >= MAX_PROCESSING_NODES ||
     (nodeKind === "output" && outputCount >= MAX_PROCESSING_OUTPUTS);
+  const presetDisabled =
+    isTransitioning ||
+    graph.nodes.length + processingPresetNodeCount(presetId) > MAX_PROCESSING_NODES ||
+    outputCount >= MAX_PROCESSING_OUTPUTS;
 
   const applyGraph = (nextGraph: ProcessingGraphConfig) => {
     try {
@@ -104,6 +110,14 @@ export function ProcessingPanel() {
       return;
     }
     applyGraph({ ...graph, nodes: [...graph.nodes, node] });
+  };
+
+  const addPreset = () => {
+    try {
+      applyGraph(appendProcessingPreset(graph, presetId));
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : "处理图预设无效");
+    }
   };
 
   return (
@@ -184,29 +198,56 @@ export function ProcessingPanel() {
       </section>
 
       <div className="processing-add-bar">
-        <select
-          aria-label="新增节点类型"
-          name="processing-node-kind"
-          value={nodeKind}
-          disabled={isTransitioning || graph.nodes.length >= MAX_PROCESSING_NODES}
-          onChange={(event) => setNodeKind(event.target.value as NodeKind)}
-        >
-          {NODE_KINDS.map((item) => (
-            <option key={item.kind} value={item.kind}>
-              {item.label}
-            </option>
-          ))}
-        </select>
-        <button
-          className="icon-button"
-          type="button"
-          aria-label="添加处理节点"
-          title="添加处理节点"
-          disabled={addDisabled}
-          onClick={addNode}
-        >
-          <Plus size={17} />
-        </button>
+        <div className="processing-add-row">
+          <select
+            aria-label="处理链预设"
+            name="processing-preset"
+            value={presetId}
+            disabled={isTransitioning}
+            onChange={(event) => setPresetId(event.target.value as ProcessingPresetId)}
+          >
+            {PROCESSING_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
+          </select>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="添加处理预设"
+            title="添加处理预设"
+            disabled={presetDisabled}
+            onClick={addPreset}
+          >
+            <ListPlus size={17} />
+          </button>
+        </div>
+        <div className="processing-add-row">
+          <select
+            aria-label="新增节点类型"
+            name="processing-node-kind"
+            value={nodeKind}
+            disabled={isTransitioning || graph.nodes.length >= MAX_PROCESSING_NODES}
+            onChange={(event) => setNodeKind(event.target.value as NodeKind)}
+          >
+            {NODE_KINDS.map((item) => (
+              <option key={item.kind} value={item.kind}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="添加处理节点"
+            title="添加处理节点"
+            disabled={addDisabled}
+            onClick={addNode}
+          >
+            <Plus size={17} />
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -783,7 +824,8 @@ function createProcessingNode(
         kind,
         input,
         name: `OUT ${outputIndex + 1}`,
-        color: OUTPUT_COLORS[outputIndex % OUTPUT_COLORS.length] ?? "#46d89c",
+        color:
+          PROCESSING_OUTPUT_COLORS[outputIndex % PROCESSING_OUTPUT_COLORS.length] ?? "#46d89c",
       };
     }
   }
