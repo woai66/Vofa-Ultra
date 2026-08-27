@@ -1252,11 +1252,15 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           }
           return;
         }
+        const backgroundContext = mode === "background" ? state : null;
 
         set({ isRefreshingPorts: true });
         try {
           const ports = sortSerialPorts(await listSerialPorts());
-          if (mode === "background" && !isBackgroundPortRefreshContext(get())) {
+          if (
+            mode === "background" &&
+            (!backgroundContext || !isSameBackgroundPortRefreshContext(backgroundContext, get()))
+          ) {
             set({ isRefreshingPorts: false });
             return;
           }
@@ -4183,6 +4187,27 @@ function isBackgroundPortRefreshContext(state: WorkbenchStore): boolean {
     !isSerialFileSendActive(state.serialFileSend.status) &&
     !isModbusTransactionActive(state.modbusTransaction) &&
     !hasReplaySession(state)
+  );
+}
+
+function isSameBackgroundPortRefreshContext(
+  initial: WorkbenchStore,
+  current: WorkbenchStore,
+): boolean {
+  return (
+    isBackgroundPortRefreshContext(current) &&
+    current.source === initial.source &&
+    current.connectionStatus === initial.connectionStatus &&
+    current.serialGeneration === initial.serialGeneration &&
+    current.serialStateRevision === initial.serialStateRevision &&
+    current.serialRecovery.enabled === initial.serialRecovery.enabled &&
+    current.serialRecovery.phase === initial.serialRecovery.phase &&
+    current.activeWorkspaceId === initial.activeWorkspaceId &&
+    current.chartDataRevision === initial.chartDataRevision &&
+    current.captureRevision === initial.captureRevision &&
+    current.numericLogRevision === initial.numericLogRevision &&
+    current.serialFileSend.revision === initial.serialFileSend.revision &&
+    current.replayRevision === initial.replayRevision
   );
 }
 
