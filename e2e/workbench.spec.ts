@@ -792,6 +792,56 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
   });
 });
 
+test("Windows 最小窗口中连接主操作始终可达", async ({ page }, testInfo) => {
+  await installTauriSerialMock(page);
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+
+  const panel = page.locator(".connection-panel");
+  const scroller = page.locator(".connection-panel-scroll");
+  const connect_button = page.getByRole("button", { name: "连接设备" });
+
+  await expect(connect_button).toBeInViewport();
+  expect(await clippedVisibleHeight(connect_button)).toBeGreaterThanOrEqual(36);
+
+  const layout = await panel.evaluate((element) => {
+    const panel_rect = element.getBoundingClientRect();
+    const scroll_element = element.querySelector<HTMLElement>(".connection-panel-scroll");
+    const action_element = element.querySelector<HTMLElement>(".connection-action-area");
+    const button_element = action_element?.querySelector<HTMLElement>(".connect-button");
+    const scroll_rect = scroll_element?.getBoundingClientRect();
+    const action_rect = action_element?.getBoundingClientRect();
+    const button_rect = button_element?.getBoundingClientRect();
+    return {
+      panel_bottom: panel_rect.bottom,
+      scroll_bottom: scroll_rect?.bottom ?? Number.POSITIVE_INFINITY,
+      action_top: action_rect?.top ?? Number.NEGATIVE_INFINITY,
+      action_bottom: action_rect?.bottom ?? Number.POSITIVE_INFINITY,
+      button_top: button_rect?.top ?? Number.NEGATIVE_INFINITY,
+      button_bottom: button_rect?.bottom ?? Number.POSITIVE_INFINITY,
+      scrollable: (scroll_element?.scrollHeight ?? 0) > (scroll_element?.clientHeight ?? 0),
+      document_width: document.documentElement.scrollWidth,
+    };
+  });
+  expect(layout.scrollable).toBe(true);
+  expect(layout.scroll_bottom).toBeLessThanOrEqual(layout.action_top + 1);
+  expect(layout.action_bottom).toBeLessThanOrEqual(layout.panel_bottom + 1);
+  expect(layout.button_top).toBeGreaterThanOrEqual(layout.action_top);
+  expect(layout.button_bottom).toBeLessThanOrEqual(layout.action_bottom);
+  expect(layout.document_width).toBeLessThanOrEqual(1_024);
+
+  await scroller.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect(page.getByRole("radio", { name: /Raw Data/ })).toBeInViewport();
+  await expect(connect_button).toBeInViewport();
+  await page.screenshot({
+    path: testInfo.outputPath("windows-minimum-connection-action.png"),
+    fullPage: false,
+  });
+});
+
 test("终端上滚挂起跟随并可回到最新", async ({ page }) => {
   await page.goto("/");
   const entries = Array.from(

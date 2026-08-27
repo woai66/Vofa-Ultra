@@ -360,7 +360,7 @@ function ConnectionPanel() {
   }, [isNativeRuntime, refreshPorts, source]);
 
   return (
-    <div className="sidebar-panel">
+    <div className="sidebar-panel connection-panel">
       <div className="sidebar-heading">
         <div>
           <span className="eyebrow">DATA SOURCE</span>
@@ -369,6 +369,7 @@ function ConnectionPanel() {
         <Cable size={20} />
       </div>
 
+      <div className="connection-panel-scroll">
       <section className="sidebar-section">
         <span className="field-label" id="data-source-label">数据源</span>
         <div className="segmented-control" role="group" aria-labelledby="data-source-label">
@@ -741,6 +742,7 @@ function ConnectionPanel() {
           ))}
         </div>
       </section>
+      </div>
 
       <div className="connection-action-area">
         <div
