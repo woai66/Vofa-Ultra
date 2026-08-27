@@ -213,6 +213,45 @@ describe("SerialReconnectCoordinator", () => {
     ).toEqual([...SERIAL_RECOVERY_DELAYS_MS]);
   });
 
+  it("自动重连使用最后一次成功的运行时控制线配置", async () => {
+    const harness = createHarness();
+    harness.listPorts.mockResolvedValue([{ ...USB_PORT, name: "COM19" }]);
+    harness.connect.mockResolvedValue({
+      status: "connected",
+      portName: "COM19",
+      generation: 5,
+      revision: 12,
+    });
+    await harness.coordinator.setEnabled(true, {
+      status: "connected",
+      generation: CONNECTED_STATE.generation,
+      config: { ...DEFAULT_SERIAL_CONFIG, portName: USB_PORT.name, dtr: true, rts: true },
+      port: USB_PORT,
+    });
+    harness.coordinator.updateConfig({
+      ...DEFAULT_SERIAL_CONFIG,
+      portName: USB_PORT.name,
+      dtr: false,
+      rts: false,
+    });
+    harness.coordinator.observeState(
+      {
+        status: "error",
+        portName: USB_PORT.name,
+        errorCode: "read-failed",
+        generation: CONNECTED_STATE.generation,
+        revision: CONNECTED_STATE.revision + 1,
+      },
+      "connected",
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(harness.connect).toHaveBeenCalledWith(
+      expect.objectContaining({ portName: "COM19", dtr: false, rts: false }),
+    );
+  });
+
   it("捕获文件收尾失败时阻止重连", async () => {
     const harness = createHarness();
     harness.prepareCaptureBoundary.mockResolvedValue(false);

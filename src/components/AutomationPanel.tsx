@@ -22,6 +22,9 @@ export function AutomationPanel() {
   const rules = useWorkbenchStore((state) => state.autoResponderRules);
   const runtime = useWorkbenchStore((state) => state.autoResponder);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
+  const serialControlLineOperation = useWorkbenchStore(
+    (state) => state.serialControlLineOperation,
+  );
   const commandTask = useWorkbenchStore((state) => state.commandTask);
   const isSendingCommand = useWorkbenchStore((state) => state.isSendingCommand);
   const workspaceTransitionStatus = useWorkbenchStore(
@@ -53,6 +56,7 @@ export function AutomationPanel() {
   const canStart =
     connectionStatus === "connected" &&
     enabledRuleCount > 0 &&
+    serialControlLineOperation === "idle" &&
     !taskActive &&
     !isSendingCommand &&
     !isTransitioning;
@@ -403,6 +407,7 @@ function ModeField({
       <div className="segmented-control" role="group" aria-labelledby={`${id}-label`}>
         <button
           type="button"
+          aria-pressed={value === "text"}
           data-active={value === "text"}
           disabled={disabled}
           onClick={() => onChange("text")}
@@ -411,6 +416,7 @@ function ModeField({
         </button>
         <button
           type="button"
+          aria-pressed={value === "hex"}
           data-active={value === "hex"}
           disabled={disabled}
           onClick={() => onChange("hex")}

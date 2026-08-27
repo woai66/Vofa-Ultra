@@ -40,6 +40,7 @@ function historyEntry(
     value,
     mode: "text",
     lineEnding: "none",
+    checksumMode: "none",
     payloadBytes: commandHistoryPayloadBytes(value),
     encodedBytes: commandHistoryPayloadBytes(value),
     variableCount: 0,
@@ -52,6 +53,7 @@ function task(overrides: Partial<CommandTaskRequest> = {}): CommandTaskRequest {
   return {
     template: compileCommandTemplate("PING", "text"),
     lineEnding: "lf",
+    checksumMode: "none",
     intervalMs: 100,
     repeatCount: 3,
     ...overrides,
@@ -77,13 +79,15 @@ function schedulerHarness(
 function prepareCommand(
   template: CompiledCommandTemplate,
   lineEnding: PreparedCommand["lineEnding"],
+  checksumMode: PreparedCommand["checksumMode"],
   context: CommandTemplateContext,
 ): PreparedCommand {
-  const rendered = renderCommandTemplate(template, context, lineEnding);
+  const rendered = renderCommandTemplate(template, context, lineEnding, checksumMode);
   return {
     value: template.source,
     mode: template.mode,
     lineEnding,
+    checksumMode,
     bytes: rendered.bytes,
     variableCount: rendered.variableCount,
   };
@@ -120,8 +124,12 @@ describe("command history", () => {
       history,
       historyEntry("PING", { lineEnding: "lf", sentAt: 3_000 }),
     );
-    history = appendCommandHistory(history, historyEntry("PING", { sentAt: 4_000 }));
-    expect(history.map((entry) => entry.repeatCount)).toEqual([2, 1, 1]);
+    history = appendCommandHistory(
+      history,
+      historyEntry("PING", { checksumMode: "xor8", sentAt: 4_000 }),
+    );
+    history = appendCommandHistory(history, historyEntry("PING", { sentAt: 5_000 }));
+    expect(history.map((entry) => entry.repeatCount)).toEqual([2, 1, 1, 1]);
   });
 
   it("同时限制条目数和保存 payload 字节数", () => {
@@ -293,11 +301,11 @@ describe("CommandScheduler", () => {
   it("已有成功后下一次渲染失败时保留成功计数且不发送无效命令", async () => {
     vi.useFakeTimers();
     const send = vi.fn<(command: PreparedCommand) => Promise<void>>().mockResolvedValue(undefined);
-    const prepare = vi.fn<typeof prepareCommand>((template, lineEnding, context) => {
+    const prepare = vi.fn<typeof prepareCommand>((template, lineEnding, checksumMode, context) => {
       if (context.sequence === 2) {
         throw new Error("命令变量 seq 的值超出 u8 范围");
       }
-      return prepareCommand(template, lineEnding, context);
+      return prepareCommand(template, lineEnding, checksumMode, context);
     });
     const { scheduler } = schedulerHarness(send, prepare);
 

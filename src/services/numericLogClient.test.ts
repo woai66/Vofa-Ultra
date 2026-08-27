@@ -50,10 +50,18 @@ describe("numericLogClient", () => {
     invokeMock.mockResolvedValue(payload);
 
     await expect(
-      startNumericLog({ source: "serial", protocol: "firewater" }),
+      startNumericLog({
+        source: "serial",
+        protocol: "firewater",
+        destinationDirectory: "D:\\sessions",
+      }),
     ).resolves.toEqual(payload);
     expect(invokeMock).toHaveBeenCalledWith("start_numeric_log", {
-      request: { source: "serial", protocol: "firewater" },
+      request: {
+        source: "serial",
+        protocol: "firewater",
+        destinationDirectory: "D:\\sessions",
+      },
     });
   });
 

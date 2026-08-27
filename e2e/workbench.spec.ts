@@ -172,17 +172,86 @@ async function readWaveformCanvasStats(page: Page): Promise<{
   });
 }
 
+async function readWaveformColorBounds(
+  page: Page,
+  color: string,
+): Promise<{ pixelCount: number; minY: number; maxY: number; span: number }> {
+  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color);
+  if (!match) {
+    throw new Error(`无效的波形颜色: ${color}`);
+  }
+  const target = match.slice(1).map((component) => Number.parseInt(component, 16));
+  return page.locator(".waveform-chart canvas").first().evaluate((canvas, targetColor) => {
+    const context = canvas.getContext("2d");
+    const plot = canvas.closest(".uplot")?.querySelector<HTMLElement>(".u-over");
+    if (!context || !plot) {
+      return { pixelCount: 0, minY: -1, maxY: -1, span: 0 };
+    }
+    const canvasRect = canvas.getBoundingClientRect();
+    const plotRect = plot.getBoundingClientRect();
+    const scaleX = canvas.width / canvasRect.width;
+    const scaleY = canvas.height / canvasRect.height;
+    const margin = 2;
+    const left = Math.max(0, Math.floor((plotRect.left - canvasRect.left - margin) * scaleX));
+    const right = Math.min(
+      canvas.width,
+      Math.ceil((plotRect.right - canvasRect.left + margin) * scaleX),
+    );
+    const top = Math.max(0, Math.floor((plotRect.top - canvasRect.top - margin) * scaleY));
+    const bottom = Math.min(
+      canvas.height,
+      Math.ceil((plotRect.bottom - canvasRect.top + margin) * scaleY),
+    );
+    const image = context.getImageData(left, top, right - left, bottom - top);
+    const pixels = image.data;
+    let pixelCount = 0;
+    let minY = image.height;
+    let maxY = -1;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const distance =
+        Math.abs((pixels[index] ?? 0) - (targetColor[0] ?? 0)) +
+        Math.abs((pixels[index + 1] ?? 0) - (targetColor[1] ?? 0)) +
+        Math.abs((pixels[index + 2] ?? 0) - (targetColor[2] ?? 0));
+      if ((pixels[index + 3] ?? 0) < 80 || distance > 90) {
+        continue;
+      }
+      const y = Math.floor(index / 4 / image.width);
+      pixelCount += 1;
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    }
+    return {
+      pixelCount,
+      minY: pixelCount > 0 ? minY : -1,
+      maxY,
+      span: pixelCount > 0 ? (maxY - minY) / scaleY : 0,
+    };
+  }, target);
+}
+
 test("标签组支持标准键盘导航", async ({ page }) => {
   await page.goto("/");
 
   const waveformTab = page.getByRole("tab", { name: "波形" });
+  const monitorTab = page.getByRole("tab", { name: "监视" });
   const attitudeTab = page.getByRole("tab", { name: "姿态" });
   const waveformPanel = page.locator("#workspace-waveform-panel");
+  const monitorPanel = page.locator("#workspace-monitor-panel");
   const attitudePanel = page.locator("#workspace-attitude-panel");
   await expectValidTabPanelReferences(page, "工作区视图");
   await expect(waveformPanel).toBeVisible();
+  await expect(monitorPanel).toBeHidden();
   await expect(attitudePanel).toBeHidden();
   await waveformTab.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(monitorTab).toBeFocused();
+  await expect(monitorTab).toHaveAttribute("aria-selected", "true");
+  await expect(monitorTab).toHaveAttribute("tabindex", "0");
+  await expect(waveformTab).toHaveAttribute("tabindex", "-1");
+  await expect(monitorPanel).toBeVisible();
+  await expect(waveformPanel).toBeHidden();
+  await expect(attitudePanel).toBeHidden();
+  await expect(monitorPanel.getByRole("heading", { name: "通道监视" })).toBeVisible();
   await page.keyboard.press("ArrowRight");
   await expect(attitudeTab).toBeFocused();
   await expect(attitudeTab).toHaveAttribute("aria-selected", "true");
@@ -190,10 +259,12 @@ test("标签组支持标准键盘导航", async ({ page }) => {
   await expect(waveformTab).toHaveAttribute("tabindex", "-1");
   await expect(attitudePanel).toBeVisible();
   await expect(waveformPanel).toBeHidden();
+  await expect(monitorPanel).toBeHidden();
   await expect(attitudePanel.getByRole("heading", { name: "3D 姿态" })).toBeVisible();
   await page.keyboard.press("Home");
   await expect(waveformTab).toBeFocused();
   await expect(waveformPanel).toBeVisible();
+  await expect(monitorPanel).toBeHidden();
   await expect(attitudePanel).toBeHidden();
 
   await page.getByRole("button", { name: "记录", exact: true }).click();
@@ -220,6 +291,222 @@ test("标签组支持标准键盘导航", async ({ page }) => {
   await expect(recordTab).toHaveAttribute("aria-selected", "true");
   await expect(recordPanel).toBeVisible();
   await expect(exportPanel).toBeHidden();
+});
+
+test("串口输入握手线状态在桌面与窄屏保持可读", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await page.setViewportSize({ width: 1_280, height: 800 });
+  await page.goto("/");
+  await setWorkbenchState(page, {
+    isNativeRuntime: true,
+    source: "serial",
+    connectionStatus: "connected",
+    serialGeneration: 7,
+    serialModemStatus: {
+      generation: 7,
+      revision: 2,
+      cts: true,
+      dsr: false,
+      ri: null,
+      dcd: true,
+    },
+  });
+
+  const status = page.locator('dl[aria-label="串口输入握手线状态"]');
+  const items = status.locator(".modem-status-item");
+  await expect(status).toBeVisible();
+  await expect(items).toHaveText(["CTS有效", "DSR无效", "RI不可用", "DCD有效"]);
+  await expect
+    .poll(() => items.evaluateAll((elements) => elements.map((element) => element.dataset.state)))
+    .toEqual(["asserted", "deasserted", "unavailable", "asserted"]);
+
+  const desktopLayout = await items.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }),
+  );
+  expect(desktopLayout).toHaveLength(4);
+  expect(desktopLayout.every(({ height }) => height >= 44)).toBe(true);
+  expect(desktopLayout[0]?.y).toBe(desktopLayout[1]?.y);
+  expect(desktopLayout[2]?.y).toBe(desktopLayout[3]?.y);
+  expect(desktopLayout[0]?.x).toBe(desktopLayout[2]?.x);
+  expect(desktopLayout[1]?.x).toBe(desktopLayout[3]?.x);
+  await page.screenshot({
+    path: testInfo.outputPath("serial-modem-status-desktop.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(status).toBeVisible();
+  const mobileBounds = await status.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      viewportWidth: document.documentElement.clientWidth,
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    };
+  });
+  expect(mobileBounds.left).toBeGreaterThanOrEqual(0);
+  expect(mobileBounds.right).toBeLessThanOrEqual(mobileBounds.viewportWidth);
+  expect(mobileBounds.scrollWidth).toBeLessThanOrEqual(mobileBounds.clientWidth);
+  await page.screenshot({
+    path: testInfo.outputPath("serial-modem-status-mobile.png"),
+    fullPage: true,
+  });
+
+  await setWorkbenchState(page, { connectionStatus: "disconnected" });
+  await expect(status).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
+test("工作台分栏支持拖拽、键盘、持久化、专注模式和窄屏回退", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+
+  await page.setViewportSize({ width: 1_280, height: 800 });
+  await page.goto("/");
+  const content = page.locator(".workspace-content");
+  const primaryPanel = page.locator("#workspace-waveform-panel");
+  const terminalPanel = page.locator("#workspace-terminal-panel");
+  const separator = page.getByRole("separator", { name: "调整主视图与终端高度" });
+  await expect(content).toHaveAttribute("data-layout-mode", "split");
+  await expect(separator).toHaveAttribute("aria-valuenow", "61");
+  await expect(primaryPanel).toBeVisible();
+  await expect(terminalPanel).toBeVisible();
+
+  const initialPrimaryHeight = await primaryPanel.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  const initialTerminalHeight = await terminalPanel.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  const separatorBox = await separator.boundingBox();
+  expect(separatorBox).not.toBeNull();
+  if (!separatorBox) {
+    throw new Error("工作台分隔条没有可用边界");
+  }
+  await page.mouse.move(
+    separatorBox.x + separatorBox.width / 2,
+    separatorBox.y + separatorBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    separatorBox.x + separatorBox.width / 2,
+    separatorBox.y + separatorBox.height / 2 - 70,
+    { steps: 4 },
+  );
+  await page.mouse.up();
+
+  const resizedPrimaryHeight = await primaryPanel.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  const resizedTerminalHeight = await terminalPanel.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  expect(resizedPrimaryHeight).toBeLessThan(initialPrimaryHeight - 50);
+  expect(resizedTerminalHeight).toBeGreaterThan(initialTerminalHeight + 50);
+  const storedSplit = await page.evaluate(() =>
+    Number.parseFloat(localStorage.getItem("vofa-ultra-workspace-split") ?? ""),
+  );
+  expect(storedSplit).toBeGreaterThanOrEqual(0.4);
+  expect(storedSplit).toBeLessThan(0.61);
+
+  await page.reload();
+  await expect(separator).toHaveAttribute("aria-valuenow", String(Math.round(storedSplit * 100)));
+  await expect
+    .poll(() => primaryPanel.evaluate((element) => element.getBoundingClientRect().height))
+    .toBeLessThan(initialPrimaryHeight - 50);
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-workspace-layout.png"),
+    fullPage: true,
+  });
+
+  await separator.focus();
+  await page.keyboard.press("Home");
+  await expect(separator).toHaveAttribute("aria-valuenow", "40");
+  await page.keyboard.press("End");
+  await expect(separator).toHaveAttribute("aria-valuenow", "66");
+  await separator.dblclick();
+  await expect(separator).toHaveAttribute("aria-valuenow", "61");
+
+  const splitButton = page.getByRole("button", { name: "分栏显示" });
+  const primaryButton = page.getByRole("button", { name: "专注波形视图" });
+  const terminalButton = page.getByRole("button", { name: "专注终端" });
+  await terminalButton.click();
+  await expect(content).toHaveAttribute("data-layout-mode", "terminal");
+  await expect(primaryPanel).toBeHidden();
+  await expect(terminalPanel).toBeVisible();
+  await splitButton.click();
+  await expect(primaryPanel).toBeVisible();
+  await expect(separator).toBeVisible();
+  await primaryButton.click();
+  await expect(content).toHaveAttribute("data-layout-mode", "primary");
+  await expect(primaryPanel).toBeVisible();
+  await expect(terminalPanel).toBeHidden();
+
+  await terminalButton.click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+  await expect(page.locator(".sidebar")).toBeHidden();
+  await expect(page.getByRole("group", { name: "工作区布局" })).toBeHidden();
+  await expect(separator).toBeHidden();
+  await expect(primaryPanel).toBeVisible();
+  await expect(terminalPanel).toBeVisible();
+  const mobileLayout = await page.locator(".app-shell").evaluate((element) => ({
+    width: element.getBoundingClientRect().width,
+    documentWidth: document.documentElement.scrollWidth,
+  }));
+  expect(mobileLayout.width).toBeLessThanOrEqual(390);
+  expect(mobileLayout.documentWidth).toBeLessThanOrEqual(390);
+  const mobileSendButton = page.getByRole("button", { name: "发送", exact: true });
+  const sendAndRailBounds = await page.evaluate(() => {
+    const send = document.querySelector<HTMLElement>(".send-button");
+    const rail = document.querySelector<HTMLElement>(".activity-rail");
+    if (!send || !rail) {
+      return null;
+    }
+    const sendRect = send.getBoundingClientRect();
+    const railRect = rail.getBoundingClientRect();
+    return {
+      sendBottom: sendRect.bottom,
+      sendHeight: sendRect.height,
+      railTop: railRect.top,
+    };
+  });
+  expect(sendAndRailBounds).not.toBeNull();
+  expect(sendAndRailBounds?.sendHeight ?? 0).toBeGreaterThanOrEqual(44);
+  expect(sendAndRailBounds?.sendBottom ?? 845).toBeLessThanOrEqual(
+    (sendAndRailBounds?.railTop ?? 0) + 1,
+  );
+  expect(await clippedVisibleHeight(mobileSendButton)).toBeGreaterThanOrEqual(44);
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-workspace-layout.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await content.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(mobileSendButton).toBeInViewport();
+  expect(await clippedVisibleHeight(mobileSendButton)).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  expect(pageErrors).toEqual([]);
 });
 
 test("终端上滚挂起跟随并可回到最新", async ({ page }) => {
@@ -452,6 +739,8 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   await expect(page.getByText("HISTORY")).toBeVisible();
   const measurementResults = page.getByLabel("波形测量结果");
   await expect(measurementResults).toBeVisible();
+  const intervalStatistics = page.getByLabel("A/B 区间统计");
+  await expect(intervalStatistics).toBeVisible();
   await expect(page.locator(".waveform-measurement-cursor")).toHaveCount(2);
   await expect
     .poll(terminalCount)
@@ -481,6 +770,7 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   await cursorB.focus();
   await page.keyboard.press("End");
   await expect(measurementResults).not.toContainText(/NaN|Infinity/);
+  await expect(intervalStatistics).not.toContainText(/NaN|Infinity/);
   await page.screenshot({
     path: testInfo.outputPath("desktop-measurement.png"),
     fullPage: true,
@@ -504,6 +794,457 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
     path: testInfo.outputPath("desktop-workbench.png"),
     fullPage: true,
   });
+});
+
+test("独立量程让混合数量级通道保持可读并正确映射测量游标", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.goto("/");
+
+  const start = 1_800_000_000;
+  const timestamps = Array.from({ length: 6 }, (_, index) => start + index);
+  const channel = (
+    id: string,
+    name: string,
+    color: string,
+    values: number[],
+  ) => ({
+    id,
+    name,
+    color,
+    visible: true,
+    points: timestamps.map((x, index) => ({ x, y: values[index] ?? 0 })),
+    lastValue: values.at(-1) ?? 0,
+  });
+  const speedColor = "#00ff00";
+  const currentColor = "#ff00ff";
+  const temperatureColor = "#ffff00";
+  await setWorkbenchState(page, {
+    channels: [
+      channel("speed", "转速", speedColor, [1_000, 2_000, 3_000, 4_000, 5_000, 6_000]),
+      channel("current", "电流", currentColor, [0.1, 0.18, 0.12, 0.2, 0.14, 0.16]),
+      channel("temperature", "温度", temperatureColor, [30, 30, 30, 30, 30, 30]),
+    ],
+    processedChannels: [],
+    extensionChannels: [],
+    chartPaused: true,
+    chartWindowSeconds: 5,
+  });
+  await expect(page.locator(".channel-readout")).toHaveCount(3);
+  await expect(page.locator(".waveform-chart canvas").first()).toBeVisible();
+
+  const sharedCurrent = await readWaveformColorBounds(page, currentColor);
+  expect(sharedCurrent.pixelCount).toBeGreaterThan(5);
+  expect(sharedCurrent.span).toBeLessThan(12);
+
+  await page.getByRole("button", { name: "独立" }).click();
+  await expect(page.locator(".waveform-panel")).toHaveAttribute(
+    "data-scale-mode",
+    "independent",
+  );
+  const focusChannel = page.getByRole("combobox", { name: "独立量程焦点通道" });
+  await expect(focusChannel).toHaveValue("speed");
+
+  await expect
+    .poll(async () => (await readWaveformColorBounds(page, currentColor)).span)
+    .toBeGreaterThan(80);
+  expect((await readWaveformColorBounds(page, speedColor)).span).toBeGreaterThan(80);
+  expect((await readWaveformColorBounds(page, temperatureColor)).pixelCount).toBeGreaterThan(20);
+
+  await focusChannel.selectOption("current");
+  await expect(focusChannel).toHaveValue("current");
+  await page.getByRole("button", { name: "开启波形测量" }).click();
+  await page.getByRole("combobox", { name: "测量通道" }).selectOption("current");
+  const intervalStatistics = page.getByLabel("A/B 区间统计");
+  await expect(intervalStatistics.getByText("样本数", { exact: true }).locator("..")).toContainText(
+    "4",
+  );
+  await expect(intervalStatistics.getByText("最小值", { exact: true }).locator("..")).toContainText(
+    "0.120",
+  );
+  await expect(intervalStatistics.getByText("最大值", { exact: true }).locator("..")).toContainText(
+    "0.200",
+  );
+  await expect(intervalStatistics.getByText("均值", { exact: true }).locator("..")).toContainText(
+    "0.160",
+  );
+  await expect(intervalStatistics.getByText("RMS", { exact: true }).locator("..")).toContainText(
+    "0.163",
+  );
+  await expect(intervalStatistics.getByText("峰峰值", { exact: true }).locator("..")).toContainText(
+    "0.080",
+  );
+  const plotHeight = await page.locator(".waveform-chart .u-over").evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  const measurementPointTops = await page
+    .locator(".waveform-measurement-point")
+    .evaluateAll((elements) => elements.map((element) => Number.parseFloat(element.style.top)));
+  expect(measurementPointTops).toHaveLength(2);
+  expect(
+    measurementPointTops.every(
+      (top) => Number.isFinite(top) && top >= 0 && top <= plotHeight,
+    ),
+  ).toBe(true);
+  expect(pageErrors).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-independent-scales.png"),
+    fullPage: true,
+  });
+});
+
+test("固定 Y 量程保持稳定映射并可恢复自动量程", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.goto("/");
+
+  const start = 1_800_000_100;
+  const color = "#00ff00";
+  const createChannel = (values: number[]) => ({
+    id: "range-test",
+    name: "量程测试",
+    color,
+    visible: true,
+    points: values.map((y, index) => ({ x: start + index, y })),
+    lastValue: values.at(-1) ?? 0,
+  });
+  await setWorkbenchState(page, {
+    channels: [createChannel([-1, -0.5, 0, 0.5, 1])],
+    processedChannels: [],
+    extensionChannels: [],
+    chartPaused: false,
+    chartWindowSeconds: 5,
+  });
+  await expect(page.locator(".waveform-chart canvas").first()).toBeVisible();
+  await expect
+    .poll(async () => (await readWaveformColorBounds(page, color)).span)
+    .toBeGreaterThan(80);
+  const automaticSpan = (await readWaveformColorBounds(page, color)).span;
+
+  await page.getByRole("button", { name: "设置 Y 轴量程" }).click();
+  const rangeForm = page.getByRole("form", { name: "Y 轴量程设置" });
+  await rangeForm.getByRole("spinbutton", { name: "Y 轴下限" }).fill("-10");
+  await rangeForm.getByRole("spinbutton", { name: "Y 轴上限" }).fill("10");
+  await rangeForm.getByRole("button", { name: "固定" }).click();
+
+  const waveformPanel = page.locator(".waveform-panel");
+  await expect(waveformPanel).toHaveAttribute("data-y-range-mode", "fixed");
+  await expect(waveformPanel).toHaveAttribute("data-y-range-min", "-10");
+  await expect(waveformPanel).toHaveAttribute("data-y-range-max", "10");
+  await expect
+    .poll(async () => (await readWaveformColorBounds(page, color)).span)
+    .toBeLessThan(automaticSpan * 0.3);
+  const narrowFixedSpan = (await readWaveformColorBounds(page, color)).span;
+
+  await setWorkbenchState(page, {
+    channels: [createChannel([-5, -2.5, 0, 2.5, 5])],
+  });
+  await expect
+    .poll(async () => (await readWaveformColorBounds(page, color)).span)
+    .toBeGreaterThan(narrowFixedSpan * 3);
+  const expandedFixedSpan = (await readWaveformColorBounds(page, color)).span;
+  await expect(waveformPanel).toHaveAttribute("data-y-range-mode", "fixed");
+
+  const plotBounds = await page.locator(".waveform-chart .u-over").boundingBox();
+  expect(plotBounds).not.toBeNull();
+  if (plotBounds) {
+    await page.mouse.move(plotBounds.x + plotBounds.width * 0.2, plotBounds.y + plotBounds.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+      plotBounds.x + plotBounds.width * 0.8,
+      plotBounds.y + plotBounds.height / 2,
+      { steps: 6 },
+    );
+    await page.mouse.up();
+  }
+  await expect(page.getByRole("button", { name: "回到实时波形" })).toBeVisible();
+  await expect(waveformPanel).toHaveAttribute("data-y-range-mode", "fixed");
+
+  await page.getByRole("button", { name: "设置 Y 轴量程" }).click();
+  await rangeForm.getByRole("button", { name: "自动", exact: true }).click();
+  await expect(waveformPanel).toHaveAttribute("data-y-range-mode", "auto");
+  await expect
+    .poll(async () => (await readWaveformColorBounds(page, color)).span)
+    .toBeGreaterThan(expandedFixedSpan * 1.4);
+  expect(pageErrors).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-fixed-waveform-range.png"),
+    fullPage: true,
+  });
+});
+
+test("终端时间基准按缓存和可见记录计算并跨刷新保留", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await page.goto("/");
+  await replaceTerminalEntries(page, [
+    {
+      id: 41_001,
+      direction: "rx",
+      timestamp: 1_700_000_000_000,
+      text: "first rx",
+      hex: "01",
+      byteCount: 1,
+    },
+    {
+      id: 41_002,
+      direction: "tx",
+      timestamp: 1_700_000_000_125,
+      text: "first tx",
+      hex: "02",
+      byteCount: 1,
+    },
+    {
+      id: 41_003,
+      direction: "rx",
+      timestamp: 1_699_999_999_900,
+      text: "late rx line",
+      hex: "03",
+      byteCount: 1,
+    },
+    {
+      id: 41_004,
+      direction: "tx",
+      timestamp: 1_700_000_000_900,
+      text: "second tx",
+      hex: "04",
+      byteCount: 1,
+    },
+  ]);
+
+  const timeMode = page.getByRole("group", { name: "终端时间基准" });
+  const timeCells = page.locator(".terminal-line time");
+  await expect(timeMode.getByRole("button", { name: "绝对时间" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await timeMode.getByRole("button", { name: "相对缓存起点" }).click();
+  await expect(timeCells).toHaveText([
+    "+00:00:00.000",
+    "+00:00:00.125",
+    "-00:00:00.100",
+    "+00:00:00.900",
+  ]);
+
+  await timeMode.getByRole("button", { name: "距上一条可见记录" }).click();
+  await expect(timeCells).toHaveText([
+    "--",
+    "+00:00:00.125",
+    "-00:00:00.225",
+    "+00:00:01.000",
+  ]);
+  await page
+    .getByRole("group", { name: "终端方向筛选" })
+    .getByRole("button", { name: "TX" })
+    .click();
+  await expect(timeCells).toHaveText(["--", "+00:00:00.775"]);
+  await page.screenshot({
+    path: testInfo.outputPath("terminal-time-desktop.png"),
+    fullPage: true,
+  });
+
+  await replaceTerminalEntries(
+    page,
+    Array.from({ length: 800 }, (_, index): TerminalEntry => ({
+      id: 43_000 + index,
+      direction: "tx",
+      timestamp: 1_700_001_000_000 + index * 20,
+      text: `virtual ${index}`,
+      hex: "07",
+      byteCount: 1,
+    })),
+  );
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText(
+    "800 / 800 条记录",
+  );
+  await expect
+    .poll(async () => {
+      const mountedLabels = await page.locator(".terminal-line time").allTextContents();
+      return (
+        mountedLabels.length > 0 &&
+        mountedLabels.every((label) => label === "+00:00:00.020")
+      );
+    })
+    .toBe(true);
+
+  await page.reload();
+  await expect(
+    page.getByRole("group", { name: "终端时间基准" }).getByRole("button", {
+      name: "距上一条可见记录",
+    }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await replaceTerminalEntries(page, [
+    {
+      id: 42_001,
+      direction: "rx",
+      timestamp: 1_700_000_100_000,
+      text: "mobile first",
+      hex: "05",
+      byteCount: 1,
+    },
+    {
+      id: 42_002,
+      direction: "rx",
+      timestamp: 1_700_000_100_250,
+      text: "mobile second",
+      hex: "06",
+      byteCount: 1,
+    },
+  ]);
+  await page.setViewportSize({ width: 600, height: 700 });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".sidebar")).toBeHidden();
+  const compactTimeMode = page.getByRole("combobox", { name: "终端时间基准" });
+  await expect(compactTimeMode).toHaveValue("interval");
+  await expect(page.getByRole("combobox", { name: "终端方向筛选" })).toHaveValue("all");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(600);
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  const mobileBounds = await compactTimeMode
+    .evaluate((control) => {
+      const controlRect = control.getBoundingClientRect();
+      const filterRect = control.closest(".terminal-filter-bar")?.getBoundingClientRect();
+      return {
+        controlLeft: controlRect.left,
+        controlRight: controlRect.right,
+        filterLeft: filterRect?.left ?? -1,
+        filterRight: filterRect?.right ?? -1,
+      };
+    });
+  expect(mobileBounds.controlLeft).toBeGreaterThanOrEqual(mobileBounds.filterLeft);
+  expect(mobileBounds.controlRight).toBeLessThanOrEqual(mobileBounds.filterRight);
+  expect(await compactTimeMode.evaluate((control) => control.getBoundingClientRect().height)).toBe(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await page.screenshot({
+    path: testInfo.outputPath("terminal-time-mobile.png"),
+    fullPage: true,
+  });
+  expect(pageErrors).toEqual([]);
+});
+
+test("终端按全部缓存或当前筛选视图导出", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await page.goto("/");
+  const entries: TerminalEntry[] = [
+    {
+      id: 44_001,
+      direction: "rx",
+      timestamp: 1_700_000_200_000,
+      text: "ready",
+      hex: "72 65 61 64 79",
+      byteCount: 5,
+    },
+    {
+      id: 44_002,
+      direction: "tx",
+      timestamp: 1_700_000_200_100,
+      text: "set rate",
+      hex: "73 65 74 20 72 61 74 65",
+      byteCount: 8,
+    },
+    {
+      id: 44_003,
+      direction: "rx",
+      timestamp: 1_700_000_200_250,
+      text: "fault sensor",
+      hex: "66 61 75 6C 74 20 73 65 6E 73 6F 72",
+      byteCount: 12,
+    },
+  ];
+  await replaceTerminalEntries(page, entries);
+
+  await page
+    .getByRole("group", { name: "终端时间基准" })
+    .getByRole("button", { name: "相对缓存起点" })
+    .click();
+  const search = page.getByRole("searchbox", { name: "搜索终端记录" });
+  await search.fill("fault");
+  await page
+    .getByRole("group", { name: "终端方向筛选" })
+    .getByRole("button", { name: "RX" })
+    .click();
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 3 条记录");
+
+  const exportTrigger = page.getByRole("button", { name: "导出终端记录" });
+  const viewDownloadPromise = page.waitForEvent("download");
+  await exportTrigger.click();
+  const exportMenu = page.getByRole("menu", { name: "终端导出范围" });
+  await expect(exportMenu.getByRole("menuitem", { name: "全部缓存 3 条" })).toBeEnabled();
+  await exportMenu.getByRole("menuitem", { name: "当前视图 1 条" }).click();
+  const viewDownload = await viewDownloadPromise;
+  expect(viewDownload.suggestedFilename()).toMatch(
+    /^vofa-ultra-terminal-view-.+\.log$/,
+  );
+  const viewPath = testInfo.outputPath("terminal-view.log");
+  await viewDownload.saveAs(viewPath);
+  expect(await readFile(viewPath, "utf8")).toBe(
+    `${new Date(entries[2].timestamp).toISOString()}\tRX\t12\tfault sensor`,
+  );
+
+  await page
+    .getByRole("group", { name: "接收显示格式" })
+    .getByRole("button", { name: "HEX" })
+    .click();
+  await search.fill("66 61");
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 3 条记录");
+  const allDownloadPromise = page.waitForEvent("download");
+  await exportTrigger.click();
+  await exportMenu.getByRole("menuitem", { name: "全部缓存 3 条" }).click();
+  const allDownload = await allDownloadPromise;
+  expect(allDownload.suggestedFilename()).toMatch(/^vofa-ultra-terminal-all-.+\.log$/);
+  const allPath = testInfo.outputPath("terminal-all.log");
+  await allDownload.saveAs(allPath);
+  expect(await readFile(allPath, "utf8")).toBe(
+    entries
+      .map(
+        (entry) =>
+          `${new Date(entry.timestamp).toISOString()}\t${entry.direction.toUpperCase()}` +
+          `\t${entry.byteCount}\t${entry.hex}`,
+      )
+      .join("\n"),
+  );
+
+  await search.fill("FF FF");
+  await exportTrigger.click();
+  await expect(exportMenu.getByRole("menuitem", { name: "当前视图 0 条" })).toBeDisabled();
+  await expect(exportMenu.getByRole("menuitem", { name: "全部缓存 3 条" })).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(exportTrigger).toBeFocused();
+
+  await search.fill("66 61");
+  await page.setViewportSize({ width: 320, height: 568 });
+  const appShell = page.locator(".app-shell");
+  const sidebar = page.locator(".sidebar");
+  if ((await appShell.getAttribute("data-sidebar-open")) === "true") {
+    await page.getByRole("button", { name: "关闭侧栏" }).click();
+  }
+  await expect(appShell).toHaveAttribute("data-sidebar-open", "false");
+  await expect(sidebar).toBeHidden();
+  await exportTrigger.click();
+  const mobileMenuBounds = await exportMenu.boundingBox();
+  expect(mobileMenuBounds).not.toBeNull();
+  expect(mobileMenuBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((mobileMenuBounds?.x ?? 0) + (mobileMenuBounds?.width ?? 321)).toBeLessThanOrEqual(320);
+  for (const menuItem of await exportMenu.getByRole("menuitem").all()) {
+    expect(await menuItem.evaluate((item) => item.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await page.screenshot({
+    path: testInfo.outputPath("terminal-export-mobile.png"),
+    fullPage: true,
+  });
+  expect(pageErrors).toEqual([]);
 });
 
 test("单次触发在后半窗结束时冻结且后台接收继续", async ({ page }) => {
@@ -699,14 +1440,16 @@ test("终端按当前显示内容执行字面量搜索和方向过滤", async ({
     const searchField = bar.querySelector<HTMLElement>(".terminal-search-field");
     const searchInput = bar.querySelector<HTMLElement>(".terminal-search-field input");
     const clearButton = bar.querySelector<HTMLElement>(".terminal-search-field button");
-    const buttons = [...bar.querySelectorAll<HTMLElement>(".terminal-direction-filter button")];
+    const selects = [
+      ...bar.querySelectorAll<HTMLElement>(".terminal-mobile-filter-selects select"),
+    ];
     return {
       documentOverflow: document.documentElement.scrollWidth - window.innerWidth,
       barOverflow: bar.scrollWidth - bar.clientWidth,
       searchHeight: searchField?.getBoundingClientRect().height ?? 0,
       searchInputHeight: searchInput?.getBoundingClientRect().height ?? 0,
       clearButtonHeight: clearButton?.getBoundingClientRect().height ?? 0,
-      buttonHeights: buttons.map((button) => button.getBoundingClientRect().height),
+      selectHeights: selects.map((select) => select.getBoundingClientRect().height),
     };
   });
   expect(mobileLayout.documentOverflow).toBeLessThanOrEqual(1);
@@ -714,7 +1457,8 @@ test("终端按当前显示内容执行字面量搜索和方向过滤", async ({
   expect(mobileLayout.searchHeight).toBeGreaterThanOrEqual(44);
   expect(mobileLayout.searchInputHeight).toBeGreaterThanOrEqual(44);
   expect(mobileLayout.clearButtonHeight).toBeGreaterThanOrEqual(44);
-  expect(mobileLayout.buttonHeights.every((height) => height >= 44)).toBe(true);
+  expect(mobileLayout.selectHeights).toHaveLength(2);
+  expect(mobileLayout.selectHeights.every((height) => height >= 44)).toBe(true);
   expect(pageErrors).toEqual([]);
 
   await page.screenshot({
@@ -840,7 +1584,8 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   await ingestProtocolText(page, "1,2,3\n", 1_100);
   await expect(health).toContainText("解析正常");
   await expect(health).toContainText("成功 1");
-  await expect(page.getByLabel("数据通道列表").getByRole("button")).toHaveCount(3);
+  await expect(page.getByLabel("数据通道列表").locator(".channel-visibility-button"))
+    .toHaveCount(3);
   await expect(page.locator(".terminal-line").last()).toContainText("1,2,3");
 
   await page.setViewportSize({ width: 320, height: 700 });
@@ -857,7 +1602,121 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   expect(layout.documentWidth).toBeLessThanOrEqual(320);
 });
 
-test("处理图转换节点生成派生通道并随 v9 工作区往返", async ({ page }, testInfo) => {
+test("通道展示配置按协议隔离并随 v11 工作区往返", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await ingestProtocolText(page, "voltage:12.5,current:2\n", 1_000);
+  await page.getByRole("button", { name: "通道", exact: true }).click();
+
+  await page.getByRole("button", { name: "编辑通道 voltage" }).click();
+  await page.getByRole("textbox", { name: "channel-0 通道别名" }).fill("母线电压");
+  await page.getByRole("textbox", { name: "channel-0 通道单位" }).fill("V");
+  await page.getByLabel("channel-0 通道颜色").fill("#abcdef");
+  await page.getByRole("button", { name: "保存 voltage 展示配置" }).click();
+
+  const firewaterRow = page.locator(".channel-row").filter({ hasText: "母线电压" });
+  await expect(firewaterRow).toContainText("voltage");
+  await expect(firewaterRow).toContainText("12.500");
+  await expect(firewaterRow).toContainText("V");
+  await expect(firewaterRow.locator(".channel-swatch")).toHaveCSS(
+    "background-color",
+    "rgb(171, 205, 239)",
+  );
+  await expect(page.locator(".channel-readout").first()).toContainText("母线电压");
+
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("radio", { name: /JustFloat/ }).click();
+  await ingestProtocolBytes(page, [0x00, 0x00, 0x48, 0x43, 0x00, 0x00, 0x80, 0x7f], 2_000);
+  await page.getByRole("button", { name: "通道", exact: true }).click();
+  await expect(page.getByText("母线电压", { exact: true })).toHaveCount(0);
+  await page.locator(".channel-edit-button").first().click();
+  await page.getByRole("textbox", { name: "channel-0 通道别名" }).fill("转速");
+  await page.getByRole("textbox", { name: "channel-0 通道单位" }).fill("rpm");
+  await page.getByRole("button", { name: /保存 .* 展示配置/ }).click();
+  await expect(page.locator(".channel-row").filter({ hasText: "转速" })).toContainText("rpm");
+
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("radio", { name: /FireWater/ }).click();
+  await ingestProtocolText(page, "voltage:13.5\n", 3_000);
+  await page.getByRole("button", { name: "通道", exact: true }).click();
+  await expect(page.locator(".channel-row").filter({ hasText: "母线电压" })).toBeVisible();
+
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  const nameInput = page.getByRole("textbox", { name: "工作区名称" });
+  await nameInput.fill("通道展示基准");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出当前" }).click();
+  const download = await downloadPromise;
+  const downloadPath = testInfo.outputPath("channel-presentation-workspace.json");
+  await download.saveAs(downloadPath);
+  const exported = JSON.parse(await readFile(downloadPath, "utf8")) as {
+    schemaVersion: number;
+    config: {
+      channelPresentations: {
+        firewater: Record<string, { alias: string; unit: string; color: string | null }>;
+        justfloat: Record<string, { alias: string; unit: string; color: string | null }>;
+      };
+    };
+  };
+  expect(exported).toMatchObject({
+    schemaVersion: 11,
+    config: {
+      channelPresentations: {
+        firewater: {
+          "channel-0": { alias: "母线电压", unit: "V", color: "#abcdef" },
+        },
+        justfloat: {
+          "channel-0": { alias: "转速", unit: "rpm", color: null },
+        },
+      },
+    },
+  });
+
+  await page.getByRole("button", { name: "通道", exact: true }).click();
+  await page.getByRole("button", { name: "编辑通道 母线电压" }).click();
+  await page.getByRole("button", { name: "恢复 voltage 默认展示" }).click();
+  await expect(page.getByText("母线电压", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  await page.getByLabel("导入工作区文件").setInputFiles(downloadPath);
+  await page.getByRole("button", { name: "通道展示基准 (2) 模拟器 · FireWater" }).click();
+  await expect(page.getByRole("heading", { name: "放弃未保存更改？" })).toBeVisible();
+  await page.getByRole("button", { name: "放弃并切换" }).click();
+  await ingestProtocolText(page, "voltage:14.5\n", 4_000);
+  await page.getByRole("button", { name: "通道", exact: true }).click();
+  await expect(page.locator(".channel-row").filter({ hasText: "母线电压" })).toBeVisible();
+
+  await page.getByRole("button", { name: "编辑通道 母线电压" }).click();
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-channel-presentation.png"),
+    fullPage: true,
+  });
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 700 });
+    const mobileLayout = await page.locator(".channel-editor").evaluate((editor) => {
+      const rect = editor.getBoundingClientRect();
+      const controls = [...editor.querySelectorAll<HTMLElement>("input, button")];
+      return {
+        left: rect.left,
+        right: rect.right,
+        overflow: editor.scrollWidth - editor.clientWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        controlHeights: controls.map((control) => control.getBoundingClientRect().height),
+      };
+    });
+    expect(mobileLayout.left).toBeGreaterThanOrEqual(0);
+    expect(mobileLayout.right).toBeLessThanOrEqual(width);
+    expect(mobileLayout.overflow).toBeLessThanOrEqual(1);
+    expect(mobileLayout.documentWidth).toBeLessThanOrEqual(width);
+    expect(mobileLayout.controlHeights.every((height) => height >= 44)).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`mobile-${width}-channel-presentation.png`),
+      fullPage: true,
+    });
+  }
+});
+
+test("处理图转换节点生成派生通道并随 v11 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -898,7 +1757,7 @@ test("处理图转换节点生成派生通道并随 v9 工作区往返", async (
   await page.getByRole("button", { name: "通道" }).click();
   await expect(page.getByText(/基础 [1-9]\d*/)).toBeVisible();
   await expect(page.getByText("派生 1", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("数据通道列表").getByRole("button").filter({ hasText: "OUT 1" }))
+  await expect(page.getByLabel("数据通道列表").locator(".channel-row").filter({ hasText: "OUT 1" }))
     .toHaveCount(1);
 
   await page.getByRole("button", { name: "工作区" }).click();
@@ -915,7 +1774,7 @@ test("处理图转换节点生成派生通道并随 v9 工作区往返", async (
     schemaVersion: number;
     config: { processingGraph: ProcessingGraphConfig };
   };
-  expect(exported.schemaVersion).toBe(9);
+  expect(exported.schemaVersion).toBe(11);
   expect(exported.config.processingGraph).toMatchObject({
     enabled: true,
     nodes: [
@@ -940,7 +1799,7 @@ test("处理图转换节点生成派生通道并随 v9 工作区往返", async (
   expect(pageErrors).toEqual([]);
 });
 
-test("实时 RX 自动应答保持有界运行并随 v9 工作区往返", async ({ page }, testInfo) => {
+test("实时 RX 自动应答保持有界运行并随 v11 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -993,7 +1852,7 @@ test("实时 RX 自动应答保持有界运行并随 v9 工作区往返", async 
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 9,
+    schemaVersion: 11,
     config: {
       autoResponderRules: [
         {
@@ -1041,36 +1900,27 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
   await expect(page.locator(".attitude-panel .live-state")).toContainText("LIVE", {
     timeout: 5_000,
   });
-  const initialCanvas = await canvasScreenshotSignature(canvas);
+  const initialCanvas = await canvasScreenshotStats(canvas);
   expect(initialCanvas.width).toBeGreaterThan(400);
   expect(initialCanvas.height).toBeGreaterThan(200);
   expect(initialCanvas.bytes).toBeGreaterThan(10_000);
-  await expect
-    .poll(async () => (await canvasScreenshotSignature(canvas)).hash)
-    .not.toBe(initialCanvas.hash);
 
   const rollReadout = page.getByLabel("当前姿态值").locator("dd").first();
   await page.getByRole("button", { name: "冻结姿态显示" }).click();
   await expect(page.locator(".attitude-panel .live-state")).toContainText("HOLD");
   const frozenRoll = await rollReadout.textContent();
+  const frozenOrientation = await scene.getAttribute("data-rendered-orientation");
+  expect(frozenOrientation).not.toBeNull();
   await page.waitForTimeout(500);
   await expect(rollReadout).toHaveText(frozenRoll ?? "");
-  await expect
-    .poll(async () => {
-      const before = await canvasScreenshotSignature(canvas);
-      await page.waitForTimeout(120);
-      const after = await canvasScreenshotSignature(canvas);
-      return before.hash === after.hash;
-    })
-    .toBe(true);
-  const frozenCanvas = await canvasScreenshotSignature(canvas);
+  await expect(scene).toHaveAttribute("data-rendered-orientation", frozenOrientation ?? "");
 
   await page.getByRole("button", { name: "继续姿态显示" }).click();
   await expect(page.locator(".attitude-panel .live-state")).toContainText("LIVE");
   await expect.poll(async () => rollReadout.textContent()).not.toBe(frozenRoll);
   await expect
-    .poll(async () => (await canvasScreenshotSignature(canvas)).hash)
-    .not.toBe(frozenCanvas.hash);
+    .poll(async () => scene.getAttribute("data-rendered-orientation"))
+    .not.toBe(frozenOrientation);
 
   const mobileViewports = [
     { width: 390, height: 844 },
@@ -1110,6 +1960,95 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
 
   await page.screenshot({
     path: testInfo.outputPath("mobile-320-attitude.png"),
+    fullPage: true,
+  });
+  expect(pageErrors).toEqual([]);
+});
+
+test("通道监视显示有界统计并支持本地冻结与窄屏布局", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+
+  await page.setViewportSize({ width: 1_280, height: 800 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+  await page.getByRole("tab", { name: "监视" }).click();
+
+  const monitor = page.locator(".channel-monitor-panel");
+  const table = page.getByRole("table", { name: "通道实时统计" });
+  const firstRow = table
+    .getByRole("rowgroup", { name: "基础通道" })
+    .locator(".channel-monitor-data-row")
+    .first();
+  const currentValue = firstRow.locator(".channel-monitor-current-cell");
+  const sampleCount = firstRow.locator(".channel-monitor-samples-cell");
+  await expect(monitor.getByRole("heading", { name: "通道监视" })).toBeVisible();
+  await expect(table).toBeVisible();
+  await expect(firstRow).toBeVisible();
+  await expect
+    .poll(async () => Number.parseInt((await sampleCount.textContent()) ?? "0", 10))
+    .toBeGreaterThan(2);
+  await expect(table.getByRole("columnheader", { name: "当前" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "变化" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "均值" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "RMS" })).toBeVisible();
+
+  await page.getByRole("button", { name: "冻结通道监视" }).click();
+  await expect(monitor.locator(".live-state")).toContainText("HOLD");
+  const frozenValue = await currentValue.textContent();
+  const frozenSamples = await sampleCount.textContent();
+  await page.waitForTimeout(500);
+  await expect(currentValue).toHaveText(frozenValue ?? "");
+  await expect(sampleCount).toHaveText(frozenSamples ?? "");
+
+  await page.getByRole("button", { name: "继续通道监视" }).click();
+  await expect(monitor.locator(".live-state")).toContainText("LIVE");
+  await expect.poll(async () => currentValue.textContent()).not.toBe(frozenValue);
+  await expect
+    .poll(async () => Number.parseInt((await sampleCount.textContent()) ?? "0", 10))
+    .toBeGreaterThan(Number.parseInt(frozenSamples ?? "0", 10));
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-channel-monitor.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+  await expect(table.getByRole("columnheader", { name: "当前" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "变化" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "样本" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "最小" })).toBeHidden();
+  await expect(table.getByRole("columnheader", { name: "最大" })).toBeHidden();
+  await expect(table.getByRole("columnheader", { name: "均值" })).toBeHidden();
+  await expect(table.getByRole("columnheader", { name: "RMS" })).toBeHidden();
+  const mobileLayout = await monitor.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const targets = [...element.querySelectorAll<HTMLElement>("button")].map((target) => {
+      const targetRect = target.getBoundingClientRect();
+      return { width: targetRect.width, height: targetRect.height };
+    });
+    return {
+      left: rect.left,
+      right: rect.right,
+      documentWidth: document.documentElement.scrollWidth,
+      targets,
+    };
+  });
+  expect(mobileLayout.left).toBeGreaterThanOrEqual(0);
+  expect(mobileLayout.right).toBeLessThanOrEqual(390);
+  expect(mobileLayout.documentWidth).toBeLessThanOrEqual(390);
+  expect(mobileLayout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(
+    true,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-390-channel-monitor.png"),
     fullPage: true,
   });
   expect(pageErrors).toEqual([]);
@@ -1160,6 +2099,67 @@ test("有界命令历史与可取消周期发送形成完整工作流", async ({
   await expect(page.getByRole("dialog", { name: "命令历史" })).toContainText("<CR>");
 });
 
+test("发送栏自动校验尾按帧顺序发送并随 v11 工作区往返", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+
+  await page
+    .getByRole("group", { name: "发送格式" })
+    .getByRole("button", { name: "HEX" })
+    .click();
+  const checksum = page.getByRole("combobox", { name: "校验" });
+  await checksum.selectOption("crc16-modbus-le");
+  await page.getByRole("combobox", { name: "行尾", exact: true }).selectOption("lf");
+  await page
+    .getByRole("textbox", { name: "发送内容" })
+    .fill("31 32 33 34 35 36 37 38 39");
+  await expect(
+    page.getByLabel("命令模板包含 0 个变量，最终 12 字节，校验尾 37 4B"),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await page
+    .getByRole("group", { name: "接收显示格式" })
+    .getByRole("button", { name: "HEX" })
+    .click();
+  await expect(page.locator('.terminal-line[data-direction="tx"] code').last()).toHaveText(
+    "31 32 33 34 35 36 37 38 39 37 4B 0A",
+  );
+
+  await checksum.selectOption("none");
+  await page.getByRole("button", { name: "命令历史，1 条" }).click();
+  const history = page.getByRole("dialog", { name: "命令历史" });
+  await expect(history).toContainText("CRC16-MODBUS-LE");
+  await history.getByRole("button", { name: /31 32 33 34/ }).click();
+  await expect(checksum).toHaveValue("crc16-modbus-le");
+
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  await page.getByRole("textbox", { name: "工作区名称" }).fill("校验工作区");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出当前" }).click();
+  const download = await downloadPromise;
+  const downloadPath = testInfo.outputPath("checksum-workspace.json");
+  await download.saveAs(downloadPath);
+  const exported = JSON.parse(await readFile(downloadPath, "utf8")) as {
+    schemaVersion: number;
+    config: { commandChecksum: string };
+  };
+  expect(exported).toMatchObject({
+    schemaVersion: 11,
+    config: { commandChecksum: "crc16-modbus-le" },
+  });
+
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  await checksum.selectOption("none");
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  await page.getByLabel("导入工作区文件").setInputFiles(downloadPath);
+  await page.getByRole("button", { name: "校验工作区 (2) 模拟器 · FireWater" }).click();
+  await page.getByRole("button", { name: "放弃并切换" }).click();
+  await expect(checksum).toHaveValue("crc16-modbus-le");
+});
+
 test("Modbus RTU 构帧和单事务主站经统一链路工作且窄屏可操作", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -1172,6 +2172,7 @@ test("Modbus RTU 构帧和单事务主站经统一链路工作且窄屏可操作
   await page.goto("/");
   await page.getByRole("button", { name: "启动模拟" }).click();
   await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+  await page.getByRole("combobox", { name: "校验" }).selectOption("crc16-modbus-le");
   await page.getByRole("button", { name: "打开 Modbus RTU 构帧器" }).click();
   let builder = page.getByRole("dialog", { name: "Modbus RTU 构帧器" });
   await expect(builder.getByLabel("Modbus RTU 帧预览")).toHaveText(
@@ -1183,6 +2184,7 @@ test("Modbus RTU 构帧和单事务主站经统一链路工作且窄屏可操作
     "01 03 00 00 00 01 84 0A",
   );
   await expect(page.getByRole("combobox", { name: "行尾", exact: true })).toHaveValue("none");
+  await expect(page.getByRole("combobox", { name: "校验" })).toHaveValue("none");
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await page
@@ -1400,6 +2402,37 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
     )
     .toBeLessThanOrEqual(0);
   await expect(page.getByRole("heading", { name: "实时波形" })).toBeVisible();
+  await page.getByRole("button", { name: "独立" }).click();
+  const waveformScaleLayout = await page.locator(".waveform-scale-tools").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const controls = Array.from(element.querySelectorAll("button, select")).map((control) => {
+      const controlRect = control.getBoundingClientRect();
+      return { width: controlRect.width, height: controlRect.height };
+    });
+    return {
+      left: rect.left,
+      right: rect.right,
+      overflow: element.scrollWidth - element.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+      controls,
+    };
+  });
+  expect(waveformScaleLayout.left).toBeGreaterThanOrEqual(0);
+  expect(waveformScaleLayout.right).toBeLessThanOrEqual(waveformScaleLayout.viewportWidth);
+  expect(waveformScaleLayout.overflow).toBeLessThanOrEqual(1);
+  expect(waveformScaleLayout.documentWidth).toBeLessThanOrEqual(
+    waveformScaleLayout.viewportWidth,
+  );
+  expect(
+    waveformScaleLayout.controls.every(
+      (control) => control.width >= 44 && control.height >= 44,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-independent-scales.png"),
+    fullPage: true,
+  });
   const mobilePlotBounds = await page.locator(".waveform-chart .u-over").boundingBox();
   expect(mobilePlotBounds).not.toBeNull();
   if (mobilePlotBounds) {
@@ -1430,6 +2463,7 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   await expect(measurementButton).toBeEnabled({ timeout: 5_000 });
   await measurementButton.click();
   await expect(page.getByLabel("波形测量结果")).toBeVisible();
+  await expect(page.getByLabel("A/B 区间统计")).toBeVisible();
   const measurementBounds = await page.locator(".waveform-measurement-strip").boundingBox();
   expect(measurementBounds).not.toBeNull();
   expect(measurementBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
@@ -1633,6 +2667,29 @@ test("中窄屏关闭侧栏后活动导航保持可操作", async ({ page }) => 
     )
     .toBeLessThanOrEqual(0);
 
+  const sendComposerLayout = await page.locator(".send-main-row").evaluate((element) => {
+    const options = element.querySelector<HTMLElement>(".send-options");
+    const payload = element.querySelector<HTMLElement>(".send-payload-field");
+    if (!options || !payload) {
+      return null;
+    }
+    const optionsRect = options.getBoundingClientRect();
+    const payloadRect = payload.getBoundingClientRect();
+    return {
+      optionsBottom: optionsRect.bottom,
+      optionsScrollWidth: options.scrollWidth,
+      optionsWidth: options.clientWidth,
+      payloadTop: payloadRect.top,
+    };
+  });
+  expect(sendComposerLayout).not.toBeNull();
+  expect(sendComposerLayout?.optionsScrollWidth ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(
+    (sendComposerLayout?.optionsWidth ?? 0) + 1,
+  );
+  expect(sendComposerLayout?.optionsBottom ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(
+    sendComposerLayout?.payloadTop ?? 0,
+  );
+
   await page.getByRole("button", { name: "通道" }).click();
   await expect(page.getByRole("heading", { name: "数据通道" })).toBeVisible();
 });
@@ -1660,12 +2717,41 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
 
   await page.getByRole("button", { name: "启动模拟" }).click();
   await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await page.getByRole("button", { name: "设置 Y 轴量程" }).click();
+  const rangeForm = page.getByRole("form", { name: "Y 轴量程设置" });
+  await expect(rangeForm).toBeVisible();
+  const rangeLayout = await rangeForm.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const targets = [...element.querySelectorAll("button, input")].map((target) => {
+      const targetRect = target.getBoundingClientRect();
+      return { width: targetRect.width, height: targetRect.height };
+    });
+    return {
+      left: rect.left,
+      right: rect.right,
+      documentWidth: document.documentElement.scrollWidth,
+      targets,
+    };
+  });
+  expect(rangeLayout.left).toBeGreaterThanOrEqual(0);
+  expect(rangeLayout.right).toBeLessThanOrEqual(320);
+  expect(rangeLayout.documentWidth).toBeLessThanOrEqual(320);
+  expect(rangeLayout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(
+    true,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-320-waveform-range.png"),
+    fullPage: true,
+  });
+  await page.keyboard.press("Escape");
+  await expect(rangeForm).toBeHidden();
   const measurementButton = page.getByRole("button", { name: "开启波形测量" });
   await expect(measurementButton).toBeEnabled({ timeout: 5_000 });
   await measurementButton.click();
   const measurementStrip = page.locator(".waveform-measurement-strip");
   await expect(measurementStrip).toBeVisible();
   await expect(page.getByLabel("波形测量结果")).not.toContainText(/NaN|Infinity/);
+  await expect(page.getByLabel("A/B 区间统计")).not.toContainText(/NaN|Infinity/);
 
   const measurementLayout = await measurementStrip.evaluate((element) => {
     const rect = element.getBoundingClientRect();
@@ -1693,6 +2779,23 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
     path: testInfo.outputPath("mobile-320-measurement.png"),
     fullPage: true,
   });
+  const intervalStatistics = page.getByLabel("A/B 区间统计");
+  const statisticsOverflow = await intervalStatistics.evaluate(
+    (element) => element.scrollWidth - element.clientWidth,
+  );
+  expect(statisticsOverflow).toBeGreaterThan(0);
+  await intervalStatistics.evaluate((element) => element.scrollTo({ left: element.scrollWidth }));
+  const scrolledStatistics = await intervalStatistics.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const lastItemBounds = element.lastElementChild?.getBoundingClientRect();
+    return {
+      scrollLeft: element.scrollLeft,
+      lastItemVisible:
+        lastItemBounds !== undefined && lastItemBounds.right <= bounds.right + 1,
+    };
+  });
+  expect(scrolledStatistics.scrollLeft).toBeGreaterThan(0);
+  expect(scrolledStatistics.lastItemVisible).toBe(true);
 });
 
 test("390 px 扩展授权控件保持触控尺寸和长文本省略", async ({ page }) => {
@@ -1811,7 +2914,7 @@ test("命名工作区可保存、切换、导出并重新导入", async ({ page 
   };
   expect(exported).toMatchObject({
     format: "vofa-ultra.workspace",
-    schemaVersion: 9,
+    schemaVersion: 11,
     name: "台架导出草稿",
     config: { protocol: "justfloat" },
   });
@@ -1898,10 +3001,9 @@ async function clippedVisibleHeight(locator: Locator): Promise<number> {
   });
 }
 
-async function canvasScreenshotSignature(locator: Locator): Promise<{
+async function canvasScreenshotStats(locator: Locator): Promise<{
   width: number;
   height: number;
-  hash: number;
   bytes: number;
 }> {
   const dimensions = await locator.evaluate((element) => {
@@ -1909,17 +3011,12 @@ async function canvasScreenshotSignature(locator: Locator): Promise<{
     return { width: canvas.width, height: canvas.height };
   });
   const screenshot = await locator.screenshot({ animations: "disabled" });
-  let hash = 2_166_136_261;
-  for (const byte of screenshot) {
-    hash ^= byte;
-    hash = Math.imul(hash, 16_777_619);
-  }
-  return { ...dimensions, hash: hash >>> 0, bytes: screenshot.byteLength };
+  return { ...dimensions, bytes: screenshot.byteLength };
 }
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({
-    version: 10,
+    version: 12,
     state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
   });
   await page.addInitScript((value) => {
@@ -1928,7 +3025,7 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("button", { name: "工作区" }).click();
-  await expect(page.getByRole("alert")).toContainText("版本 10 的较新配置");
+  await expect(page.getByRole("alert")).toContainText("版本 12 的较新配置");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();
@@ -1948,11 +3045,22 @@ test("浏览器预览显示会话状态但不开放文件操作", async ({ page 
   await expect(page.getByRole("button", { name: "开始录制" })).toBeDisabled();
   await expect(page.getByText("仅桌面应用支持文件录制")).toBeVisible();
   await expect(page.getByLabel("录制状态")).toContainText("未录制");
+  const recordingDirectory = page.getByRole("region", { name: "记录目录" });
+  await expect(recordingDirectory).toContainText("系统默认");
+  await expect(
+    recordingDirectory.getByRole("button", { name: "选择记录目录" }),
+  ).toBeDisabled();
+  await expect(
+    recordingDirectory.getByRole("button", { name: "恢复默认记录目录" }),
+  ).toBeDisabled();
 
   await page.getByRole("tab", { name: "数值" }).click();
   await expect(page.getByRole("button", { name: "开始数值记录" })).toBeDisabled();
   await expect(page.getByText("仅桌面应用支持数值文件记录")).toBeVisible();
   await expect(page.getByLabel("数值记录状态")).toContainText("未记录数值");
+  await expect(page.getByRole("region", { name: "记录目录" })).toContainText(
+    "系统默认",
+  );
 
   await page.getByRole("tab", { name: "回放" }).click();
   await expect(page.getByRole("button", { name: "打开捕获文件" })).toBeDisabled();
@@ -2115,9 +3223,63 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
 
   await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
   await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
+  const deviceInfo = page.getByRole("group", { name: "已选端口信息" });
+  await expect(deviceInfo).toContainText("Telemetry");
+  await expect(deviceInfo).toContainText("Acme Devices");
+  await expect(deviceInfo).toContainText("1234:5678");
+  await expect(deviceInfo).toContainText("唯一身份");
+  await expect(deviceInfo).not.toContainText("DEVICE-001");
+
+  const desktopViewport = page.viewportSize();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await deviceInfo.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: testInfo.outputPath("serial-discovery-mobile.png"),
+    fullPage: false,
+  });
+  if (desktopViewport) {
+    await page.setViewportSize(desktopViewport);
+  }
+
+  const portListCalls = await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { portListCalls: number };
+    };
+    return testWindow.__TAURI_TEST__.portListCalls;
+  });
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect.poll(async () => page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: { portListCalls: number };
+    };
+    return testWindow.__TAURI_TEST__.portListCalls;
+  })).toBeGreaterThan(portListCalls);
+
   await page.getByRole("checkbox", { name: "自动重连" }).check();
   await page.getByRole("button", { name: "连接设备" }).click();
   await expect(page.getByText("自动重连已待命")).toBeVisible();
+
+  await page.getByRole("checkbox", { name: "DTR" }).uncheck();
+  await page.getByRole("checkbox", { name: "RTS" }).uncheck();
+  await expect(page.getByRole("checkbox", { name: "DTR" })).not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "RTS" })).not.toBeChecked();
+  expect(
+    await page.evaluate(() => {
+      const testWindow = window as unknown as {
+        __TAURI_TEST__: {
+          controlLineCalls: Array<{
+            generation: number;
+            line: "dtr" | "rts";
+            asserted: boolean;
+          }>;
+        };
+      };
+      return testWindow.__TAURI_TEST__.controlLineCalls;
+    }),
+  ).toEqual([
+    { generation: 1, line: "dtr", asserted: false },
+    { generation: 1, line: "rts", asserted: false },
+  ]);
 
   await page.evaluate(() => {
     const testWindow = window as unknown as {
@@ -2139,10 +3301,92 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
   await expect(page.getByText("COM19", { exact: true })).toBeVisible();
   expect(pageErrors).toEqual([]);
 
+  await deviceInfo.scrollIntoViewIfNeeded();
   await page.screenshot({
     path: testInfo.outputPath("serial-recovery.png"),
     fullPage: true,
   });
+});
+
+test("桌面原始捕获与数值记录共用所选会话目录", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await installTauriSerialMock(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "连接设备" }).click();
+  await expect(page.getByText("COM3 已连接")).toBeVisible();
+  await page.getByRole("button", { name: "记录", exact: true }).click();
+
+  let directory = page.getByRole("region", { name: "记录目录" });
+  let selectDirectory = directory.getByRole("button", { name: "选择记录目录" });
+  await selectDirectory.click();
+  await expect(directory.getByRole("status")).toContainText("系统默认");
+  await expect(selectDirectory).toBeEnabled();
+  expect(
+    await page.evaluate(() => {
+      const testWindow = window as unknown as {
+        __TAURI_TEST__: {
+          recordingDirectoryDialogCalls: number;
+          recordingStartRequests: unknown[];
+        };
+      };
+      return {
+        dialogCalls: testWindow.__TAURI_TEST__.recordingDirectoryDialogCalls,
+        startRequests: testWindow.__TAURI_TEST__.recordingStartRequests.length,
+      };
+    }),
+  ).toEqual({ dialogCalls: 1, startRequests: 0 });
+
+  await selectDirectory.click();
+  await expect(directory.getByRole("status")).toContainText("D:\\sessions");
+  await page.getByRole("button", { name: "开始录制" }).click();
+  await expect(page.getByLabel("录制状态")).toContainText("正在录制");
+
+  await page.getByRole("tab", { name: "数值" }).click();
+  directory = page.getByRole("region", { name: "记录目录" });
+  selectDirectory = directory.getByRole("button", { name: "选择记录目录" });
+  await expect(directory.getByRole("status")).toContainText("D:\\sessions");
+  await expect(selectDirectory).toBeDisabled();
+  await page.getByRole("button", { name: "开始数值记录" }).click();
+  await expect(page.getByLabel("数值记录状态")).toContainText("正在记录数值");
+
+  const requests = await page.evaluate(() => {
+    const testWindow = window as unknown as {
+      __TAURI_TEST__: {
+        recordingStartRequests: Array<{
+          command: string;
+          request: Record<string, unknown>;
+        }>;
+      };
+    };
+    return testWindow.__TAURI_TEST__.recordingStartRequests;
+  });
+  expect(requests).toHaveLength(2);
+  expect(requests).toEqual([
+    {
+      command: "start_capture",
+      request: expect.objectContaining({
+        source: "serial",
+        protocol: "firewater",
+        destinationDirectory: "D:\\sessions",
+      }),
+    },
+    {
+      command: "start_numeric_log",
+      request: {
+        source: "serial",
+        protocol: "firewater",
+        destinationDirectory: "D:\\sessions",
+      },
+    },
+  ]);
+  expect(pageErrors).toEqual([]);
 });
 
 test("桌面实时链路批量记录解析后的数值 CSV", async ({ page }) => {
@@ -2584,10 +3828,12 @@ async function installTauriSerialMock(page: Page): Promise<void> {
     const callbacks = new Map<number, Callback>();
     const listeners = new Map<string, number[]>();
     let nextCallbackId = 1;
+    let portListCalls = 0;
     let ports = [
       {
         name: "COM3",
         kind: "usb",
+        manufacturer: "Acme Devices",
         product: "Telemetry",
         serialNumber: "DEVICE-001",
         vendorId: 0x1234,
@@ -2614,6 +3860,17 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       errorCode: undefined as string | undefined,
       message: "",
     };
+    let captureState = {
+      status: "idle",
+      sessionId: 0,
+      revision: 0,
+      formatVersion: 2,
+      path: "",
+      dataBytes: 0,
+      recordCount: 0,
+      markerCount: 0,
+      message: "",
+    };
     let numericLogState = {
       status: "idle",
       sessionId: 0,
@@ -2624,6 +3881,16 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       message: "",
     };
     const numericLogBatches: unknown[][] = [];
+    const recordingStartRequests: Array<{
+      command: string;
+      request: Record<string, unknown>;
+    }> = [];
+    const controlLineCalls: Array<{
+      generation: number;
+      line: "dtr" | "rts";
+      asserted: boolean;
+    }> = [];
+    let recordingDirectoryDialogCalls = 0;
     const closeOperations: string[] = [];
     let destroyCount = 0;
 
@@ -2657,6 +3924,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         return undefined;
       }
       if (command === "list_serial_ports") {
+        portListCalls += 1;
         return ports.map((port) => ({ ...port }));
       }
       if (command === "get_serial_state") {
@@ -2666,6 +3934,11 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         return { ...fileSendState };
       }
       if (command === "plugin:dialog|open") {
+        const options = args?.options as { directory?: boolean } | undefined;
+        if (options?.directory) {
+          recordingDirectoryDialogCalls += 1;
+          return recordingDirectoryDialogCalls === 1 ? null : "D:\\sessions";
+        }
         return "C:\\firmware\\firmware.bin";
       }
       if (command === "connect_serial") {
@@ -2710,6 +3983,22 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         };
         emitSerialState();
         return { ...serialState };
+      }
+      if (command === "set_serial_control_line") {
+        const generation = Number(args?.generation);
+        const line = String(args?.line);
+        const asserted = args?.asserted;
+        if (serialState.status !== "connected") {
+          throw new Error("串口尚未连接");
+        }
+        if (generation !== serialState.generation) {
+          throw new Error("串口连接已发生变化");
+        }
+        if ((line !== "dtr" && line !== "rts") || typeof asserted !== "boolean") {
+          throw new Error("串口控制线参数无效");
+        }
+        controlLineCalls.push({ generation, line, asserted });
+        return undefined;
       }
       if (command === "start_serial_file_send") {
         fileSendState = {
@@ -2775,26 +4064,38 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         return true;
       }
       if (command === "get_capture_state") {
-        return {
-          status: "idle",
-          sessionId: 0,
-          revision: 0,
+        return { ...captureState };
+      }
+      if (command === "start_capture") {
+        const request = (args?.request as Record<string, unknown>) ?? {};
+        recordingStartRequests.push({ command, request: { ...request } });
+        const directory = String(request.destinationDirectory ?? "C:\\captures");
+        captureState = {
+          status: "recording",
+          sessionId: 7,
+          revision: captureState.revision + 1,
           formatVersion: 2,
-          path: "",
+          path: `${directory}\\capture.vucap`,
           dataBytes: 0,
           recordCount: 0,
           markerCount: 0,
+          message: "",
         };
+        emit("capture://state", { ...captureState });
+        return { ...captureState };
       }
       if (command === "get_numeric_log_state") {
         return { ...numericLogState };
       }
       if (command === "start_numeric_log") {
+        const request = (args?.request as Record<string, unknown>) ?? {};
+        recordingStartRequests.push({ command, request: { ...request } });
+        const directory = String(request.destinationDirectory ?? "C:\\captures");
         numericLogState = {
           status: "recording",
           sessionId: 17,
           revision: numericLogState.revision + 1,
-          path: "C:\\captures\\numeric.csv",
+          path: `${directory}\\numeric.csv.part`,
           outputBytes: 116,
           sampleCount: 0,
           message: "",
@@ -2821,6 +4122,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           ...numericLogState,
           status: "idle",
           revision: numericLogState.revision + 1,
+          path: numericLogState.path.replace(/\.part$/, ""),
           message: "",
         };
         emit("numeric-log://state", { ...numericLogState });
@@ -2886,12 +4188,23 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       __TAURI_EVENT_PLUGIN_INTERNALS__: Record<string, unknown>;
       __TAURI_TEST__: {
         closeOperations: string[];
+        controlLineCalls: Array<{
+          generation: number;
+          line: "dtr" | "rts";
+          asserted: boolean;
+        }>;
         destroyCount: number;
         emitNumericData(): void;
         loseDevice(): void;
         requestClose(): Promise<void>;
+        recordingDirectoryDialogCalls: number;
+        recordingStartRequests: Array<{
+          command: string;
+          request: Record<string, unknown>;
+        }>;
         restoreDevice(): void;
         numericLogBatches: unknown[][];
+        portListCalls: number;
       };
     };
     testWindow.__TAURI_INTERNALS__ = {
@@ -2919,10 +4232,18 @@ async function installTauriSerialMock(page: Page): Promise<void> {
     };
     testWindow.__TAURI_TEST__ = {
       closeOperations,
+      controlLineCalls,
       get destroyCount() {
         return destroyCount;
       },
       numericLogBatches,
+      get portListCalls() {
+        return portListCalls;
+      },
+      get recordingDirectoryDialogCalls() {
+        return recordingDirectoryDialogCalls;
+      },
+      recordingStartRequests,
       emitNumericData: () => {
         emit("serial://data", {
           data: "MSwyCg==",
@@ -2958,6 +4279,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
           {
             name: "COM19",
             kind: "usb",
+            manufacturer: "Acme Devices",
             product: "Telemetry",
             serialNumber: "DEVICE-001",
             vendorId: 0x1234,

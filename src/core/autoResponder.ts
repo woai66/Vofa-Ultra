@@ -333,6 +333,7 @@ export class AutoResponderRuntime {
         value: compiled.responseTemplate.source,
         mode: compiled.responseTemplate.mode,
         lineEnding: compiled.rule.lineEnding,
+        checksumMode: "none",
         bytes: Uint8Array.from(rendered.bytes),
         variableCount: rendered.variableCount,
       };

@@ -96,6 +96,67 @@ describe("AttitudePanel", () => {
     });
   });
 
+  it("下拉显示活动协议别名但自动映射仍优先使用 parser 原名", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState({
+      channelPresentations: {
+        firewater: {
+          "channel-0": { alias: "实时姿态 A", unit: "deg", color: null },
+        },
+        justfloat: {
+          "channel-0": { alias: "回放姿态 A", unit: "rad", color: null },
+        },
+      },
+    });
+    render(<AttitudePanel theme="dark" />);
+
+    const configuration = screen.getByRole("dialog", { name: "姿态通道配置" });
+    expect(
+      within(configuration).getAllByRole("option", { name: "实时姿态 A" }),
+    ).toHaveLength(3);
+    await user.click(screen.getByRole("button", { name: "自动映射姿态通道" }));
+    expect(useWorkbenchStore.getState().attitudeConfig.channels).toMatchObject({
+      roll: "channel-0",
+      pitch: "channel-1",
+      yaw: "channel-2",
+    });
+
+    act(() => {
+      useWorkbenchStore.setState({
+        replayStatus: "paused",
+        replaySessionId: 7,
+        replayHeader: {
+          source: "simulator",
+          protocol: "justfloat",
+          serialConfig: useWorkbenchStore.getState().serialConfig,
+          startedAtUnixMs: 1_000,
+          timeUnit: "microseconds",
+        },
+      });
+    });
+    expect(
+      within(configuration).getAllByRole("option", { name: "回放姿态 A" }),
+    ).toHaveLength(3);
+  });
+
+  it("首帧到达前也显示工作区保存的基础通道别名", () => {
+    useWorkbenchStore.setState({
+      channels: [],
+      channelPresentations: {
+        firewater: {
+          "channel-0": { alias: "待机姿态 A", unit: "deg", color: null },
+        },
+        justfloat: {},
+      },
+    });
+    render(<AttitudePanel theme="dark" />);
+
+    const configuration = screen.getByRole("dialog", { name: "姿态通道配置" });
+    expect(
+      within(configuration).getAllByRole("option", { name: "待机姿态 A" }),
+    ).toHaveLength(3);
+  });
+
   it("冻结保持读数，归零改变显示四元数，视角复位更新 token", async () => {
     const user = userEvent.setup();
     const config = completeEulerConfig();
