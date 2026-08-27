@@ -331,7 +331,7 @@ describe("Sidebar 串口恢复界面", () => {
     ]);
   });
 
-  it("始终提供常用波特率选项并立即应用选择", () => {
+  it("已有波特率时仍提供全部常用选项并立即应用选择", () => {
     useWorkbenchStore.setState((state) => ({
       connectionStatus: "disconnected",
       serialConfig: { ...state.serialConfig, baudRate: 115_200 },
@@ -346,17 +346,20 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    const baud_rate = screen.getByRole("combobox", { name: "波特率" });
+    const baud_rate = screen.getByRole("textbox", { name: "波特率" });
+    const baud_rate_presets = screen.getByRole("combobox", {
+      name: "选择常用波特率",
+    });
     expect(baud_rate).toHaveValue("115200");
-    expect(within(baud_rate).getByRole("option", { name: "9600" })).toBeInTheDocument();
-    expect(within(baud_rate).getByRole("option", { name: "自定义..." })).toBeInTheDocument();
+    expect(within(baud_rate_presets).getByRole("option", { name: "9600" })).toBeInTheDocument();
+    expect(within(baud_rate_presets).getAllByRole("option")).toHaveLength(14);
 
-    fireEvent.change(baud_rate, { target: { value: "9600" } });
+    fireEvent.change(baud_rate_presets, { target: { value: "9600" } });
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(9_600);
-    expect(screen.queryByRole("textbox", { name: "自定义波特率" })).not.toBeInTheDocument();
+    expect(baud_rate).toHaveValue("9600");
   });
 
-  it("用无步进文本框提交自定义波特率并可切回预设", () => {
+  it("用无步进文本框提交自定义波特率并可从下拉切回预设", () => {
     useWorkbenchStore.setState((state) => ({
       connectionStatus: "disconnected",
       serialConfig: { ...state.serialConfig, baudRate: 115_200 },
@@ -371,25 +374,30 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    const baud_rate = screen.getByRole("combobox", { name: "波特率" });
-    fireEvent.change(baud_rate, { target: { value: "custom" } });
-    const custom_baud_rate = screen.getByRole("textbox", {
-      name: "自定义波特率",
-    }) as HTMLInputElement;
-    expect(custom_baud_rate).toHaveAttribute("type", "text");
-    expect(custom_baud_rate).toHaveAttribute("inputmode", "numeric");
+    const baud_rate = screen.getByRole("textbox", { name: "波特率" }) as HTMLInputElement;
+    expect(baud_rate).toHaveAttribute("type", "text");
+    expect(baud_rate).toHaveAttribute("inputmode", "numeric");
 
-    fireEvent.change(custom_baud_rate, { target: { value: "250000" } });
-    fireEvent.wheel(custom_baud_rate, { deltaY: -100 });
-    expect(custom_baud_rate).toHaveValue("250000");
-    fireEvent.keyDown(custom_baud_rate, { key: "Enter" });
+    fireEvent.change(baud_rate, { target: { value: "250000" } });
+    fireEvent.wheel(baud_rate, { deltaY: -100 });
+    expect(baud_rate).toHaveValue("250000");
+    fireEvent.keyDown(baud_rate, { key: "Enter" });
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(250_000);
 
-    fireEvent.change(screen.getByRole("combobox", { name: "波特率" }), {
+    fireEvent.change(baud_rate, { target: { value: "12000000" } });
+    fireEvent.keyDown(baud_rate, { key: "Enter" });
+    expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(12_000_000);
+
+    fireEvent.change(baud_rate, { target: { value: "12000001" } });
+    fireEvent.keyDown(baud_rate, { key: "Escape" });
+    expect(baud_rate).toHaveValue("12000000");
+    expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(12_000_000);
+
+    fireEvent.change(screen.getByRole("combobox", { name: "选择常用波特率" }), {
       target: { value: "115200" },
     });
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(115_200);
-    expect(screen.queryByRole("textbox", { name: "自定义波特率" })).not.toBeInTheDocument();
+    expect(baud_rate).toHaveValue("115200");
   });
 
   it("失焦时拒绝非法自定义波特率并恢复当前配置", () => {
@@ -407,14 +415,33 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    const custom_baud_rate = screen.getByRole("textbox", { name: "自定义波特率" });
-    fireEvent.change(custom_baud_rate, { target: { value: "0" } });
-    expect(custom_baud_rate).toHaveAttribute("aria-invalid", "true");
-    fireEvent.blur(custom_baud_rate);
+    const baud_rate = screen.getByRole("textbox", { name: "波特率" });
+    fireEvent.change(baud_rate, { target: { value: "0" } });
+    expect(baud_rate).toHaveAttribute("aria-invalid", "true");
+    fireEvent.blur(baud_rate);
 
-    expect(custom_baud_rate).toHaveValue("250000");
-    expect(custom_baud_rate).toHaveAttribute("aria-invalid", "false");
+    expect(baud_rate).toHaveValue("250000");
+    expect(baud_rate).toHaveAttribute("aria-invalid", "false");
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(250_000);
+  });
+
+  it("连接期间同时锁定波特率输入和常用值下拉", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      serialConfig: { ...state.serialConfig, baudRate: 115_200 },
+      serialRecovery: { ...state.serialRecovery, phase: "armed" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("textbox", { name: "波特率" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "选择常用波特率" })).toBeDisabled();
   });
 
   it("打开桌面串口连接面板时请求后台刷新", () => {

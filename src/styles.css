@@ -990,16 +990,60 @@ textarea:disabled {
   font-weight: 600;
 }
 
-.baud-rate-custom-field {
+.baud-rate-field {
   display: grid;
   gap: 6px;
 }
 
-.baud-rate-custom-field input[aria-invalid="true"] {
+.baud-rate-combobox {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 36px;
+}
+
+.baud-rate-combobox > input {
+  border-radius: 5px 0 0 5px;
+}
+
+.baud-rate-combobox > input[aria-invalid="true"] {
   border-color: var(--danger);
 }
 
-.baud-rate-custom-field .field-hint {
+.baud-rate-preset-control {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.baud-rate-preset-control select {
+  height: 34px;
+  padding: 0;
+  border-left: 0;
+  border-radius: 0 5px 5px 0;
+  appearance: none;
+  color: transparent;
+  cursor: pointer;
+}
+
+.baud-rate-preset-control select option {
+  background: var(--surface-1);
+  color: var(--text);
+}
+
+.baud-rate-preset-control svg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  color: var(--text-muted);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.baud-rate-preset-control select:disabled + svg {
+  opacity: 0.48;
+}
+
+.baud-rate-field .field-hint {
   color: var(--text-subtle);
   font-size: 10px;
   line-height: 1.4;

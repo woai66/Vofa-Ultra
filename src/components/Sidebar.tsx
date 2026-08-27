@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import {
   Cable,
   Check,
+  ChevronDown,
   CircleCheck,
   CircleStop,
   Download,
@@ -76,7 +77,6 @@ const ExtensionPanel = lazy(() =>
   import("./ExtensionPanel").then(({ ExtensionPanel }) => ({ default: ExtensionPanel })),
 );
 
-const CUSTOM_BAUD_RATE_VALUE = "custom";
 const MIN_BAUD_RATE = 1;
 const MAX_BAUD_RATE = 12_000_000;
 
@@ -94,93 +94,91 @@ interface BaudRateFieldProps {
 }
 
 function BaudRateField({ value, disabled, onChange }: BaudRateFieldProps) {
-  const [customMode, setCustomMode] = useState(() => !isPresetBaudRate(value));
-  const [customValue, setCustomValue] = useState(String(value));
-  const parsedCustomValue = parseBaudRate(customValue);
+  const [draftValue, setDraftValue] = useState(String(value));
+  const parsedDraftValue = parseBaudRate(draftValue);
 
   useEffect(() => {
-    setCustomValue(String(value));
-    setCustomMode(!isPresetBaudRate(value));
+    setDraftValue(String(value));
   }, [value]);
 
-  const commitCustomValue = () => {
-    const parsed = parseBaudRate(customValue);
+  const commitDraftValue = () => {
+    const parsed = parseBaudRate(draftValue);
     if (parsed === null) {
-      setCustomValue(String(value));
+      setDraftValue(String(value));
       return;
     }
-    if (isPresetBaudRate(parsed)) {
-      setCustomMode(false);
-    }
+    setDraftValue(String(parsed));
     if (parsed !== value) {
       onChange(parsed);
     }
   };
 
   return (
-    <>
-      <label className="field-label" htmlFor="baud-rate-preset">
+    <div className="baud-rate-field">
+      <label className="field-label" htmlFor="baud-rate">
         波特率
       </label>
-      <select
-        id="baud-rate-preset"
-        value={customMode ? CUSTOM_BAUD_RATE_VALUE : String(value)}
-        disabled={disabled}
-        onChange={(event) => {
-          if (event.target.value === CUSTOM_BAUD_RATE_VALUE) {
-            setCustomValue(String(value));
-            setCustomMode(true);
-            return;
-          }
-          const baudRate = Number(event.target.value);
-          setCustomMode(false);
-          setCustomValue(String(baudRate));
-          onChange(baudRate);
-        }}
-      >
-        {BAUD_RATES.map((rate) => (
-          <option key={rate} value={rate}>
-            {rate}
-          </option>
-        ))}
-        <option value={CUSTOM_BAUD_RATE_VALUE}>自定义...</option>
-      </select>
-      {customMode && (
-        <label className="baud-rate-custom-field">
-          <span className="field-label">自定义波特率</span>
-          <input
-            aria-label="自定义波特率"
-            aria-describedby="baud-rate-custom-hint"
-            aria-invalid={parsedCustomValue === null}
-            type="text"
-            inputMode="numeric"
-            pattern="[0-9]*"
-            maxLength={8}
-            autoFocus
-            autoComplete="off"
-            spellCheck={false}
-            value={customValue}
+      <div className="baud-rate-combobox">
+        <input
+          id="baud-rate"
+          name="baud-rate"
+          aria-describedby="baud-rate-hint"
+          aria-invalid={parsedDraftValue === null}
+          type="text"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          maxLength={8}
+          autoComplete="off"
+          spellCheck={false}
+          value={draftValue}
+          disabled={disabled}
+          onChange={(event) => setDraftValue(event.target.value)}
+          onBlur={commitDraftValue}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commitDraftValue();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              setDraftValue(String(value));
+            }
+          }}
+        />
+        <span className="baud-rate-preset-control">
+          <select
+            id="baud-rate-preset"
+            name="baud-rate-preset"
+            aria-label="选择常用波特率"
+            title="选择常用波特率"
+            value={isPresetBaudRate(value) ? String(value) : ""}
             disabled={disabled}
-            onChange={(event) => setCustomValue(event.target.value)}
-            onBlur={commitCustomValue}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                commitCustomValue();
-              } else if (event.key === "Escape") {
-                setCustomValue(String(value));
-                if (isPresetBaudRate(value)) {
-                  setCustomMode(false);
-                }
+            onChange={(event) => {
+              const baudRate = Number(event.target.value);
+              setDraftValue(String(baudRate));
+              if (baudRate !== value) {
+                onChange(baudRate);
               }
             }}
-          />
-          <span className="field-hint" id="baud-rate-custom-hint">
-            请输入 1 到 12000000 之间的整数
-          </span>
-        </label>
-      )}
-    </>
+          >
+            <option value="" disabled>
+              常用波特率
+            </option>
+            {BAUD_RATES.map((rate) => (
+              <option key={rate} value={rate}>
+                {rate}
+              </option>
+            ))}
+          </select>
+          <ChevronDown aria-hidden="true" size={15} />
+        </span>
+      </div>
+      <span
+        className={parsedDraftValue === null ? "field-hint" : "sr-only"}
+        id="baud-rate-hint"
+      >
+        请输入 1 到 12000000 之间的整数
+      </span>
+    </div>
   );
 }
 
