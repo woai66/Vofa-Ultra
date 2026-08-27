@@ -362,6 +362,36 @@ describe("Sidebar 串口恢复界面", () => {
     ]);
   });
 
+  it("仅在选中可用串口时启用连接动作", () => {
+    const refreshPorts = vi.fn().mockResolvedValue(undefined);
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      ports: [{ name: "COM4", kind: "usb", product: "Available Adapter" }],
+      serialConfig: { ...state.serialConfig, portName: "COM3" },
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+      refreshPorts,
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const connectButton = screen.getByRole("button", { name: "连接设备" });
+    expect(connectButton).toBeDisabled();
+    expect(connectButton).toHaveAttribute(
+      "title",
+      "COM3 当前不可用，请刷新或选择其他串口",
+    );
+
+    fireEvent.change(screen.getByLabelText("串口设备"), { target: { value: "COM4" } });
+    expect(connectButton).toBeEnabled();
+    expect(connectButton).not.toHaveAttribute("title");
+  });
+
   it("已有波特率时仍提供全部常用选项并立即应用选择", () => {
     useWorkbenchStore.setState((state) => ({
       connectionStatus: "disconnected",

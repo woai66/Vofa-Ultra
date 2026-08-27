@@ -350,6 +350,12 @@ function ConnectionPanel() {
     const selectedPort = ports.find((port) => port.name === config.portName);
     return selectedPort ? presentSerialPort(selectedPort) : null;
   }, [config.portName, ports]);
+  const serialConnectUnavailable =
+    source === "serial" && selectedPortPresentation === null;
+  const primaryActionDisabled =
+    isCancellingSerialConnection ||
+    (!canCancelConnection &&
+      (isBusy || (!isConnected && serialConnectUnavailable)));
 
   useEffect(() => {
     if (isNativeRuntime && source === "serial") {
@@ -775,7 +781,14 @@ function ConnectionPanel() {
           className="primary-button connect-button"
           type="button"
           data-action={showCancelAction ? "cancel" : "primary"}
-          disabled={isCancellingSerialConnection || (!canCancelConnection && isBusy)}
+          disabled={primaryActionDisabled}
+          title={
+            !isConnected && !canCancelConnection && serialConnectUnavailable
+              ? config.portName
+                ? `${config.portName} 当前不可用，请刷新或选择其他串口`
+                : "未发现可用串口，请连接设备后刷新"
+              : undefined
+          }
           onClick={() =>
             void (canCancelConnection
               ? cancelSerialConnection()

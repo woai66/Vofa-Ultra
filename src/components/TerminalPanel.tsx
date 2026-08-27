@@ -490,6 +490,14 @@ export function TerminalPanel() {
     modbusTransactionActive ||
     manualSendPending ||
     (isSendingCommand && commandSendOrigin !== "auto-responder");
+  const canSendManually =
+    connectionStatus === "connected" &&
+    hasSendableFrame &&
+    !templatePreview.error &&
+    !templatePreview.loading &&
+    !isWorkspaceTransitioning &&
+    !taskActive &&
+    !manualSendBlocked;
   const workflowVisible = workflowOpen || taskActive;
   const canStartPeriodic =
     connectionStatus === "connected" &&
@@ -943,13 +951,7 @@ export function TerminalPanel() {
   };
 
   const submit = async () => {
-    if (
-      !hasSendableFrame ||
-      templatePreview.error ||
-      templatePreview.loading ||
-      taskActive ||
-      manualSendBlocked
-    ) {
+    if (!canSendManually) {
       return;
     }
     const submittedRevision = draftRevisionRef.current;
@@ -1700,14 +1702,7 @@ export function TerminalPanel() {
             <button
               className="primary-button send-button"
               type="button"
-              disabled={
-                connectionStatus !== "connected" ||
-                !hasSendableFrame ||
-                Boolean(templatePreview.error) ||
-                templatePreview.loading ||
-                isWorkspaceTransitioning ||
-                manualSendBlocked
-              }
+              disabled={!canSendManually}
               onClick={() => void submit()}
             >
               <Send size={16} />
