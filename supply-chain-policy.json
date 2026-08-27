@@ -210,7 +210,7 @@
       {
         "kind": "license",
         "path": "legal/third-party/wasmi-MIT.txt",
-        "source": "https://raw.githubusercontent.com/wasmi-labs/wasmi/903727318e28a5a9bdb28bad599c2755ba1958f1/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/wasmi-labs/wasmi/b28325a0427bcd2b8f0543c45fa1fcc6cffc75bd/LICENSE-MIT",
         "sha256": "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657"
       }
     ],
@@ -265,22 +265,22 @@
       "fileSet": "spdx-mit",
       "reason": "The crate archive contains a dual-license pointer but omits both complete license texts."
     },
-    "pkg:cargo/wasmi@0.50.0": {
+    "pkg:cargo/wasmi@1.0.6": {
       "selectedLicense": "MIT",
       "fileSet": "wasmi",
       "reason": "The crate archive omits the workspace-root MIT text pinned to its source commit."
     },
-    "pkg:cargo/wasmi_collections@0.50.0": {
+    "pkg:cargo/wasmi_collections@1.0.6": {
       "selectedLicense": "MIT",
       "fileSet": "wasmi",
       "reason": "The crate archive omits the workspace-root MIT text pinned to its source commit."
     },
-    "pkg:cargo/wasmi_core@0.50.0": {
+    "pkg:cargo/wasmi_core@1.0.6": {
       "selectedLicense": "MIT",
       "fileSet": "wasmi",
       "reason": "The crate archive omits the workspace-root MIT text pinned to its source commit."
     },
-    "pkg:cargo/wasmi_ir@0.50.0": {
+    "pkg:cargo/wasmi_ir@1.0.6": {
       "selectedLicense": "MIT",
       "fileSet": "wasmi",
       "reason": "The crate archive omits the workspace-root MIT text pinned to its source commit."

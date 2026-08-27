@@ -26,7 +26,8 @@ serialport = { version = "4.7", default-features = false }
 sha2 = "=0.10.9"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-wasmi = { version = "=0.50.0", default-features = false, features = ["std", "extra-checks"] }
+wasmi = { version = "=1.0.6", default-features = false, features = ["std", "extra-checks"] }
+wasmparser = { version = "=0.228.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
