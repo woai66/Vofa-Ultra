@@ -174,6 +174,33 @@ describe("Sidebar 串口恢复界面", () => {
     expect(summary).not.toHaveTextContent("DEVICE-001");
   });
 
+  it("向辅助技术暴露当前数据源选项", () => {
+    const { rerender } = render(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "串口" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "模拟器" })).toHaveAttribute("aria-pressed", "false");
+
+    useWorkbenchStore.setState({ source: "simulator" });
+    rerender(
+      <Sidebar
+        activePanel="connection"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "串口" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "模拟器" })).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("端口选项按名称自然排序并包含设备摘要", () => {
     useWorkbenchStore.setState((state) => ({
       connectionStatus: "connected",
@@ -312,6 +339,26 @@ describe("Sidebar 串口恢复界面", () => {
     useWorkbenchStore.setState({ connectionStatus: "disconnected" });
     rerender(<Sidebar {...props} />);
     expect(screen.queryByLabelText("串口输入握手线状态")).not.toBeInTheDocument();
+  });
+});
+
+describe("Sidebar 外观设置", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("向辅助技术暴露当前主题选项", () => {
+    render(
+      <Sidebar
+        activePanel="settings"
+        theme="dark"
+        onClose={vi.fn()}
+        onThemeChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /深色/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /浅色/ })).toHaveAttribute("aria-pressed", "false");
   });
 });
 

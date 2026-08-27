@@ -412,13 +412,27 @@ describe("TerminalPanel", () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
     const search = screen.getByRole("searchbox", { name: "搜索终端记录" });
+    const displayFormat = screen.getByRole("group", { name: "接收显示格式" });
+
+    expect(within(displayFormat).getByRole("button", { name: "TEXT" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(within(displayFormat).getByRole("button", { name: "HEX" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
 
     await user.type(search, "54 65");
     expect(screen.getByText("0 / 3 条记录")).toBeVisible();
-    await user.click(
-      within(screen.getByRole("group", { name: "接收显示格式" })).getByRole("button", {
-        name: "HEX",
-      }),
+    await user.click(within(displayFormat).getByRole("button", { name: "HEX" }));
+    expect(within(displayFormat).getByRole("button", { name: "TEXT" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(within(displayFormat).getByRole("button", { name: "HEX" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
     );
     expect(search).toHaveAttribute("placeholder", "搜索 HEX 内容");
     expect(screen.getByText("1 / 3 条记录")).toBeVisible();
@@ -439,11 +453,24 @@ describe("TerminalPanel", () => {
     }) as HTMLTextAreaElement;
     const sendFormat = screen.getByRole("group", { name: "发送格式" });
 
+    expect(within(sendFormat).getByRole("button", { name: "文本" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(within(sendFormat).getByRole("button", { name: "HEX" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
     await user.type(input, "draft");
     await user.keyboard("{ArrowUp}");
     expect(input).toHaveValue("AA");
     expect(within(sendFormat).getByRole("button", { name: "HEX" })).toHaveAttribute(
       "data-active",
+      "true",
+    );
+    expect(within(sendFormat).getByRole("button", { name: "HEX" })).toHaveAttribute(
+      "aria-pressed",
       "true",
     );
     expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("xor8");
@@ -454,6 +481,10 @@ describe("TerminalPanel", () => {
       "data-active",
       "true",
     );
+    expect(within(sendFormat).getByRole("button", { name: "文本" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("lf");
     expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("sum8");
 
@@ -461,6 +492,10 @@ describe("TerminalPanel", () => {
     expect(input).toHaveValue("draft");
     expect(within(sendFormat).getByRole("button", { name: "HEX" })).toHaveAttribute(
       "data-active",
+      "true",
+    );
+    expect(within(sendFormat).getByRole("button", { name: "HEX" })).toHaveAttribute(
+      "aria-pressed",
       "true",
     );
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("none");

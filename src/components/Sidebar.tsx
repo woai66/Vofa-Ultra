@@ -212,6 +212,7 @@ function ConnectionPanel() {
         <div className="segmented-control" role="group" aria-labelledby="data-source-label">
           <button
             type="button"
+            aria-pressed={source === "serial"}
             data-active={source === "serial"}
             disabled={!isNativeRuntime || configDisabled}
             title={isNativeRuntime ? "使用本机串口" : "浏览器预览不可访问串口"}
@@ -221,6 +222,7 @@ function ConnectionPanel() {
           </button>
           <button
             type="button"
+            aria-pressed={source === "simulator"}
             data-active={source === "simulator"}
             disabled={configDisabled}
             onClick={() => void setSource("simulator")}
@@ -1034,10 +1036,20 @@ function SettingsPanel({ theme, onThemeChange }: Pick<SidebarProps, "theme" | "o
           role="group"
           aria-labelledby="appearance-label"
         >
-          <button type="button" data-active={theme === "dark"} onClick={() => onThemeChange("dark")}>
+          <button
+            type="button"
+            aria-pressed={theme === "dark"}
+            data-active={theme === "dark"}
+            onClick={() => onThemeChange("dark")}
+          >
             <Moon size={15} /> 深色
           </button>
-          <button type="button" data-active={theme === "light"} onClick={() => onThemeChange("light")}>
+          <button
+            type="button"
+            aria-pressed={theme === "light"}
+            data-active={theme === "light"}
+            onClick={() => onThemeChange("light")}
+          >
             <Sun size={15} /> 浅色
           </button>
         </div>

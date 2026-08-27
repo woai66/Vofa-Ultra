@@ -593,6 +593,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
               <button
                 key={seconds}
                 type="button"
+                aria-pressed={chartWindowSeconds === seconds}
                 data-active={chartWindowSeconds === seconds}
                 disabled={isWorkspaceTransitioning}
                 onClick={() => handleWindowChange(seconds as ChartWindowSeconds)}
