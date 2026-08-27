@@ -121,11 +121,11 @@ describe("TerminalPanel", () => {
         (time) => time.textContent,
       );
 
-    expect(within(modeGroup).getByRole("button", { name: "绝对时间" })).toHaveAttribute(
+    expect(within(modeGroup).getByRole("button", { name: "ABS，绝对时间" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    await user.click(within(modeGroup).getByRole("button", { name: "相对缓存起点" }));
+    await user.click(within(modeGroup).getByRole("button", { name: "REL，相对缓存起点" }));
     await waitFor(() => {
       expect(timeLabels()).toEqual([
         "+00:00:00.000",
@@ -136,7 +136,7 @@ describe("TerminalPanel", () => {
     });
     expect(localStorage.getItem(TERMINAL_TIME_MODE_STORAGE_KEY)).toBe("relative");
 
-    await user.click(within(modeGroup).getByRole("button", { name: "距上一条可见记录" }));
+    await user.click(within(modeGroup).getByRole("button", { name: "ΔT，距上一条可见记录" }));
     await waitFor(() => {
       expect(timeLabels()).toEqual([
         "--",
@@ -157,7 +157,7 @@ describe("TerminalPanel", () => {
 
     firstRender.unmount();
     render(<TerminalPanel />);
-    expect(screen.getByRole("button", { name: "距上一条可见记录" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "ΔT，距上一条可见记录" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );

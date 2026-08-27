@@ -1119,7 +1119,7 @@ export function TerminalPanel() {
               type="button"
               data-active={terminalTimeMode === option.mode}
               aria-pressed={terminalTimeMode === option.mode}
-              aria-label={option.description}
+              aria-label={`${option.label}，${option.description}`}
               title={option.description}
               onClick={() => setTerminalTimeMode(option.mode)}
             >

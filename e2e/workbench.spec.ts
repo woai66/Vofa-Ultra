@@ -944,11 +944,13 @@ test("终端时间基准按缓存和可见记录计算并跨刷新保留", async
 
   const timeMode = page.getByRole("group", { name: "终端时间基准" });
   const timeCells = page.locator(".terminal-line time");
-  await expect(timeMode.getByRole("button", { name: "绝对时间" })).toHaveAttribute(
+  await expect(
+    timeMode.getByRole("button", { name: "ABS，绝对时间", exact: true }),
+  ).toHaveAttribute(
     "aria-pressed",
     "true",
   );
-  await timeMode.getByRole("button", { name: "相对缓存起点" }).click();
+  await timeMode.getByRole("button", { name: "REL，相对缓存起点", exact: true }).click();
   await expect(timeCells).toHaveText([
     "+00:00:00.000",
     "+00:00:00.125",
@@ -956,7 +958,7 @@ test("终端时间基准按缓存和可见记录计算并跨刷新保留", async
     "+00:00:00.900",
   ]);
 
-  await timeMode.getByRole("button", { name: "距上一条可见记录" }).click();
+  await timeMode.getByRole("button", { name: "ΔT，距上一条可见记录", exact: true }).click();
   await expect(timeCells).toHaveText([
     "--",
     "+00:00:00.125",
@@ -1000,7 +1002,8 @@ test("终端时间基准按缓存和可见记录计算并跨刷新保留", async
   await page.reload();
   await expect(
     page.getByRole("group", { name: "终端时间基准" }).getByRole("button", {
-      name: "距上一条可见记录",
+      name: "ΔT，距上一条可见记录",
+      exact: true,
     }),
   ).toHaveAttribute("aria-pressed", "true");
   await replaceTerminalEntries(page, [
