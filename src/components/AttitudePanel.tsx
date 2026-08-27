@@ -363,6 +363,7 @@ function AttitudeConfiguration({
             <button
               key={mode}
               type="button"
+              aria-pressed={config.inputMode === mode}
               data-active={config.inputMode === mode}
               disabled={disabled}
               onClick={() => onChange((next) => setInputMode(next, mode))}
@@ -410,6 +411,7 @@ function AttitudeConfiguration({
                 <button
                   key={unit}
                   type="button"
+                  aria-pressed={config.angleUnit === unit}
                   data-active={config.angleUnit === unit}
                   disabled={disabled}
                   onClick={() =>
@@ -428,6 +430,7 @@ function AttitudeConfiguration({
               <button
                 key={frame}
                 type="button"
+                aria-pressed={config.coordinateFrame === frame}
                 data-active={config.coordinateFrame === frame}
                 disabled={disabled}
                 onClick={() =>

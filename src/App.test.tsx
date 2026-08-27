@@ -39,11 +39,14 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "添加处理节点" })).toBeEnabled();
   });
 
-  it("切换标签后按需加载姿态视图", async () => {
+  it("切换标签后按需加载监视与姿态视图", async () => {
     const user = userEvent.setup();
     render(<App />);
 
+    expect(screen.queryByRole("heading", { name: "通道监视" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "3D 姿态" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "监视" }));
+    expect(await screen.findByRole("heading", { name: "通道监视" })).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "姿态" }));
 
     expect(await screen.findByRole("heading", { name: "3D 姿态" })).toBeInTheDocument();
@@ -55,17 +58,32 @@ describe("App", () => {
     render(<App />);
 
     const waveformTab = screen.getByRole("tab", { name: "波形" });
+    const monitorTab = screen.getByRole("tab", { name: "监视" });
     const attitudeTab = screen.getByRole("tab", { name: "姿态" });
     const waveformPanel = document.getElementById("workspace-waveform-panel");
+    const monitorPanel = document.getElementById("workspace-monitor-panel");
     const attitudePanel = document.getElementById("workspace-attitude-panel");
     expect(waveformTab).toHaveAttribute("tabindex", "0");
+    expect(monitorTab).toHaveAttribute("tabindex", "-1");
     expect(attitudeTab).toHaveAttribute("tabindex", "-1");
     expect(waveformTab).toHaveAttribute("aria-controls", "workspace-waveform-panel");
+    expect(monitorTab).toHaveAttribute("aria-controls", "workspace-monitor-panel");
     expect(attitudeTab).toHaveAttribute("aria-controls", "workspace-attitude-panel");
     expect(waveformPanel).not.toHaveAttribute("hidden");
+    expect(monitorPanel).toHaveAttribute("hidden");
     expect(attitudePanel).toHaveAttribute("hidden");
 
     waveformTab.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(monitorTab).toHaveFocus();
+    expect(monitorTab).toHaveAttribute("aria-selected", "true");
+    expect(monitorPanel).not.toHaveAttribute("hidden");
+    expect(waveformPanel).toHaveAttribute("hidden");
+    expect(attitudePanel).toHaveAttribute("hidden");
+    expect(monitorPanel).toContainElement(
+      await screen.findByRole("heading", { name: "通道监视" }),
+    );
+
     await user.keyboard("{ArrowRight}");
     expect(attitudeTab).toHaveFocus();
     expect(attitudeTab).toHaveAttribute("aria-selected", "true");
@@ -74,6 +92,7 @@ describe("App", () => {
     expect(document.getElementById("workspace-attitude-panel")).toBe(attitudePanel);
     expect(attitudePanel).not.toHaveAttribute("hidden");
     expect(waveformPanel).toHaveAttribute("hidden");
+    expect(monitorPanel).toHaveAttribute("hidden");
     expect(attitudePanel).toContainElement(
       await screen.findByRole("heading", { name: "3D 姿态" }),
     );
@@ -82,6 +101,7 @@ describe("App", () => {
     expect(waveformTab).toHaveFocus();
     expect(waveformTab).toHaveAttribute("aria-selected", "true");
     expect(waveformPanel).not.toHaveAttribute("hidden");
+    expect(monitorPanel).toHaveAttribute("hidden");
     expect(attitudePanel).toHaveAttribute("hidden");
 
     await user.keyboard("{ArrowLeft}");
@@ -139,6 +159,13 @@ describe("App", () => {
     expect(primary).toHaveAttribute("aria-pressed", "true");
     await user.click(split);
     expect(content).toHaveAttribute("data-layout-mode", "split");
+
+    await user.click(screen.getByRole("tab", { name: "监视" }));
+    expect(screen.getByRole("button", { name: "专注监视视图" })).toBeInTheDocument();
+    expect(screen.getByRole("separator")).toHaveAttribute(
+      "aria-controls",
+      "workspace-monitor-panel workspace-terminal-panel",
+    );
 
     await user.click(screen.getByRole("tab", { name: "姿态" }));
     expect(screen.getByRole("button", { name: "专注姿态视图" })).toBeInTheDocument();

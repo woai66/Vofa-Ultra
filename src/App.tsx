@@ -34,8 +34,13 @@ import {
 
 export type ThemeMode = "dark" | "light";
 
-const WORKSPACE_VIEWS = ["waveform", "attitude"] as const;
-type WorkspaceView = (typeof WORKSPACE_VIEWS)[number];
+const WORKSPACE_VIEW_TABS = [
+  ["waveform", "波形", ChartNoAxesCombined],
+  ["monitor", "监视", Rows2],
+  ["attitude", "姿态", Orbit],
+] as const;
+type WorkspaceView = (typeof WORKSPACE_VIEW_TABS)[number][0];
+const WORKSPACE_VIEWS: readonly WorkspaceView[] = WORKSPACE_VIEW_TABS.map(([view]) => view);
 type WorkspaceLayoutMode = "split" | "primary" | "terminal";
 
 const WORKSPACE_SPLIT_STORAGE_KEY = "vofa-ultra-workspace-split";
@@ -52,10 +57,15 @@ interface WorkspaceResizeState {
 }
 
 const loadAttitudePanel = () => import("./components/AttitudePanel");
-const AttitudePanel = lazy(async () => {
-  const module = await loadAttitudePanel();
-  return { default: module.AttitudePanel };
-});
+const preloadAttitudePanel = () => void loadAttitudePanel();
+const AttitudePanel = lazy(() =>
+  loadAttitudePanel().then(({ AttitudePanel }) => ({ default: AttitudePanel })),
+);
+const ChannelMonitorPanel = lazy(() =>
+  import("./components/ChannelMonitorPanel").then(({ ChannelMonitorPanel }) => ({
+    default: ChannelMonitorPanel,
+  })),
+);
 
 export default function App() {
   const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>("connection");
@@ -105,7 +115,7 @@ export default function App() {
   };
 
   const selectWorkspaceView = (view: WorkspaceView) => {
-    if (view === "attitude") {
+    if (view !== "waveform") {
       setWaveformMeasuring(false);
     }
     setWorkspaceView(view);
@@ -210,7 +220,9 @@ export default function App() {
     "--workspace-primary-share": `${workspaceSplit}fr`,
     "--workspace-terminal-share": `${1 - workspaceSplit}fr`,
   } as CSSProperties;
-  const primaryFocusLabel = workspaceView === "waveform" ? "专注波形视图" : "专注姿态视图";
+  const primaryFocusLabel = `专注${
+    workspaceView === "waveform" ? "波形" : workspaceView === "monitor" ? "监视" : "姿态"
+  }视图`;
 
   return (
     <div className="app-shell" data-sidebar-open={sidebarOpen}>
@@ -246,46 +258,30 @@ export default function App() {
             className="workspace-view-tabs"
             role="tablist"
             aria-label="工作区视图"
-            aria-orientation="horizontal"
           >
-            <button
-              id="workspace-waveform-tab"
-              type="button"
-              role="tab"
-              aria-controls="workspace-waveform-panel"
-              aria-selected={workspaceView === "waveform"}
-              tabIndex={workspaceView === "waveform" ? 0 : -1}
-              data-active={workspaceView === "waveform"}
-              title="波形视图"
-              ref={(element) => {
-                workspaceTabRefs.current.waveform = element ?? undefined;
-              }}
-              onKeyDown={(event) => handleWorkspaceTabKeyDown(event, "waveform")}
-              onClick={() => selectWorkspaceView("waveform")}
-            >
-              <ChartNoAxesCombined size={15} />
-              <span>波形</span>
-            </button>
-            <button
-              id="workspace-attitude-tab"
-              type="button"
-              role="tab"
-              aria-controls="workspace-attitude-panel"
-              aria-selected={workspaceView === "attitude"}
-              tabIndex={workspaceView === "attitude" ? 0 : -1}
-              data-active={workspaceView === "attitude"}
-              title="姿态视图"
-              ref={(element) => {
-                workspaceTabRefs.current.attitude = element ?? undefined;
-              }}
-              onKeyDown={(event) => handleWorkspaceTabKeyDown(event, "attitude")}
-              onFocus={() => void loadAttitudePanel()}
-              onPointerEnter={() => void loadAttitudePanel()}
-              onClick={() => selectWorkspaceView("attitude")}
-            >
-              <Orbit size={15} />
-              <span>姿态</span>
-            </button>
+            {WORKSPACE_VIEW_TABS.map(([view, label, Icon]) => {
+              const active = workspaceView === view;
+              return (
+                <button
+                  key={view}
+                  id={`workspace-${view}-tab`}
+                  type="button"
+                  role="tab"
+                  aria-controls={`workspace-${view}-panel`}
+                  aria-selected={active}
+                  tabIndex={active ? 0 : -1}
+                  ref={(element) => {
+                    workspaceTabRefs.current[view] = element ?? undefined;
+                  }}
+                  onKeyDown={(event) => handleWorkspaceTabKeyDown(event, view)}
+                  onPointerEnter={view === "attitude" ? preloadAttitudePanel : undefined}
+                  onClick={() => selectWorkspaceView(view)}
+                >
+                  <Icon size={15} />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
           </div>
           <div className="workspace-layout-controls" role="group" aria-label="工作区布局">
             <button
@@ -335,6 +331,11 @@ export default function App() {
         >
           <WorkspaceTabPanel view="waveform" activeView={workspaceView}>
             <WaveformPanel theme={theme} onMeasurementModeChange={setWaveformMeasuring} />
+          </WorkspaceTabPanel>
+          <WorkspaceTabPanel view="monitor" activeView={workspaceView}>
+            <Suspense fallback={<ChannelMonitorPanelFallback />}>
+              <ChannelMonitorPanel />
+            </Suspense>
           </WorkspaceTabPanel>
           <WorkspaceTabPanel view="attitude" activeView={workspaceView}>
             <Suspense fallback={<AttitudePanelFallback />}>
@@ -427,5 +428,15 @@ function AttitudePanelFallback() {
         </div>
       </div>
     </section>
+  );
+}
+
+function ChannelMonitorPanelFallback() {
+  return (
+    <section
+      className="workspace-panel channel-monitor-panel"
+      aria-label="加载中"
+      aria-busy="true"
+    />
   );
 }

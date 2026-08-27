@@ -233,13 +233,25 @@ test("标签组支持标准键盘导航", async ({ page }) => {
   await page.goto("/");
 
   const waveformTab = page.getByRole("tab", { name: "波形" });
+  const monitorTab = page.getByRole("tab", { name: "监视" });
   const attitudeTab = page.getByRole("tab", { name: "姿态" });
   const waveformPanel = page.locator("#workspace-waveform-panel");
+  const monitorPanel = page.locator("#workspace-monitor-panel");
   const attitudePanel = page.locator("#workspace-attitude-panel");
   await expectValidTabPanelReferences(page, "工作区视图");
   await expect(waveformPanel).toBeVisible();
+  await expect(monitorPanel).toBeHidden();
   await expect(attitudePanel).toBeHidden();
   await waveformTab.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(monitorTab).toBeFocused();
+  await expect(monitorTab).toHaveAttribute("aria-selected", "true");
+  await expect(monitorTab).toHaveAttribute("tabindex", "0");
+  await expect(waveformTab).toHaveAttribute("tabindex", "-1");
+  await expect(monitorPanel).toBeVisible();
+  await expect(waveformPanel).toBeHidden();
+  await expect(attitudePanel).toBeHidden();
+  await expect(monitorPanel.getByRole("heading", { name: "通道监视" })).toBeVisible();
   await page.keyboard.press("ArrowRight");
   await expect(attitudeTab).toBeFocused();
   await expect(attitudeTab).toHaveAttribute("aria-selected", "true");
@@ -247,10 +259,12 @@ test("标签组支持标准键盘导航", async ({ page }) => {
   await expect(waveformTab).toHaveAttribute("tabindex", "-1");
   await expect(attitudePanel).toBeVisible();
   await expect(waveformPanel).toBeHidden();
+  await expect(monitorPanel).toBeHidden();
   await expect(attitudePanel.getByRole("heading", { name: "3D 姿态" })).toBeVisible();
   await page.keyboard.press("Home");
   await expect(waveformTab).toBeFocused();
   await expect(waveformPanel).toBeVisible();
+  await expect(monitorPanel).toBeHidden();
   await expect(attitudePanel).toBeHidden();
 
   await page.getByRole("button", { name: "记录", exact: true }).click();
@@ -277,6 +291,81 @@ test("标签组支持标准键盘导航", async ({ page }) => {
   await expect(recordTab).toHaveAttribute("aria-selected", "true");
   await expect(recordPanel).toBeVisible();
   await expect(exportPanel).toBeHidden();
+});
+
+test("串口输入握手线状态在桌面与窄屏保持可读", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+  await page.setViewportSize({ width: 1_280, height: 800 });
+  await page.goto("/");
+  await setWorkbenchState(page, {
+    isNativeRuntime: true,
+    source: "serial",
+    connectionStatus: "connected",
+    serialGeneration: 7,
+    serialModemStatus: {
+      generation: 7,
+      revision: 2,
+      cts: true,
+      dsr: false,
+      ri: null,
+      dcd: true,
+    },
+  });
+
+  const status = page.locator('dl[aria-label="串口输入握手线状态"]');
+  const items = status.locator(".modem-status-item");
+  await expect(status).toBeVisible();
+  await expect(items).toHaveText(["CTS有效", "DSR无效", "RI不可用", "DCD有效"]);
+  await expect
+    .poll(() => items.evaluateAll((elements) => elements.map((element) => element.dataset.state)))
+    .toEqual(["asserted", "deasserted", "unavailable", "asserted"]);
+
+  const desktopLayout = await items.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    }),
+  );
+  expect(desktopLayout).toHaveLength(4);
+  expect(desktopLayout.every(({ height }) => height >= 44)).toBe(true);
+  expect(desktopLayout[0]?.y).toBe(desktopLayout[1]?.y);
+  expect(desktopLayout[2]?.y).toBe(desktopLayout[3]?.y);
+  expect(desktopLayout[0]?.x).toBe(desktopLayout[2]?.x);
+  expect(desktopLayout[1]?.x).toBe(desktopLayout[3]?.x);
+  await page.screenshot({
+    path: testInfo.outputPath("serial-modem-status-desktop.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(status).toBeVisible();
+  const mobileBounds = await status.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      viewportWidth: document.documentElement.clientWidth,
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    };
+  });
+  expect(mobileBounds.left).toBeGreaterThanOrEqual(0);
+  expect(mobileBounds.right).toBeLessThanOrEqual(mobileBounds.viewportWidth);
+  expect(mobileBounds.scrollWidth).toBeLessThanOrEqual(mobileBounds.clientWidth);
+  await page.screenshot({
+    path: testInfo.outputPath("serial-modem-status-mobile.png"),
+    fullPage: true,
+  });
+
+  await setWorkbenchState(page, { connectionStatus: "disconnected" });
+  await expect(status).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
 });
 
 test("工作台分栏支持拖拽、键盘、持久化、专注模式和窄屏回退", async ({ page }, testInfo) => {
@@ -1876,6 +1965,95 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
   expect(pageErrors).toEqual([]);
 });
 
+test("通道监视显示有界统计并支持本地冻结与窄屏布局", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      pageErrors.push(message.text());
+    }
+  });
+
+  await page.setViewportSize({ width: 1_280, height: 800 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+  await page.getByRole("tab", { name: "监视" }).click();
+
+  const monitor = page.locator(".channel-monitor-panel");
+  const table = page.getByRole("table", { name: "通道实时统计" });
+  const firstRow = table
+    .getByRole("rowgroup", { name: "基础通道" })
+    .locator(".channel-monitor-data-row")
+    .first();
+  const currentValue = firstRow.locator(".channel-monitor-current-cell");
+  const sampleCount = firstRow.locator(".channel-monitor-samples-cell");
+  await expect(monitor.getByRole("heading", { name: "通道监视" })).toBeVisible();
+  await expect(table).toBeVisible();
+  await expect(firstRow).toBeVisible();
+  await expect
+    .poll(async () => Number.parseInt((await sampleCount.textContent()) ?? "0", 10))
+    .toBeGreaterThan(2);
+  await expect(table.getByRole("columnheader", { name: "当前" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "变化" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "均值" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "RMS" })).toBeVisible();
+
+  await page.getByRole("button", { name: "冻结通道监视" }).click();
+  await expect(monitor.locator(".live-state")).toContainText("HOLD");
+  const frozenValue = await currentValue.textContent();
+  const frozenSamples = await sampleCount.textContent();
+  await page.waitForTimeout(500);
+  await expect(currentValue).toHaveText(frozenValue ?? "");
+  await expect(sampleCount).toHaveText(frozenSamples ?? "");
+
+  await page.getByRole("button", { name: "继续通道监视" }).click();
+  await expect(monitor.locator(".live-state")).toContainText("LIVE");
+  await expect.poll(async () => currentValue.textContent()).not.toBe(frozenValue);
+  await expect
+    .poll(async () => Number.parseInt((await sampleCount.textContent()) ?? "0", 10))
+    .toBeGreaterThan(Number.parseInt(frozenSamples ?? "0", 10));
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-channel-monitor.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+  await expect(table.getByRole("columnheader", { name: "当前" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "变化" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "样本" })).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "最小" })).toBeHidden();
+  await expect(table.getByRole("columnheader", { name: "最大" })).toBeHidden();
+  await expect(table.getByRole("columnheader", { name: "均值" })).toBeHidden();
+  await expect(table.getByRole("columnheader", { name: "RMS" })).toBeHidden();
+  const mobileLayout = await monitor.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const targets = [...element.querySelectorAll<HTMLElement>("button")].map((target) => {
+      const targetRect = target.getBoundingClientRect();
+      return { width: targetRect.width, height: targetRect.height };
+    });
+    return {
+      left: rect.left,
+      right: rect.right,
+      documentWidth: document.documentElement.scrollWidth,
+      targets,
+    };
+  });
+  expect(mobileLayout.left).toBeGreaterThanOrEqual(0);
+  expect(mobileLayout.right).toBeLessThanOrEqual(390);
+  expect(mobileLayout.documentWidth).toBeLessThanOrEqual(390);
+  expect(mobileLayout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(
+    true,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-390-channel-monitor.png"),
+    fullPage: true,
+  });
+  expect(pageErrors).toEqual([]);
+});
+
 test("有界命令历史与可取消周期发送形成完整工作流", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "启动模拟" }).click();
@@ -3070,6 +3248,28 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
   await page.getByRole("button", { name: "连接设备" }).click();
   await expect(page.getByText("自动重连已待命")).toBeVisible();
 
+  await page.getByRole("checkbox", { name: "DTR" }).uncheck();
+  await page.getByRole("checkbox", { name: "RTS" }).uncheck();
+  await expect(page.getByRole("checkbox", { name: "DTR" })).not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "RTS" })).not.toBeChecked();
+  expect(
+    await page.evaluate(() => {
+      const testWindow = window as unknown as {
+        __TAURI_TEST__: {
+          controlLineCalls: Array<{
+            generation: number;
+            line: "dtr" | "rts";
+            asserted: boolean;
+          }>;
+        };
+      };
+      return testWindow.__TAURI_TEST__.controlLineCalls;
+    }),
+  ).toEqual([
+    { generation: 1, line: "dtr", asserted: false },
+    { generation: 1, line: "rts", asserted: false },
+  ]);
+
   await page.evaluate(() => {
     const testWindow = window as unknown as {
       __TAURI_TEST__: { loseDevice(): void };
@@ -3674,6 +3874,11 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       command: string;
       request: Record<string, unknown>;
     }> = [];
+    const controlLineCalls: Array<{
+      generation: number;
+      line: "dtr" | "rts";
+      asserted: boolean;
+    }> = [];
     let recordingDirectoryDialogCalls = 0;
     const closeOperations: string[] = [];
     let destroyCount = 0;
@@ -3767,6 +3972,22 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         };
         emitSerialState();
         return { ...serialState };
+      }
+      if (command === "set_serial_control_line") {
+        const generation = Number(args?.generation);
+        const line = String(args?.line);
+        const asserted = args?.asserted;
+        if (serialState.status !== "connected") {
+          throw new Error("串口尚未连接");
+        }
+        if (generation !== serialState.generation) {
+          throw new Error("串口连接已发生变化");
+        }
+        if ((line !== "dtr" && line !== "rts") || typeof asserted !== "boolean") {
+          throw new Error("串口控制线参数无效");
+        }
+        controlLineCalls.push({ generation, line, asserted });
+        return undefined;
       }
       if (command === "start_serial_file_send") {
         fileSendState = {
@@ -3956,6 +4177,11 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       __TAURI_EVENT_PLUGIN_INTERNALS__: Record<string, unknown>;
       __TAURI_TEST__: {
         closeOperations: string[];
+        controlLineCalls: Array<{
+          generation: number;
+          line: "dtr" | "rts";
+          asserted: boolean;
+        }>;
         destroyCount: number;
         emitNumericData(): void;
         loseDevice(): void;
@@ -3995,6 +4221,7 @@ async function installTauriSerialMock(page: Page): Promise<void> {
     };
     testWindow.__TAURI_TEST__ = {
       closeOperations,
+      controlLineCalls,
       get destroyCount() {
         return destroyCount;
       },
