@@ -27,7 +27,9 @@ export default tseslint.config(
       "react-refresh": reactRefresh,
     },
     rules: {
-      ...reactHooks.configs.recommended.rules,
+      // v7 的 recommended 预设包含 React Compiler 规则；项目尚未启用编译器，先保持原有 Hooks 规则契约。
+      "react-hooks/exhaustive-deps": "warn",
+      "react-hooks/rules-of-hooks": "error",
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
     },
   },

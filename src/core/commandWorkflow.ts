@@ -4,6 +4,7 @@ import type {
   CommandTemplateContext,
   CompiledCommandTemplate,
 } from "./commandTemplate";
+import type { CommandChecksumMode } from "./checksum";
 
 export const MAX_COMMAND_HISTORY_ENTRIES = 100;
 export const MAX_COMMAND_HISTORY_PAYLOAD_BYTES = 256 * 1024;
@@ -24,6 +25,7 @@ export interface PreparedCommand {
   value: string;
   mode: DisplayMode;
   lineEnding: LineEnding;
+  checksumMode: CommandChecksumMode;
   bytes: Uint8Array;
   variableCount: number;
 }
@@ -31,6 +33,7 @@ export interface PreparedCommand {
 export interface CommandTaskRequest {
   template: CompiledCommandTemplate;
   lineEnding: LineEnding;
+  checksumMode: CommandChecksumMode;
   intervalMs: number;
   repeatCount: number | null;
 }
@@ -42,6 +45,7 @@ export interface CommandSchedulerDependencies {
   prepare(
     template: CompiledCommandTemplate,
     lineEnding: LineEnding,
+    checksumMode: CommandChecksumMode,
     context: CommandTemplateContext,
   ): PreparedCommand;
   send(command: PreparedCommand): Promise<void>;
@@ -79,7 +83,8 @@ export function appendCommandHistory(
     last &&
     last.value === entry.value &&
     last.mode === entry.mode &&
-    last.lineEnding === entry.lineEnding
+    last.lineEnding === entry.lineEnding &&
+    last.checksumMode === entry.checksumMode
   ) {
     return [
       ...history.slice(0, -1),
@@ -272,11 +277,16 @@ export class CommandScheduler {
     sequence: number,
     nowMs: number,
   ): PreparedCommand {
-    const command = this.dependencies.prepare(task.template, task.lineEnding, {
-      sequence,
-      nowMs,
-      taskStartedAtMs: task.taskStartedAtMs,
-    });
+    const command = this.dependencies.prepare(
+      task.template,
+      task.lineEnding,
+      task.checksumMode,
+      {
+        sequence,
+        nowMs,
+        taskStartedAtMs: task.taskStartedAtMs,
+      },
+    );
     if (command.bytes.length === 0) {
       throw new Error("发送内容不能为空");
     }

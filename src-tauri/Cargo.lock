@@ -3909,6 +3909,8 @@ name = "vofa-ultra"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "dunce",
+ "libc",
  "semver",
  "serde",
  "serde_json",
@@ -3919,6 +3921,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "wasmi",
  "wat",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

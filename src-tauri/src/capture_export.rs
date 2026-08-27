@@ -1,5 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, ErrorKind, Read, Write};
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -12,6 +14,8 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
 
 use crate::capture::{
     CaptureDirection, CaptureHeader, CaptureItem, CaptureMarker, CaptureReadError, CaptureReader,
@@ -1256,27 +1260,52 @@ impl DestinationCommit {
     fn commit(mut self) -> Result<Option<String>, String> {
         if self.destination_path.exists() {
             let backup_path = unique_backup_path(&self.destination_path, self.job_id)?;
-            fs::rename(&self.destination_path, &backup_path).map_err(|error| {
-                format!(
-                    "备份现有目标文件 {} 失败: {error}",
-                    self.destination_path.display()
-                )
-            })?;
-            self.backup_path = Some(backup_path);
+
+            #[cfg(windows)]
+            {
+                self.backup_path = Some(backup_path.clone());
+                if let Err(error) = replace_existing_destination(
+                    &self.temp_path,
+                    &self.destination_path,
+                    &backup_path,
+                ) {
+                    return Err(self.commit_error(error));
+                }
+                return Ok(self.finish_commit());
+            }
+
+            #[cfg(not(windows))]
+            {
+                fs::rename(&self.destination_path, &backup_path).map_err(|error| {
+                    format!(
+                        "备份现有目标文件 {} 失败: {error}",
+                        self.destination_path.display()
+                    )
+                })?;
+                self.backup_path = Some(backup_path);
+            }
         }
 
         if let Err(error) = fs::rename(&self.temp_path, &self.destination_path) {
-            let restore_error = self.restore_backup().err();
-            let mut message = format!(
-                "提交导出文件 {} 失败: {error}",
-                self.destination_path.display()
-            );
-            if let Some(restore_error) = restore_error {
-                message.push_str(&format!("；{restore_error}"));
-            }
-            return Err(message);
+            return Err(self.commit_error(error));
         }
 
+        Ok(self.finish_commit())
+    }
+
+    fn commit_error(&mut self, error: io::Error) -> String {
+        let restore_error = self.restore_backup().err();
+        let mut message = format!(
+            "提交导出文件 {} 失败: {error}",
+            self.destination_path.display()
+        );
+        if let Some(restore_error) = restore_error {
+            message.push_str(&format!("；{restore_error}"));
+        }
+        message
+    }
+
+    fn finish_commit(&mut self) -> Option<String> {
         let warning = self.backup_path.as_ref().and_then(|backup_path| {
             fs::remove_file(backup_path).err().map(|error| {
                 format!(
@@ -1286,7 +1315,7 @@ impl DestinationCommit {
             })
         });
         self.committed = true;
-        Ok(warning)
+        warning
     }
 
     fn restore_backup(&mut self) -> Result<(), String> {
@@ -1294,6 +1323,12 @@ impl DestinationCommit {
             return Ok(());
         };
         if self.destination_path.exists() {
+            if backup_path.exists() {
+                return Err(format!(
+                    "目标文件仍存在，旧文件备份保留于 {}",
+                    backup_path.display()
+                ));
+            }
             return Ok(());
         }
         fs::rename(backup_path, &self.destination_path).map_err(|error| {
@@ -1303,6 +1338,41 @@ impl DestinationCommit {
             )
         })
     }
+}
+
+#[cfg(windows)]
+fn replace_existing_destination(
+    temp_path: &Path,
+    destination_path: &Path,
+    backup_path: &Path,
+) -> io::Result<()> {
+    let temp_path_wide = windows_path(temp_path);
+    let destination_path_wide = windows_path(destination_path);
+    let backup_path_wide = windows_path(backup_path);
+
+    // 单次系统调用同时替换目标并保留旧文件，避免两次 rename 之间目标路径缺失。
+    let replaced = unsafe {
+        ReplaceFileW(
+            destination_path_wide.as_ptr(),
+            temp_path_wide.as_ptr(),
+            backup_path_wide.as_ptr(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if replaced == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_path(path: &Path) -> Vec<u16> {
+    path.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 impl Drop for DestinationCommit {
@@ -2243,6 +2313,23 @@ mod tests {
         assert_eq!(remaining, vec!["capture.csv"]);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_replace_existing_destination_preserves_old_file_as_backup() {
+        let directory = TestDirectory::new("replace-file");
+        let destination = directory.join("捕获.csv");
+        let temp = directory.join("捕获.tmp");
+        let backup = directory.join("捕获.backup");
+        fs::write(&destination, b"old").unwrap();
+        fs::write(&temp, b"new").unwrap();
+
+        replace_existing_destination(&temp, &destination, &backup).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"new");
+        assert_eq!(fs::read(&backup).unwrap(), b"old");
+        assert!(!temp.exists());
+    }
+
     #[test]
     fn failed_commit_restores_existing_destination() {
         let directory = TestDirectory::new("commit-restore");
@@ -2260,6 +2347,22 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert_eq!(remaining, vec!["capture.csv"]);
+    }
+
+    #[test]
+    fn failed_restore_reports_backup_when_destination_still_exists() {
+        let directory = TestDirectory::new("commit-partial");
+        let destination = directory.join("capture.csv");
+        let backup = directory.join("capture.backup");
+        fs::write(&destination, b"new").unwrap();
+        fs::write(&backup, b"old").unwrap();
+
+        let mut commit = DestinationCommit::new(directory.join("missing.tmp"), destination, 9);
+        commit.backup_path = Some(backup.clone());
+
+        let error = commit.restore_backup().unwrap_err();
+        assert!(error.contains("旧文件备份保留"));
+        assert!(error.contains(&backup.display().to_string()));
     }
 
     #[test]

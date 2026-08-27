@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -7,18 +9,24 @@ import {
   useState,
 } from "react";
 import {
+  Check,
   CirclePause,
   Crosshair,
   LocateFixed,
   Play,
+  RotateCcw,
   Ruler,
+  SlidersHorizontal,
   Trash2,
   TrendingDown,
   TrendingUp,
   Waves,
+  X,
 } from "lucide-react";
 import uPlot, { type AlignedData, type Options } from "uplot";
 import type { ThemeMode } from "../App";
+import { presentChannelSeries } from "../core/channelPresentation";
+import type { SpectrumWindowSize } from "../core/spectrumConfig";
 import {
   calculateWaveformMeasurement,
   createInitialMeasurementAnchors,
@@ -32,30 +40,74 @@ import type {
   WaveformTriggerEdge,
   WaveformTriggerPhase,
 } from "../core/waveformTrigger";
-import { useWorkbenchStore } from "../store/workbenchStore";
+import {
+  selectActiveProtocol,
+  useWorkbenchStore,
+} from "../store/workbenchStore";
 import type { ChannelSeries } from "../types/workbench";
 import type { ChartWindowSeconds } from "../types/workspace";
+
+const MeasurementStrip = lazy(() => import("./WaveformMeasurementStrip"));
+const WaveformSpectrum = lazy(() => import("./WaveformSpectrum"));
 
 interface WaveformPanelProps {
   theme: ThemeMode;
   onMeasurementModeChange?(enabled: boolean): void;
 }
 
+type WaveformScaleMode = "shared" | "independent";
+
+interface WaveformFixedRange {
+  minimum: number;
+  maximum: number;
+}
+
+type IndependentWaveformFixedRanges = Record<string, WaveformFixedRange>;
+type WaveformViewMode = "time" | "spectrum";
+
 export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelProps) {
   const rawChannels = useWorkbenchStore((state) => state.channels);
   const processedChannels = useWorkbenchStore((state) => state.processedChannels);
   const extensionChannels = useWorkbenchStore((state) => state.extensionChannels);
+  const channelPresentations = useWorkbenchStore((state) => state.channelPresentations);
+  const activeProtocol = useWorkbenchStore(selectActiveProtocol);
+  const presentedRawChannels = useMemo(
+    () =>
+      rawChannels.map((channel) =>
+        presentChannelSeries(channel, activeProtocol, channelPresentations),
+      ),
+    [activeProtocol, channelPresentations, rawChannels],
+  );
+  const presentedProcessedChannels = useMemo(
+    () =>
+      processedChannels.map((channel) =>
+        presentChannelSeries(channel, activeProtocol, channelPresentations),
+      ),
+    [activeProtocol, channelPresentations, processedChannels],
+  );
+  const presentedExtensionChannels = useMemo(
+    () =>
+      extensionChannels.map((channel) =>
+        presentChannelSeries(channel, activeProtocol, channelPresentations),
+      ),
+    [activeProtocol, channelPresentations, extensionChannels],
+  );
   const channels = useMemo(
-    () => [...rawChannels, ...processedChannels, ...extensionChannels],
-    [extensionChannels, processedChannels, rawChannels],
+    () => [
+      ...presentedRawChannels,
+      ...presentedProcessedChannels,
+      ...presentedExtensionChannels,
+    ],
+    [presentedExtensionChannels, presentedProcessedChannels, presentedRawChannels],
   );
   const triggerChannels = useMemo(
-    () => [...rawChannels, ...processedChannels],
-    [processedChannels, rawChannels],
+    () => [...presentedRawChannels, ...presentedProcessedChannels],
+    [presentedProcessedChannels, presentedRawChannels],
   );
   const channelStructureSignature = channels
     .map((channel) => `${channel.id}:${channel.color}:${channel.visible}`)
     .join("|");
+  const channelIdSignature = channels.map((channel) => channel.id).join("\u001f");
   const chartPaused = useWorkbenchStore((state) => state.chartPaused);
   const chartWindowSeconds = useWorkbenchStore((state) => state.chartWindowSeconds);
   const chartDataRevision = useWorkbenchStore((state) => state.chartDataRevision);
@@ -72,15 +124,31 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   );
   const clearChart = useWorkbenchStore((state) => state.clearChart);
   const [measurementEnabled, setMeasurementEnabled] = useState(false);
+  const [viewMode, setViewMode] = useState<WaveformViewMode>("time");
   const [triggerControlsOpen, setTriggerControlsOpen] = useState(false);
   const [triggerChannelId, setTriggerChannelId] = useState("");
   const [triggerEdge, setTriggerEdge] = useState<WaveformTriggerEdge>("rising");
   const [triggerThreshold, setTriggerThreshold] = useState("");
   const [waveformFollowSuspended, setWaveformFollowSuspended] = useState(false);
+  const [waveformScaleMode, setWaveformScaleMode] =
+    useState<WaveformScaleMode>("shared");
+  const [focusedScaleChannelId, setFocusedScaleChannelId] = useState("");
+  const [sharedFixedRange, setSharedFixedRange] =
+    useState<WaveformFixedRange | null>(null);
+  const [independentFixedRanges, setIndependentFixedRanges] =
+    useState<IndependentWaveformFixedRanges>({});
+  const [rangeControlsOpen, setRangeControlsOpen] = useState(false);
+  const [rangeMinimumDraft, setRangeMinimumDraft] = useState("");
+  const [rangeMaximumDraft, setRangeMaximumDraft] = useState("");
   const [activeCursor, setActiveCursor] = useState<WaveformMeasurementCursor>("A");
   const [measurementChannelId, setMeasurementChannelId] = useState("");
   const [measurementAnchors, setMeasurementAnchors] =
     useState<WaveformMeasurementAnchors | null>(null);
+  const rangeButtonRef = useRef<HTMLButtonElement>(null);
+  const [spectrumChannelId, setSpectrumChannelId] = useState("");
+  const [spectrumWindowSize, setSpectrumWindowSize] =
+    useState<SpectrumWindowSize>(256);
+  const [spectrumSampleRateInput, setSpectrumSampleRateInput] = useState("");
   const pausedBeforeMeasurementRef = useRef(false);
   const previousChartDataRevisionRef = useRef(chartDataRevision);
   const triggerConfig = waveformTrigger.config;
@@ -98,10 +166,39 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     triggerThreshold.trim().length > 0 &&
     Number.isFinite(parsedTriggerThreshold) &&
     (!chartPaused || waveformTrigger.phase === "frozen");
+  const visibleScaleChannels = useMemo(
+    () => channels.filter((channel) => channel.visible),
+    [channels],
+  );
+  const focusedScaleChannel =
+    visibleScaleChannels.find((channel) => channel.id === focusedScaleChannelId) ??
+    visibleScaleChannels[0];
+  const activeFixedRange =
+    waveformScaleMode === "shared"
+      ? sharedFixedRange
+      : focusedScaleChannel
+        ? independentFixedRanges[focusedScaleChannel.id] ?? null
+        : null;
+  const parsedRangeMinimum = parseWaveformRangeInput(rangeMinimumDraft);
+  const parsedRangeMaximum = parseWaveformRangeInput(rangeMaximumDraft);
+  const rangeValidationMessage = validateWaveformFixedRange(
+    rangeMinimumDraft,
+    rangeMaximumDraft,
+  );
+  const canApplyFixedRange =
+    rangeValidationMessage === null &&
+    parsedRangeMinimum !== null &&
+    parsedRangeMaximum !== null;
+  const canConfigureRange =
+    waveformScaleMode === "shared"
+      ? visibleScaleChannels.length > 0
+      : focusedScaleChannel !== undefined;
+  const measurementChannels =
+    waveformScaleMode === "independent" ? visibleScaleChannels : channels;
   const selectedChannel =
-    channels.find((channel) => channel.id === measurementChannelId) ??
-    channels.find((channel) => channel.visible && channel.points.length > 0) ??
-    channels.find((channel) => channel.points.length > 0);
+    measurementChannels.find((channel) => channel.id === measurementChannelId) ??
+    measurementChannels.find((channel) => channel.visible && channel.points.length > 0) ??
+    measurementChannels.find((channel) => channel.points.length > 0);
   const visibleMeasurementPoints = useMemo(
     () => getVisibleMeasurementPoints(selectedChannel?.points ?? [], chartWindowSeconds),
     [chartWindowSeconds, selectedChannel?.points],
@@ -152,6 +249,23 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     }
   }, [triggerChannelId, triggerChannels, waveformTrigger.phase]);
 
+  useEffect(() => {
+    const nextFocusedChannelId = focusedScaleChannel?.id ?? "";
+    if (focusedScaleChannelId !== nextFocusedChannelId) {
+      setFocusedScaleChannelId(nextFocusedChannelId);
+      setRangeControlsOpen(false);
+    }
+  }, [focusedScaleChannel?.id, focusedScaleChannelId]);
+
+  useEffect(() => {
+    const channelIds = new Set(
+      channelIdSignature.length > 0 ? channelIdSignature.split("\u001f") : [],
+    );
+    setIndependentFixedRanges((current) =>
+      pruneIndependentWaveformFixedRanges(current, channelIds),
+    );
+  }, [channelIdSignature]);
+
   const resetMeasurement = useCallback(
     (restorePause: boolean) => {
       setWaveformFollowSuspended(false);
@@ -172,6 +286,9 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       return;
     }
     previousChartDataRevisionRef.current = chartDataRevision;
+    setSharedFixedRange(null);
+    setIndependentFixedRanges({});
+    setRangeControlsOpen(false);
     if (measurementEnabled) {
       resetMeasurement(true);
     }
@@ -219,6 +336,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
 
   const handleMeasurementToggle = () => {
     setWaveformFollowSuspended(false);
+    setRangeControlsOpen(false);
     if (measurementEnabled) {
       resetMeasurement(true);
       return;
@@ -232,6 +350,9 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     setMeasurementChannelId(selectedChannel.id);
     setMeasurementAnchors(initialMeasurementAnchors);
     setActiveCursor("A");
+    if (waveformScaleMode === "independent") {
+      setFocusedScaleChannelId(selectedChannel.id);
+    }
     setMeasurementEnabled(true);
     onMeasurementModeChange?.(true);
   };
@@ -262,7 +383,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   };
 
   const handleMeasurementChannelChange = (channelId: string) => {
-    const channel = channels.find((candidate) => candidate.id === channelId);
+    const channel = measurementChannels.find((candidate) => candidate.id === channelId);
     if (!channel) {
       return;
     }
@@ -273,6 +394,89 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     setMeasurementChannelId(channel.id);
     setMeasurementAnchors(anchors);
     setActiveCursor("A");
+    if (waveformScaleMode === "independent") {
+      setWaveformFollowSuspended(false);
+      setFocusedScaleChannelId(channel.id);
+    }
+  };
+
+  const handleScaleModeChange = (mode: WaveformScaleMode) => {
+    if (waveformScaleMode === mode) {
+      return;
+    }
+    setWaveformFollowSuspended(false);
+    setRangeControlsOpen(false);
+    setWaveformScaleMode(mode);
+  };
+
+  const handleFocusedScaleChannelChange = (channelId: string) => {
+    if (!visibleScaleChannels.some((channel) => channel.id === channelId)) {
+      return;
+    }
+    setWaveformFollowSuspended(false);
+    setRangeControlsOpen(false);
+    setFocusedScaleChannelId(channelId);
+  };
+
+  const closeRangeControls = (restoreFocus = false) => {
+    setRangeControlsOpen(false);
+    if (restoreFocus) {
+      globalThis.requestAnimationFrame(() => rangeButtonRef.current?.focus());
+    }
+  };
+
+  const handleRangeControlsToggle = () => {
+    if (rangeControlsOpen) {
+      closeRangeControls(true);
+      return;
+    }
+    if (!canConfigureRange || measurementEnabled || triggerRunning) {
+      return;
+    }
+    setTriggerControlsOpen(false);
+    setRangeMinimumDraft(
+      activeFixedRange ? String(activeFixedRange.minimum) : "",
+    );
+    setRangeMaximumDraft(
+      activeFixedRange ? String(activeFixedRange.maximum) : "",
+    );
+    setRangeControlsOpen(true);
+  };
+
+  const handleApplyFixedRange = () => {
+    if (
+      !canApplyFixedRange ||
+      parsedRangeMinimum === null ||
+      parsedRangeMaximum === null
+    ) {
+      return;
+    }
+    const nextRange = {
+      minimum: parsedRangeMinimum,
+      maximum: parsedRangeMaximum,
+    };
+    if (waveformScaleMode === "shared") {
+      setSharedFixedRange(nextRange);
+    } else if (focusedScaleChannel) {
+      setIndependentFixedRanges((current) => ({
+        ...current,
+        [focusedScaleChannel.id]: nextRange,
+      }));
+    }
+    closeRangeControls(true);
+  };
+
+  const handleRestoreAutomaticRange = () => {
+    if (waveformScaleMode === "shared") {
+      setSharedFixedRange(null);
+    } else if (focusedScaleChannel) {
+      setIndependentFixedRanges((current) => {
+        const nextRanges = { ...current };
+        delete nextRanges[focusedScaleChannel.id];
+        return nextRanges;
+      });
+    }
+    closeRangeControls(true);
   };
 
   const handleTriggerChannelChange = (channelId: string) => {
@@ -353,10 +557,28 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
 
   const handleClearChart = () => {
     setWaveformFollowSuspended(false);
+    setSharedFixedRange(null);
+    setIndependentFixedRanges({});
+    setRangeControlsOpen(false);
     if (measurementEnabled) {
       resetMeasurement(true);
     }
     clearChart();
+  };
+
+  const handleViewModeChange = (mode: WaveformViewMode) => {
+    if (mode === viewMode) {
+      return;
+    }
+    setWaveformFollowSuspended(false);
+    if (mode === "spectrum") {
+      if (measurementEnabled) {
+        resetMeasurement(true);
+      }
+      setTriggerControlsOpen(false);
+      setRangeControlsOpen(false);
+    }
+    setViewMode(mode);
   };
 
   return (
@@ -367,12 +589,21 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       data-trigger-controls={triggerControlsOpen}
       data-trigger-phase={waveformTrigger.phase}
       data-follow-suspended={waveformFollowSuspended}
+      data-scale-mode={waveformScaleMode}
+      data-y-range-mode={activeFixedRange ? "fixed" : "auto"}
+      data-y-range-target={
+        waveformScaleMode === "shared" ? "shared" : focusedScaleChannel?.id
+      }
+      data-y-range-min={activeFixedRange?.minimum}
+      data-y-range-max={activeFixedRange?.maximum}
+      data-range-controls={rangeControlsOpen}
+      data-view-mode={viewMode}
     >
       <header className="panel-toolbar">
         <div className="panel-title-group">
           <Waves size={17} />
           <div>
-            <h2 id="waveform-title">实时波形</h2>
+            <h2 id="waveform-title">{viewMode === "time" ? "实时波形" : "频谱分析"}</h2>
             <span className="panel-subtitle">{channels.length} 个通道</span>
           </div>
           <span className="live-state" data-paused={chartPaused}>
@@ -381,57 +612,87 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
           </span>
         </div>
         <div className="panel-actions">
-          <div className="time-window-control" role="group" aria-label="波形时间窗">
-            {[5, 15, 30, 60].map((seconds) => (
-              <button
-                key={seconds}
-                type="button"
-                data-active={chartWindowSeconds === seconds}
-                disabled={isWorkspaceTransitioning}
-                onClick={() => handleWindowChange(seconds as ChartWindowSeconds)}
-              >
-                {seconds}s
-              </button>
-            ))}
+          <div
+            className="segmented-control compact-segments waveform-view-control"
+            role="group"
+            aria-label="波形视图"
+          >
+            <button
+              type="button"
+              data-active={viewMode === "time"}
+              aria-pressed={viewMode === "time"}
+              onClick={() => handleViewModeChange("time")}
+            >
+              时域
+            </button>
+            <button
+              type="button"
+              data-active={viewMode === "spectrum"}
+              aria-pressed={viewMode === "spectrum"}
+              onClick={() => handleViewModeChange("spectrum")}
+            >
+              频谱
+            </button>
           </div>
-          <button
-            className="icon-button waveform-follow-latest"
-            type="button"
-            aria-label="回到实时波形"
-            aria-hidden={!waveformFollowSuspended}
-            title={waveformFollowSuspended ? "回到实时波形" : undefined}
-            data-active={waveformFollowSuspended}
-            data-visible={waveformFollowSuspended}
-            disabled={!waveformFollowSuspended}
-            onClick={() => setWaveformFollowSuspended(false)}
-          >
-            <LocateFixed size={16} />
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
-            title={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
-            aria-expanded={triggerControlsOpen}
-            aria-controls="waveform-trigger-controls"
-            data-active={triggerControlsOpen || waveformTrigger.phase !== "idle"}
-            disabled={measurementEnabled}
-            onClick={() => setTriggerControlsOpen((open) => !open)}
-          >
-            <Crosshair size={16} />
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
-            title={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
-            aria-pressed={measurementEnabled}
-            data-active={measurementEnabled}
-            disabled={!initialMeasurementAnchors || triggerRunning}
-            onClick={handleMeasurementToggle}
-          >
-            <Ruler size={16} />
-          </button>
+          {viewMode === "time" && (
+            <>
+              <div className="time-window-control" role="group" aria-label="波形时间窗">
+                {[5, 15, 30, 60].map((seconds) => (
+                  <button
+                    key={seconds}
+                    type="button"
+                    aria-pressed={chartWindowSeconds === seconds}
+                    data-active={chartWindowSeconds === seconds}
+                    disabled={isWorkspaceTransitioning}
+                    onClick={() => handleWindowChange(seconds as ChartWindowSeconds)}
+                  >
+                    {seconds}s
+                  </button>
+                ))}
+              </div>
+              <button
+                className="icon-button waveform-follow-latest"
+                type="button"
+                aria-label="回到实时波形"
+                aria-hidden={!waveformFollowSuspended}
+                title={waveformFollowSuspended ? "回到实时波形" : undefined}
+                data-active={waveformFollowSuspended}
+                data-visible={waveformFollowSuspended}
+                disabled={!waveformFollowSuspended}
+                onClick={() => setWaveformFollowSuspended(false)}
+              >
+                <LocateFixed size={16} />
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
+                title={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
+                aria-expanded={triggerControlsOpen}
+                aria-controls="waveform-trigger-controls"
+                data-active={triggerControlsOpen || waveformTrigger.phase !== "idle"}
+                disabled={measurementEnabled}
+                onClick={() => {
+                  setRangeControlsOpen(false);
+                  setTriggerControlsOpen((open) => !open);
+                }}
+              >
+                <Crosshair size={16} />
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
+                title={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
+                aria-pressed={measurementEnabled}
+                data-active={measurementEnabled}
+                disabled={!initialMeasurementAnchors || triggerRunning}
+                onClick={handleMeasurementToggle}
+              >
+                <Ruler size={16} />
+              </button>
+            </>
+          )}
           <button
             className="icon-button"
             type="button"
@@ -456,17 +717,214 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
 
       {channels.length > 0 && (
         <div className="channel-strip" aria-label="通道实时值">
+          <div className="waveform-scale-tools">
+            <div className="waveform-scale-mode" role="group" aria-label="波形量程模式">
+              <button
+                type="button"
+                aria-pressed={waveformScaleMode === "shared"}
+                data-active={waveformScaleMode === "shared"}
+                onClick={() => handleScaleModeChange("shared")}
+              >
+                共享
+              </button>
+              <button
+                type="button"
+                aria-pressed={waveformScaleMode === "independent"}
+                data-active={waveformScaleMode === "independent"}
+                onClick={() => handleScaleModeChange("independent")}
+              >
+                独立
+              </button>
+            </div>
+            {waveformScaleMode === "independent" && (
+              <label className="waveform-focus-channel">
+                <span
+                  style={{ backgroundColor: focusedScaleChannel?.color }}
+                  aria-hidden="true"
+                />
+                <select
+                  aria-label="独立量程焦点通道"
+                  title="选择纵轴通道"
+                  value={focusedScaleChannel?.id ?? ""}
+                  disabled={visibleScaleChannels.length === 0}
+                  onChange={(event) => handleFocusedScaleChannelChange(event.target.value)}
+                >
+                  {visibleScaleChannels.length === 0 && <option value="">无可见通道</option>}
+                  {visibleScaleChannels.map((channel) => (
+                    <option key={channel.id} value={channel.id}>
+                      {channel.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <button
+              ref={rangeButtonRef}
+              className="icon-button waveform-range-button"
+              type="button"
+              aria-label={rangeControlsOpen ? "关闭 Y 轴量程设置" : "设置 Y 轴量程"}
+              title={activeFixedRange ? "Y 轴使用固定量程" : "Y 轴使用自动量程"}
+              aria-expanded={rangeControlsOpen}
+              aria-controls="waveform-range-controls"
+              aria-pressed={activeFixedRange !== null}
+              data-active={rangeControlsOpen || activeFixedRange !== null}
+              disabled={!canConfigureRange || measurementEnabled || triggerRunning}
+              onClick={handleRangeControlsToggle}
+            >
+              <SlidersHorizontal size={15} />
+            </button>
+          </div>
           {channels.slice(0, 8).map((channel) => (
-            <div key={channel.id} className="channel-readout" data-visible={channel.visible}>
+            <div
+              key={channel.id}
+              className="channel-readout"
+              data-visible={channel.visible}
+              data-focused={
+                waveformScaleMode === "independent" &&
+                channel.id === focusedScaleChannel?.id
+              }
+            >
               <span style={{ backgroundColor: channel.color }} />
-              <small>{channel.name}</small>
-              <strong>{formatValue(channel.lastValue)}</strong>
+              <small>{channel.displayName}</small>
+              <strong>
+                {formatValue(channel.lastValue)}
+                {channel.unit && <span>{channel.unit}</span>}
+              </strong>
             </div>
           ))}
         </div>
       )}
 
-      {triggerControlsOpen && (
+      {rangeControlsOpen && (
+        <form
+          id="waveform-range-controls"
+          className="waveform-range-strip"
+          aria-label="Y 轴量程设置"
+          onSubmit={(event) => {
+            event.preventDefault();
+            handleApplyFixedRange();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              closeRangeControls(true);
+            }
+          }}
+        >
+          <div
+            className="waveform-range-target"
+            data-shared={waveformScaleMode === "shared"}
+          >
+            {waveformScaleMode === "independent" && (
+              <span
+                style={{ backgroundColor: focusedScaleChannel?.color }}
+                aria-hidden="true"
+              />
+            )}
+            <div>
+              <strong>
+                {waveformScaleMode === "shared"
+                  ? "共享 Y 轴"
+                  : focusedScaleChannel?.displayName ?? "无可见通道"}
+              </strong>
+              <small data-mode={activeFixedRange ? "fixed" : "auto"}>
+                {activeFixedRange ? "FIXED" : "AUTO"}
+              </small>
+            </div>
+          </div>
+          <label className="waveform-range-field" data-field="minimum">
+            <span>下限</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="any"
+              aria-label="Y 轴下限"
+              value={rangeMinimumDraft}
+              autoFocus
+              onChange={(event) => setRangeMinimumDraft(event.target.value)}
+            />
+          </label>
+          <label className="waveform-range-field" data-field="maximum">
+            <span>上限</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="any"
+              aria-label="Y 轴上限"
+              value={rangeMaximumDraft}
+              onChange={(event) => setRangeMaximumDraft(event.target.value)}
+            />
+          </label>
+          <span
+            className="waveform-range-validation"
+            role={rangeValidationMessage ? "alert" : "status"}
+          >
+            {rangeValidationMessage ?? "下限 < 上限"}
+          </span>
+          <div className="waveform-range-actions">
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={activeFixedRange === null}
+              onClick={handleRestoreAutomaticRange}
+            >
+              <RotateCcw size={14} />
+              自动
+            </button>
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={!canApplyFixedRange}
+            >
+              <Check size={14} />
+              固定
+            </button>
+            <button
+              className="icon-button compact"
+              type="button"
+              aria-label="关闭 Y 轴量程设置"
+              title="关闭"
+              onClick={() => closeRangeControls(true)}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </form>
+      )}
+
+      {viewMode === "spectrum" && (
+        <Suspense
+          fallback={
+            <>
+              <div
+                className="spectrum-control-strip"
+                aria-label="频谱设置加载中"
+                aria-busy="true"
+              />
+              <div className="waveform-canvas-wrap">
+                <div className="panel-empty-state" role="status" aria-live="polite">
+                  <Waves size={30} strokeWidth={1.4} />
+                  <strong>正在加载频谱</strong>
+                </div>
+              </div>
+            </>
+          }
+        >
+          <WaveformSpectrum
+            channels={channels}
+            theme={theme}
+            chartDataRevision={chartDataRevision}
+            channelId={spectrumChannelId}
+            windowSize={spectrumWindowSize}
+            sampleRateInput={spectrumSampleRateInput}
+            onChannelChange={setSpectrumChannelId}
+            onWindowSizeChange={setSpectrumWindowSize}
+            onSampleRateChange={setSpectrumSampleRateInput}
+          />
+        </Suspense>
+      )}
+
+      {viewMode === "time" && triggerControlsOpen && (
         <div
           id="waveform-trigger-controls"
           className="waveform-trigger-strip"
@@ -487,7 +945,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
               {triggerChannels.length === 0 && <option value="">无通道</option>}
               {triggerChannels.map((channel) => (
                 <option key={channel.id} value={channel.id}>
-                  {channel.name}
+                  {channel.displayName}
                 </option>
               ))}
             </select>
@@ -517,7 +975,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
             </button>
           </div>
           <label className="trigger-threshold-control">
-            <span>阈值</span>
+            <span>{selectedTriggerChannel?.unit ? `阈值 (${selectedTriggerChannel.unit})` : "阈值"}</span>
             <input
               type="number"
               inputMode="decimal"
@@ -542,157 +1000,64 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
         </div>
       )}
 
-      {measurementEnabled && selectedChannel && measurementResult && (
-        <MeasurementStrip
-          channels={channels}
-          selectedChannel={selectedChannel}
-          activeCursor={activeCursor}
-          measurement={measurementResult}
-          sampleCount={visibleMeasurementPoints.length}
-          onChannelChange={handleMeasurementChannelChange}
-          onActiveCursorChange={setActiveCursor}
-          onCursorIndexChange={handleCursorIndexChange}
-        />
+      {viewMode === "time" && measurementEnabled && selectedChannel && measurementResult && (
+        <Suspense
+          fallback={
+            <div
+              className="waveform-measurement-strip"
+              aria-label="波形测量加载中"
+              aria-busy="true"
+            />
+          }
+        >
+          <MeasurementStrip
+            channels={measurementChannels}
+            selectedChannel={selectedChannel}
+            activeCursor={activeCursor}
+            measurement={measurementResult}
+            visiblePoints={visibleMeasurementPoints}
+            onChannelChange={handleMeasurementChannelChange}
+            onActiveCursorChange={setActiveCursor}
+            onCursorIndexChange={handleCursorIndexChange}
+          />
+        </Suspense>
       )}
 
-      <div className="waveform-canvas-wrap">
-        {channels.length === 0 ? (
-          <div className="panel-empty-state">
-            <Waves size={30} strokeWidth={1.4} />
-            <strong>等待数据帧</strong>
-            <span>连接设备或启动模拟数据源</span>
-          </div>
-        ) : (
-          <WaveformChart
-            channels={channels}
-            windowSeconds={chartWindowSeconds}
-            theme={theme}
-            measurementEnabled={measurementEnabled}
-            measurement={measurementResult}
-            followSuspended={waveformFollowSuspended}
-            canSuspendFollow={!chartPaused && !measurementEnabled}
-            triggerTimestampSeconds={waveformTrigger.triggerTimestampSeconds}
-            onFollowSuspend={() => {
-              disarmWaveformTrigger();
-              setWaveformFollowSuspended(true);
-            }}
-            onMeasurementSelect={handleChartMeasurement}
-          />
-        )}
-      </div>
+      {viewMode === "time" && (
+        <div className="waveform-canvas-wrap">
+          {channels.length === 0 ? (
+            <div className="panel-empty-state">
+              <Waves size={30} strokeWidth={1.4} />
+              <strong>等待数据帧</strong>
+              <span>连接设备或启动模拟数据源</span>
+            </div>
+          ) : (
+            <WaveformChart
+              channels={channels}
+              windowSeconds={chartWindowSeconds}
+              theme={theme}
+              scaleMode={waveformScaleMode}
+              sharedFixedRange={sharedFixedRange}
+              independentFixedRanges={independentFixedRanges}
+              focusedChannelId={
+                waveformScaleMode === "independent" ? focusedScaleChannel?.id ?? null : null
+              }
+              measurementChannelId={selectedChannel?.id ?? null}
+              measurementEnabled={measurementEnabled}
+              measurement={measurementResult}
+              followSuspended={waveformFollowSuspended}
+              canSuspendFollow={!chartPaused && !measurementEnabled}
+              triggerTimestampSeconds={waveformTrigger.triggerTimestampSeconds}
+              onFollowSuspend={() => {
+                disarmWaveformTrigger();
+                setWaveformFollowSuspended(true);
+              }}
+              onMeasurementSelect={handleChartMeasurement}
+            />
+          )}
+        </div>
+      )}
     </section>
-  );
-}
-
-interface MeasurementStripProps {
-  channels: ChannelSeries[];
-  selectedChannel: ChannelSeries;
-  activeCursor: WaveformMeasurementCursor;
-  measurement: WaveformMeasurementResult;
-  sampleCount: number;
-  onChannelChange(channelId: string): void;
-  onActiveCursorChange(cursor: WaveformMeasurementCursor): void;
-  onCursorIndexChange(cursor: WaveformMeasurementCursor, index: number): void;
-}
-
-function MeasurementStrip({
-  channels,
-  selectedChannel,
-  activeCursor,
-  measurement,
-  sampleCount,
-  onChannelChange,
-  onActiveCursorChange,
-  onCursorIndexChange,
-}: MeasurementStripProps) {
-  const lastIndex = Math.max(0, sampleCount - 1);
-
-  return (
-    <div className="waveform-measurement-strip">
-      <div className="measurement-controls">
-        <div className="measurement-primary-controls">
-          <span
-            className="measurement-channel-swatch"
-            style={{ backgroundColor: selectedChannel.color }}
-            aria-hidden="true"
-          />
-          <select
-            id="waveform-measurement-channel"
-            name="waveform-measurement-channel"
-            aria-label="测量通道"
-            value={selectedChannel.id}
-            onChange={(event) => onChannelChange(event.target.value)}
-          >
-            {channels.map((channel) => (
-              <option key={channel.id} value={channel.id}>
-                {channel.name}
-              </option>
-            ))}
-          </select>
-          <div className="measurement-cursor-selector" role="group" aria-label="当前测量游标">
-            {(["A", "B"] as const).map((cursor) => (
-              <button
-                key={cursor}
-                type="button"
-                aria-pressed={activeCursor === cursor}
-                data-active={activeCursor === cursor}
-                onClick={() => onActiveCursorChange(cursor)}
-              >
-                {cursor}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="measurement-range-controls">
-          <label data-cursor="A">
-            <span>A</span>
-            <input
-              id="waveform-cursor-a"
-              name="waveform-cursor-a"
-              type="range"
-              aria-label="游标 A 采样点"
-              min={0}
-              max={measurement.pointB.index}
-              step={1}
-              value={measurement.pointA.index}
-              onChange={(event) => onCursorIndexChange("A", Number(event.target.value))}
-            />
-          </label>
-          <label data-cursor="B">
-            <span>B</span>
-            <input
-              id="waveform-cursor-b"
-              name="waveform-cursor-b"
-              type="range"
-              aria-label="游标 B 采样点"
-              min={measurement.pointA.index}
-              max={lastIndex}
-              step={1}
-              value={measurement.pointB.index}
-              onChange={(event) => onCursorIndexChange("B", Number(event.target.value))}
-            />
-          </label>
-        </div>
-      </div>
-      <dl className="measurement-readouts" aria-label="波形测量结果" aria-live="polite">
-        <MeasurementReadout label="tA" value={formatCursorTime(measurement.pointA.timestampSeconds)} />
-        <MeasurementReadout label="tB" value={formatCursorTime(measurement.pointB.timestampSeconds)} />
-        <MeasurementReadout label="Δt" value={formatDuration(measurement.deltaTimeSeconds)} />
-        <MeasurementReadout label="1/Δt" value={formatFrequency(measurement.frequencyHz)} />
-        <MeasurementReadout label="yA" value={formatValue(measurement.pointA.value)} />
-        <MeasurementReadout label="yB" value={formatValue(measurement.pointB.value)} />
-        <MeasurementReadout label="Δy" value={formatValue(measurement.deltaY)} />
-      </dl>
-    </div>
-  );
-}
-
-function MeasurementReadout({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd>{value}</dd>
-    </div>
   );
 }
 
@@ -700,6 +1065,11 @@ interface WaveformChartProps {
   channels: ChannelSeries[];
   windowSeconds: number;
   theme: ThemeMode;
+  scaleMode: WaveformScaleMode;
+  sharedFixedRange: WaveformFixedRange | null;
+  independentFixedRanges: IndependentWaveformFixedRanges;
+  focusedChannelId: string | null;
+  measurementChannelId: string | null;
   measurementEnabled: boolean;
   measurement: WaveformMeasurementResult | null;
   followSuspended: boolean;
@@ -722,6 +1092,11 @@ function WaveformChart({
   channels,
   windowSeconds,
   theme,
+  scaleMode,
+  sharedFixedRange,
+  independentFixedRanges,
+  focusedChannelId,
+  measurementChannelId,
   measurementEnabled,
   measurement,
   followSuspended,
@@ -732,17 +1107,34 @@ function WaveformChart({
 }: WaveformChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<uPlot | null>(null);
+  const suspendedXRangeRef = useRef<[number, number] | null>(null);
   const overlayRef = useRef<WaveformOverlayElements | null>(null);
+  const measurementScaleKey = waveformScaleKey(scaleMode, measurementChannelId);
+  const measurementChannelColor =
+    channels.find((channel) => channel.id === measurementChannelId)?.color ?? "#46d89c";
   const measurementRef = useRef({
     enabled: measurementEnabled,
     result: measurement,
     onSelect: onMeasurementSelect,
+    scaleKey: measurementScaleKey,
+    color: measurementChannelColor,
   });
   const followInteractionRef = useRef({ canSuspendFollow, onFollowSuspend });
+  const followSuspendedRef = useRef(followSuspended);
   const triggerTimestampRef = useRef(triggerTimestampSeconds);
   const channelSignature = channels
     .map((channel) => `${channel.id}:${channel.color}:${channel.visible}`)
     .join("|");
+  const fixedRangeSignature =
+    scaleMode === "shared"
+      ? formatWaveformFixedRangeSignature(sharedFixedRange)
+      : channels
+          .map((channel) =>
+            `${channel.id}:${formatWaveformFixedRangeSignature(
+              independentFixedRanges[channel.id] ?? null,
+            )}`,
+          )
+          .join("|");
   const data = useMemo(
     () =>
       createAlignedData(
@@ -759,8 +1151,11 @@ function WaveformChart({
     enabled: measurementEnabled,
     result: measurement,
     onSelect: onMeasurementSelect,
+    scaleKey: measurementScaleKey,
+    color: measurementChannelColor,
   };
   followInteractionRef.current = { canSuspendFollow, onFollowSuspend };
+  followSuspendedRef.current = followSuspended;
   triggerTimestampRef.current = triggerTimestampSeconds;
 
   useLayoutEffect(() => {
@@ -775,6 +1170,8 @@ function WaveformChart({
         overlayRef.current,
         measurementRef.current.enabled,
         measurementRef.current.result,
+        measurementRef.current.scaleKey,
+        measurementRef.current.color,
         triggerTimestampRef.current,
       );
     };
@@ -806,6 +1203,15 @@ function WaveformChart({
     };
     const computed = getComputedStyle(container);
     const channelMetadata = channelMetadataRef.current;
+    const focusedChannel = channelMetadata.find(
+      (channel) => channel.visible && channel.id === focusedChannelId,
+    );
+    const focusedScaleKey =
+      scaleMode === "shared"
+        ? "y"
+        : focusedChannel
+          ? waveformScaleKey(scaleMode, focusedChannel.id)
+          : null;
     const options: Options = {
       width: Math.max(container.clientWidth, 200),
       height: Math.max(container.clientHeight, 180),
@@ -820,31 +1226,60 @@ function WaveformChart({
         points: { size: 5, width: 1 },
       },
       legend: { show: false },
-      scales: {
-        x: { time: true },
-        y: { auto: true },
-      },
+      scales:
+        scaleMode === "shared"
+          ? {
+              x: { time: true },
+              y: createWaveformScaleOptions(sharedFixedRange),
+            }
+          : {
+              x: { time: true },
+              ...Object.fromEntries(
+                channelMetadata.map((channel) => [
+                  waveformScaleKey(scaleMode, channel.id),
+                  createWaveformScaleOptions(
+                    independentFixedRanges[channel.id] ?? null,
+                  ),
+                ]),
+              ),
+            },
       axes: [
         {
+          scale: "x",
           stroke: computed.getPropertyValue("--text-muted").trim(),
           grid: { stroke: computed.getPropertyValue("--chart-grid").trim(), width: 1 },
           ticks: { stroke: computed.getPropertyValue("--chart-grid-strong").trim(), width: 1 },
           font: "11px ui-monospace, SFMono-Regular, Consolas, monospace",
           size: 32,
         },
-        {
-          stroke: computed.getPropertyValue("--text-muted").trim(),
-          grid: { stroke: computed.getPropertyValue("--chart-grid").trim(), width: 1 },
-          ticks: { stroke: computed.getPropertyValue("--chart-grid-strong").trim(), width: 1 },
-          font: "11px ui-monospace, SFMono-Regular, Consolas, monospace",
-          size: 50,
-        },
+        ...(focusedScaleKey
+          ? [
+              {
+                scale: focusedScaleKey,
+                stroke:
+                  scaleMode === "independent" && focusedChannel
+                    ? focusedChannel.color
+                    : computed.getPropertyValue("--text-muted").trim(),
+                grid: {
+                  stroke: computed.getPropertyValue("--chart-grid").trim(),
+                  width: 1,
+                },
+                ticks: {
+                  stroke: computed.getPropertyValue("--chart-grid-strong").trim(),
+                  width: 1,
+                },
+                font: "11px ui-monospace, SFMono-Regular, Consolas, monospace",
+                size: 50,
+              },
+            ]
+          : []),
       ],
       series: [
         {},
         ...channelMetadata.map((channel) => ({
           label: channel.name,
           stroke: channel.color,
+          scale: waveformScaleKey(scaleMode, channel.id),
           width: 1.8,
           show: channel.visible,
           spanGaps: true,
@@ -863,6 +1298,10 @@ function WaveformChart({
     const chart = new uPlot(options, initialDataRef.current, container);
     chartRef.current = chart;
     overlayRef.current = createWaveformOverlay(chart.over);
+    const suspendedXRange = suspendedXRangeRef.current;
+    if (followSuspendedRef.current && suspendedXRange) {
+      chart.setScale("x", { min: suspendedXRange[0], max: suspendedXRange[1] });
+    }
     syncWaveformOverlay(chart);
     let pointerStart: { id: number; x: number; y: number } | null = null;
     const handlePointerDown = (event: PointerEvent) => {
@@ -913,11 +1352,31 @@ function WaveformChart({
       chart.over.removeEventListener("pointerdown", handlePointerDown);
       chart.over.removeEventListener("pointerup", handlePointerUp);
       chart.over.removeEventListener("pointercancel", handlePointerCancel);
+      const xMinimum = chart.scales.x?.min;
+      const xMaximum = chart.scales.x?.max;
+      suspendedXRangeRef.current =
+        followSuspendedRef.current &&
+        typeof xMinimum === "number" &&
+        typeof xMaximum === "number" &&
+        Number.isFinite(xMinimum) &&
+        Number.isFinite(xMaximum) &&
+        xMinimum < xMaximum
+          ? [xMinimum, xMaximum]
+          : null;
       chart.destroy();
       chartRef.current = null;
       overlayRef.current = null;
     };
-  }, [channelSignature, measurementEnabled, theme]);
+  }, [
+    channelSignature,
+    fixedRangeSignature,
+    focusedChannelId,
+    independentFixedRanges,
+    measurementEnabled,
+    scaleMode,
+    sharedFixedRange,
+    theme,
+  ]);
 
   useLayoutEffect(() => {
     chartRef.current?.setData(data, !followSuspended);
@@ -931,10 +1390,18 @@ function WaveformChart({
         overlayRef.current,
         measurementEnabled,
         measurement,
+        measurementScaleKey,
+        measurementChannelColor,
         triggerTimestampSeconds,
       );
     }
-  }, [measurement, measurementEnabled, triggerTimestampSeconds]);
+  }, [
+    measurement,
+    measurementChannelColor,
+    measurementEnabled,
+    measurementScaleKey,
+    triggerTimestampSeconds,
+  ]);
 
   return (
     <div
@@ -980,6 +1447,8 @@ function updateWaveformOverlay(
   elements: WaveformOverlayElements | null,
   enabled: boolean,
   measurement: WaveformMeasurementResult | null,
+  measurementScaleKey: string,
+  measurementColor: string,
   triggerTimestampSeconds: number | null,
 ): void {
   if (!elements) {
@@ -1001,10 +1470,14 @@ function updateWaveformOverlay(
     return;
   }
 
+  elements.range.style.setProperty("--measurement-channel-color", measurementColor);
+  elements.cursorA.style.setProperty("--measurement-channel-color", measurementColor);
+  elements.cursorB.style.setProperty("--measurement-channel-color", measurementColor);
+
   const leftA = chart.valToPos(measurement.pointA.timestampSeconds, "x");
   const leftB = chart.valToPos(measurement.pointB.timestampSeconds, "x");
-  const topA = chart.valToPos(measurement.pointA.value, "y");
-  const topB = chart.valToPos(measurement.pointB.value, "y");
+  const topA = chart.valToPos(measurement.pointA.value, measurementScaleKey);
+  const topB = chart.valToPos(measurement.pointB.value, measurementScaleKey);
   if (![leftA, leftB, topA, topB].every(Number.isFinite)) {
     elements.range.hidden = true;
     elements.cursorA.hidden = true;
@@ -1045,6 +1518,66 @@ function formatTriggerThreshold(value: number): string {
   return Number.isFinite(value) ? String(value) : "";
 }
 
+function waveformScaleKey(
+  mode: WaveformScaleMode,
+  channelId: string | null,
+): string {
+  return mode === "independent" && channelId ? `channel:${channelId}` : "y";
+}
+
+function createWaveformScaleOptions(fixedRange: WaveformFixedRange | null) {
+  if (!fixedRange) {
+    return { auto: true };
+  }
+  return {
+    auto: false,
+    range: [fixedRange.minimum, fixedRange.maximum] as [number, number],
+  };
+}
+
+function parseWaveformRangeInput(value: string): number | null {
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function validateWaveformFixedRange(
+  minimumDraft: string,
+  maximumDraft: string,
+): string | null {
+  const minimum = parseWaveformRangeInput(minimumDraft);
+  const maximum = parseWaveformRangeInput(maximumDraft);
+  if (minimum === null || maximum === null) {
+    return "请输入有限上下限";
+  }
+  if (minimum >= maximum) {
+    return "下限必须小于上限";
+  }
+  return null;
+}
+
+function formatWaveformFixedRangeSignature(
+  fixedRange: WaveformFixedRange | null,
+): string {
+  return fixedRange ? `${fixedRange.minimum}:${fixedRange.maximum}` : "auto";
+}
+
+function pruneIndependentWaveformFixedRanges(
+  ranges: IndependentWaveformFixedRanges,
+  channelIds: ReadonlySet<string>,
+): IndependentWaveformFixedRanges {
+  const entries = Object.entries(ranges);
+  if (entries.every(([channelId]) => channelIds.has(channelId))) {
+    return ranges;
+  }
+  return Object.fromEntries(
+    entries.filter(([channelId]) => channelIds.has(channelId)),
+  );
+}
+
 function createAlignedData(channels: ChannelSeries[], windowSeconds: number): AlignedData {
   const referencePoints = channels[0]?.points ?? [];
   const latestTime = referencePoints.at(-1)?.x ?? 0;
@@ -1055,41 +1588,6 @@ function createAlignedData(channels: ChannelSeries[], windowSeconds: number): Al
     return timestamps.map((timestamp) => valueByTime.get(timestamp) ?? null);
   });
   return [timestamps, ...values] as AlignedData;
-}
-
-function formatCursorTime(timestampSeconds: number): string {
-  const date = new Date(timestampSeconds * 1_000);
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  const seconds = String(date.getSeconds()).padStart(2, "0");
-  const milliseconds = String(date.getMilliseconds()).padStart(3, "0");
-  return `${hours}:${minutes}:${seconds}.${milliseconds}`;
-}
-
-function formatDuration(seconds: number): string {
-  if (seconds >= 1) {
-    return `${seconds.toFixed(3)} s`;
-  }
-  if (seconds >= 0.001) {
-    return `${(seconds * 1_000).toFixed(3)} ms`;
-  }
-  if (seconds >= 0.000_001) {
-    return `${(seconds * 1_000_000).toFixed(3)} us`;
-  }
-  return `${(seconds * 1_000_000_000).toFixed(3)} ns`;
-}
-
-function formatFrequency(frequencyHz: number | null): string {
-  if (frequencyHz === null) {
-    return "--";
-  }
-  if (frequencyHz >= 1_000_000) {
-    return `${(frequencyHz / 1_000_000).toFixed(3)} MHz`;
-  }
-  if (frequencyHz >= 1_000) {
-    return `${(frequencyHz / 1_000).toFixed(3)} kHz`;
-  }
-  return `${frequencyHz.toFixed(3)} Hz`;
 }
 
 function formatValue(value: number): string {
