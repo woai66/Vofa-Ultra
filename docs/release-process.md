@@ -29,8 +29,22 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 ## 3. 构建候选包
 
-首个 Beta 只在 Windows 10/11 x64 构建一个无签名 NSIS `.exe` 候选包。具体命令见
-[README](../README.md#本地无签名-windows-候选包)。
+首个 Beta 只在 Windows 10/11 x64 构建一个无签名 NSIS `.exe` 候选包：
+
+```bash
+pnpm tauri build
+pnpm package:collect windows
+```
+
+`package:collect` 要求 `artifacts/windows` 不存在或为空，防止把旧候选包混入本次结果。已有产物应先移走，或在确认
+不再需要后删除。收集完成后，安装包、`SHA256SUMS`、SBOM 和第三方许可证材料位于 `artifacts/windows`。
+
+在 PowerShell 中可再次核对安装包摘要：
+
+```powershell
+Get-FileHash -Algorithm SHA256 artifacts\windows\*.exe
+Get-Content artifacts\windows\SHA256SUMS
+```
 
 构建后至少确认：
 
