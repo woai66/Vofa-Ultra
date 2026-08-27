@@ -372,6 +372,7 @@ export function TerminalPanel() {
   const historyDraftRef = useRef<CommandDraft | null>(null);
   const pendingSelectionRef = useRef<number | null>(null);
   const previousTerminalAutoScrollRef = useRef(terminalAutoScroll);
+  const draftRevisionRef = useRef(0);
   const [message, setMessage] = useState("");
   const [sendError, setSendError] = useState("");
   const [manualSendPending, setManualSendPending] = useState(false);
@@ -530,6 +531,18 @@ export function TerminalPanel() {
     !taskActive;
   const fileSendHasSnapshot = serialFileSend.jobId > 0 && serialFileSend.status !== "idle";
   const fileSendProgressMax = Math.max(1, serialFileSend.totalBytes);
+
+  useEffect(() =>
+    useWorkbenchStore.subscribe((state, previousState) => {
+      if (
+        state.sendMode !== previousState.sendMode ||
+        state.lineEnding !== previousState.lineEnding ||
+        state.commandChecksum !== previousState.commandChecksum ||
+        state.terminalTxTextEncoding !== previousState.terminalTxTextEncoding
+      ) {
+        draftRevisionRef.current += 1;
+      }
+    }), []);
   const fileSendProgressValue =
     serialFileSend.totalBytes > 0
       ? Math.min(serialFileSend.transmittedBytes, serialFileSend.totalBytes)
@@ -707,6 +720,7 @@ export function TerminalPanel() {
 
   useEffect(() => {
     if (isWorkspaceTransitioning) {
+      draftRevisionRef.current += 1;
       setModbusOpen(false);
       setQuickCommandsOpen(false);
       setFileSendOpen(false);
@@ -790,7 +804,14 @@ export function TerminalPanel() {
     setCopiedConverterOutput(null);
   };
 
+  const markDraftChanged = () => {
+    draftRevisionRef.current += 1;
+  };
+
   const applyDraft = (draft: CommandDraft) => {
+    if (draft.value !== message) {
+      markDraftChanged();
+    }
     setMessage(draft.value);
     setSendMode(draft.mode);
     setLineEnding(draft.lineEnding);
@@ -811,6 +832,9 @@ export function TerminalPanel() {
     const nextMessage =
       message.slice(0, selectionStart) + token + message.slice(selectionEnd);
     pendingSelectionRef.current = selectionStart + token.length;
+    if (nextMessage !== message) {
+      markDraftChanged();
+    }
     setMessage(nextMessage);
     setSendError("");
     setVariablesOpen(false);
@@ -927,14 +951,20 @@ export function TerminalPanel() {
     ) {
       return;
     }
+    const submittedRevision = draftRevisionRef.current;
     setSendError("");
     setManualSendPending(true);
     try {
       await send(message, sendMode, lineEnding);
-      setMessage("");
-      resetHistoryNavigation();
+      if (draftRevisionRef.current === submittedRevision) {
+        markDraftChanged();
+        setMessage("");
+        resetHistoryNavigation();
+      }
     } catch (error) {
-      setSendError(error instanceof Error ? error.message : String(error));
+      if (draftRevisionRef.current === submittedRevision) {
+        setSendError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setManualSendPending(false);
     }
@@ -1520,6 +1550,7 @@ export function TerminalPanel() {
               spellCheck={false}
               placeholder={sendMode === "hex" ? "01 03 00 00 00 02 C4 0B" : "输入要发送的内容"}
               onChange={(event) => {
+                markDraftChanged();
                 setMessage(event.target.value);
                 setSendError("");
                 resetHistoryNavigation();
