@@ -14,6 +14,7 @@ import {
   createDefaultAutoResponderRule,
   isAutoResponderActive,
 } from "../core/autoResponder";
+import { isModbusPollActive } from "../core/modbusPoller";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { AutoResponderRule } from "../types/automation";
 import type { DisplayMode, LineEnding } from "../types/serial";
@@ -26,6 +27,7 @@ export function AutomationPanel() {
     (state) => state.serialControlLineOperation,
   );
   const commandTask = useWorkbenchStore((state) => state.commandTask);
+  const modbusPoll = useWorkbenchStore((state) => state.modbusPoll);
   const isSendingCommand = useWorkbenchStore((state) => state.isSendingCommand);
   const workspaceTransitionStatus = useWorkbenchStore(
     (state) => state.workspaceTransitionStatus,
@@ -58,6 +60,7 @@ export function AutomationPanel() {
     enabledRuleCount > 0 &&
     serialControlLineOperation === "idle" &&
     !taskActive &&
+    !isModbusPollActive(modbusPoll) &&
     !isSendingCommand &&
     !isTransitioning;
   const draftDirty = useMemo(

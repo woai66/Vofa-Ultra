@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createInitialModbusPollSnapshot } from "../core/modbusPoller";
 import { createEmptyProtocolHealth } from "../core/protocols";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { Sidebar } from "./Sidebar";
@@ -9,6 +10,7 @@ const originalSetSerialControlLine = useWorkbenchStore.getState().setSerialContr
 
 describe("Sidebar 串口恢复界面", () => {
   beforeEach(() => {
+    useWorkbenchStore.getState().stopModbusPolling();
     useWorkbenchStore.setState({
       isNativeRuntime: true,
       source: "serial",
@@ -54,10 +56,12 @@ describe("Sidebar 串口恢复界面", () => {
       captureStatus: "idle",
       replayStatus: "idle",
       replaySessionId: 0,
+      modbusPoll: createInitialModbusPollSnapshot(),
     });
   });
 
   afterEach(() => {
+    useWorkbenchStore.getState().stopModbusPolling();
     cleanup();
     useWorkbenchStore.setState({
       refreshPorts: originalRefreshPorts,
@@ -78,6 +82,38 @@ describe("Sidebar 串口恢复界面", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "关闭侧栏" }));
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("Modbus 轮询期间禁用串口控制线", () => {
+    useWorkbenchStore.setState({
+      connectionStatus: "connected",
+      serialRecovery: {
+        ...useWorkbenchStore.getState().serialRecovery,
+        phase: "idle",
+      },
+      modbusPoll: {
+        ...createInitialModbusPollSnapshot(),
+        status: "running",
+        request: {
+          operation: "read-input-registers",
+          unitId: 1,
+          address: 0,
+          quantity: 1,
+        },
+      },
+    });
+
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("checkbox", { name: "DTR" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "RTS" })).toBeDisabled();
   });
 
   it("显示恢复阶段、尝试次数和诊断工具", () => {

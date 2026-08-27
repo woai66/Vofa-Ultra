@@ -78,7 +78,12 @@ import {
   terminalEntryPayload,
   type TerminalDirectionFilter,
 } from "../core/terminalSearch";
-import { formatModbusRtuFrame, type ModbusRtuRequest } from "../core/modbusRtu";
+import { isModbusPollActive } from "../core/modbusPoller";
+import {
+  formatModbusRtuFrame,
+  type ModbusRtuReadRequest,
+  type ModbusRtuRequest,
+} from "../core/modbusRtu";
 import { selectSerialFilePath } from "../services/serialClient";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { DisplayMode, LineEnding, SerialFileSendStatus } from "../types/serial";
@@ -87,11 +92,13 @@ import type {
   QuickCommand,
   TerminalEntry,
 } from "../types/workbench";
-import { ModbusRtuBuilder } from "./ModbusRtuBuilder";
 import { QuickCommandPopover } from "./QuickCommandPopover";
 
 const TerminalExportMenu = lazy(() => import("./TerminalExportMenu"));
 const CommandHistoryPopover = lazy(() => import("./CommandHistoryPopover"));
+const ModbusRtuBuilder = lazy(() =>
+  import("./ModbusRtuBuilder").then((module) => ({ default: module.ModbusRtuBuilder })),
+);
 
 type RepeatMode = "count" | "continuous";
 const COMMAND_REFERENCE_VIEWS = ["variables", "ascii", "converter", "checksum"] as const;
@@ -291,6 +298,7 @@ export function TerminalPanel() {
   const commandHistory = useWorkbenchStore((state) => state.commandHistory);
   const commandTask = useWorkbenchStore((state) => state.commandTask);
   const autoResponder = useWorkbenchStore((state) => state.autoResponder);
+  const modbusPoll = useWorkbenchStore((state) => state.modbusPoll);
   const modbusTransaction = useWorkbenchStore((state) => state.modbusTransaction);
   const modbusTransactions = useWorkbenchStore((state) => state.modbusTransactions);
   const serialFileSend = useWorkbenchStore((state) => state.serialFileSend);
@@ -328,6 +336,8 @@ export function TerminalPanel() {
   const cancelFileSend = useWorkbenchStore((state) => state.cancelFileSend);
   const startPeriodicSend = useWorkbenchStore((state) => state.startPeriodicSend);
   const stopPeriodicSend = useWorkbenchStore((state) => state.stopPeriodicSend);
+  const startModbusPolling = useWorkbenchStore((state) => state.startModbusPolling);
+  const stopModbusPolling = useWorkbenchStore((state) => state.stopModbusPolling);
   const startModbusTransaction = useWorkbenchStore((state) => state.startModbusTransaction);
   const cancelModbusTransaction = useWorkbenchStore((state) => state.cancelModbusTransaction);
   const clearModbusTransactions = useWorkbenchStore((state) => state.clearModbusTransactions);
@@ -425,11 +435,13 @@ export function TerminalPanel() {
   const visibleError = templatePreview.error || sendError;
   const taskActive = commandTask.status === "running" || commandTask.status === "stopping";
   const autoResponderActive = isAutoResponderActive(autoResponder);
+  const modbusPollActive = isModbusPollActive(modbusPoll);
   const modbusTransactionActive = modbusTransaction.status !== "idle";
   const fileSendActive = isFileSendActive(serialFileSend.status);
   const manualSendBlocked =
     serialControlLineOperation !== "idle" ||
     fileSendActive ||
+    modbusPollActive ||
     modbusTransactionActive ||
     manualSendPending ||
     (isSendingCommand && commandSendOrigin !== "auto-responder");
@@ -443,6 +455,7 @@ export function TerminalPanel() {
     !autoResponderActive &&
     serialControlLineOperation === "idle" &&
     !fileSendActive &&
+    !modbusPollActive &&
     !modbusTransactionActive &&
     !taskActive;
   const canExecuteModbus =
@@ -452,6 +465,7 @@ export function TerminalPanel() {
     !isSendingCommand &&
     !autoResponderActive &&
     !fileSendActive &&
+    !modbusPollActive &&
     !modbusTransactionActive &&
     !taskActive;
   const canStartFileSend =
@@ -466,6 +480,7 @@ export function TerminalPanel() {
     !isSendingCommand &&
     !autoResponderActive &&
     !fileSendActive &&
+    !modbusPollActive &&
     !modbusTransactionActive &&
     !taskActive;
   const fileSendHasSnapshot = serialFileSend.jobId > 0 && serialFileSend.status !== "idle";
@@ -737,6 +752,14 @@ export function TerminalPanel() {
 
   const executeModbusTransaction = (request: ModbusRtuRequest, timeoutMs: number) =>
     startModbusTransaction(request, timeoutMs);
+
+  const startModbusReadPolling = (
+    request: ModbusRtuReadRequest,
+    timeoutMs: number,
+    intervalMs: number,
+  ) => {
+    startModbusPolling(request, timeoutMs, intervalMs);
+  };
 
   const applyQuickCommand = (command: QuickCommand) => {
     if (isWorkspaceTransitioning) {
@@ -1423,7 +1446,7 @@ export function TerminalPanel() {
             title="Modbus RTU 构帧器"
             aria-haspopup="dialog"
             aria-expanded={modbusOpen}
-            data-active={modbusOpen}
+            data-active={modbusOpen || modbusPollActive}
             disabled={isWorkspaceTransitioning || fileSendActive}
             onClick={() => {
               setHistoryOpen(false);
@@ -1434,6 +1457,7 @@ export function TerminalPanel() {
             }}
           >
             <Blocks size={16} />
+            {modbusPollActive ? <span className="modbus-poll-activity-dot" /> : null}
           </button>
           <button
             ref={variableTriggerRef}
@@ -1503,7 +1527,7 @@ export function TerminalPanel() {
             title={workflowOpen ? "收起周期发送设置" : "周期发送设置"}
             aria-expanded={workflowVisible}
             data-active={workflowVisible}
-            disabled={taskActive || fileSendActive}
+            disabled={taskActive || fileSendActive || modbusPollActive}
             onClick={() => {
               setHistoryOpen(false);
               setFileSendOpen(false);
@@ -1676,19 +1700,25 @@ export function TerminalPanel() {
         )}
 
         {modbusOpen && (
-          <ModbusRtuBuilder
-            canExecute={canExecuteModbus}
-            transaction={modbusTransaction}
-            transactions={modbusTransactions}
-            onApply={applyModbusFrame}
-            onExecute={executeModbusTransaction}
-            onCancel={cancelModbusTransaction}
-            onClearHistory={clearModbusTransactions}
-            onClose={() => {
-              setModbusOpen(false);
-              modbusTriggerRef.current?.focus();
-            }}
-          />
+          <Suspense fallback={null}>
+            <ModbusRtuBuilder
+              canExecute={canExecuteModbus}
+              canStartPolling={canExecuteModbus}
+              polling={modbusPoll}
+              transaction={modbusTransaction}
+              transactions={modbusTransactions}
+              onApply={applyModbusFrame}
+              onExecute={executeModbusTransaction}
+              onStartPolling={startModbusReadPolling}
+              onStopPolling={stopModbusPolling}
+              onCancel={cancelModbusTransaction}
+              onClearHistory={clearModbusTransactions}
+              onClose={() => {
+                setModbusOpen(false);
+                modbusTriggerRef.current?.focus();
+              }}
+            />
+          </Suspense>
         )}
 
         {quickCommandsOpen && (

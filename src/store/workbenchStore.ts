@@ -44,6 +44,12 @@ import {
 } from "../core/commandWorkflow";
 import { ExtensionCoordinator } from "../core/extensionCoordinator";
 import {
+  createInitialModbusPollSnapshot,
+  isModbusPollActive,
+  ModbusPoller,
+  type ModbusPollSnapshot,
+} from "../core/modbusPoller";
+import {
   buildModbusRtuRequest,
   cloneModbusRtuRequest,
   createInitialModbusRtuTransactionSnapshot,
@@ -53,6 +59,7 @@ import {
   MIN_MODBUS_TRANSACTION_TIMEOUT_MS,
   parseModbusRtuResponse,
   simulateModbusRtuResponse,
+  type ModbusRtuReadRequest,
   type ModbusRtuRequest,
   type ModbusRtuTransactionRecord,
   type ModbusRtuTransactionSnapshot,
@@ -343,6 +350,7 @@ let serialControlLineOperation = 0;
 let serialRecoverySettingOperation = 0;
 let commandScheduler: CommandScheduler | null = null;
 let autoResponderRuntime: AutoResponderRuntime | null = null;
+let modbusPoller: ModbusPoller | null = null;
 const commandSendArbiter = new CommandSendArbiter();
 let captureExportDialogOperation = 0;
 let extensionOperation = 0;
@@ -410,6 +418,7 @@ export interface WorkbenchStore {
   commandTask: CommandTaskSnapshot;
   autoResponderRules: AutoResponderRule[];
   autoResponder: AutoResponderSnapshot;
+  modbusPoll: ModbusPollSnapshot;
   modbusTransaction: ModbusRtuTransactionSnapshot;
   modbusTransactions: ModbusRtuTransactionRecord[];
   serialFileSend: SerialFileSendPayload;
@@ -517,6 +526,12 @@ export interface WorkbenchStore {
   setAutoResponderRules(rules: readonly AutoResponderRule[]): void;
   startAutoResponder(): void;
   stopAutoResponder(): void;
+  startModbusPolling(
+    request: ModbusRtuReadRequest,
+    timeoutMs: number,
+    intervalMs: number,
+  ): void;
+  stopModbusPolling(): void;
   startModbusTransaction(request: ModbusRtuRequest, timeoutMs: number): Promise<boolean>;
   cancelModbusTransaction(): Promise<boolean>;
   clearModbusTransactions(): void;
@@ -671,6 +686,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       commandTask: createInitialCommandTaskSnapshot(),
       autoResponderRules: cloneAutoResponderRules(INITIAL_WORKSPACE_CONFIG.autoResponderRules),
       autoResponder: createInitialAutoResponderSnapshot(),
+      modbusPoll: createInitialModbusPollSnapshot(),
       modbusTransaction: createInitialModbusRtuTransactionSnapshot(),
       modbusTransactions: [],
       serialFileSend: createIdleSerialFileSendPayload(),
@@ -1023,6 +1039,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           ? settleTerminalPresentation(state, terminalLineAssembler)
           : state.terminalEntries;
         if (!nativeRuntime && state.isNativeRuntime) {
+          stopCurrentModbusPolling("source-change");
           stopCurrentCommandWorkflows("source-change");
           revokeExtensionForBoundary(get, set, "运行环境已切换，扩展会话已撤销");
         }
@@ -1078,6 +1095,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!beginRuntimeTransition(get, set, "switching-source")) {
           return;
         }
+        stopCurrentModbusPolling("source-change", false);
         try {
           await getSerialRecoveryCoordinator().cancel("source-change", true);
           if (get().connectionStatus === "connected" || get().connectionStatus === "connecting") {
@@ -1114,6 +1132,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           get().workspaceTransitionStatus !== "idle" ||
           get().runtimeTransitionStatus !== "idle" ||
           isSerialFileSendActive(get().serialFileSend.status) ||
+          isModbusPollActive(get().modbusPoll) ||
           isModbusTransactionActive(get().modbusTransaction) ||
           isRecoveryActivePhase(get().serialRecovery.phase) ||
           isCaptureActive(get().captureStatus) ||
@@ -1151,6 +1170,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           get().workspaceTransitionStatus !== "idle" ||
           get().runtimeTransitionStatus !== "idle" ||
           isSerialFileSendActive(get().serialFileSend.status) ||
+          isModbusPollActive(get().modbusPoll) ||
           isModbusTransactionActive(get().modbusTransaction) ||
           isRecoveryActivePhase(get().serialRecovery.phase) ||
           isCaptureActive(get().captureStatus) ||
@@ -1304,6 +1324,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!beginRuntimeTransition(get, set, "connecting")) {
           return;
         }
+        stopCurrentModbusPolling("connection-change", false);
         await cancelActiveSerialFileSend(get);
         await cancelActiveModbusTransaction(get);
         stopCurrentCommandWorkflows("connection-change");
@@ -1610,103 +1631,26 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         getAutoResponderRuntime().stop("user");
       },
 
+      startModbusPolling: (request, timeoutMs, intervalMs) => {
+        assertModbusPollingCanStart(get(), timeoutMs);
+        getModbusPoller().start(request, timeoutMs, intervalMs);
+      },
+
+      stopModbusPolling: () => {
+        getModbusPoller().stop("user");
+      },
+
       startModbusTransaction: async (request, timeoutMs) => {
-        const state = get();
-        assertModbusTransactionCanStart(state, timeoutMs);
-        const requestCopy = cloneModbusRtuRequest(request);
-        const requestFrame = buildModbusRtuRequest(requestCopy);
-        const transactionId = nextModbusTransactionId();
-        const queuedAt = Date.now();
-        set({
-          modbusTransaction: {
-            transactionId,
-            generation: state.serialGeneration,
-            status: "queued",
-            request: requestCopy,
-            requestFrame,
-            timeoutMs,
-            queuedAt,
-            message: "等待 Modbus RTU 总线静默",
-          },
-        });
-
-        try {
-          if (state.source === "serial") {
-            await startSerialModbusTransaction(transactionId, requestFrame, timeoutMs);
-            return true;
-          }
-
-          const transmittedAt = Date.now();
-          get().handleSerialTx({
-            data: bytesToBase64(requestFrame),
-            byteCount: requestFrame.length,
-            transmittedAt,
-            generation: state.serialGeneration,
-          });
-          get().handleModbusTransaction({
-            transactionId,
-            status: "waiting",
-            request: bytesToBase64(requestFrame),
-            startedAt: transmittedAt,
-            durationMs: 0,
-            generation: state.serialGeneration,
-            message: requestCopy.unitId === 0 ? "广播写入已完成" : "等待模拟设备响应",
-          });
-          if (requestCopy.unitId === 0) {
-            get().handleModbusTransaction({
-              transactionId,
-              status: "completed",
-              request: bytesToBase64(requestFrame),
-              startedAt: transmittedAt,
-              endedAt: transmittedAt,
-              durationMs: 0,
-              generation: state.serialGeneration,
-              message: "Modbus RTU 广播写入已完成，不等待响应",
-            });
-            return true;
-          }
-
-          simulatorModbusTimer = globalThis.setTimeout(() => {
-            simulatorModbusTimer = null;
-            const active = useWorkbenchStore.getState().modbusTransaction;
-            if (
-              active.transactionId !== transactionId ||
-              active.status === "idle" ||
-              !active.request
-            ) {
-              return;
-            }
-            const response = simulateModbusRtuResponse(active.request);
-            if (!response) {
-              return;
-            }
-            const endedAt = Date.now();
-            useWorkbenchStore.getState().ingestBytes(response, endedAt);
-            useWorkbenchStore.getState().handleModbusTransaction({
-              transactionId,
-              status: "completed",
-              request: bytesToBase64(active.requestFrame),
-              response: bytesToBase64(response),
-              startedAt: active.startedAt ?? transmittedAt,
-              endedAt,
-              durationMs: Math.max(0, endedAt - (active.startedAt ?? transmittedAt)),
-              generation: active.generation,
-              message: "Modbus RTU 模拟事务已完成",
-            });
-          }, Math.min(60, timeoutMs));
-          return true;
-        } catch (error) {
-          if (get().modbusTransaction.transactionId === transactionId) {
-            set({ modbusTransaction: createInitialModbusRtuTransactionSnapshot() });
-          }
-          throw error;
-        }
+        return beginModbusTransaction(request, timeoutMs, false, get, set).completion;
       },
 
       cancelModbusTransaction: async () => {
         const active = get().modbusTransaction;
         if (active.status === "idle" || active.transactionId === 0) {
           return false;
+        }
+        if (active.status === "cancelling") {
+          return true;
         }
         set({
           modbusTransaction: {
@@ -1897,6 +1841,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             : createUnavailableSerialModemStatus(payload.generation);
         if (payload.status !== "connected") {
           serialControlLineOperation += 1;
+          stopCurrentModbusPolling("connection-lost", false);
           if (
             isModbusTransactionActive(state.modbusTransaction) &&
             state.modbusTransaction.generation === state.serialGeneration
@@ -2033,6 +1978,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return;
         }
         if (isSerialFileSendActive(payload.status)) {
+          stopCurrentModbusPolling("source-change");
           stopCurrentCommandWorkflows("source-change");
         }
         set({ serialFileSend: payload });
@@ -3471,6 +3417,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
 export function disposeWorkbenchRuntime(): void {
   serialControlLineOperation += 1;
+  stopCurrentModbusPolling("runtime-dispose", false);
   stopCurrentCommandWorkflows("runtime-dispose");
   void useWorkbenchStore.getState().cancelFileSend();
   cancelModbusTransactionForRuntimeDispose();
@@ -3508,16 +3455,22 @@ export function disposeWorkbenchRuntime(): void {
 }
 
 export async function prepareWorkbenchForAppClose(): Promise<void> {
+  stopCurrentModbusPolling("runtime-dispose", false);
+  const modbusCancellation = cancelActiveModbusTransaction(useWorkbenchStore.getState);
   stopCurrentCommandWorkflows("runtime-dispose");
   useWorkbenchStore.setState({
     runtimeTransitionStatus: "closing-app",
     statusMessage: "正在完成记录并关闭应用",
     waveformTrigger: createIdleWaveformTriggerState(),
   });
-  const recordingsStopped = await stopCurrentRecordings(
+  const recordingsCompletion = stopCurrentRecordings(
     useWorkbenchStore.getState,
     useWorkbenchStore.setState,
   );
+  const [recordingsStopped] = await Promise.all([
+    recordingsCompletion,
+    modbusCancellation,
+  ]);
   if (!recordingsStopped) {
     throw new Error("记录任务未能在应用关闭前正常完成");
   }
@@ -3871,8 +3824,51 @@ function getAutoResponderRuntime(): AutoResponderRuntime {
   return autoResponderRuntime;
 }
 
+function getModbusPoller(): ModbusPoller {
+  if (modbusPoller) {
+    return modbusPoller;
+  }
+
+  modbusPoller = new ModbusPoller({
+    now: Date.now,
+    setTimer: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+    clearTimer: (timer) => globalThis.clearTimeout(timer as ReturnType<typeof setTimeout>),
+    dispatch: (request, timeoutMs) => {
+      const pending = beginModbusTransaction(
+        request,
+        timeoutMs,
+        true,
+        useWorkbenchStore.getState,
+        useWorkbenchStore.setState,
+      );
+      void pending.completion.catch((error) => {
+        getModbusPoller().handleDispatchError(pending.transactionId, error);
+      });
+      return pending.transactionId;
+    },
+    cancel: async (transactionId) => {
+      const state = useWorkbenchStore.getState();
+      if (state.modbusTransaction.transactionId !== transactionId) {
+        return false;
+      }
+      return state.cancelModbusTransaction();
+    },
+    onSnapshot: (modbusPoll) => {
+      useWorkbenchStore.setState({ modbusPoll });
+    },
+  });
+  return modbusPoller;
+}
+
 function stopCurrentCommandTask(reason: CommandTaskStopReason): boolean {
   return commandScheduler?.stop(reason) ?? false;
+}
+
+function stopCurrentModbusPolling(
+  reason: CommandTaskStopReason,
+  cancelInFlight = true,
+): boolean {
+  return modbusPoller?.stop(reason, cancelInFlight) ?? false;
 }
 
 function stopCurrentCommandWorkflows(reason: CommandTaskStopReason): void {
@@ -3926,13 +3922,127 @@ function clearSimulatorModbusTimer(): void {
   }
 }
 
+function beginModbusTransaction(
+  request: ModbusRtuRequest,
+  timeoutMs: number,
+  allowActivePoller: boolean,
+  get: WorkbenchGet,
+  set: WorkbenchSet,
+): { transactionId: number; completion: Promise<boolean> } {
+  const state = get();
+  assertModbusTransactionCanStart(state, timeoutMs, allowActivePoller);
+  const requestCopy = cloneModbusRtuRequest(request);
+  const requestFrame = buildModbusRtuRequest(requestCopy);
+  const transactionId = nextModbusTransactionId();
+  const queuedAt = Date.now();
+  set({
+    modbusTransaction: {
+      transactionId,
+      generation: state.serialGeneration,
+      status: "queued",
+      request: requestCopy,
+      requestFrame,
+      timeoutMs,
+      queuedAt,
+      message: "等待 Modbus RTU 总线静默",
+    },
+  });
+
+  const completion = (async () => {
+    try {
+      if (state.source === "serial") {
+        await startSerialModbusTransaction(transactionId, requestFrame, timeoutMs);
+        return true;
+      }
+
+      const transmittedAt = Date.now();
+      get().handleSerialTx({
+        data: bytesToBase64(requestFrame),
+        byteCount: requestFrame.length,
+        transmittedAt,
+        generation: state.serialGeneration,
+      });
+      get().handleModbusTransaction({
+        transactionId,
+        status: "waiting",
+        request: bytesToBase64(requestFrame),
+        startedAt: transmittedAt,
+        durationMs: 0,
+        generation: state.serialGeneration,
+        message: requestCopy.unitId === 0 ? "广播写入已完成" : "等待模拟设备响应",
+      });
+      if (requestCopy.unitId === 0) {
+        get().handleModbusTransaction({
+          transactionId,
+          status: "completed",
+          request: bytesToBase64(requestFrame),
+          startedAt: transmittedAt,
+          endedAt: transmittedAt,
+          durationMs: 0,
+          generation: state.serialGeneration,
+          message: "Modbus RTU 广播写入已完成，不等待响应",
+        });
+        return true;
+      }
+
+      simulatorModbusTimer = globalThis.setTimeout(() => {
+        simulatorModbusTimer = null;
+        const active = useWorkbenchStore.getState().modbusTransaction;
+        if (
+          active.transactionId !== transactionId ||
+          active.status === "idle" ||
+          !active.request
+        ) {
+          return;
+        }
+        const response = simulateModbusRtuResponse(active.request);
+        if (!response) {
+          return;
+        }
+        const endedAt = Date.now();
+        useWorkbenchStore.getState().ingestBytes(response, endedAt);
+        useWorkbenchStore.getState().handleModbusTransaction({
+          transactionId,
+          status: "completed",
+          request: bytesToBase64(active.requestFrame),
+          response: bytesToBase64(response),
+          startedAt: active.startedAt ?? transmittedAt,
+          endedAt,
+          durationMs: Math.max(0, endedAt - (active.startedAt ?? transmittedAt)),
+          generation: active.generation,
+          message: "Modbus RTU 模拟事务已完成",
+        });
+      }, Math.min(60, timeoutMs));
+      return true;
+    } catch (error) {
+      if (get().modbusTransaction.transactionId === transactionId) {
+        set({ modbusTransaction: createInitialModbusRtuTransactionSnapshot() });
+      }
+      throw error;
+    }
+  })();
+
+  return { transactionId, completion };
+}
+
 async function cancelActiveModbusTransaction(get: WorkbenchGet): Promise<void> {
   if (isModbusTransactionActive(get().modbusTransaction)) {
     await get().cancelModbusTransaction();
   }
 }
 
-function assertModbusTransactionCanStart(state: WorkbenchStore, timeoutMs: number): void {
+function assertModbusPollingCanStart(state: WorkbenchStore, timeoutMs: number): void {
+  if (isModbusPollActive(state.modbusPoll)) {
+    throw new Error("已有 Modbus RTU 轮询任务正在运行或停止中");
+  }
+  assertModbusTransactionCanStart(state, timeoutMs, true);
+}
+
+function assertModbusTransactionCanStart(
+  state: WorkbenchStore,
+  timeoutMs: number,
+  allowActivePoller = false,
+): void {
   if (
     !Number.isInteger(timeoutMs) ||
     timeoutMs < MIN_MODBUS_TRANSACTION_TIMEOUT_MS ||
@@ -3942,7 +4052,7 @@ function assertModbusTransactionCanStart(state: WorkbenchStore, timeoutMs: numbe
       `响应超时必须是 ${MIN_MODBUS_TRANSACTION_TIMEOUT_MS}-${MAX_MODBUS_TRANSACTION_TIMEOUT_MS} ms`,
     );
   }
-  assertCommandCanSend(state);
+  assertCommandCanSend(state, allowActivePoller);
   if (isModbusTransactionActive(state.modbusTransaction)) {
     throw new Error("已有 Modbus RTU 事务正在运行");
   }
@@ -4008,10 +4118,12 @@ function finalizeModbusTransaction(
     errorCode: payload.errorCode,
     message: payload.message,
   };
+  let finalized = false;
   set((latest) => {
     if (latest.modbusTransaction.transactionId !== active.transactionId) {
       return {};
     }
+    finalized = true;
     return {
       modbusTransaction: createInitialModbusRtuTransactionSnapshot(),
       modbusTransactions: [record, ...latest.modbusTransactions].slice(
@@ -4020,6 +4132,15 @@ function finalizeModbusTransaction(
       ),
     };
   });
+  if (finalized) {
+    modbusPoller?.handleTerminal({
+      transactionId: active.transactionId,
+      status: payload.status,
+      result,
+      endedAt,
+      message: payload.message,
+    });
+  }
 }
 
 function equalByteArrays(left: Uint8Array, right: Uint8Array): boolean {
@@ -4039,7 +4160,7 @@ function assertCommandCanStart(state: WorkbenchStore): void {
   }
 }
 
-function assertCommandCanSend(state: WorkbenchStore): void {
+function assertCommandCanSend(state: WorkbenchStore, allowActivePoller = false): void {
   if (
     state.workspaceTransitionStatus !== "idle" ||
     state.runtimeTransitionStatus !== "idle" ||
@@ -4052,6 +4173,9 @@ function assertCommandCanSend(state: WorkbenchStore): void {
   }
   if (state.serialControlLineOperation !== "idle") {
     throw new Error("串口控制线操作进行中，请稍后重试");
+  }
+  if (!allowActivePoller && isModbusPollActive(state.modbusPoll)) {
+    throw new Error("Modbus RTU 轮询运行中，暂不能发送其他数据");
   }
   if (isModbusTransactionActive(state.modbusTransaction)) {
     throw new Error("Modbus RTU 事务进行中，暂不能发送其他数据");
@@ -4168,6 +4292,7 @@ function isSerialControlLineContextAvailable(state: WorkbenchStore): boolean {
     !isCaptureActive(state.captureStatus) &&
     !isNumericLogActive(state.numericLogStatus) &&
     !isSerialFileSendActive(state.serialFileSend.status) &&
+    !isModbusPollActive(state.modbusPoll) &&
     !isModbusTransactionActive(state.modbusTransaction) &&
     !hasReplaySession(state)
   );
@@ -4185,6 +4310,7 @@ function isBackgroundPortRefreshContext(state: WorkbenchStore): boolean {
     !isCaptureActive(state.captureStatus) &&
     !isNumericLogActive(state.numericLogStatus) &&
     !isSerialFileSendActive(state.serialFileSend.status) &&
+    !isModbusPollActive(state.modbusPoll) &&
     !isModbusTransactionActive(state.modbusTransaction) &&
     !hasReplaySession(state)
   );
@@ -4387,6 +4513,8 @@ async function prepareAndOpenReplay(
   get: WorkbenchGet,
   set: WorkbenchSet,
 ): Promise<boolean> {
+  stopCurrentModbusPolling("replay-open", false);
+  await cancelActiveModbusTransaction(get);
   stopCurrentCommandWorkflows("replay-open");
   if (!(await stopCurrentRecordings(get, set))) {
     set({ replayMessage: "捕获文件尚未完成，无法打开回放" });
@@ -4557,6 +4685,7 @@ async function disconnectCurrentSource(
   get: WorkbenchGet,
   set: WorkbenchSet,
 ): Promise<boolean> {
+  stopCurrentModbusPolling("connection-change", false);
   await cancelActiveSerialFileSend(get);
   await cancelActiveModbusTransaction(get);
   if (get().source === "simulator") {
@@ -4593,6 +4722,8 @@ async function applyWorkspaceSnapshot(
   get: WorkbenchGet,
   set: WorkbenchSet,
 ): Promise<boolean> {
+  stopCurrentModbusPolling("workspace-change", false);
+  await cancelActiveModbusTransaction(get);
   stopCurrentCommandWorkflows("workspace-change");
   await getSerialRecoveryCoordinator().cancel("workspace-change", true);
   const target = get().workspaces.find((workspace) => workspace.id === id);

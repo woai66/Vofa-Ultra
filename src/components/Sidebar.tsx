@@ -27,6 +27,7 @@ import {
   presentChannelSeries,
   type PresentedChannelSeries,
 } from "../core/channelPresentation";
+import { isModbusPollActive } from "../core/modbusPoller";
 import {
   BUILTIN_PROTOCOLS,
   PROTOCOL_DROP_REASON_LABELS,
@@ -128,6 +129,7 @@ function ConnectionPanel() {
   const serialModemStatus = useWorkbenchStore((state) => state.serialModemStatus);
   const serialRecovery = useWorkbenchStore((state) => state.serialRecovery);
   const serialFileSendStatus = useWorkbenchStore((state) => state.serialFileSend.status);
+  const modbusPoll = useWorkbenchStore((state) => state.modbusPoll);
   const modbusTransactionStatus = useWorkbenchStore(
     (state) => state.modbusTransaction.status,
   );
@@ -193,6 +195,7 @@ function ConnectionPanel() {
     serialFileSendStatus === "queued" ||
     serialFileSendStatus === "sending" ||
     serialFileSendStatus === "cancelling" ||
+    isModbusPollActive(modbusPoll) ||
     modbusTransactionStatus !== "idle";
   const sortedPorts = useMemo(() => sortSerialPorts(ports), [ports]);
   const selectedPortPresentation = useMemo(() => {
