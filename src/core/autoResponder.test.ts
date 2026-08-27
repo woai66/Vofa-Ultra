@@ -11,6 +11,7 @@ import {
   parseAutoResponderRules,
   type AutoResponderDispatch,
 } from "./autoResponder";
+import { encodeText, loadTextEncoding } from "./textEncoding";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -93,6 +94,17 @@ describe("自动应答规则", () => {
     expect(() => parseAutoResponderRules([rule({ cooldownMs: 19 })])).toThrow(/冷却时间/);
   });
 
+  it("保存时不以 UTF-8 误判文本触发长度，启动时按 RX 编码限制线上字节", async () => {
+    const rules = parseAutoResponderRules([
+      rule({ triggerMode: "text", trigger: "中".repeat(100) }),
+    ]);
+    const { runtime } = runtimeHarness();
+
+    expect(() => runtime.start(rules, "utf-8")).toThrow(/256 字节/);
+    await loadTextEncoding("gb18030");
+    expect(() => runtime.start(rules, "gb18030")).not.toThrow();
+  });
+
   it("只在当前格式接受 CR 响应行尾", () => {
     const crRule = rule({ lineEnding: "cr" });
 
@@ -102,6 +114,43 @@ describe("自动应答规则", () => {
 });
 
 describe("AutoResponderRuntime", () => {
+  it("分别使用 RX GB18030 匹配和 TX Windows-1252 响应", async () => {
+    await Promise.all([
+      loadTextEncoding("gb18030"),
+      loadTextEncoding("windows-1252"),
+    ]);
+    const sent: AutoResponderDispatch[] = [];
+    const { runtime } = runtimeHarness(async (dispatch) => {
+      sent.push(dispatch);
+    });
+    runtime.start(
+      [
+        rule({
+          triggerMode: "text",
+          trigger: "中文",
+          responseMode: "text",
+          response: "Café €",
+        }),
+      ],
+      "gb18030",
+      "windows-1252",
+    );
+
+    runtime.ingest(encodeText("中文", "gb18030"), 1_000);
+    await flushPromises();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.command.textEncoding).toBe("windows-1252");
+    expect(Array.from(sent[0]?.command.bytes ?? [])).toEqual([
+      0x43,
+      0x61,
+      0x66,
+      0xe9,
+      0x20,
+      0x80,
+    ]);
+  });
+
   it("按字节匹配跨 chunk、重叠模式和 NUL", async () => {
     const sent: AutoResponderDispatch[] = [];
     const { runtime } = runtimeHarness(async (dispatch) => {

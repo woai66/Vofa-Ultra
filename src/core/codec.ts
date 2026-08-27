@@ -1,10 +1,12 @@
 import type { DisplayMode, LineEnding } from "../types/serial";
+import type { TerminalTextEncoding } from "../types/workbench";
+import { encodeText } from "./textEncoding";
 
-const LINE_ENDINGS: Record<LineEnding, string> = {
-  none: "",
-  lf: "\n",
-  cr: "\r",
-  crlf: "\r\n",
+const LINE_ENDING_BYTES: Record<LineEnding, readonly number[]> = {
+  none: [],
+  lf: [0x0a],
+  cr: [0x0d],
+  crlf: [0x0d, 0x0a],
 };
 
 export function decodeBase64(value: string): Uint8Array {
@@ -12,16 +14,22 @@ export function decodeBase64(value: string): Uint8Array {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-export function encodeOutbound(value: string, mode: DisplayMode, lineEnding: LineEnding): Uint8Array {
-  if (mode === "hex") {
-    const bytes = parseHex(value);
-    const suffix = new TextEncoder().encode(LINE_ENDINGS[lineEnding]);
-    const result = new Uint8Array(bytes.length + suffix.length);
-    result.set(bytes);
-    result.set(suffix, bytes.length);
-    return result;
-  }
-  return new TextEncoder().encode(value + LINE_ENDINGS[lineEnding]);
+export function encodeOutbound(
+  value: string,
+  mode: DisplayMode,
+  lineEnding: LineEnding,
+  textEncoding: TerminalTextEncoding = "utf-8",
+): Uint8Array {
+  const bytes = mode === "hex" ? parseHex(value) : encodeText(value, textEncoding);
+  const suffix = encodeLineEnding(lineEnding);
+  const result = new Uint8Array(bytes.length + suffix.length);
+  result.set(bytes);
+  result.set(suffix, bytes.length);
+  return result;
+}
+
+export function encodeLineEnding(lineEnding: LineEnding): Uint8Array {
+  return Uint8Array.from(LINE_ENDING_BYTES[lineEnding]);
 }
 
 export function parseHex(value: string): Uint8Array {

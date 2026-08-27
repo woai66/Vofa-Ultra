@@ -1,5 +1,9 @@
 import type { DisplayMode, LineEnding } from "../types/serial";
-import type { CommandHistoryEntry, CommandTaskSnapshot } from "../types/workbench";
+import type {
+  CommandHistoryEntry,
+  CommandTaskSnapshot,
+  TerminalTextEncoding,
+} from "../types/workbench";
 import type {
   CommandTemplateContext,
   CompiledCommandTemplate,
@@ -26,6 +30,7 @@ export interface PreparedCommand {
   mode: DisplayMode;
   lineEnding: LineEnding;
   checksumMode: CommandChecksumMode;
+  textEncoding: TerminalTextEncoding;
   bytes: Uint8Array;
   variableCount: number;
 }
@@ -84,7 +89,8 @@ export function appendCommandHistory(
     last.value === entry.value &&
     last.mode === entry.mode &&
     last.lineEnding === entry.lineEnding &&
-    last.checksumMode === entry.checksumMode
+    last.checksumMode === entry.checksumMode &&
+    (entry.mode !== "text" || last.textEncoding === entry.textEncoding)
   ) {
     return [
       ...history.slice(0, -1),

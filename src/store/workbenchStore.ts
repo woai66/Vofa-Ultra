@@ -6,11 +6,13 @@ import {
   CommandSendArbiter,
   cloneAutoResponderRules,
   createInitialAutoResponderSnapshot,
+  isAutoResponderActive,
   parseAutoResponderRules,
   type AutoResponderStopReason,
   type CommandSendOrigin,
 } from "../core/autoResponder";
 import { decodeBase64, formatHex } from "../core/codec";
+import { isTextEncodingLoaded, loadTextEncoding } from "../core/textEncoding";
 import {
   cloneChannelPresentations,
   updateChannelPresentation,
@@ -239,6 +241,7 @@ import type {
   TerminalRxLineEnding,
   TerminalRxRecordMode,
   TerminalRxTextEncoding,
+  TerminalTextEncoding,
   TransferStats,
 } from "../types/workbench";
 import type {
@@ -252,7 +255,7 @@ import type {
   ChannelPresentationProtocol,
   ChannelPresentations,
   ChartWindowSeconds,
-  WorkspaceExportV12,
+  WorkspaceExportV13,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AutoResponderRule, AutoResponderSnapshot } from "../types/automation";
@@ -270,7 +273,7 @@ const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY =
   MAX_TERMINAL_UNTERMINATED_LINE_BYTES + MAX_TERMINAL_LINE_ENDING_BYTES;
 export const WORKBENCH_STORAGE_KEY = "vofa-ultra-workbench";
-export const WORKBENCH_STORAGE_VERSION = 12;
+export const WORKBENCH_STORAGE_VERSION = 13;
 export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [
   0,
   1,
@@ -284,6 +287,7 @@ export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [
   9,
   10,
   11,
+  12,
 ] as const;
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
@@ -420,6 +424,7 @@ export interface WorkbenchStore {
   terminalRxRecordMode: TerminalRxRecordMode;
   terminalRxLineEnding: TerminalRxLineEnding;
   terminalRxTextEncoding: TerminalRxTextEncoding;
+  terminalTxTextEncoding: TerminalTextEncoding;
   commandHistory: CommandHistoryEntry[];
   quickCommands: QuickCommand[];
   commandTask: CommandTaskSnapshot;
@@ -532,10 +537,10 @@ export interface WorkbenchStore {
     lineEnding: LineEnding,
     intervalMs: number,
     repeatCount: number | null,
-  ): void;
+  ): void | Promise<void>;
   stopPeriodicSend(): void;
   setAutoResponderRules(rules: readonly AutoResponderRule[]): void;
-  startAutoResponder(): void;
+  startAutoResponder(): void | Promise<void>;
   stopAutoResponder(): void;
   startModbusPolling(
     request: ModbusRtuReadRequest,
@@ -562,6 +567,7 @@ export interface WorkbenchStore {
   setTerminalRxRecordMode(mode: TerminalRxRecordMode): void;
   setTerminalRxLineEnding(lineEnding: TerminalRxLineEnding): void;
   setTerminalRxTextEncoding(encoding: TerminalRxTextEncoding): void;
+  setTerminalTxTextEncoding(encoding: TerminalTextEncoding): void;
   setTerminalPaused(paused: boolean): void;
   setTerminalAutoScroll(enabled: boolean): void;
   setChartPaused(paused: boolean): void;
@@ -621,7 +627,7 @@ export interface WorkbenchStore {
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
   deleteWorkspace(id: string): Promise<boolean>;
-  importWorkspace(workspace: WorkspaceExportV12): string;
+  importWorkspace(workspace: WorkspaceExportV13): string;
 }
 
 type PersistedWorkbenchState = Pick<
@@ -637,6 +643,7 @@ type PersistedWorkbenchState = Pick<
   | "terminalRxRecordMode"
   | "terminalRxLineEnding"
   | "terminalRxTextEncoding"
+  | "terminalTxTextEncoding"
   | "quickCommands"
   | "terminalAutoScroll"
   | "chartWindowSeconds"
@@ -694,6 +701,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       terminalRxRecordMode: INITIAL_WORKSPACE_CONFIG.terminalRxRecordMode,
       terminalRxLineEnding: INITIAL_WORKSPACE_CONFIG.terminalRxLineEnding,
       terminalRxTextEncoding: INITIAL_WORKSPACE_CONFIG.terminalRxTextEncoding,
+      terminalTxTextEncoding: INITIAL_WORKSPACE_CONFIG.terminalTxTextEncoding,
       commandHistory: [],
       quickCommands: cloneQuickCommands(INITIAL_WORKSPACE_CONFIG.quickCommands),
       commandTask: createInitialCommandTaskSnapshot(),
@@ -1557,7 +1565,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       send: async (value, mode, lineEnding) => {
-        const template = compileCommandTemplate(value, mode);
+        const textEncoding = get().terminalTxTextEncoding;
+        if (mode === "text" && !isTextEncodingLoaded(textEncoding)) {
+          await loadTextEncoding(textEncoding);
+        }
+        const template = compileCommandTemplate(value, mode, textEncoding);
         const nowMs = Date.now();
         const command = prepareCommandTemplate(
           template,
@@ -1627,15 +1639,25 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       startPeriodicSend: (value, mode, lineEnding, intervalMs, repeatCount) => {
-        const template = compileCommandTemplate(value, mode);
-        assertCommandCanStart(get());
-        getCommandScheduler().start({
-          template,
-          lineEnding,
-          checksumMode: get().commandChecksum,
-          intervalMs,
-          repeatCount,
-        });
+        const initialState = get();
+        assertCommandCanStart(initialState);
+        const textEncoding = initialState.terminalTxTextEncoding;
+        const checksumMode = initialState.commandChecksum;
+        const start = () => {
+          assertCommandCanStart(get());
+          const template = compileCommandTemplate(value, mode, textEncoding);
+          getCommandScheduler().start({
+            template,
+            lineEnding,
+            checksumMode,
+            intervalMs,
+            repeatCount,
+          });
+        };
+        if (mode === "text" && !isTextEncodingLoaded(textEncoding)) {
+          return loadTextEncoding(textEncoding).then(start);
+        }
+        start();
       },
 
       stopPeriodicSend: () => {
@@ -1652,15 +1674,39 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       startAutoResponder: () => {
-        const state = get();
-        assertCommandCanSend(state);
-        if (getCommandScheduler().isActive()) {
-          throw new Error("周期发送运行中，请先停止任务");
+        const initialState = get();
+        assertAutoResponderCanStart(initialState);
+        const enabledRules = initialState.autoResponderRules.filter((rule) => rule.enabled);
+        const encodings = new Set<TerminalTextEncoding>();
+        if (enabledRules.some((rule) => rule.triggerMode === "text")) {
+          encodings.add(initialState.terminalRxTextEncoding);
         }
-        if (commandSendArbiter.isBusy() || state.isSendingCommand) {
-          throw new Error("请等待当前发送完成后再启用自动应答");
+        if (enabledRules.some((rule) => rule.responseMode === "text")) {
+          encodings.add(initialState.terminalTxTextEncoding);
         }
-        getAutoResponderRuntime().start(state.autoResponderRules);
+        const start = () => {
+          const state = get();
+          assertAutoResponderCanStart(state);
+          if (
+            state.autoResponderRules !== initialState.autoResponderRules ||
+            state.terminalRxTextEncoding !== initialState.terminalRxTextEncoding ||
+            state.terminalTxTextEncoding !== initialState.terminalTxTextEncoding
+          ) {
+            throw new Error("自动应答配置已变更，请重新启用");
+          }
+          getAutoResponderRuntime().start(
+            initialState.autoResponderRules,
+            initialState.terminalRxTextEncoding,
+            initialState.terminalTxTextEncoding,
+          );
+        };
+        const unloaded = Array.from(encodings).filter(
+          (encoding) => !isTextEncodingLoaded(encoding),
+        );
+        if (unloaded.length > 0) {
+          return Promise.all(unloaded.map((encoding) => loadTextEncoding(encoding))).then(start);
+        }
+        start();
       },
 
       stopAutoResponder: () => {
@@ -1992,7 +2038,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               "tx",
               bytes,
               payload.transmittedAt,
-              new TextDecoder().decode(bytes),
+              new TextDecoder(payload.textEncoding).decode(bytes),
             );
         set({
           terminalEntries: entry
@@ -2134,6 +2180,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const state = get();
         if (
           state.workspaceTransitionStatus !== "idle" ||
+          isAutoResponderActive(state.autoResponder) ||
           terminalRxTextEncoding === state.terminalRxTextEncoding
         ) {
           return;
@@ -2144,6 +2191,15 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           terminalRxTextEncoding,
           terminalEntries,
         });
+      },
+      setTerminalTxTextEncoding: (terminalTxTextEncoding) => {
+        const state = get();
+        if (
+          state.workspaceTransitionStatus === "idle" &&
+          !isAutoResponderActive(state.autoResponder)
+        ) {
+          set({ terminalTxTextEncoding });
+        }
       },
       setTerminalPaused: (terminalPaused) => {
         const state = get();
@@ -3393,6 +3449,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         terminalRxRecordMode: state.terminalRxRecordMode,
         terminalRxLineEnding: state.terminalRxLineEnding,
         terminalRxTextEncoding: state.terminalRxTextEncoding,
+        terminalTxTextEncoding: state.terminalTxTextEncoding,
         quickCommands: state.quickCommands,
         terminalAutoScroll: state.terminalAutoScroll,
         chartWindowSeconds: state.chartWindowSeconds,
@@ -4197,6 +4254,16 @@ function assertCommandCanStart(state: WorkbenchStore): void {
   }
 }
 
+function assertAutoResponderCanStart(state: WorkbenchStore): void {
+  assertCommandCanSend(state);
+  if (getCommandScheduler().isActive()) {
+    throw new Error("周期发送运行中，请先停止任务");
+  }
+  if (commandSendArbiter.isBusy() || state.isSendingCommand) {
+    throw new Error("请等待当前发送完成后再启用自动应答");
+  }
+}
+
 function assertCommandCanSend(state: WorkbenchStore, allowActivePoller = false): void {
   if (
     state.workspaceTransitionStatus !== "idle" ||
@@ -4240,6 +4307,7 @@ function prepareCommandTemplate(
     mode: template.mode,
     lineEnding,
     checksumMode,
+    textEncoding: template.textEncoding,
     bytes: rendered.bytes,
     variableCount: rendered.variableCount,
   };
@@ -4266,13 +4334,17 @@ function executePreparedCommand(
     set({ isSendingCommand: true, commandSendOrigin: origin });
     try {
       if (state.source === "serial") {
-        await sendSerial(command.bytes);
+        await sendSerial(
+          command.bytes,
+          command.mode === "text" ? command.textEncoding : undefined,
+        );
       } else {
         get().handleSerialTx({
           data: bytesToBase64(command.bytes),
           byteCount: command.bytes.length,
           transmittedAt: Date.now(),
           generation: get().serialGeneration,
+          textEncoding: command.mode === "text" ? command.textEncoding : undefined,
         });
       }
       const sentAt = Date.now();
@@ -4287,6 +4359,7 @@ function executePreparedCommand(
                 mode: command.mode,
                 lineEnding: command.lineEnding,
                 checksumMode: command.checksumMode,
+                textEncoding: command.textEncoding,
                 payloadBytes: commandHistoryPayloadBytes(command.value),
                 encodedBytes: command.bytes.length,
                 variableCount: command.variableCount,
@@ -4812,6 +4885,7 @@ async function applyWorkspaceSnapshot(
     terminalRxRecordMode: config.terminalRxRecordMode,
     terminalRxLineEnding: config.terminalRxLineEnding,
     terminalRxTextEncoding: config.terminalRxTextEncoding,
+    terminalTxTextEncoding: config.terminalTxTextEncoding,
     quickCommands: config.quickCommands,
     terminalAutoScroll: config.terminalAutoScroll,
     chartWindowSeconds: config.chartWindowSeconds,

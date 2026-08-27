@@ -41,6 +41,7 @@ function historyEntry(
     mode: "text",
     lineEnding: "none",
     checksumMode: "none",
+    textEncoding: "utf-8",
     payloadBytes: commandHistoryPayloadBytes(value),
     encodedBytes: commandHistoryPayloadBytes(value),
     variableCount: 0,
@@ -88,6 +89,7 @@ function prepareCommand(
     mode: template.mode,
     lineEnding,
     checksumMode,
+    textEncoding: template.textEncoding,
     bytes: rendered.bytes,
     variableCount: rendered.variableCount,
   };
@@ -156,6 +158,26 @@ describe("command history", () => {
     const oversized = "x".repeat(MAX_COMMAND_HISTORY_PAYLOAD_BYTES + 1);
 
     expect(appendCommandHistory(existing, historyEntry(oversized))).toEqual(existing);
+  });
+
+  it("TEXT 按编码区分历史，HEX 忽略无效的文本编码差异", () => {
+    let history = appendCommandHistory([], historyEntry("PING"));
+    history = appendCommandHistory(
+      history,
+      historyEntry("PING", { textEncoding: "gb18030", sentAt: 2_000 }),
+    );
+    expect(history).toHaveLength(2);
+
+    history = appendCommandHistory(
+      history,
+      historyEntry("AA", { mode: "hex", textEncoding: "utf-8", sentAt: 3_000 }),
+    );
+    history = appendCommandHistory(
+      history,
+      historyEntry("AA", { mode: "hex", textEncoding: "windows-1252", sentAt: 4_000 }),
+    );
+    expect(history).toHaveLength(3);
+    expect(history.at(-1)?.repeatCount).toBe(2);
   });
 });
 

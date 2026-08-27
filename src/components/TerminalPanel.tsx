@@ -65,6 +65,12 @@ import {
 } from "../core/dataConverter";
 import { getHorizontalTabTarget } from "../core/tabNavigation";
 import {
+  isTextEncodingLoaded,
+  loadTextEncoding,
+  TEXT_ENCODING_OPTIONS,
+  textEncodingLabel,
+} from "../core/textEncoding";
+import {
   formatTerminalTime,
   parseTerminalTimeMode,
   TERMINAL_TIME_MODE_STORAGE_KEY,
@@ -91,6 +97,7 @@ import type {
   CommandTaskSnapshot,
   QuickCommand,
   TerminalEntry,
+  TerminalTextEncoding,
 } from "../types/workbench";
 import { QuickCommandPopover } from "./QuickCommandPopover";
 
@@ -262,6 +269,7 @@ interface CommandDraft {
   mode: DisplayMode;
   lineEnding: LineEnding;
   checksumMode?: CommandChecksumMode;
+  textEncoding?: TerminalTextEncoding;
 }
 
 interface CommandTemplatePreview {
@@ -269,6 +277,7 @@ interface CommandTemplatePreview {
   variableCount: number;
   checksumHex: string;
   error: string;
+  loading: boolean;
 }
 
 interface ChecksumPreview {
@@ -295,6 +304,7 @@ export function TerminalPanel() {
   const terminalRxRecordMode = useWorkbenchStore((state) => state.terminalRxRecordMode);
   const terminalRxLineEnding = useWorkbenchStore((state) => state.terminalRxLineEnding);
   const terminalRxTextEncoding = useWorkbenchStore((state) => state.terminalRxTextEncoding);
+  const terminalTxTextEncoding = useWorkbenchStore((state) => state.terminalTxTextEncoding);
   const commandHistory = useWorkbenchStore((state) => state.commandHistory);
   const commandTask = useWorkbenchStore((state) => state.commandTask);
   const autoResponder = useWorkbenchStore((state) => state.autoResponder);
@@ -327,6 +337,9 @@ export function TerminalPanel() {
   );
   const setTerminalRxTextEncoding = useWorkbenchStore(
     (state) => state.setTerminalRxTextEncoding,
+  );
+  const setTerminalTxTextEncoding = useWorkbenchStore(
+    (state) => state.setTerminalTxTextEncoding,
   );
   const setTerminalPaused = useWorkbenchStore((state) => state.setTerminalPaused);
   const clearTerminal = useWorkbenchStore((state) => state.clearTerminal);
@@ -362,6 +375,12 @@ export function TerminalPanel() {
   const [message, setMessage] = useState("");
   const [sendError, setSendError] = useState("");
   const [manualSendPending, setManualSendPending] = useState(false);
+  const [taskStartPending, setTaskStartPending] = useState(false);
+  const [loadedTxTextEncoding, setLoadedTxTextEncoding] =
+    useState<TerminalTextEncoding | null>(() =>
+      isTextEncodingLoaded(terminalTxTextEncoding) ? terminalTxTextEncoding : null,
+    );
+  const [txTextEncodingLoadError, setTxTextEncodingLoadError] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [fileSendOpen, setFileSendOpen] = useState(false);
   const [selectedFilePath, setSelectedFilePath] = useState("");
@@ -399,10 +418,34 @@ export function TerminalPanel() {
   const [terminalFollowSuspended, setTerminalFollowSuspended] = useState(false);
   const hasPayload = message.length > 0 || lineEnding !== "none";
   const hasSendableFrame = hasPayload || commandChecksum !== "none";
-  const templatePreview = useMemo(
-    () => previewCommandTemplate(message, sendMode, lineEnding, commandChecksum),
-    [commandChecksum, lineEnding, message, sendMode],
-  );
+  const txTextEncodingReady =
+    sendMode === "hex" || loadedTxTextEncoding === terminalTxTextEncoding;
+  const templatePreview = useMemo(() => {
+    if (!txTextEncodingReady) {
+      return {
+        byteCount: 0,
+        variableCount: 0,
+        checksumHex: "",
+        error: txTextEncodingLoadError,
+        loading: !txTextEncodingLoadError,
+      };
+    }
+    return previewCommandTemplate(
+      message,
+      sendMode,
+      lineEnding,
+      commandChecksum,
+      terminalTxTextEncoding,
+    );
+  }, [
+    commandChecksum,
+    lineEnding,
+    message,
+    sendMode,
+    terminalTxTextEncoding,
+    txTextEncodingLoadError,
+    txTextEncodingReady,
+  ]);
   const availableVariables = useMemo(
     () => COMMAND_VARIABLE_INSERTIONS.filter((item) => item.mode === sendMode),
     [sendMode],
@@ -449,6 +492,7 @@ export function TerminalPanel() {
   const canStartPeriodic =
     connectionStatus === "connected" &&
     !templatePreview.error &&
+    !templatePreview.loading &&
     templatePreview.byteCount > 0 &&
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
@@ -457,7 +501,8 @@ export function TerminalPanel() {
     !fileSendActive &&
     !modbusPollActive &&
     !modbusTransactionActive &&
-    !taskActive;
+    !taskActive &&
+    !taskStartPending;
   const canExecuteModbus =
     connectionStatus === "connected" &&
     serialControlLineOperation === "idle" &&
@@ -521,6 +566,37 @@ export function TerminalPanel() {
   useEffect(() => {
     localStorage.setItem(TERMINAL_TIME_MODE_STORAGE_KEY, terminalTimeMode);
   }, [terminalTimeMode]);
+
+  useEffect(() => {
+    if (sendMode !== "text") {
+      return;
+    }
+    if (isTextEncodingLoaded(terminalTxTextEncoding)) {
+      setLoadedTxTextEncoding(terminalTxTextEncoding);
+      setTxTextEncodingLoadError("");
+      return;
+    }
+
+    let active = true;
+    setLoadedTxTextEncoding(null);
+    setTxTextEncodingLoadError("");
+    void loadTextEncoding(terminalTxTextEncoding)
+      .then(() => {
+        if (active) {
+          setLoadedTxTextEncoding(terminalTxTextEncoding);
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setTxTextEncodingLoadError(
+            `加载 ${textEncodingLabel(terminalTxTextEncoding)} 编码器失败：${getErrorMessage(error)}`,
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [sendMode, terminalTxTextEncoding]);
 
   useEffect(() => {
     if (
@@ -721,6 +797,9 @@ export function TerminalPanel() {
     if (draft.checksumMode !== undefined) {
       setCommandChecksum(draft.checksumMode);
     }
+    if (draft.textEncoding !== undefined) {
+      setTerminalTxTextEncoding(draft.textEncoding);
+    }
     setSendError("");
     setVariablesOpen(false);
   };
@@ -788,6 +867,7 @@ export function TerminalPanel() {
         mode: sendMode,
         lineEnding,
         checksumMode: commandChecksum,
+        textEncoding: terminalTxTextEncoding,
       };
     }
     historyCursorRef.current = index;
@@ -806,6 +886,7 @@ export function TerminalPanel() {
           mode: sendMode,
           lineEnding,
           checksumMode: commandChecksum,
+          textEncoding: terminalTxTextEncoding,
         };
         historyCursorRef.current = commandHistory.length - 1;
       } else {
@@ -837,7 +918,13 @@ export function TerminalPanel() {
   };
 
   const submit = async () => {
-    if (!hasSendableFrame || templatePreview.error || taskActive || manualSendBlocked) {
+    if (
+      !hasSendableFrame ||
+      templatePreview.error ||
+      templatePreview.loading ||
+      taskActive ||
+      manualSendBlocked
+    ) {
       return;
     }
     setSendError("");
@@ -853,10 +940,11 @@ export function TerminalPanel() {
     }
   };
 
-  const startTask = () => {
+  const startTask = async () => {
     setSendError("");
+    setTaskStartPending(true);
     try {
-      startPeriodicSend(
+      await startPeriodicSend(
         message,
         sendMode,
         lineEnding,
@@ -866,6 +954,8 @@ export function TerminalPanel() {
       setWorkflowOpen(true);
     } catch (error) {
       setSendError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTaskStartPending(false);
     }
   };
 
@@ -938,7 +1028,7 @@ export function TerminalPanel() {
               type="button"
               aria-pressed={displayMode === "text"}
               data-active={displayMode === "text"}
-              disabled={isWorkspaceTransitioning}
+              disabled={isWorkspaceTransitioning || autoResponderActive}
               onClick={() => setDisplayMode("text")}
             >
               TEXT
@@ -1336,6 +1426,31 @@ export function TerminalPanel() {
                 HEX
               </button>
             </div>
+            <div className="send-text-encoding-field">
+              <label className="send-field-caption" htmlFor="send-text-encoding">
+                编码
+              </label>
+              <select
+                id="send-text-encoding"
+                name="send-text-encoding"
+                aria-label="发送文本编码"
+                value={terminalTxTextEncoding}
+                disabled={
+                  sendMode !== "text" || isWorkspaceTransitioning || autoResponderActive
+                }
+                onChange={(event) => {
+                  resetHistoryNavigation();
+                  setSendError("");
+                  setTerminalTxTextEncoding(event.target.value as TerminalTextEncoding);
+                }}
+              >
+                {TEXT_ENCODING_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="send-checksum-field">
               <label className="send-field-caption" htmlFor="send-checksum">
                 校验
@@ -1558,6 +1673,7 @@ export function TerminalPanel() {
                 connectionStatus !== "connected" ||
                 !hasSendableFrame ||
                 Boolean(templatePreview.error) ||
+                templatePreview.loading ||
                 isWorkspaceTransitioning ||
                 manualSendBlocked
               }
@@ -1569,7 +1685,13 @@ export function TerminalPanel() {
           )}
         </div>
 
-        {hasSendableFrame && !templatePreview.error && (
+        {hasSendableFrame && templatePreview.loading && (
+          <span className="command-template-summary" role="status">
+            正在加载 {textEncodingLabel(terminalTxTextEncoding)} 编码器
+          </span>
+        )}
+
+        {hasSendableFrame && !templatePreview.error && !templatePreview.loading && (
           <span
             id="command-template-summary"
             className="command-template-summary"
@@ -1724,7 +1846,7 @@ export function TerminalPanel() {
         {quickCommandsOpen && (
           <QuickCommandPopover
             draft={{ template: message, mode: sendMode, lineEnding }}
-            canSaveDraft={hasPayload && !templatePreview.error}
+            canSaveDraft={hasPayload && !templatePreview.error && !templatePreview.loading}
             onApply={applyQuickCommand}
             onClose={() => {
               setQuickCommandsOpen(false);
@@ -1811,7 +1933,7 @@ export function TerminalPanel() {
                 className="primary-button command-task-button"
                 type="button"
                 disabled={!canStartPeriodic}
-                onClick={startTask}
+                onClick={() => void startTask()}
               >
                 <Play size={15} />
                 启动
@@ -2321,9 +2443,10 @@ function previewCommandTemplate(
   mode: DisplayMode,
   lineEnding: LineEnding,
   checksumMode: CommandChecksumMode,
+  textEncoding: TerminalTextEncoding,
 ): CommandTemplatePreview {
   try {
-    const template = compileCommandTemplate(value, mode);
+    const template = compileCommandTemplate(value, mode, textEncoding);
     const nowMs = Date.now();
     const rendered = renderCommandTemplate(
       template,
@@ -2336,6 +2459,7 @@ function previewCommandTemplate(
       variableCount: rendered.variableCount,
       checksumHex: formatHex(rendered.checksumBytes),
       error: "",
+      loading: false,
     };
   } catch (error) {
     return {
@@ -2343,8 +2467,13 @@ function previewCommandTemplate(
       variableCount: 0,
       checksumHex: "",
       error: error instanceof Error ? error.message : String(error),
+      loading: false,
     };
   }
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function commandTemplateSummaryLabel(preview: CommandTemplatePreview): string {

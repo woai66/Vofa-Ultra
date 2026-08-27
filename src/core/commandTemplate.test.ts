@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   COMMAND_VARIABLE_INSERTIONS,
   compileCommandTemplate,
@@ -8,6 +8,7 @@ import {
   renderCommandTemplate,
   type CommandTemplateContext,
 } from "./commandTemplate";
+import { loadTextEncoding } from "./textEncoding";
 
 const CONTEXT: CommandTemplateContext = {
   sequence: 1,
@@ -45,12 +46,37 @@ describe("命令模板", () => {
     ]);
   });
 
+  it("用 GB18030 编码字面量和变量后依次追加校验尾与 CR", async () => {
+    await loadTextEncoding("gb18030");
+    const template = compileCommandTemplate("中${seq}", "text", "gb18030");
+    const rendered = renderCommandTemplate(template, CONTEXT, "cr", "sum8");
+
+    expect(Array.from(rendered.bytes)).toEqual([0xd6, 0xd0, 0x31, 0xd7, 0x0d]);
+    expect(Array.from(rendered.checksumBytes)).toEqual([0xd7]);
+  });
+
   it("对变量展开后的二进制 payload 计算校验且不把行尾纳入计算", () => {
     const template = compileCommandTemplate("AA ${seq:u16be}", "hex");
     const rendered = renderCommandTemplate(template, CONTEXT, "crlf", "crc16-modbus-le");
 
     expect(Array.from(rendered.checksumBytes)).toEqual([0x90, 0x20]);
     expect(Array.from(rendered.bytes)).toEqual([0xaa, 0x00, 0x01, 0x90, 0x20, 0x0d, 0x0a]);
+  });
+
+  it("未加载非 UTF-8 编码器时 HEX 模板仍能独立追加行尾", async () => {
+    vi.resetModules();
+    const freshModule = await import("./commandTemplate");
+    const template = freshModule.compileCommandTemplate(
+      "AA ${seq:u8}",
+      "hex",
+      "windows-1252",
+    );
+
+    expect(Array.from(freshModule.renderCommandTemplate(template, CONTEXT, "cr").bytes)).toEqual([
+      0xaa,
+      0x01,
+      0x0d,
+    ]);
   });
 
   it("空模板仍能生成空 payload 的校验尾并随后追加行尾", () => {

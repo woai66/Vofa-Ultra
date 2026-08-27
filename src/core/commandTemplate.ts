@@ -1,10 +1,12 @@
-import { encodeOutbound, parseHex } from "./codec";
+import { encodeLineEnding, parseHex } from "./codec";
 import {
   createCommandChecksumSuffix,
   DEFAULT_COMMAND_CHECKSUM_MODE,
   type CommandChecksumMode,
 } from "./checksum";
 import type { DisplayMode, LineEnding } from "../types/serial";
+import type { TerminalTextEncoding } from "../types/workbench";
+import { encodeText } from "./textEncoding";
 
 export const MAX_COMMAND_BYTES = 64 * 1024;
 export const MAX_COMMAND_TEMPLATE_BYTES = 256 * 1024;
@@ -47,6 +49,7 @@ export type CommandTemplateToken = LiteralToken | VariableToken;
 export interface CompiledCommandTemplate {
   readonly source: string;
   readonly mode: DisplayMode;
+  readonly textEncoding: TerminalTextEncoding;
   readonly tokens: readonly CommandTemplateToken[];
   readonly variableCount: number;
 }
@@ -121,6 +124,7 @@ export const COMMAND_VARIABLE_INSERTIONS: readonly CommandVariableInsertion[] = 
 export function compileCommandTemplate(
   source: string,
   mode: DisplayMode,
+  textEncoding: TerminalTextEncoding = "utf-8",
 ): CompiledCommandTemplate {
   if (source.length > MAX_COMMAND_TEMPLATE_BYTES) {
     throw new Error(`命令模板不能超过 ${MAX_COMMAND_TEMPLATE_BYTES / 1024} KiB`);
@@ -186,6 +190,7 @@ export function compileCommandTemplate(
   return Object.freeze({
     source,
     mode,
+    textEncoding,
     tokens: Object.freeze(frozenTokens),
     variableCount,
   });
@@ -204,15 +209,15 @@ export function renderCommandTemplate(
   for (const token of template.tokens) {
     const bytes =
       token.kind === "literal"
-        ? renderLiteral(token.value, template.mode)
-        : renderVariable(token, template.mode, context);
+        ? renderLiteral(token.value, template.mode, template.textEncoding)
+        : renderVariable(token, template.mode, template.textEncoding, context);
     byteLength = appendBoundedChunk(chunks, bytes, byteLength);
   }
 
   const payload = concatenateChunks(chunks, byteLength);
   const checksumBytes = createCommandChecksumSuffix(payload, checksumMode);
   byteLength = appendBoundedChunk(chunks, checksumBytes, byteLength);
-  const lineEndingBytes = encodeOutbound("", "text", lineEnding);
+  const lineEndingBytes = encodeLineEnding(lineEnding);
   byteLength = appendBoundedChunk(chunks, lineEndingBytes, byteLength);
   const bytes = new Uint8Array(byteLength);
   let offset = 0;
@@ -265,17 +270,22 @@ function parseVariableToken(content: string, mode: DisplayMode): VariableToken {
   return { kind: "variable", name, format };
 }
 
-function renderLiteral(value: string, mode: DisplayMode): Uint8Array {
-  return mode === "text" ? new TextEncoder().encode(value) : parseHex(value);
+function renderLiteral(
+  value: string,
+  mode: DisplayMode,
+  textEncoding: TerminalTextEncoding,
+): Uint8Array {
+  return mode === "text" ? encodeText(value, textEncoding) : parseHex(value);
 }
 
 function renderVariable(
   token: VariableToken,
   mode: DisplayMode,
+  textEncoding: TerminalTextEncoding,
   context: CommandTemplateContext,
 ): Uint8Array {
   if (mode === "text") {
-    return new TextEncoder().encode(renderTextVariable(token.name, context));
+    return encodeText(renderTextVariable(token.name, context), textEncoding);
   }
   if (!token.format) {
     throw new Error(`HEX 变量 ${token.name} 缺少定宽格式`);

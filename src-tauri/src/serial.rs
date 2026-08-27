@@ -760,7 +760,10 @@ impl SerialWorker {
 }
 
 enum WorkerCommand {
-    Write(Vec<u8>),
+    Write {
+        data: Vec<u8>,
+        text_encoding: Option<String>,
+    },
     SetControlLine(ControlLineCommand),
     StartModbus(ModbusCommand),
     StartFileSend(FileSendCommand),
@@ -829,7 +832,7 @@ struct FileSendRuntime {
 }
 
 enum PendingWriteOrigin {
-    Normal,
+    Normal { text_encoding: Option<String> },
     Modbus(ModbusCommand),
     FileSend { job_id: u64 },
 }
@@ -911,6 +914,8 @@ struct SerialTxPayload {
     byte_count: usize,
     transmitted_at: u64,
     generation: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_encoding: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -1513,7 +1518,11 @@ pub fn disconnect_serial(
 }
 
 #[tauri::command]
-pub fn send_serial(state: State<'_, SerialState>, data: Vec<u8>) -> Result<(), String> {
+pub fn send_serial(
+    state: State<'_, SerialState>,
+    data: Vec<u8>,
+    text_encoding: Option<String>,
+) -> Result<(), String> {
     if data.is_empty() {
         return Ok(());
     }
@@ -1522,6 +1531,12 @@ pub fn send_serial(state: State<'_, SerialState>, data: Vec<u8>) -> Result<(), S
             "单次发送不能超过 {} KiB，请拆分后重试",
             MAX_WRITE_SIZE / 1024
         ));
+    }
+    if text_encoding
+        .as_deref()
+        .is_some_and(|encoding| !matches!(encoding, "utf-8" | "gb18030" | "windows-1252"))
+    {
+        return Err("发送文本编码无效".to_owned());
     }
 
     let shared = state
@@ -1541,7 +1556,10 @@ pub fn send_serial(state: State<'_, SerialState>, data: Vec<u8>) -> Result<(), S
         .ok_or_else(|| "串口工作线程已停止".to_owned())?;
 
     command_tx
-        .try_send(WorkerCommand::Write(data))
+        .try_send(WorkerCommand::Write {
+            data,
+            text_encoding,
+        })
         .map_err(|error| match error {
             mpsc::TrySendError::Full(_) => "串口发送队列已满，请降低发送速率".to_owned(),
             mpsc::TrySendError::Disconnected(_) => "串口工作线程已停止".to_owned(),
@@ -2181,7 +2199,7 @@ fn take_file_send_prefix(pending_write: &mut Option<PendingWrite>, job_id: u64) 
     Some(pending.data)
 }
 
-fn emit_serial_tx(app: &AppHandle, generation: u64, data: &[u8]) {
+fn emit_serial_tx(app: &AppHandle, generation: u64, data: &[u8], text_encoding: Option<&str>) {
     if data.is_empty() {
         return;
     }
@@ -2192,6 +2210,7 @@ fn emit_serial_tx(app: &AppHandle, generation: u64, data: &[u8]) {
             byte_count: data.len(),
             transmitted_at: unix_millis(),
             generation,
+            text_encoding: text_encoding.map(str::to_owned),
         },
     );
 }
@@ -2220,7 +2239,7 @@ fn settle_file_send_bytes(
             )
             .is_ok();
     runtime.transmitted_bytes = transmitted_bytes;
-    emit_serial_tx(app, runtime.generation, data);
+    emit_serial_tx(app, runtime.generation, data, None);
     publish_file_send_progress(
         app,
         shared_state,
@@ -2613,11 +2632,14 @@ fn run_serial_worker(
                     }
                 } else {
                     match command_rx.try_recv() {
-                        Ok(WorkerCommand::Write(data)) => {
+                        Ok(WorkerCommand::Write {
+                            data,
+                            text_encoding,
+                        }) => {
                             pending_write = Some(PendingWrite {
                                 data,
                                 offset: 0,
-                                origin: PendingWriteOrigin::Normal,
+                                origin: PendingWriteOrigin::Normal { text_encoding },
                             });
                         }
                         Ok(WorkerCommand::SetControlLine(command)) => {
@@ -2827,8 +2849,13 @@ fn run_serial_worker(
                     if pending.offset == pending.data.len() {
                         let completed = pending_write.take().expect("待发送数据应当存在");
                         match completed.origin {
-                            PendingWriteOrigin::Normal => {
-                                emit_serial_tx(&app, generation, &completed.data);
+                            PendingWriteOrigin::Normal { text_encoding } => {
+                                emit_serial_tx(
+                                    &app,
+                                    generation,
+                                    &completed.data,
+                                    text_encoding.as_deref(),
+                                );
                             }
                             PendingWriteOrigin::FileSend { job_id } => {
                                 let Some(runtime) = file_runtime.as_mut().filter(|runtime| {
@@ -2898,6 +2925,7 @@ fn run_serial_worker(
                                         byte_count: completed.data.len(),
                                         transmitted_at,
                                         generation,
+                                        text_encoding: None,
                                     },
                                 );
                                 if command.spec.is_broadcast() {
@@ -3564,6 +3592,30 @@ mod tests {
     }
 
     #[test]
+    fn serial_tx_payload_uses_optional_camel_case_text_encoding() {
+        let encoded = SerialTxPayload {
+            data: "1tDOxA==".to_owned(),
+            byte_count: 4,
+            transmitted_at: 1_000,
+            generation: 3,
+            text_encoding: Some("gb18030".to_owned()),
+        };
+        let encoded_json = serde_json::to_value(encoded).unwrap();
+        assert_eq!(encoded_json["textEncoding"], "gb18030");
+        assert!(encoded_json.get("text_encoding").is_none());
+
+        let binary = SerialTxPayload {
+            data: "qg==".to_owned(),
+            byte_count: 1,
+            transmitted_at: 1_001,
+            generation: 3,
+            text_encoding: None,
+        };
+        let binary_json = serde_json::to_value(binary).unwrap();
+        assert!(binary_json.get("textEncoding").is_none());
+    }
+
+    #[test]
     fn modem_status_poll_reanchors_after_delayed_ticks() {
         let start = Instant::now();
         let mut next_poll = start + MODEM_STATUS_POLL_INTERVAL;
@@ -4183,7 +4235,9 @@ mod tests {
         let mut normal = Some(PendingWrite {
             data: vec![7, 8],
             offset: 1,
-            origin: PendingWriteOrigin::Normal,
+            origin: PendingWriteOrigin::Normal {
+                text_encoding: None,
+            },
         });
         assert!(take_file_send_prefix(&mut normal, 21).is_none());
         assert!(normal.is_some());
