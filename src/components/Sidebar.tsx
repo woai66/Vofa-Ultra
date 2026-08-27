@@ -27,6 +27,7 @@ import {
   presentChannelSeries,
   type PresentedChannelSeries,
 } from "../core/channelPresentation";
+import { APP_DISPLAY_VERSION } from "../core/appMetadata";
 import { isModbusPollActive } from "../core/modbusPoller";
 import {
   BUILTIN_PROTOCOLS,
@@ -1312,6 +1313,24 @@ function SettingsPanel({
         <RotateCcw size={16} />
         重置传输统计
       </button>
+      <section className="sidebar-section about-section" aria-labelledby="about-product-name">
+        <span className="field-label">关于</span>
+        <div className="about-product-line">
+          <strong id="about-product-name">Vofa-Ultra</strong>
+          <code>{APP_DISPLAY_VERSION}</code>
+        </div>
+        <p>面向嵌入式开发者的 Windows 串口与实时波形工作台。</p>
+        <dl className="about-meta">
+          <div>
+            <dt>支持平台</dt>
+            <dd>Windows 10/11 x64</dd>
+          </div>
+          <div>
+            <dt>许可证</dt>
+            <dd>MIT</dd>
+          </div>
+        </dl>
+      </section>
     </div>
   );
 }
