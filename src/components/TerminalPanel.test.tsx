@@ -121,11 +121,11 @@ describe("TerminalPanel", () => {
         (time) => time.textContent,
       );
 
-    expect(within(modeGroup).getByRole("button", { name: "绝对时间" })).toHaveAttribute(
+    expect(within(modeGroup).getByRole("button", { name: "ABS，绝对时间" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    await user.click(within(modeGroup).getByRole("button", { name: "相对缓存起点" }));
+    await user.click(within(modeGroup).getByRole("button", { name: "REL，相对缓存起点" }));
     await waitFor(() => {
       expect(timeLabels()).toEqual([
         "+00:00:00.000",
@@ -136,7 +136,7 @@ describe("TerminalPanel", () => {
     });
     expect(localStorage.getItem(TERMINAL_TIME_MODE_STORAGE_KEY)).toBe("relative");
 
-    await user.click(within(modeGroup).getByRole("button", { name: "距上一条可见记录" }));
+    await user.click(within(modeGroup).getByRole("button", { name: "ΔT，距上一条可见记录" }));
     await waitFor(() => {
       expect(timeLabels()).toEqual([
         "--",
@@ -157,7 +157,7 @@ describe("TerminalPanel", () => {
 
     firstRender.unmount();
     render(<TerminalPanel />);
-    expect(screen.getByRole("button", { name: "距上一条可见记录" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "ΔT，距上一条可见记录" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -526,15 +526,23 @@ describe("TerminalPanel", () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
 
-    await user.click(screen.getByRole("button", { name: "命令历史，1 条" }));
-    const historyDialog = screen.getByRole("dialog", { name: "命令历史" });
+    const historyTrigger = screen.getByRole("button", { name: "命令历史，1 条" });
+    await user.click(historyTrigger);
+    let historyDialog = await screen.findByRole("dialog", { name: "命令历史" });
     expect(historyDialog).toHaveTextContent("CRC32-LE");
+    expect(within(historyDialog).getByRole("button", { name: /PING/ })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "命令历史" })).not.toBeInTheDocument();
+    expect(historyTrigger).toHaveFocus();
+
+    await user.click(historyTrigger);
+    historyDialog = await screen.findByRole("dialog", { name: "命令历史" });
     await user.click(within(historyDialog).getByRole("button", { name: /PING/ }));
     expect(screen.getByRole("textbox", { name: "发送内容" })).toHaveValue("PING");
     expect(screen.getByRole("combobox", { name: "行尾" })).toHaveValue("crlf");
     expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("crc32-le");
 
-    await user.click(screen.getByRole("button", { name: "命令历史，1 条" }));
+    await user.click(historyTrigger);
     await user.click(screen.getByRole("button", { name: "清空命令历史" }));
     expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
     expect(screen.getByRole("button", { name: "命令历史，0 条" })).toBeDisabled();
@@ -738,7 +746,7 @@ describe("TerminalPanel", () => {
       });
     });
     await user.click(screen.getByRole("button", { name: "命令历史，1 条" }));
-    expect(screen.getByRole("dialog", { name: "命令历史" })).toHaveTextContent("最近 3 B");
+    expect(await screen.findByRole("dialog", { name: "命令历史" })).toHaveTextContent("最近 3 B");
   });
 
   it("HEX 变量菜单只提供定宽格式并发送原始字节", async () => {

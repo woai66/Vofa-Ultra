@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -140,6 +140,27 @@ const TEST_CHANNELS: ChannelSeries[] = [
     lastValue: 5,
   },
 ];
+
+function createSpectrumChannel(
+  id = "channel-0",
+  name = "电压",
+  frequencyHz = 32,
+  amplitude = 2,
+): ChannelSeries {
+  const sampleRateHz = 256;
+  const points = Array.from({ length: 256 }, (_, index) => ({
+    x: 10,
+    y: 4 + amplitude * Math.sin((2 * Math.PI * frequencyHz * index) / sampleRateHz),
+  }));
+  return {
+    id,
+    name,
+    color: id === "channel-0" ? "#46d89c" : "#55bde8",
+    visible: true,
+    points,
+    lastValue: points.at(-1)?.y ?? 0,
+  };
+}
 
 function latestUPlotMock(): UPlotMockInstance {
   const chart = uPlotMockInstances.at(-1);
@@ -843,5 +864,96 @@ describe("WaveformPanel 波形测量", () => {
       useWorkbenchStore.setState({ chartDataRevision: 1 });
     });
     expect(screen.queryByRole("button", { name: "回到实时波形" })).not.toBeInTheDocument();
+  });
+
+  it("按帧顺序显示确定性正弦信号的频率和幅值", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState({ channels: [createSpectrumChannel()] });
+    render(<WaveformPanel theme="dark" />);
+
+    await user.click(screen.getByRole("button", { name: "频谱" }));
+    expect(await screen.findByText("未设置采样率")).toBeVisible();
+    await user.type(screen.getByRole("spinbutton", { name: "频谱采样率" }), "256");
+
+    await screen.findByLabelText("电压 频谱图");
+    const results = screen.getByLabelText("频谱分析结果");
+    expect(results).not.toHaveAttribute("aria-live");
+    await waitFor(() => {
+      expect(within(results).getByText("Fs").parentElement).toHaveTextContent("256.000 Hz");
+      expect(within(results).getByText("Δf").parentElement).toHaveTextContent("1.000 Hz");
+      expect(within(results).getByText("Peak").parentElement).toHaveTextContent("32.000 Hz");
+      expect(within(results).getByText("Amp").parentElement).toHaveTextContent("2.000");
+    });
+    expect(latestUPlotMock().setData).toHaveBeenLastCalledWith(expect.any(Array), true);
+  });
+
+  it("提示采样率越界和样本不足，并随点数切换更新需求", async () => {
+    const user = userEvent.setup();
+    render(<WaveformPanel theme="dark" />);
+
+    await user.click(screen.getByRole("button", { name: "频谱" }));
+    const sampleRateInput = screen.getByRole("spinbutton", { name: "频谱采样率" });
+    expect(screen.getByText("未设置采样率")).toBeVisible();
+
+    await user.type(sampleRateInput, "0.09");
+    expect(sampleRateInput).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("采样率超出范围")).toBeVisible();
+
+    await user.clear(sampleRateInput);
+    await user.type(sampleRateInput, "1000001");
+    expect(screen.getByText("采样率超出范围")).toBeVisible();
+
+    await user.clear(sampleRateInput);
+    await user.type(sampleRateInput, "256");
+    expect(await screen.findByText("5 / 256")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /^512$/ }));
+    expect(await screen.findByText("5 / 512")).toBeVisible();
+  });
+
+  it("切入频谱会退出测量并只恢复测量引起的暂停", async () => {
+    const user = userEvent.setup();
+    const onMeasurementModeChange = vi.fn();
+    render(<WaveformPanel theme="dark" onMeasurementModeChange={onMeasurementModeChange} />);
+
+    await user.click(screen.getByRole("button", { name: "开启波形测量" }));
+    expect(useWorkbenchStore.getState().chartPaused).toBe(true);
+    await user.click(screen.getByRole("button", { name: "频谱" }));
+
+    expect(screen.queryByLabelText("波形测量结果")).not.toBeInTheDocument();
+    expect(useWorkbenchStore.getState().chartPaused).toBe(false);
+    expect(onMeasurementModeChange).toHaveBeenLastCalledWith(false);
+    expect(screen.getByRole("region", { name: "频谱分析" })).toHaveAttribute(
+      "data-view-mode",
+      "spectrum",
+    );
+  });
+
+  it("频谱设置保持为组件会话状态，不修改工作区配置或触发状态", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState({
+      channels: [
+        createSpectrumChannel(),
+        createSpectrumChannel("channel-1", "电流", 48, 1.5),
+      ],
+    });
+    const initialState = useWorkbenchStore.getState();
+    const workspacesBefore = structuredClone(initialState.workspaces);
+    const activeWorkspaceIdBefore = initialState.activeWorkspaceId;
+    const chartWindowSecondsBefore = initialState.chartWindowSeconds;
+    render(<WaveformPanel theme="dark" />);
+
+    await user.click(screen.getByRole("button", { name: "频谱" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "频谱通道" }), "channel-1");
+    await user.type(screen.getByRole("spinbutton", { name: "频谱采样率" }), "256");
+    await user.click(screen.getByRole("button", { name: /^512$/ }));
+
+    const finalState = useWorkbenchStore.getState();
+    expect(finalState.workspaces).toEqual(workspacesBefore);
+    expect(finalState.activeWorkspaceId).toBe(activeWorkspaceIdBefore);
+    expect(finalState.chartWindowSeconds).toBe(chartWindowSecondsBefore);
+    expect(Object.keys(finalState).filter((key) => key.toLowerCase().includes("spectrum"))).toEqual(
+      [],
+    );
+    expect(finalState.waveformTrigger.phase).toBe("idle");
   });
 });

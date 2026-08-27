@@ -95,6 +95,50 @@ describe("FireWaterParser", () => {
     });
   });
 
+  it("解析等号命名通道并在所有单切点保持一致", () => {
+    const bytes = new TextEncoder().encode("yaw=1.234 pitch=0.567,cur=0.8\n");
+
+    for (let split = 0; split <= bytes.length; split += 1) {
+      const parser = new FireWaterParser();
+      const frames = [
+        ...parser.push(bytes.slice(0, split), 2_100),
+        ...parser.push(bytes.slice(split), 2_100),
+      ];
+
+      expect(frames, `split=${split}`).toEqual([
+        {
+          labels: ["yaw", "pitch", "cur"],
+          values: [1.234, 0.567, 0.8],
+          timestamp: 2_100,
+        },
+      ]);
+      expect(parser.getHealthSnapshot()).toMatchObject({
+        acceptedFrames: 1,
+        droppedFrames: 0,
+      });
+    }
+  });
+
+  it("拒绝重复、混用或缺失的命名分隔符并在后续行恢复", () => {
+    const parser = new FireWaterParser();
+    const frames = parser.push(
+      new TextEncoder().encode(
+        "a=1=2\na:1 b=2\n=1\na=\na=b:1\nvalid=3\n",
+      ),
+      2_200,
+    );
+
+    expect(frames).toEqual([
+      { labels: ["valid"], values: [3], timestamp: 2_200 },
+    ]);
+    expect(parser.getHealthSnapshot()).toMatchObject({
+      acceptedFrames: 1,
+      droppedFrames: 5,
+      reasonCounts: { "invalid-format": 5 },
+      lastDropReason: "invalid-format",
+    });
+  });
+
   it("拒绝超出通道、标签和有限数值边界的行", () => {
     const parser = new FireWaterParser();
     const tooManyValues = Array.from(
@@ -103,7 +147,7 @@ describe("FireWaterParser", () => {
     ).join(",");
     const longLabel = "x".repeat(MAX_PROTOCOL_LABEL_LENGTH + 1);
     const bytes = new TextEncoder().encode(
-      `${tooManyValues}\n${longLabel}:1\nbad\u0085label:1\nNaN,1\nInfinity,2\n1,2\n`,
+      `${tooManyValues}\n${longLabel}=1\nbad\u0085label:1\nNaN,1\nInfinity,2\n1,2\n`,
     );
 
     expect(parser.push(bytes, 2_500).map((frame) => frame.values)).toEqual([[1, 2]]);

@@ -793,7 +793,7 @@ function verify_package_metadata() {
   }
 
   if (tauri_config.bundle.targets !== "all") {
-    fail('Tauri bundle targets must be "all"; CI narrows targets per platform');
+    fail('Tauri bundle targets must be "all"; the build command narrows targets per platform');
   }
 
   if (tauri_config.build?.beforeBuildCommand !== "pnpm build:desktop") {

@@ -26,6 +26,7 @@ import {
 import uPlot, { type AlignedData, type Options } from "uplot";
 import type { ThemeMode } from "../App";
 import { presentChannelSeries } from "../core/channelPresentation";
+import type { SpectrumWindowSize } from "../core/spectrumConfig";
 import {
   calculateWaveformMeasurement,
   createInitialMeasurementAnchors,
@@ -47,6 +48,7 @@ import type { ChannelSeries } from "../types/workbench";
 import type { ChartWindowSeconds } from "../types/workspace";
 
 const MeasurementStrip = lazy(() => import("./WaveformMeasurementStrip"));
+const WaveformSpectrum = lazy(() => import("./WaveformSpectrum"));
 
 interface WaveformPanelProps {
   theme: ThemeMode;
@@ -61,6 +63,7 @@ interface WaveformFixedRange {
 }
 
 type IndependentWaveformFixedRanges = Record<string, WaveformFixedRange>;
+type WaveformViewMode = "time" | "spectrum";
 
 export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelProps) {
   const rawChannels = useWorkbenchStore((state) => state.channels);
@@ -121,6 +124,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   );
   const clearChart = useWorkbenchStore((state) => state.clearChart);
   const [measurementEnabled, setMeasurementEnabled] = useState(false);
+  const [viewMode, setViewMode] = useState<WaveformViewMode>("time");
   const [triggerControlsOpen, setTriggerControlsOpen] = useState(false);
   const [triggerChannelId, setTriggerChannelId] = useState("");
   const [triggerEdge, setTriggerEdge] = useState<WaveformTriggerEdge>("rising");
@@ -141,6 +145,10 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   const [measurementAnchors, setMeasurementAnchors] =
     useState<WaveformMeasurementAnchors | null>(null);
   const rangeButtonRef = useRef<HTMLButtonElement>(null);
+  const [spectrumChannelId, setSpectrumChannelId] = useState("");
+  const [spectrumWindowSize, setSpectrumWindowSize] =
+    useState<SpectrumWindowSize>(256);
+  const [spectrumSampleRateInput, setSpectrumSampleRateInput] = useState("");
   const pausedBeforeMeasurementRef = useRef(false);
   const previousChartDataRevisionRef = useRef(chartDataRevision);
   const triggerConfig = waveformTrigger.config;
@@ -558,6 +566,21 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     clearChart();
   };
 
+  const handleViewModeChange = (mode: WaveformViewMode) => {
+    if (mode === viewMode) {
+      return;
+    }
+    setWaveformFollowSuspended(false);
+    if (mode === "spectrum") {
+      if (measurementEnabled) {
+        resetMeasurement(true);
+      }
+      setTriggerControlsOpen(false);
+      setRangeControlsOpen(false);
+    }
+    setViewMode(mode);
+  };
+
   return (
     <section
       className="workspace-panel waveform-panel"
@@ -574,12 +597,13 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       data-y-range-min={activeFixedRange?.minimum}
       data-y-range-max={activeFixedRange?.maximum}
       data-range-controls={rangeControlsOpen}
+      data-view-mode={viewMode}
     >
       <header className="panel-toolbar">
         <div className="panel-title-group">
           <Waves size={17} />
           <div>
-            <h2 id="waveform-title">实时波形</h2>
+            <h2 id="waveform-title">{viewMode === "time" ? "实时波形" : "频谱分析"}</h2>
             <span className="panel-subtitle">{channels.length} 个通道</span>
           </div>
           <span className="live-state" data-paused={chartPaused}>
@@ -588,61 +612,87 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
           </span>
         </div>
         <div className="panel-actions">
-          <div className="time-window-control" role="group" aria-label="波形时间窗">
-            {[5, 15, 30, 60].map((seconds) => (
-              <button
-                key={seconds}
-                type="button"
-                aria-pressed={chartWindowSeconds === seconds}
-                data-active={chartWindowSeconds === seconds}
-                disabled={isWorkspaceTransitioning}
-                onClick={() => handleWindowChange(seconds as ChartWindowSeconds)}
-              >
-                {seconds}s
-              </button>
-            ))}
+          <div
+            className="segmented-control compact-segments waveform-view-control"
+            role="group"
+            aria-label="波形视图"
+          >
+            <button
+              type="button"
+              data-active={viewMode === "time"}
+              aria-pressed={viewMode === "time"}
+              onClick={() => handleViewModeChange("time")}
+            >
+              时域
+            </button>
+            <button
+              type="button"
+              data-active={viewMode === "spectrum"}
+              aria-pressed={viewMode === "spectrum"}
+              onClick={() => handleViewModeChange("spectrum")}
+            >
+              频谱
+            </button>
           </div>
-          <button
-            className="icon-button waveform-follow-latest"
-            type="button"
-            aria-label="回到实时波形"
-            aria-hidden={!waveformFollowSuspended}
-            title={waveformFollowSuspended ? "回到实时波形" : undefined}
-            data-active={waveformFollowSuspended}
-            data-visible={waveformFollowSuspended}
-            disabled={!waveformFollowSuspended}
-            onClick={() => setWaveformFollowSuspended(false)}
-          >
-            <LocateFixed size={16} />
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
-            title={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
-            aria-expanded={triggerControlsOpen}
-            aria-controls="waveform-trigger-controls"
-            data-active={triggerControlsOpen || waveformTrigger.phase !== "idle"}
-            disabled={measurementEnabled}
-            onClick={() => {
-              setRangeControlsOpen(false);
-              setTriggerControlsOpen((open) => !open);
-            }}
-          >
-            <Crosshair size={16} />
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
-            title={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
-            aria-pressed={measurementEnabled}
-            data-active={measurementEnabled}
-            disabled={!initialMeasurementAnchors || triggerRunning}
-            onClick={handleMeasurementToggle}
-          >
-            <Ruler size={16} />
-          </button>
+          {viewMode === "time" && (
+            <>
+              <div className="time-window-control" role="group" aria-label="波形时间窗">
+                {[5, 15, 30, 60].map((seconds) => (
+                  <button
+                    key={seconds}
+                    type="button"
+                    aria-pressed={chartWindowSeconds === seconds}
+                    data-active={chartWindowSeconds === seconds}
+                    disabled={isWorkspaceTransitioning}
+                    onClick={() => handleWindowChange(seconds as ChartWindowSeconds)}
+                  >
+                    {seconds}s
+                  </button>
+                ))}
+              </div>
+              <button
+                className="icon-button waveform-follow-latest"
+                type="button"
+                aria-label="回到实时波形"
+                aria-hidden={!waveformFollowSuspended}
+                title={waveformFollowSuspended ? "回到实时波形" : undefined}
+                data-active={waveformFollowSuspended}
+                data-visible={waveformFollowSuspended}
+                disabled={!waveformFollowSuspended}
+                onClick={() => setWaveformFollowSuspended(false)}
+              >
+                <LocateFixed size={16} />
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
+                title={triggerControlsOpen ? "关闭触发设置" : "打开触发设置"}
+                aria-expanded={triggerControlsOpen}
+                aria-controls="waveform-trigger-controls"
+                data-active={triggerControlsOpen || waveformTrigger.phase !== "idle"}
+                disabled={measurementEnabled}
+                onClick={() => {
+                  setRangeControlsOpen(false);
+                  setTriggerControlsOpen((open) => !open);
+                }}
+              >
+                <Crosshair size={16} />
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
+                title={measurementEnabled ? "关闭波形测量" : "开启波形测量"}
+                aria-pressed={measurementEnabled}
+                data-active={measurementEnabled}
+                disabled={!initialMeasurementAnchors || triggerRunning}
+                onClick={handleMeasurementToggle}
+              >
+                <Ruler size={16} />
+              </button>
+            </>
+          )}
           <button
             className="icon-button"
             type="button"
@@ -842,7 +892,39 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
         </form>
       )}
 
-      {triggerControlsOpen && (
+      {viewMode === "spectrum" && (
+        <Suspense
+          fallback={
+            <>
+              <div
+                className="spectrum-control-strip"
+                aria-label="频谱设置加载中"
+                aria-busy="true"
+              />
+              <div className="waveform-canvas-wrap">
+                <div className="panel-empty-state" role="status" aria-live="polite">
+                  <Waves size={30} strokeWidth={1.4} />
+                  <strong>正在加载频谱</strong>
+                </div>
+              </div>
+            </>
+          }
+        >
+          <WaveformSpectrum
+            channels={channels}
+            theme={theme}
+            chartDataRevision={chartDataRevision}
+            channelId={spectrumChannelId}
+            windowSize={spectrumWindowSize}
+            sampleRateInput={spectrumSampleRateInput}
+            onChannelChange={setSpectrumChannelId}
+            onWindowSizeChange={setSpectrumWindowSize}
+            onSampleRateChange={setSpectrumSampleRateInput}
+          />
+        </Suspense>
+      )}
+
+      {viewMode === "time" && triggerControlsOpen && (
         <div
           id="waveform-trigger-controls"
           className="waveform-trigger-strip"
@@ -918,7 +1000,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
         </div>
       )}
 
-      {measurementEnabled && selectedChannel && measurementResult && (
+      {viewMode === "time" && measurementEnabled && selectedChannel && measurementResult && (
         <Suspense
           fallback={
             <div
@@ -941,38 +1023,40 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
         </Suspense>
       )}
 
-      <div className="waveform-canvas-wrap">
-        {channels.length === 0 ? (
-          <div className="panel-empty-state">
-            <Waves size={30} strokeWidth={1.4} />
-            <strong>等待数据帧</strong>
-            <span>连接设备或启动模拟数据源</span>
-          </div>
-        ) : (
-          <WaveformChart
-            channels={channels}
-            windowSeconds={chartWindowSeconds}
-            theme={theme}
-            scaleMode={waveformScaleMode}
-            sharedFixedRange={sharedFixedRange}
-            independentFixedRanges={independentFixedRanges}
-            focusedChannelId={
-              waveformScaleMode === "independent" ? focusedScaleChannel?.id ?? null : null
-            }
-            measurementChannelId={selectedChannel?.id ?? null}
-            measurementEnabled={measurementEnabled}
-            measurement={measurementResult}
-            followSuspended={waveformFollowSuspended}
-            canSuspendFollow={!chartPaused && !measurementEnabled}
-            triggerTimestampSeconds={waveformTrigger.triggerTimestampSeconds}
-            onFollowSuspend={() => {
-              disarmWaveformTrigger();
-              setWaveformFollowSuspended(true);
-            }}
-            onMeasurementSelect={handleChartMeasurement}
-          />
-        )}
-      </div>
+      {viewMode === "time" && (
+        <div className="waveform-canvas-wrap">
+          {channels.length === 0 ? (
+            <div className="panel-empty-state">
+              <Waves size={30} strokeWidth={1.4} />
+              <strong>等待数据帧</strong>
+              <span>连接设备或启动模拟数据源</span>
+            </div>
+          ) : (
+            <WaveformChart
+              channels={channels}
+              windowSeconds={chartWindowSeconds}
+              theme={theme}
+              scaleMode={waveformScaleMode}
+              sharedFixedRange={sharedFixedRange}
+              independentFixedRanges={independentFixedRanges}
+              focusedChannelId={
+                waveformScaleMode === "independent" ? focusedScaleChannel?.id ?? null : null
+              }
+              measurementChannelId={selectedChannel?.id ?? null}
+              measurementEnabled={measurementEnabled}
+              measurement={measurementResult}
+              followSuspended={waveformFollowSuspended}
+              canSuspendFollow={!chartPaused && !measurementEnabled}
+              triggerTimestampSeconds={waveformTrigger.triggerTimestampSeconds}
+              onFollowSuspend={() => {
+                disarmWaveformTrigger();
+                setWaveformFollowSuspended(true);
+              }}
+              onMeasurementSelect={handleChartMeasurement}
+            />
+          )}
+        </div>
+      )}
     </section>
   );
 }

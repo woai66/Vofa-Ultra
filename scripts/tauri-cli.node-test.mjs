@@ -8,7 +8,9 @@ import {
   ENCODED_RUSTFLAGS_SEPARATOR,
   build_remap_path_flags,
   build_tauri_environment,
+  clear_release_bundle_directory,
   is_release_build,
+  release_bundle_root,
   resolved_path_variants,
   run_tauri_cli,
   split_cargo_rustflags,
@@ -45,6 +47,150 @@ test("routes only non-debug Tauri build commands through release remapping", () 
   assert.equal(is_release_build(["build", "-d"]), false);
   assert.equal(is_release_build(["dev"]), false);
   assert.equal(is_release_build(["bundle"]), false);
+});
+
+test("resolves only the active release bundle directory", () => {
+  assert.equal(
+    release_bundle_root({
+      arguments_: ["build"],
+      environment: {},
+      project_root: PROJECT_WITH_SPACES,
+    }),
+    path.join(PROJECT_WITH_SPACES, "src-tauri", "target", "release", "bundle"),
+  );
+  assert.equal(
+    release_bundle_root({
+      arguments_: ["build", "--target=x86_64-pc-windows-msvc"],
+      environment: { CARGO_BUILD_TARGET: "aarch64-apple-darwin" },
+      project_root: PROJECT_WITH_SPACES,
+    }),
+    path.join(
+      PROJECT_WITH_SPACES,
+      "src-tauri",
+      "target",
+      "x86_64-pc-windows-msvc",
+      "release",
+      "bundle",
+    ),
+  );
+  assert.equal(
+    release_bundle_root({
+      arguments_: ["build", "-t", "x86_64-pc-windows-msvc"],
+      project_root: PROJECT_WITH_SPACES,
+    }),
+    path.join(
+      PROJECT_WITH_SPACES,
+      "src-tauri",
+      "target",
+      "x86_64-pc-windows-msvc",
+      "release",
+      "bundle",
+    ),
+  );
+  assert.equal(
+    release_bundle_root({
+      arguments_: ["build"],
+      environment: { CARGO_BUILD_TARGET: "aarch64-apple-darwin" },
+      project_root: PROJECT_WITH_SPACES,
+    }),
+    path.join(
+      PROJECT_WITH_SPACES,
+      "src-tauri",
+      "target",
+      "aarch64-apple-darwin",
+      "release",
+      "bundle",
+    ),
+  );
+  assert.equal(
+    release_bundle_root({
+      arguments_: ["build", "--debug"],
+      environment: {},
+      project_root: PROJECT_WITH_SPACES,
+    }),
+    null,
+  );
+  for (const arguments_ of [
+    ["build", "--target="],
+    ["build", "--target", ".."],
+    ["build", "--target", "../outside"],
+  ]) {
+    assert.throws(
+      () => release_bundle_root({ arguments_, project_root: PROJECT_WITH_SPACES }),
+      /Invalid Rust target/,
+    );
+  }
+  assert.throws(
+    () => release_bundle_root({
+      arguments_: ["build", "--target"],
+      project_root: PROJECT_WITH_SPACES,
+    }),
+    /target is missing/,
+  );
+  assert.throws(
+    () => release_bundle_root({
+      arguments_: ["build", "-t", "x86_64-pc-windows-msvc", "--target=other-target"],
+      project_root: PROJECT_WITH_SPACES,
+    }),
+    /target must be provided once/,
+  );
+});
+
+test("clears generated bundles only for an actual release build", async () => {
+  const removals = [];
+  const remove_directory = async (directory_path, options) => {
+    removals.push({ directory_path, options });
+  };
+  const expected_root = path.join(
+    PROJECT_WITH_SPACES,
+    "src-tauri",
+    "target",
+    "x86_64-pc-windows-msvc",
+    "release",
+    "bundle",
+  );
+  assert.equal(
+    await clear_release_bundle_directory({
+      arguments_: ["build", "--target", "x86_64-pc-windows-msvc"],
+      environment: {},
+      project_root: PROJECT_WITH_SPACES,
+      remove_directory,
+    }),
+    expected_root,
+  );
+  assert.deepEqual(removals, [{
+    directory_path: expected_root,
+    options: { force: true, recursive: true },
+  }]);
+
+  for (const arguments_ of [
+    ["dev"],
+    ["build", "--debug"],
+    ["build", "--help"],
+    ["--version", "build"],
+  ]) {
+    assert.equal(
+      await clear_release_bundle_directory({
+        arguments_,
+        environment: {},
+        project_root: PROJECT_WITH_SPACES,
+        remove_directory,
+      }),
+      null,
+    );
+  }
+  assert.equal(removals.length, 1);
+
+  assert.equal(
+    await clear_release_bundle_directory({
+      arguments_: ["build", "--", "--help"],
+      environment: {},
+      project_root: PROJECT_WITH_SPACES,
+      remove_directory,
+    }),
+    path.join(PROJECT_WITH_SPACES, "src-tauri", "target", "release", "bundle"),
+  );
+  assert.equal(removals.length, 2);
 });
 
 test("encodes release remaps without inheriting a HOME-wide mapping", () => {

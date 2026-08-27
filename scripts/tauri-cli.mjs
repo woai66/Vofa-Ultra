@@ -2,12 +2,14 @@
 
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const ENCODED_RUSTFLAGS_SEPARATOR = "\x1f";
+const RUST_TARGET_PATTERN = /^[a-z0-9](?:[a-z0-9_.-]*[a-z0-9])?$/i;
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const PROJECT_ROOT = path.resolve(path.dirname(SCRIPT_PATH), "..");
@@ -38,6 +40,85 @@ export function is_release_build(arguments_) {
     ? build_arguments
     : build_arguments.slice(0, separator_index);
   return !build_options.some((argument) => argument === "--debug" || argument === "-d");
+}
+
+function release_build_options(arguments_) {
+  const index = command_index(arguments_);
+  if (index < 0 || arguments_[index] !== "build") {
+    return [];
+  }
+  const build_arguments = arguments_.slice(index + 1);
+  const separator_index = build_arguments.indexOf("--");
+  return separator_index < 0 ? build_arguments : build_arguments.slice(0, separator_index);
+}
+
+function explicit_build_target(build_options) {
+  const target_values = [];
+  for (let index = 0; index < build_options.length; index += 1) {
+    const argument = build_options[index];
+    if (argument === "--target" || argument === "-t") {
+      const value = build_options[index + 1];
+      if (typeof value !== "string" || value.startsWith("-")) {
+        throw new Error("Tauri release build target is missing");
+      }
+      target_values.push(value);
+      index += 1;
+    } else if (argument.startsWith("--target=") || argument.startsWith("-t=")) {
+      target_values.push(argument.slice(argument.indexOf("=") + 1));
+    }
+  }
+  if (target_values.length > 1) {
+    throw new Error("Tauri release build target must be provided once");
+  }
+  return target_values[0];
+}
+
+export function release_bundle_root({
+  arguments_,
+  environment = {},
+  project_root = PROJECT_ROOT,
+}) {
+  if (!is_release_build(arguments_)) {
+    return null;
+  }
+
+  const build_options = release_build_options(arguments_);
+  const explicit_target = explicit_build_target(build_options);
+  const environment_target = environment.TAURI_ENV_TARGET_TRIPLE
+    || environment.CARGO_BUILD_TARGET;
+  const configured_target = explicit_target
+    ?? environment_target;
+  const target_root = path.join(project_root, "src-tauri", "target");
+  if (configured_target === undefined) {
+    return path.join(target_root, "release", "bundle");
+  }
+  if (typeof configured_target !== "string" || !RUST_TARGET_PATTERN.test(configured_target)) {
+    throw new Error(`Invalid Rust target for release bundle cleanup: ${configured_target}`);
+  }
+  return path.join(target_root, configured_target, "release", "bundle");
+}
+
+export async function clear_release_bundle_directory({
+  arguments_,
+  environment = {},
+  project_root = PROJECT_ROOT,
+  remove_directory = rm,
+}) {
+  const separator_index = arguments_.indexOf("--");
+  const tauri_arguments = separator_index < 0
+    ? arguments_
+    : arguments_.slice(0, separator_index);
+  if (tauri_arguments.some(
+    (argument) => ["--help", "-h", "--version", "-V"].includes(argument),
+  )) {
+    return null;
+  }
+  const bundle_root = release_bundle_root({ arguments_, environment, project_root });
+  if (bundle_root === null) {
+    return null;
+  }
+  await remove_directory(bundle_root, { force: true, recursive: true });
+  return bundle_root;
 }
 
 export function default_cargo_home(environment, home_directory = homedir()) {
@@ -136,6 +217,7 @@ export function run_tauri_cli({
 
 async function main() {
   const arguments_ = process.argv.slice(2);
+  await clear_release_bundle_directory({ arguments_, environment: process.env });
   const environment = build_tauri_environment({ arguments_, environment: process.env });
   const result = await run_tauri_cli({ arguments_, environment });
   if (result.signal) {

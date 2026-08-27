@@ -228,6 +228,59 @@ async function readWaveformColorBounds(
     };
   }, target);
 }
+test("主题偏好跟随系统并持久化固定选择", async ({ page }, testInfo) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/");
+
+  const root = page.locator("html");
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  expect(await page.evaluate(() => localStorage.getItem("vofa-ultra-theme"))).toBe("system");
+
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(root).toHaveAttribute("data-theme", "light");
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const appearance = page.getByRole("group", { name: "外观" });
+  const system_button = appearance.getByRole("button", { name: "系统" });
+  const dark_button = appearance.getByRole("button", { name: "深色" });
+  await expect(system_button).toHaveAttribute("aria-pressed", "true");
+
+  await dark_button.click();
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  expect(await page.evaluate(() => localStorage.getItem("vofa-ultra-theme"))).toBe("dark");
+
+  await page.reload();
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await expect(appearance.getByRole("button", { name: "深色" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  await appearance.getByRole("button", { name: "系统" }).click();
+  await expect(root).toHaveAttribute("data-theme", "light");
+  expect(await page.evaluate(() => localStorage.getItem("vofa-ultra-theme"))).toBe("system");
+
+  await page.screenshot({
+    path: testInfo.outputPath("system-theme-desktop.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 320, height: 568 });
+  await expect(appearance).toBeVisible();
+  const theme_buttons = appearance.getByRole("button");
+  await expect(theme_buttons).toHaveCount(3);
+  for (let index = 0; index < 3; index += 1) {
+    const box = await theme_buttons.nth(index).boundingBox();
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44);
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("system-theme-mobile.png"),
+    fullPage: true,
+  });
+});
 
 test("标签组支持标准键盘导航", async ({ page }) => {
   await page.goto("/");
@@ -1019,11 +1072,13 @@ test("终端时间基准按缓存和可见记录计算并跨刷新保留", async
 
   const timeMode = page.getByRole("group", { name: "终端时间基准" });
   const timeCells = page.locator(".terminal-line time");
-  await expect(timeMode.getByRole("button", { name: "绝对时间" })).toHaveAttribute(
+  await expect(
+    timeMode.getByRole("button", { name: "ABS，绝对时间", exact: true }),
+  ).toHaveAttribute(
     "aria-pressed",
     "true",
   );
-  await timeMode.getByRole("button", { name: "相对缓存起点" }).click();
+  await timeMode.getByRole("button", { name: "REL，相对缓存起点", exact: true }).click();
   await expect(timeCells).toHaveText([
     "+00:00:00.000",
     "+00:00:00.125",
@@ -1031,7 +1086,7 @@ test("终端时间基准按缓存和可见记录计算并跨刷新保留", async
     "+00:00:00.900",
   ]);
 
-  await timeMode.getByRole("button", { name: "距上一条可见记录" }).click();
+  await timeMode.getByRole("button", { name: "ΔT，距上一条可见记录", exact: true }).click();
   await expect(timeCells).toHaveText([
     "--",
     "+00:00:00.125",
@@ -1075,7 +1130,8 @@ test("终端时间基准按缓存和可见记录计算并跨刷新保留", async
   await page.reload();
   await expect(
     page.getByRole("group", { name: "终端时间基准" }).getByRole("button", {
-      name: "距上一条可见记录",
+      name: "ΔT，距上一条可见记录",
+      exact: true,
     }),
   ).toHaveAttribute("aria-pressed", "true");
   await replaceTerminalEntries(page, [
@@ -1245,6 +1301,125 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
     fullPage: true,
   });
   expect(pageErrors).toEqual([]);
+});
+
+test("频谱按帧顺序分析同时间戳数据并适配窄屏", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  await setWorkbenchState(page, {
+    isNativeRuntime: true,
+    source: "serial",
+    connectionStatus: "connected",
+  });
+  const signal = Array.from({ length: 256 }, (_, index) => {
+    const value = 3 + 2 * Math.sin((2 * Math.PI * 32 * index) / 256);
+    return value.toFixed(12);
+  }).join("\n");
+  await ingestProtocolText(page, `${signal}\n`, 1_000);
+  await expect(page.locator(".channel-readout")).toHaveCount(1);
+
+  const timestampCount = await page.evaluate(() => {
+    type WorkbenchStoreHandle = {
+      getState(): { channels: Array<{ points: Array<{ x: number }> }> };
+    };
+    const runtime = globalThis as typeof globalThis & {
+      __vofaUltraE2eStore?: WorkbenchStoreHandle;
+    };
+    const points = runtime.__vofaUltraE2eStore?.getState().channels[0]?.points ?? [];
+    return new Set(points.map((point) => point.x)).size;
+  });
+  expect(timestampCount).toBe(1);
+
+  await page.getByRole("button", { name: "频谱" }).click();
+  await page.getByRole("spinbutton", { name: "频谱采样率" }).fill("256");
+  const spectrumResults = page.getByLabel("频谱分析结果");
+  await expect(spectrumResults.getByText("Peak").locator("..")).toContainText("32.000 Hz");
+  await expect(spectrumResults.getByText("Amp").locator("..")).toContainText("2.000");
+
+  const spectrumCanvas = page.locator(".spectrum-chart canvas").first();
+  await expect(spectrumCanvas).toBeVisible();
+  const canvasStats = await readWaveformCanvasStats(page);
+  expect(canvasStats.width).toBeGreaterThan(400);
+  expect(canvasStats.height).toBeGreaterThan(180);
+  expect(canvasStats.opaquePixels).toBeGreaterThan(50);
+  expect(canvasStats.chromaticPixels).toBeGreaterThan(100);
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-spectrum.png"),
+    fullPage: true,
+  });
+
+  for (const viewport of [
+    { width: 390, height: 844 },
+    { width: 320, height: 568 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.waitForTimeout(200);
+    const appShell = page.locator(".app-shell");
+    if ((await appShell.getAttribute("data-sidebar-open")) === "true") {
+      await page.getByRole("button", { name: "关闭侧栏" }).click({ force: true });
+      await expect(appShell).toHaveAttribute("data-sidebar-open", "false");
+    }
+    const layout = await page.locator(".spectrum-control-strip").evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const targets = [...element.querySelectorAll<HTMLElement>("button, select, input")].map(
+        (target) => {
+          const targetRect = target.getBoundingClientRect();
+          return {
+            left: targetRect.left,
+            top: targetRect.top,
+            right: targetRect.right,
+            bottom: targetRect.bottom,
+            width: targetRect.width,
+            height: targetRect.height,
+          };
+        },
+      );
+      let overlapCount = 0;
+      for (let leftIndex = 0; leftIndex < targets.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < targets.length; rightIndex += 1) {
+          const left = targets[leftIndex];
+          const right = targets[rightIndex];
+          if (
+            left &&
+            right &&
+            Math.min(left.right, right.right) - Math.max(left.left, right.left) > 0.5 &&
+            Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 0.5
+          ) {
+            overlapCount += 1;
+          }
+        }
+      }
+      return {
+        left: rect.left,
+        right: rect.right,
+        overflow: element.scrollWidth - element.clientWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        overlapCount,
+        targets,
+      };
+    });
+    expect(layout.left).toBeGreaterThanOrEqual(0);
+    expect(layout.right).toBeLessThanOrEqual(viewport.width);
+    expect(layout.overflow).toBeLessThanOrEqual(1);
+    expect(layout.documentWidth).toBeLessThanOrEqual(viewport.width);
+    expect(layout.overlapCount).toBe(0);
+    expect(layout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(
+      true,
+    );
+    const canvasBounds = await spectrumCanvas.boundingBox();
+    expect(canvasBounds).not.toBeNull();
+    expect(canvasBounds?.height ?? 0).toBeGreaterThanOrEqual(180);
+    expect(canvasBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+    expect((canvasBounds?.x ?? 0) + (canvasBounds?.width ?? 0)).toBeLessThanOrEqual(
+      viewport.width,
+    );
+  }
+
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-320-spectrum.png"),
+    fullPage: true,
+  });
 });
 
 test("单次触发在后半窗结束时冻结且后台接收继续", async ({ page }) => {
@@ -1467,6 +1642,62 @@ test("终端按当前显示内容执行字面量搜索和方向过滤", async ({
   });
 });
 
+test("终端跨行原生选择只包含当前显示的 payload", async ({ page }) => {
+  await page.goto("/");
+  await replaceTerminalEntries(page, [
+    {
+      id: 951,
+      direction: "rx",
+      timestamp: 1_700_000_000_000,
+      text: "payload-alpha",
+      hex: "01 02 03",
+      byteCount: 3,
+    },
+    {
+      id: 952,
+      direction: "tx",
+      timestamp: 1_700_000_000_100,
+      text: "payload-beta",
+      hex: "04 05 06 07",
+      byteCount: 4,
+    },
+    {
+      id: 953,
+      direction: "system",
+      timestamp: 1_700_000_000_200,
+      text: "payload-gamma",
+      hex: "08 09 0A 0B 0C",
+      byteCount: 5,
+    },
+  ]);
+
+  const payloads = page.locator(".terminal-line code");
+  await expect(payloads).toHaveText(["payload-alpha", "payload-beta", "payload-gamma"]);
+  const selectedText = await payloads.evaluateAll((elements) => {
+    const first = elements[0];
+    const last = elements.at(-1);
+    const selection = window.getSelection();
+    if (!first || !last || !selection) {
+      throw new Error("终端 payload 尚未准备好原生文本选择");
+    }
+    const range = document.createRange();
+    range.setStart(first, 0);
+    range.setEnd(last, last.childNodes.length);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const value = selection.toString();
+    selection.removeAllRanges();
+    return value;
+  });
+
+  expect(selectedText).toContain("payload-alpha");
+  expect(selectedText).toContain("payload-beta");
+  expect(selectedText).toContain("payload-gamma");
+  expect(selectedText).not.toMatch(/\d{2}:\d{2}:\d{2}\.\d{3}/);
+  expect(selectedText).not.toMatch(/\b(?:RX|TX|SYSTEM)\b/);
+  expect(selectedText).not.toMatch(/\b\d+ B\b/);
+});
+
 test("终端 RX 行记录按所选编码显示并保持原始字节及窄屏布局", async ({ page }, testInfo) => {
   await page.goto("/");
   const recordMode = page.getByRole("group", { name: "接收记录方式" });
@@ -1575,18 +1806,25 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   const health = page.getByRole("region", { name: "协议解析健康度" });
   await expect(health).toContainText("已丢弃 1 帧");
   await expect(health).toContainText("最近：包含非有限数值");
-  await expect(health).toContainText("FireWater：每行 1–16 个有限数值");
+  await expect(health).toContainText("FireWater：每行 1–16 个有限数值，命名字段使用 : 或 =");
 
   await page.getByRole("button", { name: "清空解析统计" }).click();
   await expect(health).toContainText("等待完整帧");
   await expect(page.locator(".protocol-warning-status")).toHaveCount(0);
 
-  await ingestProtocolText(page, "1,2,3\n", 1_100);
+  await ingestProtocolText(page, "yaw=1.234 pitch=0.567 cur=0.8\n", 1_100);
   await expect(health).toContainText("解析正常");
   await expect(health).toContainText("成功 1");
   await expect(page.getByLabel("数据通道列表").locator(".channel-visibility-button"))
     .toHaveCount(3);
-  await expect(page.locator(".terminal-line").last()).toContainText("1,2,3");
+  await expect(page.getByLabel("数据通道列表").locator(".channel-name")).toHaveText([
+    "yaw",
+    "pitch",
+    "cur",
+  ]);
+  await expect(page.locator(".terminal-line").last()).toContainText(
+    "yaw=1.234 pitch=0.567 cur=0.8",
+  );
 
   await page.setViewportSize({ width: 320, height: 700 });
   const layout = await health.evaluate((element) => {
@@ -1815,6 +2053,21 @@ test("实时 RX 自动应答保持有界运行并随 v11 工作区往返", async
   await expect(page.getByLabel("规则名称")).toHaveValue("规则 1");
   await expect(page.getByLabel("触发内容")).toHaveValue("0A");
   await expect(page.getByLabel("响应模板")).toHaveValue("ACK");
+  await page.getByRole("button", { name: "添加自动应答规则" }).click();
+  await expect(page.getByLabel("规则名称")).toHaveValue("规则 2");
+  await page.getByLabel("规则名称").fill("尚未保存");
+  const rule_list = page.getByRole("list", { name: "自动应答规则" });
+  await rule_list.locator(".automation-rule-select").filter({ hasText: "规则 1" }).click();
+  await expect(page.getByLabel("规则名称")).toHaveValue("尚未保存");
+  await expect(page.getByText("请先保存或还原当前规则修改")).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("automation-draft-protection.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "还原规则修改" }).click();
+  await rule_list.locator(".automation-rule-select").filter({ hasText: "规则 1" }).click();
+  await expect(page.getByLabel("规则名称")).toHaveValue("规则 1");
+  await page.getByRole("button", { name: "删除规则 规则 2" }).click();
 
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await page.getByRole("button", { name: "启动模拟" }).click();
@@ -1922,6 +2175,44 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
     .poll(async () => scene.getAttribute("data-rendered-orientation"))
     .not.toBe(frozenOrientation);
 
+  const contextLossSupported = await canvas.evaluate((element) => {
+    const testCanvas = element as HTMLCanvasElement & {
+      contextLossExtension?: WEBGL_lose_context;
+    };
+    const extension = testCanvas.getContext("webgl2")?.getExtension("WEBGL_lose_context");
+    if (!extension) {
+      return false;
+    }
+    testCanvas.contextLossExtension = extension;
+    extension.loseContext();
+    return true;
+  });
+  expect(contextLossSupported).toBe(true);
+  await expect(scene).toHaveAttribute("data-renderer", "lost");
+  await expect(page.locator(".attitude-state-overlay[role=\"alert\"]")).toContainText(
+    "显卡上下文已丢失，正在等待自动恢复",
+  );
+
+  await canvas.evaluate((element) => {
+    const testCanvas = element as HTMLCanvasElement & {
+      contextLossExtension?: WEBGL_lose_context;
+    };
+    const extension = testCanvas.contextLossExtension;
+    delete testCanvas.contextLossExtension;
+    extension?.restoreContext();
+  });
+  await expect(scene).toHaveAttribute("data-renderer", "ready");
+  await expect(page.locator(".attitude-state-overlay[role=\"alert\"]")).toHaveCount(0);
+  await expect
+    .poll(async () => (await canvasScreenshotStats(canvas)).bytes)
+    .toBeGreaterThan(10_000);
+  const restoredOrientation = await scene.getAttribute("data-rendered-orientation");
+  expect(restoredOrientation).not.toBeNull();
+  await expect
+    .poll(async () => scene.getAttribute("data-rendered-orientation"))
+    .not.toBe(restoredOrientation);
+  await scene.screenshot({ path: testInfo.outputPath("desktop-attitude-restored.png") });
+
   const mobileViewports = [
     { width: 390, height: 844 },
     { width: 320, height: 568 },
@@ -1956,12 +2247,17 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
     expect(layout.bottom).toBeLessThanOrEqual(viewport.height);
     expect(layout.documentWidth).toBeLessThanOrEqual(viewport.width);
     expect(layout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(true);
+    await configuration.getByRole("button", { name: "关闭姿态配置" }).click();
+    await expect(configuration).not.toBeVisible();
+    const mobileCanvas = await canvasScreenshotStats(canvas);
+    expect(mobileCanvas.width).toBeGreaterThan(200);
+    expect(mobileCanvas.height).toBeGreaterThan(100);
+    expect(mobileCanvas.bytes).toBeGreaterThan(5_000);
+    await page.screenshot({
+      path: testInfo.outputPath(`mobile-${viewport.width}-attitude.png`),
+      fullPage: true,
+    });
   }
-
-  await page.screenshot({
-    path: testInfo.outputPath("mobile-320-attitude.png"),
-    fullPage: true,
-  });
   expect(pageErrors).toEqual([]);
 });
 
@@ -2069,9 +2365,18 @@ test("有界命令历史与可取消周期发送形成完整工作流", async ({
   const taskStatus = page.getByRole("status", { name: "周期发送状态" });
   await expect(taskStatus).toContainText("已完成 3 次发送", { timeout: 5_000 });
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(3);
-  await page.getByRole("button", { name: "命令历史，1 条" }).click();
-  await expect(page.getByRole("dialog", { name: "命令历史" })).toContainText("×3");
-  await page.getByRole("button", { name: "命令历史，1 条" }).click();
+  const historyTrigger = page.getByRole("button", { name: "命令历史，1 条" });
+  await historyTrigger.click();
+  const historyDialog = page.getByRole("dialog", { name: "命令历史" });
+  const historyEntry = historyDialog.getByRole("button", { name: /PING/ });
+  await expect(historyDialog).toContainText("×3");
+  await expect(historyEntry).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(historyDialog).toHaveCount(0);
+  await expect(historyTrigger).toBeFocused();
+  await historyTrigger.click();
+  await expect(historyDialog.getByRole("button", { name: /PING/ })).toBeFocused();
+  await historyTrigger.click();
 
   await page.getByRole("button", { name: "持续" }).click();
   await page.getByRole("button", { name: "启动" }).click();

@@ -404,6 +404,11 @@
       "selectedLicense": "MIT",
       "fileSet": "spdx-mit",
       "reason": "The package contains SPDX metadata but omits complete MIT and Apache-2.0 terms."
+    },
+    "pkg:npm/fft.js@4.0.4": {
+      "selectedLicense": "MIT",
+      "fileSet": "spdx-mit",
+      "reason": "The npm package declares MIT but omits the complete license text."
     }
   }
 }

@@ -282,19 +282,31 @@ function parseFireWaterLine(line: string, timestamp: number): FireWaterLineResul
   if (tokens.length > MAX_PROTOCOL_CHANNELS) {
     return { frame: null, reason: "too-many-channels" };
   }
+  let namedSeparator: ":" | "=" | null = null;
   for (const token of tokens) {
-    const separatorIndex = token.indexOf(":");
+    const colonIndex = token.indexOf(":");
+    const equalsIndex = token.indexOf("=");
+    if (colonIndex >= 0 && equalsIndex >= 0) {
+      return { frame: null, reason: "invalid-format" };
+    }
+    const separator = colonIndex >= 0 ? ":" : equalsIndex >= 0 ? "=" : null;
+    const separatorIndex = separator === ":" ? colonIndex : equalsIndex;
     if (
-      separatorIndex !== token.lastIndexOf(":") ||
-      separatorIndex === 0
+      separator !== null &&
+      (separatorIndex !== token.lastIndexOf(separator) ||
+        separatorIndex === 0 ||
+        (namedSeparator !== null && namedSeparator !== separator))
     ) {
       return { frame: null, reason: "invalid-format" };
     }
-    const label = separatorIndex > 0 ? token.slice(0, separatorIndex) : "";
+    if (separator !== null) {
+      namedSeparator = separator;
+    }
+    const label = separator !== null ? token.slice(0, separatorIndex) : "";
     if (label && !isValidProtocolLabel(label)) {
       return { frame: null, reason: "invalid-label" };
     }
-    const valueText = separatorIndex > 0 ? token.slice(separatorIndex + 1) : token;
+    const valueText = separator !== null ? token.slice(separatorIndex + 1) : token;
     if (!valueText) {
       return { frame: null, reason: "invalid-format" };
     }
@@ -436,7 +448,13 @@ function isValidProtocolLabel(label: string): boolean {
     label.length <= MAX_PROTOCOL_LABEL_LENGTH &&
     !Array.from(label).some((character) => {
       const code = character.charCodeAt(0);
-      return code <= 32 || code === 44 || code === 58 || (code >= 127 && code <= 159);
+      return (
+        code <= 32 ||
+        code === 44 ||
+        code === 58 ||
+        code === 61 ||
+        (code >= 127 && code <= 159)
+      );
     })
   );
 }
