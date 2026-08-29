@@ -1087,7 +1087,9 @@ function ConnectionPanel() {
               : isBusy
                 ? "处理中"
                 : isConnected
-                  ? "断开连接"
+                  ? source === "serial"
+                    ? "断开连接"
+                    : "停止模拟"
                   : isReplayLoaded
                     ? "退出回放并连接"
                     : source === "serial"

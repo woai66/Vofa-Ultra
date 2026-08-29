@@ -203,6 +203,14 @@ describe("WaveformPanel 波形测量", () => {
     expect(screen.getByRole("button", { name: "开启波形测量" })).toBeDisabled();
   });
 
+  it("Raw Data 空态明确原始字节不会生成波形", () => {
+    useWorkbenchStore.setState({ channels: [], protocol: "raw" });
+    render(<WaveformPanel theme="dark" />);
+
+    expect(screen.getByText("Raw Data 不生成波形")).toBeVisible();
+    expect(screen.getByText("原始字节保留在数据终端中")).toBeVisible();
+  });
+
   it("按连接、暂停和回放状态显示真实的波形运行状态", () => {
     useWorkbenchStore.setState({ connectionStatus: "disconnected" });
     const { container } = render(<WaveformPanel theme="dark" />);

@@ -21,6 +21,8 @@ import type { DataPoint } from "../types/workbench";
 interface WaveformSpectrumProps {
   channels: PresentedChannelSeries[];
   theme: ThemeMode;
+  emptyStateTitle: string;
+  emptyStateDetail: string;
   chartDataRevision: number;
   channelId: string;
   windowSize: SpectrumWindowSize;
@@ -36,11 +38,14 @@ type SpectrumPanelAnalysisResult =
 type SpectrumAnalyzer = typeof import("../core/spectrum").analyzeSpectrum;
 
 const SPECTRUM_REFRESH_INTERVAL_MS = 100;
+const MIN_SPECTRUM_CHART_HEIGHT = 64;
 let spectrumAnalyzerPromise: Promise<SpectrumAnalyzer> | null = null;
 
 export default function WaveformSpectrum({
   channels,
   theme,
+  emptyStateTitle,
+  emptyStateDetail,
   chartDataRevision,
   channelId,
   windowSize,
@@ -92,8 +97,8 @@ export default function WaveformSpectrum({
         {channels.length === 0 ? (
           <div className="panel-empty-state">
             <Waves size={30} strokeWidth={1.4} />
-            <strong>等待数据帧</strong>
-            <span>连接设备或启动模拟数据源</span>
+            <strong>{emptyStateTitle}</strong>
+            <span>{emptyStateDetail}</span>
           </div>
         ) : analysis?.status === "ok" && selectedChannel ? (
           <SpectrumChart
@@ -298,7 +303,7 @@ function SpectrumChart({ analysis, channel, theme }: SpectrumChartProps) {
     const computed = getComputedStyle(container);
     const options: Options = {
       width: Math.max(container.clientWidth, 200),
-      height: Math.max(container.clientHeight, 180),
+      height: Math.max(container.clientHeight, MIN_SPECTRUM_CHART_HEIGHT),
       padding: [12, 14, 2, 0],
       cursor: {
         drag: { x: false, y: false, setScale: false },
@@ -348,7 +353,7 @@ function SpectrumChart({ analysis, channel, theme }: SpectrumChartProps) {
     chartRef.current = chart;
     const observer = new ResizeObserver(() => {
       const width = Math.max(container.clientWidth, 200);
-      const height = Math.max(container.clientHeight, 180);
+      const height = Math.max(container.clientHeight, MIN_SPECTRUM_CHART_HEIGHT);
       if (chart.width !== width || chart.height !== height) {
         chart.setSize({ width, height });
       }

@@ -481,6 +481,7 @@ describe("Sidebar 串口恢复界面", () => {
     expect(screen.getByLabelText("信号类型")).toBeDisabled();
     expect(screen.getByLabelText("模拟器通道数")).toBeDisabled();
     expect(screen.getByLabelText("模拟器采样率")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "停止模拟" })).toBeEnabled();
   });
 
   it("端口选项按名称自然排序并包含设备摘要", () => {
