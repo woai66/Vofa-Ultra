@@ -125,7 +125,7 @@ export class JustFloatParser implements ProtocolParser {
     const frames: ParsedFrame[] = [];
     let frameStart = 0;
 
-    let tailIndex = findSequence(buffer, JUSTFLOAT_TAIL, frameStart);
+    let tailIndex = findJustFloatTail(buffer, frameStart, this.discardingFrame);
     while (tailIndex >= 0) {
       const frameLength = tailIndex - frameStart;
       if (this.discardingFrame) {
@@ -149,7 +149,7 @@ export class JustFloatParser implements ProtocolParser {
 
       this.discardingFrame = false;
       frameStart = tailIndex + JUSTFLOAT_TAIL.length;
-      tailIndex = findSequence(buffer, JUSTFLOAT_TAIL, frameStart);
+      tailIndex = findJustFloatTail(buffer, frameStart, this.discardingFrame);
     }
 
     const remainder = buffer.slice(frameStart);
@@ -491,18 +491,45 @@ function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
   return result;
 }
 
-function findSequence(buffer: Uint8Array, sequence: Uint8Array, fromIndex = 0): number {
-  const lastStart = buffer.length - sequence.length;
-  for (let start = fromIndex; start <= lastStart; start += 1) {
+function findJustFloatTail(
+  buffer: Uint8Array,
+  frameStart: number,
+  allowUnaligned: boolean,
+): number {
+  const candidates: number[] = [];
+  const lastStart = buffer.length - JUSTFLOAT_TAIL.length;
+  for (let start = frameStart; start <= lastStart; start += 1) {
     let matches = true;
-    for (let index = 0; index < sequence.length; index += 1) {
-      if (buffer[start + index] !== sequence[index]) {
+    for (let index = 0; index < JUSTFLOAT_TAIL.length; index += 1) {
+      if (buffer[start + index] !== JUSTFLOAT_TAIL[index]) {
         matches = false;
         break;
       }
     }
     if (matches) {
-      return start;
+      candidates.push(start);
+    }
+  }
+
+  const aligned = candidates.find(
+    (candidate) => (candidate - frameStart) % Float32Array.BYTES_PER_ELEMENT === 0,
+  );
+  if (aligned !== undefined) {
+    return aligned;
+  }
+  if (allowUnaligned) {
+    return candidates[0] ?? -1;
+  }
+  for (const candidate of candidates) {
+    const nextFrameStart = candidate + JUSTFLOAT_TAIL.length;
+    if (
+      candidates.some(
+        (next) =>
+          next > candidate &&
+          (next - nextFrameStart) % Float32Array.BYTES_PER_ELEMENT === 0,
+      )
+    ) {
+      return candidate;
     }
   }
   return -1;

@@ -47,7 +47,9 @@ const STRUCTURED_PROTOCOL_FIXTURES = {
   justfloat: {
     id: "justfloat",
     values: [1.25, -2, 3],
-    malformedInput: new Uint8Array([0x12, 0x34, 0x00, 0x00, 0x80, 0x7f]),
+    malformedInput: new Uint8Array([
+      0x01, 0x00, 0xc0, 0x7f, 0x00, 0x00, 0x80, 0x7f,
+    ]),
     oversizedInput: new Uint8Array(80).fill(1),
     recoveryBoundary: new Uint8Array([0x00, 0x00, 0x80, 0x7f]),
     encode: encodeJustFloatFrame,
@@ -250,6 +252,23 @@ describe("JustFloatParser", () => {
 
     expect(parser.push(bytes.slice(0, -1), 6_100)).toEqual([]);
     expect(parser.push(bytes.slice(-1), 6_200)).toEqual([{ values, timestamp: 6_200 }]);
+  });
+
+  it("忽略合法浮点载荷中未对齐的伪帧尾", () => {
+    const parser = new JustFloatParser();
+    const payload = new Uint8Array([0x01, 0x00, 0x00, 0x80, 0x7f, 0x00, 0x00, 0x00]);
+    const frame = concatBytes(payload, new Uint8Array([0x00, 0x00, 0x80, 0x7f]));
+    const view = new DataView(payload.buffer);
+    const expected = [view.getFloat32(0, true), view.getFloat32(4, true)];
+
+    expect(parser.push(frame.slice(0, 5), 6_250)).toEqual([]);
+    expect(parser.push(frame.slice(5), 6_260)).toEqual([
+      { values: expected, timestamp: 6_260 },
+    ]);
+    expect(parser.getHealthSnapshot()).toMatchObject({
+      acceptedFrames: 1,
+      droppedFrames: 0,
+    });
   });
 
   it("丢弃超长未闭合帧并在下一个帧尾后恢复", () => {

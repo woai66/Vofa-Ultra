@@ -2406,6 +2406,49 @@ describe("workbenchStore", () => {
     });
   });
 
+  it.each(["disconnected", "error"] as const)(
+    "串口变为 %s 后忽略同一连接代次的迟到数据",
+    (terminalStatus) => {
+      useWorkbenchStore.setState({
+        source: "serial",
+        protocol: "firewater",
+        connectionStatus: "connected",
+        serialGeneration: 7,
+        serialStateRevision: 2,
+      });
+      useWorkbenchStore.getState().handleSerialData({
+        data: btoa("1,2\n"),
+        receivedAt: 1_000,
+        generation: 7,
+      });
+      expect(useWorkbenchStore.getState()).toMatchObject({
+        stats: { rxBytes: 4, rxFrames: 1 },
+      });
+
+      useWorkbenchStore.getState().handleSerialState({
+        status: terminalStatus,
+        portName: "COM7",
+        message: terminalStatus === "error" ? "设备已移除" : undefined,
+        generation: 7,
+        revision: 3,
+      });
+      const stateAtBoundary = useWorkbenchStore.getState();
+
+      stateAtBoundary.handleSerialData({
+        data: btoa("3,4\n"),
+        receivedAt: 1_100,
+        generation: 7,
+      });
+
+      expect(useWorkbenchStore.getState()).toMatchObject({
+        connectionStatus: terminalStatus,
+        stats: stateAtBoundary.stats,
+        channels: stateAtBoundary.channels,
+        terminalEntries: stateAtBoundary.terminalEntries,
+      });
+    },
+  );
+
   it("输入握手线只接受当前连接递增修订，并在换代时重新开始", () => {
     useWorkbenchStore.setState({
       source: "serial",

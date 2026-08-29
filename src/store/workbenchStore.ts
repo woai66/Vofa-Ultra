@@ -2095,6 +2095,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (
           hasReplaySession(state) ||
           state.source !== "serial" ||
+          state.connectionStatus !== "connected" ||
           payload.generation !== state.serialGeneration
         ) {
           return;
