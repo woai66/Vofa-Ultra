@@ -367,6 +367,7 @@ let replayProcessingRuntime = new ProcessingGraphRuntime(
 );
 let captureStopPromise: Promise<boolean> | null = null;
 let numericLogStopPromise: Promise<boolean> | null = null;
+let appClosePromise: Promise<void> | null = null;
 let serialRecoveryCoordinator: SerialReconnectCoordinator | null = null;
 let serialConnectOperation = 0;
 let serialPortRefreshOperation = 0;
@@ -3771,25 +3772,100 @@ export function disposeWorkbenchRuntime(): void {
   })().catch(() => undefined);
 }
 
-export async function prepareWorkbenchForAppClose(): Promise<void> {
+export function prepareWorkbenchForAppClose(): Promise<void> {
+  if (appClosePromise) {
+    return appClosePromise;
+  }
+
+  let resolveClose!: () => void;
+  let rejectClose!: (reason?: unknown) => void;
+  const pending = new Promise<void>((resolve, reject) => {
+    resolveClose = resolve;
+    rejectClose = reject;
+  });
+  appClosePromise = pending;
+  void prepareWorkbenchForAppCloseOnce().then(resolveClose, rejectClose);
+  void pending.then(
+    () => {
+      if (appClosePromise === pending) {
+        appClosePromise = null;
+      }
+    },
+    () => {
+      if (appClosePromise === pending) {
+        appClosePromise = null;
+      }
+    },
+  );
+  return pending;
+}
+
+async function prepareWorkbenchForAppCloseOnce(): Promise<void> {
+  const state = useWorkbenchStore.getState();
+  const manualConnectionPending =
+    state.source === "serial" &&
+    state.connectionStatus === "connecting" &&
+    state.serialRecovery.phase !== "connecting";
+  const failures: string[] = [];
+
+  invalidateSerialPortRefresh(useWorkbenchStore.setState);
+  serialConnectOperation += 1;
+  serialControlLineOperation += 1;
+  serialRecoverySettingOperation += 1;
   stopCurrentModbusPolling("runtime-dispose", false);
-  const modbusCancellation = cancelActiveModbusTransaction(useWorkbenchStore.getState);
+  const modbusCancellation = cancelActiveModbusTransaction(useWorkbenchStore.getState).catch(
+    (error: unknown) => {
+      failures.push(`取消 Modbus RTU 事务失败：${getErrorMessage(error)}`);
+    },
+  );
   stopCurrentCommandWorkflows("runtime-dispose");
   useWorkbenchStore.setState({
     runtimeTransitionStatus: "closing-app",
     statusMessage: "正在完成记录并关闭应用",
+    serialControlLineOperation: "idle",
     waveformTrigger: createIdleWaveformTriggerState(),
   });
-  const recordingsCompletion = stopCurrentRecordings(
-    useWorkbenchStore.getState,
-    useWorkbenchStore.setState,
-  );
-  const [recordingsStopped] = await Promise.all([
-    recordingsCompletion,
-    modbusCancellation,
-  ]);
-  if (!recordingsStopped) {
-    throw new Error("记录任务未能在应用关闭前正常完成");
+
+  try {
+    await serialRecoveryCoordinator?.cancel("runtime-dispose", true);
+    if (manualConnectionPending) {
+      await cancelPendingSerialConnection();
+    }
+  } catch (error) {
+    failures.push(`取消串口连接失败：${getErrorMessage(error)}`);
+  }
+
+  if (state.isNativeRuntime) {
+    try {
+      const payload = await disconnectSerial();
+      useWorkbenchStore.getState().handleSerialState(payload);
+      if (payload.status !== "disconnected") {
+        failures.push(`串口未正常断开：${serialStatusMessage(payload.status, payload.portName)}`);
+      }
+    } catch (error) {
+      failures.push(`断开串口失败：${getErrorMessage(error)}`);
+    }
+  }
+
+  await modbusCancellation;
+  useWorkbenchStore.setState({ statusMessage: "正在完成记录并关闭应用" });
+
+  try {
+    const recordingsStopped = await stopCurrentRecordings(
+      useWorkbenchStore.getState,
+      useWorkbenchStore.setState,
+    );
+    if (!recordingsStopped) {
+      failures.push("记录任务未能在应用关闭前正常完成");
+    }
+  } catch (error) {
+    failures.push(`记录任务未能在应用关闭前正常完成：${getErrorMessage(error)}`);
+  }
+
+  if (failures.length > 0) {
+    const message = `应用关闭收尾失败：${failures.join("；")}`;
+    useWorkbenchStore.setState({ statusMessage: message });
+    throw new Error(message);
   }
 }
 

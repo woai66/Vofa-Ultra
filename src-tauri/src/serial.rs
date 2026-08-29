@@ -54,6 +54,40 @@ impl Default for SerialState {
     }
 }
 
+impl SerialState {
+    pub(crate) fn shutdown(&self) -> Result<(), String> {
+        let worker = {
+            let mut shared = match self.shared.lock() {
+                Ok(shared) => shared,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            shared.connection_request = shared.connection_request.saturating_add(1);
+            shared.pending_connection_request = None;
+            shared.active_control_line = None;
+            if let Some(active) = shared.active_modbus.as_ref() {
+                active.cancel.store(true, Ordering::Release);
+            }
+            if let Some(active) = shared.active_file_send.as_ref() {
+                let phase = active.phase.load(Ordering::Acquire);
+                if matches!(phase, FILE_SEND_QUEUED | FILE_SEND_TRANSMITTING) {
+                    let _ = active.phase.compare_exchange(
+                        phase,
+                        FILE_SEND_CANCEL_REQUESTED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                }
+            }
+            shared.worker.take()
+        };
+
+        match worker {
+            Some(worker) => worker.stop().map_err(|failure| failure.message),
+            None => Ok(()),
+        }
+    }
+}
+
 struct SharedSerialState {
     connection_request: u64,
     pending_connection_request: Option<u64>,
@@ -3716,6 +3750,72 @@ mod tests {
         assert_eq!(stale_snapshot.status, shared.status.as_str());
         assert_eq!(stale_snapshot.generation, shared.generation);
         assert_eq!(stale_snapshot.revision, shared.revision);
+    }
+
+    #[test]
+    fn shutdown_invalidates_connect_and_joins_worker() {
+        let state = SerialState::default();
+        let worker_cancel = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::new(AtomicBool::new(false));
+        let task_cancel = Arc::clone(&worker_cancel);
+        let task_finished = Arc::clone(&worker_finished);
+        let join_handle = thread::spawn(move || {
+            while !task_cancel.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            task_finished.store(true, Ordering::Release);
+        });
+        let modbus_cancel = Arc::new(AtomicBool::new(false));
+        let file_send_phase = Arc::new(AtomicU8::new(FILE_SEND_TRANSMITTING));
+
+        {
+            let mut shared = state.shared.lock().unwrap();
+            shared.connection_request = 41;
+            shared.pending_connection_request = Some(41);
+            shared.generation = 7;
+            shared.status = SerialStatus::Connecting;
+            shared.active_control_line = Some(ActiveControlLine {
+                operation_id: 1,
+                generation: 7,
+            });
+            shared.active_modbus = Some(ActiveModbusControl {
+                transaction_id: 1,
+                generation: 7,
+                request: vec![1],
+                queued_at: 0,
+                cancel: Arc::clone(&modbus_cancel),
+                request_phase: Arc::new(AtomicU8::new(MODBUS_REQUEST_QUEUED)),
+            });
+            shared.active_file_send = Some(ActiveFileSendControl {
+                job_id: 1,
+                generation: 7,
+                phase: Arc::clone(&file_send_phase),
+            });
+            shared.worker = Some(SerialWorker {
+                generation: 7,
+                hardware_flow_control: false,
+                command_tx: None,
+                cancel: Arc::clone(&worker_cancel),
+                join_handle: Some(join_handle),
+            });
+        }
+
+        state.shutdown().unwrap();
+        assert!(worker_cancel.load(Ordering::Acquire));
+        assert!(worker_finished.load(Ordering::Acquire));
+        assert!(modbus_cancel.load(Ordering::Acquire));
+        assert_eq!(
+            file_send_phase.load(Ordering::Acquire),
+            FILE_SEND_CANCEL_REQUESTED
+        );
+        {
+            let shared = state.shared.lock().unwrap();
+            assert_eq!(shared.connection_request, 42);
+            assert!(shared.pending_connection_request.is_none());
+            assert!(shared.active_control_line.is_none());
+            assert!(shared.worker.is_none());
+        }
+        state.shutdown().unwrap();
     }
 
     #[test]
