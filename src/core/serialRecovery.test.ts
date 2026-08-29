@@ -214,6 +214,7 @@ describe("SerialReconnectCoordinator", () => {
 
     const report = harness.coordinator.exportDiagnostics({
       appVersion: "0.1.0",
+      buildId: "abcdef123456",
       connectionStatus: "error",
       generation: connection_lost.generation,
       revision: connection_lost.revision,
@@ -244,6 +245,7 @@ describe("SerialReconnectCoordinator", () => {
     });
     const report = harness.coordinator.exportDiagnostics({
       appVersion: "0.1.0",
+      buildId: "abcdef123456",
       connectionStatus: "error",
       generation: 4,
       revision: 11,
@@ -358,6 +360,7 @@ describe("SerialReconnectCoordinator", () => {
       blocked.coordinator
         .exportDiagnostics({
           appVersion: "0.1.0",
+          buildId: "abcdef123456",
           connectionStatus: "error",
           generation: CONNECTED_STATE.generation,
           revision: CONNECTED_STATE.revision + 1,
@@ -515,6 +518,7 @@ describe("SerialDiagnosticLog", () => {
 
     const report = log.export({
       appVersion: "0.1.0",
+      buildId: "abcdef123456",
       connectionStatus: "disconnected",
       generation: 0,
       revision: 0,
@@ -536,6 +540,7 @@ describe("SerialDiagnosticLog", () => {
 
     const report = log.export({
       appVersion: "0.1.0",
+      buildId: "abcdef123456",
       connectionStatus: "error",
       generation: 4,
       revision: 11,
@@ -582,6 +587,7 @@ describe("SerialDiagnosticLog", () => {
 
     const report = harness.coordinator.exportDiagnostics({
       appVersion: "0.1.0",
+      buildId: "abcdef123456",
       connectionStatus: "error",
       generation: 4,
       revision: 11,

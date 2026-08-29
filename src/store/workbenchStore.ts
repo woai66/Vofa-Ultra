@@ -1,6 +1,6 @@
 import { create, type StoreApi } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
-import { APP_VERSION } from "../core/appMetadata";
+import { APP_BUILD_ID, APP_VERSION } from "../core/appMetadata";
 import {
   AutoResponderRuntime,
   CommandSendArbiter,
@@ -1738,6 +1738,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const state = get();
         return getSerialRecoveryCoordinator().exportDiagnostics({
           appVersion: APP_VERSION,
+          buildId: APP_BUILD_ID,
           connectionStatus: state.connectionStatus,
           generation: state.serialGeneration,
           revision: state.serialStateRevision,

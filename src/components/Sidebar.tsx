@@ -37,7 +37,7 @@ import {
   presentChannelSeries,
   type PresentedChannelSeries,
 } from "../core/channelPresentation";
-import { APP_DISPLAY_VERSION } from "../core/appMetadata";
+import { APP_BUILD_ID, APP_DISPLAY_VERSION } from "../core/appMetadata";
 import { isModbusPollActive } from "../core/modbusPoller";
 import {
   BUILTIN_PROTOCOLS,
@@ -1713,6 +1713,12 @@ function SettingsPanel({
           <div>
             <dt>许可证</dt>
             <dd>MIT</dd>
+          </div>
+          <div>
+            <dt>构建</dt>
+            <dd>
+              <code>{APP_BUILD_ID}</code>
+            </dd>
           </div>
         </dl>
       </section>

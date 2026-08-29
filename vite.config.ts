@@ -1,6 +1,9 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import type { Plugin, Rollup } from "vite";
 
@@ -10,12 +13,15 @@ const ATTITUDE_JS_LIMIT_BYTES = 650 * 1024;
 const ATTITUDE_JS_GZIP_LIMIT_BYTES = 180 * 1024;
 const ATTITUDE_PANEL_MODULE = "/src/components/AttitudePanel.tsx";
 const THREE_MODULE_SEGMENT = "/node_modules/three/";
+const PROJECT_ROOT = path.resolve(fileURLToPath(new URL(".", import.meta.url)));
 const APP_VERSION = readAppVersion();
+const APP_BUILD_ID = readAppBuildId();
 
 export default defineConfig({
   plugins: [react(), frontendBundleBudget()],
   define: {
     __APP_VERSION__: JSON.stringify(APP_VERSION),
+    __APP_BUILD_ID__: JSON.stringify(APP_BUILD_ID),
   },
   clearScreen: false,
   server: {
@@ -178,4 +184,49 @@ function readAppVersion(): string {
     throw new Error("package.json version 必须是非空字符串");
   }
   return packageManifest.version;
+}
+
+function readAppBuildId(): string {
+  const configuredBuildId = process.env.VOFA_ULTRA_BUILD_ID;
+  if (configuredBuildId) {
+    return normalizeBuildId(configuredBuildId);
+  }
+
+  try {
+    const safeDirectory = PROJECT_ROOT.replaceAll("\\", "/");
+    const gitArguments = ["-c", `safe.directory=${safeDirectory}`];
+    const commit = execFileSync(
+      "git",
+      [...gitArguments, "rev-parse", "--short=12", "HEAD^{commit}"],
+      {
+        cwd: PROJECT_ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim();
+    const dirty = execFileSync(
+      "git",
+      [...gitArguments, "status", "--porcelain=v1", "--untracked-files=all"],
+      {
+        cwd: PROJECT_ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim().length > 0;
+    return normalizeBuildId(`${commit}${dirty ? "-dirty" : ""}`);
+  } catch {
+    return "development";
+  }
+}
+
+function normalizeBuildId(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  const match = /^([0-9a-f]{7,40})(-dirty)?$/.exec(normalized);
+  if (match) {
+    return `${match[1]?.slice(0, 12)}${match[2] ?? ""}`;
+  }
+  if (normalized === "development") {
+    return normalized;
+  }
+  throw new Error("VOFA_ULTRA_BUILD_ID 必须是 7 到 40 位 Git commit，或 development");
 }

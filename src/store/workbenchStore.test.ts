@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import compatibilityPolicy from "../../compatibility-policy.json";
-import { APP_VERSION } from "../core/appMetadata";
+import { APP_BUILD_ID, APP_VERSION } from "../core/appMetadata";
 import {
   createDefaultAutoResponderRule,
   createInitialAutoResponderSnapshot,
@@ -534,7 +534,10 @@ describe("workbenchStore", () => {
   });
 
   it("诊断报告使用构建注入的应用版本", () => {
-    expect(useWorkbenchStore.getState().getSerialDiagnostics().appVersion).toBe(APP_VERSION);
+    expect(useWorkbenchStore.getState().getSerialDiagnostics()).toMatchObject({
+      appVersion: APP_VERSION,
+      buildId: APP_BUILD_ID,
+    });
   });
 
   it("读取块模式保持每次 ingest 一条终端记录", () => {

@@ -184,6 +184,7 @@ export interface SerialDiagnosticsReport {
   schemaVersion: 1;
   generatedAt: number;
   appVersion: string;
+  buildId: string;
   connection: {
     status: ConnectionStatus;
     recoveryPhase: SerialRecoveryPhase;

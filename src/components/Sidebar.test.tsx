@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { APP_DISPLAY_VERSION } from "../core/appMetadata";
+import { APP_BUILD_ID, APP_DISPLAY_VERSION } from "../core/appMetadata";
 import { createInitialModbusPollSnapshot } from "../core/modbusPoller";
 import { createEmptyProtocolHealth } from "../core/protocols";
 import { useWorkbenchStore } from "../store/workbenchStore";
@@ -1177,7 +1177,7 @@ describe("Sidebar 主题偏好", () => {
     expect(light_button).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("显示当前版本、Windows 支持范围和许可证", () => {
+  it("显示当前版本、构建、Windows 支持范围和许可证", () => {
     render(
       <Sidebar
         activePanel="settings"
@@ -1189,6 +1189,7 @@ describe("Sidebar 主题偏好", () => {
 
     const about = screen.getByRole("region", { name: "Vofa-Ultra" });
     expect(about).toHaveTextContent(APP_DISPLAY_VERSION);
+    expect(about).toHaveTextContent(APP_BUILD_ID);
     expect(about).toHaveTextContent("Windows 10/11 x64");
     expect(about).toHaveTextContent("MIT");
   });

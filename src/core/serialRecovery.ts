@@ -73,6 +73,7 @@ interface DiagnosticInput {
 
 interface DiagnosticsContext {
   appVersion: string;
+  buildId: string;
   connectionStatus: ConnectionStatus;
   generation: number;
   revision: number;
@@ -722,6 +723,7 @@ function createDiagnosticsReport(
     schemaVersion: 1,
     generatedAt,
     appVersion: context.appVersion,
+    buildId: context.buildId,
     connection: {
       status: context.connectionStatus,
       recoveryPhase: context.recoveryPhase,
