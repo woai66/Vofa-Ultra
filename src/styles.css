@@ -1003,6 +1003,10 @@ textarea:disabled {
   line-height: 1.35;
 }
 
+.connection-panel .field-label {
+  font-size: 13px;
+}
+
 .baud-rate-field {
   display: grid;
   gap: 6px;
@@ -1015,7 +1019,7 @@ textarea:disabled {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface-1);
-  grid-template-columns: minmax(0, 1fr) 42px;
+  grid-template-columns: minmax(0, 1fr) 36px;
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
@@ -1055,13 +1059,13 @@ textarea:disabled {
 
 .baud-rate-toggle {
   display: grid;
-  width: 42px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
+  margin: 2px;
   place-items: center;
   padding: 0;
   border: 0;
-  border-left: 1px solid var(--border);
-  border-radius: 0 5px 5px 0;
+  border-radius: 4px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -1083,23 +1087,23 @@ textarea:disabled {
 .baud-rate-options {
   position: absolute;
   z-index: 80;
-  top: calc(100% + 6px);
+  top: calc(100% + 5px);
   right: 0;
   left: 0;
   display: grid;
   max-height: 260px;
-  padding: 4px;
+  padding: 5px;
   overflow-y: auto;
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  box-shadow: var(--shadow);
+  border-radius: 7px;
+  box-shadow: 0 12px 28px rgb(0 0 0 / 34%);
   background: var(--surface-1);
   gap: 2px;
 }
 
 .baud-rate-options[data-placement="top"] {
   top: auto;
-  bottom: calc(100% + 6px);
+  bottom: calc(100% + 5px);
 }
 
 .baud-rate-options button {
@@ -1212,6 +1216,22 @@ textarea:focus {
 
 .connection-fields {
   gap: 7px;
+}
+
+.connection-panel .segmented-control button {
+  font-size: 13px;
+}
+
+.connection-panel input:disabled,
+.connection-panel select:disabled,
+.connection-panel .segmented-control button:disabled,
+.connection-panel .protocol-option:disabled {
+  opacity: 0.64;
+}
+
+.connection-panel .segmented-control button[data-active="true"]:disabled,
+.connection-panel .protocol-option[data-active="true"]:disabled {
+  opacity: 1;
 }
 
 .simulator-config-grid {
@@ -1745,7 +1765,7 @@ textarea:focus {
 .protocol-option {
   display: flex;
   width: 100%;
-  min-height: 47px;
+  min-height: 52px;
   align-items: center;
   padding: 7px 8px;
   border: 0;
@@ -1766,8 +1786,9 @@ textarea:focus {
 }
 
 .protocol-option[data-active="true"] {
-  background: var(--accent-soft);
+  background: var(--surface-1);
   color: var(--text);
+  box-shadow: inset 2px 0 var(--accent);
 }
 
 .protocol-dot {
@@ -1791,13 +1812,13 @@ textarea:focus {
 }
 
 .protocol-option strong {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
 }
 
 .protocol-option small {
   color: var(--text-subtle);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 :root[data-theme="light"] .protocol-option[data-active="true"] small {
@@ -1818,13 +1839,17 @@ textarea:focus {
   min-width: 0;
   align-items: flex-start;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
   gap: 7px;
 }
 
 .connection-message > span:last-child {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.connection-action-area .primary-button {
+  height: 40px;
 }
 
 .status-dot {
@@ -2853,10 +2878,10 @@ textarea:focus {
   display: flex;
   min-width: 0;
   align-items: center;
-  padding: 0 14px;
+  padding: 0 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-0);
-  gap: 10px;
+  gap: 12px;
 }
 
 .sidebar-toggle {
@@ -2875,7 +2900,8 @@ textarea:focus {
 .workspace-title strong {
   flex: 0 0 auto;
   overflow: hidden;
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2895,16 +2921,16 @@ textarea:focus {
   flex: 0 0 auto;
   align-items: center;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
   gap: 7px;
 }
 
 .workspace-view-tabs {
   display: grid;
-  height: 31px;
+  height: 33px;
   flex: 0 0 auto;
-  grid-template-columns: repeat(3, 62px);
+  grid-template-columns: repeat(3, 64px);
   margin-left: auto;
   padding: 2px;
   border: 1px solid var(--border);
@@ -2939,13 +2965,13 @@ textarea:focus {
 
 .workspace-layout-controls {
   display: grid;
-  height: 31px;
+  height: 33px;
   flex: 0 0 auto;
   padding: 2px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface-2);
-  grid-template-columns: repeat(3, 28px);
+  grid-template-columns: repeat(3, 30px);
 }
 
 .workspace-layout-controls button {
@@ -3097,10 +3123,15 @@ textarea:focus {
   flex: 0 0 46px;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px 0 14px;
+  padding: 0 14px 0 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-0);
   gap: 10px;
+}
+
+.panel-toolbar .icon-button {
+  width: 32px;
+  height: 32px;
 }
 
 .panel-title-group,
@@ -3125,14 +3156,14 @@ textarea:focus {
 .panel-title-group h2 {
   margin: 0;
   color: var(--text);
-  font-size: 13px;
-  font-weight: 650;
+  font-size: 14px;
+  font-weight: 600;
   white-space: nowrap;
 }
 
 .panel-subtitle {
   color: var(--text-subtle);
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -3221,14 +3252,14 @@ textarea:focus {
   margin-left: 7px;
   color: var(--accent);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   gap: 5px;
 }
 
 .live-state > span {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: currentColor;
   box-shadow: 0 0 0 3px var(--accent-soft);
@@ -3460,15 +3491,15 @@ textarea:focus {
 }
 
 .time-window-control button {
-  width: 34px;
-  height: 26px;
+  width: 36px;
+  height: 28px;
   padding: 0;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
 }
 
@@ -3484,8 +3515,8 @@ textarea:focus {
 .channel-strip {
   display: flex;
   min-width: 0;
-  min-height: 34px;
-  flex: 0 0 34px;
+  min-height: 38px;
+  flex: 0 0 38px;
   align-items: center;
   overflow-x: auto;
   border-bottom: 1px solid var(--border);
@@ -3497,7 +3528,7 @@ textarea:focus {
   z-index: 2;
   left: 0;
   display: flex;
-  height: 34px;
+  height: 38px;
   flex: 0 0 auto;
   align-items: center;
   padding: 0 8px;
@@ -3509,8 +3540,8 @@ textarea:focus {
 
 .waveform-scale-mode {
   display: grid;
-  height: 26px;
-  grid-template-columns: repeat(2, 38px);
+  height: 28px;
+  grid-template-columns: repeat(2, 40px);
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -3523,7 +3554,7 @@ textarea:focus {
   border: 0;
   background: transparent;
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 11px;
   cursor: pointer;
 }
 
@@ -3558,20 +3589,20 @@ textarea:focus {
 
 .waveform-focus-channel select {
   width: 112px;
-  height: 26px;
+  height: 28px;
   min-width: 0;
   padding: 0 22px 0 7px;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--surface-1);
   color: var(--text);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .waveform-range-button {
-  width: 26px;
-  height: 26px;
-  flex: 0 0 26px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
 }
 
 .waveform-range-strip {
@@ -3692,8 +3723,8 @@ textarea:focus {
 
 .channel-readout {
   display: grid;
-  min-width: 118px;
-  height: 34px;
+  min-width: 132px;
+  height: 38px;
   align-items: center;
   grid-template-columns: 6px minmax(30px, auto) auto;
   padding: 0 12px;
@@ -3719,7 +3750,7 @@ textarea:focus {
 .channel-readout small {
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3730,7 +3761,7 @@ textarea:focus {
   justify-content: flex-end;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
   text-align: right;
   gap: 3px;
@@ -3740,7 +3771,7 @@ textarea:focus {
   max-width: 40px;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4667,12 +4698,12 @@ textarea:focus {
 
 .panel-empty-state strong {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
 }
 
 .panel-empty-state span {
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .compact-segments {
@@ -4686,7 +4717,7 @@ textarea:focus {
   height: 25px;
   padding: 0 8px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .terminal-filter-bar {
@@ -4731,7 +4762,7 @@ textarea:focus {
   height: 28px;
   padding: 0 5px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .terminal-rx-line-ending select:disabled {
@@ -4770,7 +4801,7 @@ textarea:focus {
   background: transparent;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .terminal-search-field input::placeholder {
@@ -4826,7 +4857,7 @@ textarea:focus {
   background: var(--surface-1);
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   user-select: text;
 }
 
@@ -4855,10 +4886,10 @@ textarea:focus {
   display: grid;
   width: 100%;
   min-width: 640px;
-  min-height: 24px;
+  min-height: 26px;
   align-items: baseline;
   grid-template-columns: 112px 30px minmax(0, 1fr) 54px;
-  padding: 3px 10px;
+  padding: 4px 10px;
   border-bottom: 1px solid var(--chart-grid);
   gap: 8px;
 }
@@ -4876,7 +4907,7 @@ textarea:focus {
 .terminal-line time,
 .terminal-line small {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -4894,7 +4925,7 @@ textarea:focus {
 
 .direction-label {
   color: var(--cyan);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -4956,8 +4987,8 @@ textarea:focus {
   justify-content: center;
   color: var(--text-subtle);
   font-family: inherit;
-  font-size: 11px;
-  gap: 5px;
+  font-size: 12px;
+  gap: 7px;
 }
 
 .send-composer {
@@ -4993,7 +5024,7 @@ textarea:focus {
   width: 76px;
   height: 29px;
   padding: 0 6px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .send-line-ending-field {
@@ -5039,7 +5070,7 @@ textarea:focus {
 
 .send-field-caption {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -5049,7 +5080,7 @@ textarea:focus {
   resize: vertical;
   padding: 6px 9px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 18px;
 }
 
@@ -5116,7 +5147,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
   line-height: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6653,7 +6684,7 @@ textarea:focus {
   background: #111815;
   color: #94a099;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 :root[data-theme="light"] .status-bar {
@@ -6667,7 +6698,7 @@ textarea:focus {
   min-width: 0;
   height: 100%;
   align-items: center;
-  padding: 0 9px;
+  padding: 0 8px;
   border-right: 1px solid #253029;
   white-space: nowrap;
   gap: 5px;
@@ -6698,6 +6729,10 @@ textarea:focus {
 
   .terminal-line {
     grid-template-columns: 106px 28px minmax(0, 1fr) 62px;
+  }
+
+  .transfer-stats {
+    display: none;
   }
 }
 
@@ -6822,6 +6857,12 @@ textarea:focus {
 
 @container workspace (max-width: 820px) {
   .workspace-header-meta {
+    display: none;
+  }
+}
+
+@container workspace (max-width: 760px) {
+  .panel-subtitle {
     display: none;
   }
 }

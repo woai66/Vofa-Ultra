@@ -121,7 +121,7 @@ const TERMINAL_TIME_MODE_OPTIONS: readonly {
   { mode: "interval", label: "ΔT", description: "距上一条可见记录" },
 ];
 
-const TERMINAL_LATEST_THRESHOLD_PX = 24;
+const TERMINAL_LATEST_THRESHOLD_PX = 26;
 const MAX_ASCII_SEARCH_CHARACTERS = 32;
 
 interface AsciiReferenceEntry {
@@ -579,7 +579,7 @@ export function TerminalPanel() {
     count: visibleEntries.length,
     getScrollElement: () => viewportRef.current,
     getItemKey: (index) => visibleEntries[index]?.id ?? index,
-    estimateSize: () => 24,
+    estimateSize: () => 26,
     overscan: 12,
     useFlushSync: false,
     anchorTo: "end",
