@@ -17,6 +17,9 @@ describe("Sidebar 串口恢复界面", () => {
       source: "serial",
       connectionStatus: "error",
       serialRuntimeError: "",
+      isRefreshingPorts: false,
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
       connectionMessage: "设备已移除",
       statusMessage: "设备已移除",
       ports: [
@@ -98,6 +101,7 @@ describe("Sidebar 串口恢复界面", () => {
       connectionMessage: "COM3 已就绪",
       statusMessage: "回放已关闭",
       serialRuntimeError: "",
+      refreshPorts: vi.fn().mockResolvedValue(undefined),
       serialRecovery: { ...state.serialRecovery, phase: "off" },
     }));
     render(
@@ -112,6 +116,127 @@ describe("Sidebar 串口恢复界面", () => {
     const connection_status = screen.getByRole("status");
     expect(connection_status).toHaveTextContent("COM3 已就绪");
     expect(connection_status).not.toHaveTextContent("回放已关闭");
+  });
+
+  it("区分串口扫描中、未发现设备和扫描失败", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      isRefreshingPorts: true,
+      connectionMessage: "等待连接",
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
+      ports: [],
+      serialConfig: { ...state.serialConfig, portName: "" },
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    const props = {
+      activePanel: "connection" as const,
+      themePreference: "dark" as const,
+      onClose: vi.fn(),
+      onThemePreferenceChange: vi.fn(),
+    };
+    const { rerender } = render(<Sidebar {...props} />);
+
+    expect(screen.getByLabelText("串口设备")).toHaveDisplayValue("正在扫描设备");
+    expect(screen.getByLabelText("串口设备")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "刷新串口列表" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("正在扫描串口设备");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "connecting");
+    expect(screen.getByRole("button", { name: "连接设备" })).toHaveAttribute(
+      "title",
+      "正在扫描串口设备",
+    );
+
+    useWorkbenchStore.setState({
+      isRefreshingPorts: false,
+      serialPortDiscoveryStatus: "empty",
+      serialPortDiscoveryMessage: "未发现串口设备",
+    });
+    rerender(<Sidebar {...props} />);
+    expect(screen.getByLabelText("串口设备")).toHaveDisplayValue("未发现设备");
+    expect(screen.getByRole("status")).toHaveTextContent("未发现串口设备");
+    expect(screen.getByRole("button", { name: "连接设备" })).toHaveAttribute(
+      "title",
+      "未发现串口设备，请连接设备后刷新",
+    );
+
+    useWorkbenchStore.setState({
+      serialPortDiscoveryStatus: "error",
+      serialPortDiscoveryMessage: "扫描串口失败：串口驱动不可用",
+    });
+    rerender(<Sidebar {...props} />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "扫描串口失败：串口驱动不可用",
+    );
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "error");
+    expect(screen.getByRole("button", { name: "连接设备" })).toHaveAttribute(
+      "title",
+      "扫描串口失败：串口驱动不可用",
+    );
+    expect(screen.getByRole("button", { name: "连接设备" })).toHaveAttribute(
+      "aria-describedby",
+      "serial-connect-action-hint",
+    );
+    expect(screen.getByRole("button", { name: "连接设备" })).toHaveAccessibleDescription(
+      "扫描串口失败：串口驱动不可用",
+    );
+  });
+
+  it("连接错误后主动扫描时优先显示本次扫描进度和结果", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "error",
+      connectionMessage: "COM3 打开失败：拒绝访问",
+      isRefreshingPorts: true,
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
+      ports: [],
+      serialConfig: { ...state.serialConfig, portName: "" },
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    const props = {
+      activePanel: "connection" as const,
+      themePreference: "dark" as const,
+      onClose: vi.fn(),
+      onThemePreferenceChange: vi.fn(),
+    };
+    const { rerender } = render(<Sidebar {...props} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("正在扫描串口设备");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "connecting");
+
+    useWorkbenchStore.setState({
+      isRefreshingPorts: false,
+      serialPortDiscoveryStatus: "ready",
+      serialPortDiscoveryMessage: "发现 1 个串口设备",
+    });
+    rerender(<Sidebar {...props} />);
+    expect(screen.getByRole("status")).toHaveTextContent("发现 1 个串口设备");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "disconnected");
+  });
+
+  it("已连接端口暂时不在枚举列表时标记为当前连接", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      connectionMessage: "COM3 已连接",
+      ports: [],
+      serialConfig: { ...state.serialConfig, portName: "COM3" },
+      serialRecovery: { ...state.serialRecovery, phase: "armed" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("串口设备")).toHaveDisplayValue("COM3 · 当前连接");
+    expect(screen.getByRole("status")).toHaveTextContent("COM3 已连接");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "connected");
   });
 
   it("为串口配置字段提供稳定表单标识", () => {
@@ -548,6 +673,7 @@ describe("Sidebar 串口恢复界面", () => {
     fireEvent.change(baud_rate, { target: { value: "0" } });
     expect(baud_rate).toHaveAttribute("aria-invalid", "true");
     expect(connect_button).toBeDisabled();
+    expect(connect_button).toHaveAccessibleDescription("请先输入有效波特率");
     fireEvent.blur(baud_rate);
 
     expect(baud_rate).toHaveValue("0");

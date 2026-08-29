@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { ProcessingGraphConfig } from "../src/types/processingGraph";
+import { DEFAULT_SERIAL_CONFIG } from "../src/types/serial";
 import type { TerminalEntry } from "../src/types/workbench";
 
 async function expectValidTabPanelReferences(page: Page, tablistName: string): Promise<void> {
@@ -944,6 +945,114 @@ test("Windows 最小窗口中连接主操作始终可达", async ({ page }, test
     path: testInfo.outputPath("windows-minimum-connection-action.png"),
     fullPage: false,
   });
+});
+
+test("串口发现三态在 Windows 最小窗口中保持一致反馈", async ({ page }, testInfo) => {
+  await installTauriSerialMock(page);
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+
+  const port_select = page.getByLabel("串口设备");
+  const connection_status = page.locator("#serial-connection-status");
+  const connect_button = page.getByRole("button", { name: "连接设备" });
+  const common_state = {
+    source: "serial",
+    connectionStatus: "disconnected",
+    connectionMessage: "等待连接",
+    serialRuntimeError: "",
+    ports: [],
+    serialConfig: { ...DEFAULT_SERIAL_CONFIG, portName: "" },
+  };
+
+  await setWorkbenchState(page, {
+    ...common_state,
+    isRefreshingPorts: true,
+    serialPortDiscoveryStatus: "idle",
+    serialPortDiscoveryMessage: "",
+  });
+  await expect(port_select).toHaveText(/正在扫描设备/);
+  await expect(port_select).toHaveAttribute("aria-busy", "true");
+  await expect(connection_status).toHaveText("正在扫描串口设备");
+  await expect(connection_status).toHaveAttribute("data-status", "connecting");
+  await expect(connect_button).toHaveAttribute("title", "正在扫描串口设备");
+  await page.screenshot({
+    path: testInfo.outputPath("serial-discovery-scanning.png"),
+    fullPage: false,
+  });
+
+  await setWorkbenchState(page, {
+    ...common_state,
+    isRefreshingPorts: false,
+    serialPortDiscoveryStatus: "empty",
+    serialPortDiscoveryMessage: "未发现串口设备",
+  });
+  await expect(port_select).toHaveText(/未发现设备/);
+  await expect(connection_status).toHaveText("未发现串口设备");
+  await expect(connection_status).toHaveAttribute("data-status", "disconnected");
+  await expect(connect_button).toHaveAttribute(
+    "title",
+    "未发现串口设备，请连接设备后刷新",
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("serial-discovery-empty.png"),
+    fullPage: false,
+  });
+
+  await setWorkbenchState(page, {
+    ...common_state,
+    isRefreshingPorts: false,
+    serialPortDiscoveryStatus: "error",
+    serialPortDiscoveryMessage: "扫描串口失败：串口驱动不可用",
+  });
+  await expect(connection_status).toHaveText("扫描串口失败：串口驱动不可用");
+  await expect(connection_status).toHaveAttribute("data-status", "error");
+  await expect(connect_button).toHaveAttribute(
+    "title",
+    "扫描串口失败：串口驱动不可用",
+  );
+  await expect(connect_button).toHaveAttribute(
+    "aria-describedby",
+    "serial-connect-action-hint",
+  );
+  await expect(connect_button).toHaveAccessibleDescription(
+    "扫描串口失败：串口驱动不可用",
+  );
+  await expect(connect_button).toBeInViewport();
+  await page.screenshot({
+    path: testInfo.outputPath("serial-discovery-error.png"),
+    fullPage: false,
+  });
+});
+
+test("连接错误后可通过刷新重新发现串口设备", async ({ page }) => {
+  await installTauriSerialMock(page, undefined, undefined, 150);
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+  await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
+
+  await setWorkbenchState(page, {
+    source: "serial",
+    connectionStatus: "error",
+    connectionMessage: "COM3 打开失败：拒绝访问",
+    serialRuntimeError: "",
+    ports: [],
+    serialConfig: { ...DEFAULT_SERIAL_CONFIG, portName: "" },
+    isRefreshingPorts: false,
+    serialPortDiscoveryStatus: "idle",
+    serialPortDiscoveryMessage: "",
+  });
+
+  const refresh_button = page.getByRole("button", { name: "刷新串口列表" });
+  const connection_status = page.locator("#serial-connection-status");
+  await refresh_button.click();
+  await expect(refresh_button).toHaveAttribute("aria-busy", "true");
+  await expect(connection_status).toHaveText("正在扫描串口设备");
+  await expect(connection_status).toHaveAttribute("data-status", "connecting");
+
+  await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
+  await expect(connection_status).toHaveText("发现 1 个串口设备");
+  await expect(connection_status).toHaveAttribute("data-status", "disconnected");
+  await expect(page.getByRole("button", { name: "连接设备" })).toBeEnabled();
 });
 
 test("波特率可直接输入且常用值始终可选", async ({ page }, testInfo) => {
@@ -4703,8 +4812,9 @@ async function installTauriSerialMock(
   page: Page,
   failedEvent?: string,
   failedCommand?: string,
+  portListDelayMs = 0,
 ): Promise<void> {
-  await page.addInitScript(({ eventToFail, commandToFail }) => {
+  await page.addInitScript(({ eventToFail, commandToFail, serialPortListDelayMs }) => {
     type Callback = (data: unknown) => unknown;
     type InvokeArgs = Record<string, unknown> | undefined;
     const callbacks = new Map<number, Callback>();
@@ -4813,6 +4923,9 @@ async function installTauriSerialMock(
       }
       if (command === "list_serial_ports") {
         portListCalls += 1;
+        if (serialPortListDelayMs > 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, serialPortListDelayMs));
+        }
         return ports.map((port) => ({ ...port }));
       }
       if (command === "get_serial_state") {
@@ -5176,5 +5289,9 @@ async function installTauriSerialMock(
         ];
       },
     };
-  }, { eventToFail: failedEvent ?? null, commandToFail: failedCommand ?? null });
+  }, {
+    eventToFail: failedEvent ?? null,
+    commandToFail: failedCommand ?? null,
+    serialPortListDelayMs: portListDelayMs,
+  });
 }

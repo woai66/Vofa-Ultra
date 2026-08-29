@@ -407,6 +407,8 @@ describe("workbenchStore", () => {
       statusMessage: "等待连接",
       ports: [],
       isRefreshingPorts: false,
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
       serialControlLineOperation: "idle",
       serialModemStatus: {
         generation: 0,
@@ -4857,7 +4859,9 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState()).toMatchObject({
       connectionStatus: "disconnected",
-      statusMessage: "串口驱动不可用",
+      serialPortDiscoveryStatus: "error",
+      serialPortDiscoveryMessage: "扫描串口失败：串口驱动不可用",
+      statusMessage: "扫描串口失败：串口驱动不可用",
       isRefreshingPorts: false,
     });
 
@@ -4865,6 +4869,8 @@ describe("workbenchStore", () => {
     await useWorkbenchStore.getState().refreshPorts();
     expect(useWorkbenchStore.getState()).toMatchObject({
       connectionStatus: "disconnected",
+      serialPortDiscoveryStatus: "ready",
+      serialPortDiscoveryMessage: "发现 1 个串口设备",
       statusMessage: "发现 1 个串口设备",
       ports: [{ name: "COM7" }],
     });
@@ -5035,6 +5041,112 @@ describe("workbenchStore", () => {
     });
   });
 
+  it("首次后台枚举失败时保留连接面板诊断但不覆盖全局消息", async () => {
+    listSerialPortsMock.mockRejectedValue(new Error("驱动暂时不可用"));
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      connectionMessage: "等待连接",
+      statusMessage: "等待连接",
+      ports: [],
+      serialConfig: { ...state.serialConfig, portName: "" },
+    }));
+
+    await useWorkbenchStore.getState().refreshPorts("background");
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "disconnected",
+      connectionMessage: "等待连接",
+      serialPortDiscoveryStatus: "error",
+      serialPortDiscoveryMessage: "扫描串口失败：驱动暂时不可用",
+      statusMessage: "等待连接",
+      ports: [],
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("有效连接事件会结束后台扫描并丢弃迟到结果", async () => {
+    const port_request = deferred<SerialPortInfo[]>();
+    listSerialPortsMock.mockReturnValue(port_request.promise);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      serialGeneration: 1,
+      serialStateRevision: 3,
+      ports: [{ name: "COM7", kind: "usb" }],
+      serialConfig: { ...state.serialConfig, portName: "COM7" },
+    }));
+
+    const refresh = useWorkbenchStore.getState().refreshPorts("background");
+    expect(useWorkbenchStore.getState().isRefreshingPorts).toBe(true);
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connected",
+      portName: "COM9",
+      generation: 2,
+      revision: 4,
+    });
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connected",
+      connectionMessage: "COM9 已连接",
+      serialConfig: { portName: "COM9" },
+      isRefreshingPorts: false,
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
+    });
+
+    port_request.resolve([{ name: "COM8", kind: "usb" }]);
+    await refresh;
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connected",
+      ports: [{ name: "COM7" }],
+      serialConfig: { portName: "COM9" },
+      isRefreshingPorts: false,
+    });
+  });
+
+  it.each([
+    { status: "disconnected" as const, message: "串口仍未连接" },
+    { status: "error" as const, message: "串口服务尚未就绪" },
+  ])("后台扫描不因启动时的 $status 快照丢失结果", async ({ status, message }) => {
+    const port_request = deferred<SerialPortInfo[]>();
+    listSerialPortsMock.mockReturnValue(port_request.promise);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      serialGeneration: 1,
+      serialStateRevision: 3,
+      ports: [],
+      serialConfig: { ...state.serialConfig, portName: "" },
+    }));
+
+    const refresh = useWorkbenchStore.getState().refreshPorts("background");
+    useWorkbenchStore.getState().handleSerialState({
+      status,
+      portName: "",
+      message,
+      generation: 1,
+      revision: 4,
+    });
+    expect(useWorkbenchStore.getState().isRefreshingPorts).toBe(true);
+
+    port_request.resolve([{ name: "COM8", kind: "usb" }]);
+    await refresh;
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: status,
+      ports: [{ name: "COM8" }],
+      serialConfig: { portName: "COM8" },
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
+      isRefreshingPorts: false,
+    });
+  });
+
   it("后台枚举完成前生命周期变化后即使回到空闲也丢弃迟到结果", async () => {
     let resolvePorts: ((ports: SerialPortInfo[]) => void) | undefined;
     listSerialPortsMock.mockImplementation(
@@ -5053,15 +5165,18 @@ describe("workbenchStore", () => {
     }));
 
     const refresh = useWorkbenchStore.getState().refreshPorts("background");
-    useWorkbenchStore.setState({
-      connectionStatus: "connecting",
-      serialStateRevision: 6,
-      statusMessage: "正在连接 COM7",
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connecting",
+      portName: "COM7",
+      generation: 2,
+      revision: 6,
     });
-    useWorkbenchStore.setState({
-      connectionStatus: "disconnected",
-      serialStateRevision: 7,
-      statusMessage: "连接已取消",
+    useWorkbenchStore.getState().handleSerialState({
+      status: "disconnected",
+      portName: "COM7",
+      message: "连接已取消",
+      generation: 2,
+      revision: 7,
     });
     resolvePorts?.([{ name: "COM8", kind: "usb" }]);
     await refresh;

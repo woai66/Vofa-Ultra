@@ -459,6 +459,12 @@ function ConnectionPanel() {
   const connectionStatusMessage = useWorkbenchStore((state) => state.connectionMessage);
   const ports = useWorkbenchStore((state) => state.ports);
   const isRefreshingPorts = useWorkbenchStore((state) => state.isRefreshingPorts);
+  const serialPortDiscoveryStatus = useWorkbenchStore(
+    (state) => state.serialPortDiscoveryStatus,
+  );
+  const serialPortDiscoveryMessage = useWorkbenchStore(
+    (state) => state.serialPortDiscoveryMessage,
+  );
   const config = useWorkbenchStore((state) => state.serialConfig);
   const simulatorConfig = useWorkbenchStore((state) => state.simulatorConfig);
   const serialControlLineOperation = useWorkbenchStore(
@@ -570,10 +576,44 @@ function ConnectionPanel() {
     portAvailable: selectedPortPresentation !== null,
     connectionStatusMessage,
     serialRuntimeError,
+    isRefreshingPorts,
+    serialPortDiscoveryStatus,
+    serialPortDiscoveryMessage,
     isCancelling: isCancellingSerialConnection,
     recoveryActive,
     recoveryMessage: serialRecovery.message,
   });
+  const connectionMessageStatus: ConnectionStatus = serialRuntimeError
+    ? "error"
+    : isCancellingSerialConnection || recoveryActive
+      ? "connecting"
+      : connectionStatus === "connected" || connectionStatus === "connecting"
+        ? connectionStatus
+        : source === "serial" && isRefreshingPorts
+          ? "connecting"
+          : source === "serial" && serialPortDiscoveryStatus === "error"
+            ? "error"
+            : source === "serial" && serialPortDiscoveryStatus !== "idle"
+              ? "disconnected"
+              : connectionStatus;
+  let connectButtonTitle: string | undefined;
+  if (!isConnected && !canCancelConnection && serialConnectUnavailable) {
+    if (serialRuntimeError) {
+      connectButtonTitle = serialRuntimeError;
+    } else if (!baudRateDraftValid) {
+      connectButtonTitle = "请先输入有效波特率";
+    } else if (isRefreshingPorts) {
+      connectButtonTitle = "正在扫描串口设备";
+    } else if (serialPortDiscoveryStatus === "error") {
+      connectButtonTitle = serialPortDiscoveryMessage;
+    } else if (config.portName) {
+      connectButtonTitle = `${config.portName} 当前不可用，请刷新或选择其他串口`;
+    } else if (serialPortDiscoveryStatus === "empty") {
+      connectButtonTitle = "未发现串口设备，请连接设备后刷新";
+    } else {
+      connectButtonTitle = "请选择串口设备后连接";
+    }
+  }
 
   useEffect(() => {
     if (isNativeRuntime && source === "serial") {
@@ -701,7 +741,8 @@ function ConnectionPanel() {
               className="icon-button compact"
               type="button"
               aria-label="刷新串口列表"
-              title="刷新串口列表"
+              aria-busy={isRefreshingPorts}
+              title={isRefreshingPorts ? "正在刷新串口列表" : "刷新串口列表"}
               disabled={isRefreshingPorts || configDisabled || Boolean(serialRuntimeError)}
               onClick={() => void refreshPorts()}
             >
@@ -712,12 +753,17 @@ function ConnectionPanel() {
             id="serial-port"
             name="serial-port"
             value={config.portName}
+            aria-busy={isRefreshingPorts}
             disabled={configDisabled}
             onChange={(event) => updateConfig("portName", event.target.value)}
           >
-            {ports.length === 0 && <option value="">未发现设备</option>}
+            {ports.length === 0 && (
+              <option value="">{isRefreshingPorts ? "正在扫描设备" : "未发现设备"}</option>
+            )}
             {config.portName && !ports.some((port) => port.name === config.portName) && (
-              <option value={config.portName}>{config.portName} · 当前不可用</option>
+              <option value={config.portName}>
+                {config.portName} · {isConnected ? "当前连接" : "当前不可用"}
+              </option>
             )}
             {sortedPorts.map((port) => (
               <option key={port.name} value={port.name}>
@@ -991,28 +1037,32 @@ function ConnectionPanel() {
 
       <div className="connection-action-area">
         <div
+          id="serial-connection-status"
           className="connection-message"
-          data-status={serialRuntimeError ? "error" : connectionStatus}
+          data-status={connectionMessageStatus}
           role="status"
         >
           <span className="status-dot" />
           <span>{connectionMessage}</span>
         </div>
+        {source === "serial" && connectButtonTitle && (
+          <span id="serial-connect-action-hint" className="sr-only">
+            {connectButtonTitle}
+          </span>
+        )}
         <button
           className="primary-button connect-button"
           type="button"
           data-action={showCancelAction ? "cancel" : "primary"}
-          disabled={primaryActionDisabled}
-          title={
-            !isConnected && !canCancelConnection && serialConnectUnavailable
-              ? serialRuntimeError ||
-                (!baudRateDraftValid
-                  ? "请先输入有效波特率"
-                  : config.portName
-                    ? `${config.portName} 当前不可用，请刷新或选择其他串口`
-                    : "未发现可用串口，请连接设备后刷新")
+          aria-describedby={
+            source === "serial"
+              ? connectButtonTitle
+                ? "serial-connect-action-hint"
+                : "serial-connection-status"
               : undefined
           }
+          disabled={primaryActionDisabled}
+          title={connectButtonTitle}
           onClick={() =>
             void (canCancelConnection
               ? cancelSerialConnection()
@@ -1056,6 +1106,9 @@ interface ConnectionMessageInput {
   portAvailable: boolean;
   connectionStatusMessage: string;
   serialRuntimeError: string;
+  isRefreshingPorts: boolean;
+  serialPortDiscoveryStatus: "idle" | "ready" | "empty" | "error";
+  serialPortDiscoveryMessage: string;
   isCancelling: boolean;
   recoveryActive: boolean;
   recoveryMessage: string;
@@ -1089,14 +1142,20 @@ function resolveConnectionMessage(input: ConnectionMessageInput): string {
         : "模拟数据正在运行")
     );
   }
-  if (input.connectionStatus === "error") {
-    return (
-      input.connectionStatusMessage ||
-      (input.source === "serial" ? "串口连接发生错误" : "模拟数据发生错误")
-    );
+  if (input.source === "serial" && input.isRefreshingPorts) {
+    return "正在扫描串口设备";
   }
   if (input.source === "simulator") {
+    if (input.connectionStatus === "error") {
+      return input.connectionStatusMessage || "模拟数据发生错误";
+    }
     return input.connectionStatusMessage || "模拟数据源已就绪";
+  }
+  if (input.serialPortDiscoveryStatus !== "idle" && input.serialPortDiscoveryMessage) {
+    return input.serialPortDiscoveryMessage;
+  }
+  if (input.connectionStatus === "error") {
+    return input.connectionStatusMessage || "串口连接发生错误";
   }
   if (!input.portName) {
     return "选择设备后连接";

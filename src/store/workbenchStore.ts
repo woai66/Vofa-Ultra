@@ -385,6 +385,8 @@ type RuntimeTransitionStatus =
   | "switching-workspace"
   | "closing-app";
 
+type SerialPortDiscoveryStatus = "idle" | "ready" | "empty" | "error";
+
 export interface WorkbenchStore {
   isNativeRuntime: boolean;
   source: DataSource;
@@ -397,6 +399,8 @@ export interface WorkbenchStore {
   statusMessage: string;
   ports: SerialPortInfo[];
   isRefreshingPorts: boolean;
+  serialPortDiscoveryStatus: SerialPortDiscoveryStatus;
+  serialPortDiscoveryMessage: string;
   serialConfig: SerialConfig;
   simulatorConfig: SimulatorConfig;
   serialControlLineOperation: "idle" | SerialControlLine;
@@ -677,6 +681,8 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       statusMessage: "等待连接",
       ports: [],
       isRefreshingPorts: false,
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
       serialConfig: { ...INITIAL_WORKSPACE_CONFIG.serialConfig },
       simulatorConfig: cloneSimulatorConfig(INITIAL_WORKSPACE_CONFIG.simulatorConfig),
       serialControlLineOperation: "idle",
@@ -1411,7 +1417,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const operation = ++serialPortRefreshOperation;
         const context = state;
 
-        set({ isRefreshingPorts: true });
+        set({
+          isRefreshingPorts: true,
+          serialPortDiscoveryStatus: "idle",
+          serialPortDiscoveryMessage: "",
+        });
         try {
           const ports = sortSerialPorts(await listSerialPorts());
           if (!ownsSerialPortRefresh(operation, context, get())) {
@@ -1420,19 +1430,27 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           const currentPort = get().serialConfig.portName;
           const currentPortAvailable = ports.some((port) => port.name === currentPort);
           const selectedPort = currentPort || ports[0]?.name || "";
+          const discoveryMessage =
+            ports.length > 0 ? `发现 ${ports.length} 个串口设备` : "未发现串口设备";
           set((state) => ({
             ports,
+            serialPortDiscoveryStatus:
+              ports.length > 0 ? (mode === "manual" ? "ready" : "idle") : "empty",
+            serialPortDiscoveryMessage:
+              ports.length > 0 && mode === "background" ? "" : discoveryMessage,
             serialConfig: { ...state.serialConfig, portName: selectedPort },
             connectionMessage:
-              currentPort && !currentPortAvailable
-                ? `${currentPort} 当前不可用`
-                : mode === "background"
-                  ? selectedPort
-                    ? `${selectedPort} 已就绪`
-                    : "未发现串口设备"
-                  : ports.length > 0
-                    ? `发现 ${ports.length} 个串口设备`
-                    : "未发现串口设备",
+              state.connectionStatus === "error"
+                ? state.connectionMessage
+                : currentPort && !currentPortAvailable
+                  ? `${currentPort} 当前不可用`
+                  : mode === "background"
+                    ? selectedPort
+                      ? `${selectedPort} 已就绪`
+                      : "未发现串口设备"
+                    : ports.length > 0
+                      ? `发现 ${ports.length} 个串口设备`
+                      : "未发现串口设备",
             statusMessage:
               mode === "background"
                 ? state.statusMessage
@@ -1446,15 +1464,36 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           if (!ownsSerialPortRefresh(operation, context, get())) {
             return;
           }
+          const message = getErrorMessage(error);
+          const discoveryMessage = `扫描串口失败：${message}`;
           if (mode === "manual") {
-            set({
-              connectionMessage: getErrorMessage(error),
-              statusMessage: getErrorMessage(error),
+            set((state) => ({
+              connectionMessage:
+                state.connectionStatus === "error"
+                  ? state.connectionMessage
+                  : discoveryMessage,
+              serialPortDiscoveryStatus: "error",
+              serialPortDiscoveryMessage: discoveryMessage,
+              statusMessage: discoveryMessage,
               serialModemStatus: createUnavailableSerialModemStatus(
-                get().serialGeneration,
+                state.serialGeneration,
               ),
               waveformTrigger: createIdleWaveformTriggerState(),
-            });
+            }));
+          } else {
+            const latest = get();
+            if (
+              latest.connectionStatus === "disconnected" &&
+              latest.ports.length === 0 &&
+              (latest.connectionMessage === "" ||
+                latest.connectionMessage === "等待连接" ||
+                latest.connectionMessage === "未发现串口设备")
+            ) {
+              set({
+                serialPortDiscoveryStatus: "error",
+                serialPortDiscoveryMessage: discoveryMessage,
+              });
+            }
           }
         } finally {
           if (operation === serialPortRefreshOperation) {
@@ -2073,6 +2112,13 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         ) {
           return;
         }
+        if (payload.status === "connecting" || payload.status === "connected") {
+          invalidateSerialPortRefresh(set);
+          state = get();
+        } else if (payload.status === "error" && !state.isRefreshingPorts) {
+          clearSerialPortDiscovery(set);
+          state = get();
+        }
         const serialModemStatus =
           payload.status === "connected" &&
           payload.generation === state.serialModemStatus.generation
@@ -2139,6 +2185,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           connectionStatus: payload.status,
           serialGeneration: payload.generation,
           serialStateRevision: payload.revision,
+          serialConfig:
+            payload.portName &&
+            (payload.status === "connecting" || payload.status === "connected")
+              ? { ...state.serialConfig, portName: payload.portName }
+              : state.serialConfig,
           connectionMessage:
             payload.message ?? serialStatusMessage(payload.status, payload.portName),
           statusMessage:
@@ -4615,9 +4666,6 @@ function isSameSerialPortRefreshContext(
   return (
     isSerialPortRefreshContext(current) &&
     current.source === initial.source &&
-    current.connectionStatus === initial.connectionStatus &&
-    current.serialGeneration === initial.serialGeneration &&
-    current.serialStateRevision === initial.serialStateRevision &&
     current.serialRecovery.enabled === initial.serialRecovery.enabled &&
     current.serialRecovery.phase === initial.serialRecovery.phase &&
     current.activeWorkspaceId === initial.activeWorkspaceId &&
@@ -4640,9 +4688,20 @@ function ownsSerialPortRefresh(
   );
 }
 
+function clearSerialPortDiscovery(set: WorkbenchSet): void {
+  set({
+    serialPortDiscoveryStatus: "idle",
+    serialPortDiscoveryMessage: "",
+  });
+}
+
 function invalidateSerialPortRefresh(set: WorkbenchSet): void {
   serialPortRefreshOperation += 1;
-  set({ isRefreshingPorts: false });
+  set({
+    isRefreshingPorts: false,
+    serialPortDiscoveryStatus: "idle",
+    serialPortDiscoveryMessage: "",
+  });
 }
 
 function isCaptureExportBusy(status: CaptureExportUiStatus): boolean {
