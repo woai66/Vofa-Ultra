@@ -445,6 +445,11 @@ test("主题偏好跟随系统并持久化固定选择", async ({ page }, testIn
   await page.goto("/");
 
   const root = page.locator("html");
+  const bodyFontFamily = await page
+    .locator("body")
+    .evaluate((element) => getComputedStyle(element).fontFamily);
+  expect(bodyFontFamily).toContain("Segoe UI Variable Text");
+  expect(bodyFontFamily).not.toContain("Inter");
   await expect(root).toHaveAttribute("data-theme", "dark");
   expect(await page.evaluate(() => localStorage.getItem("vofa-ultra-theme"))).toBe("system");
 
