@@ -1627,7 +1627,7 @@ function SettingsPanel({
   );
 
   return (
-    <div className="sidebar-panel">
+    <div className="sidebar-panel settings-sidebar-panel">
       <div className="sidebar-heading">
         <div>
           <span className="eyebrow">PREFERENCES</span>

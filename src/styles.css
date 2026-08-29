@@ -299,19 +299,19 @@ textarea:disabled {
 .session-tabs {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  padding: 8px 16px;
+  padding: 9px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-0);
-  gap: 4px;
+  gap: 5px;
 }
 
 .session-tabs button {
-  height: 30px;
+  height: 32px;
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -329,7 +329,7 @@ textarea:disabled {
 
 .capture-state {
   display: flex;
-  min-height: 76px;
+  min-height: 80px;
   align-items: center;
   padding: 14px 16px;
   gap: 11px;
@@ -395,75 +395,77 @@ textarea:disabled {
 }
 
 .capture-state strong {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .capture-state span:last-child {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .capture-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   border-top: 1px solid var(--border);
 }
 
 .capture-metrics > div {
   display: grid;
   min-width: 0;
-  min-height: 68px;
+  min-height: 62px;
   align-content: center;
-  padding: 9px 10px;
+  align-items: center;
+  padding: 9px 12px;
   border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   color: var(--text-subtle);
-  gap: 2px;
+  gap: 2px 8px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-rows: auto auto;
 }
 
-.capture-metrics > div:last-child {
+.capture-metrics > div:nth-child(2n) {
   border-right: 0;
 }
 
+.capture-metrics > div:nth-last-child(2):nth-child(odd),
+.capture-metrics > div:last-child:nth-child(even) {
+  border-bottom: 0;
+}
+
+.capture-metrics > div:last-child:nth-child(odd) {
+  border-right: 0;
+  border-bottom: 0;
+  grid-column: 1 / -1;
+}
+
 .capture-metrics svg {
-  margin-bottom: 2px;
+  grid-row: 1 / 3;
 }
 
 .capture-metrics span {
-  font-size: 9px;
+  font-size: 12px;
+  line-height: 1.2;
 }
 
 .capture-metrics strong {
   overflow: hidden;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.capture-metrics[data-wide="true"] {
-  grid-template-columns: 1.5fr 0.75fr 0.75fr;
-}
-
 .capture-metrics[data-wide="true"] > div:first-child strong {
-  font-size: 9px;
-}
-
-.capture-metrics[data-markers="true"] {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  font-size: 12px;
 }
 
 .capture-metrics[data-markers="true"] > div {
-  padding-inline: 7px;
-}
-
-.capture-metrics[data-wide="true"][data-markers="true"] {
-  grid-template-columns:
-    minmax(0, 1.65fr)
-    minmax(0, 1fr)
-    minmax(0, 0.75fr)
-    minmax(0, 0.6fr);
+  padding-inline: 12px;
 }
 
 .capture-action-section {
@@ -495,7 +497,7 @@ textarea:disabled {
 
 .recording-directory-value strong {
   overflow: hidden;
-  font-size: 11px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -503,7 +505,7 @@ textarea:disabled {
 .recording-directory-value code {
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
   overflow-wrap: anywhere;
 }
 
@@ -566,20 +568,21 @@ textarea:disabled {
 
 .capture-availability {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 12px;
+  line-height: 1.4;
   text-align: center;
 }
 
 .capture-file-section code {
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
   overflow-wrap: anywhere;
 }
 
 .capture-file-section strong {
   overflow: hidden;
-  font-size: 11px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -710,7 +713,7 @@ textarea:disabled {
   min-width: 0;
   align-items: center;
   color: var(--amber);
-  font-size: 10px;
+  font-size: 12px;
   gap: 6px;
 }
 
@@ -791,7 +794,7 @@ textarea:disabled {
 .replay-marker-list button > span:nth-child(2) {
   min-width: 0;
   overflow: hidden;
-  font-size: 11px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -799,7 +802,7 @@ textarea:disabled {
 .replay-marker-list time {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .replay-marker-swatch {
@@ -981,13 +984,13 @@ textarea:disabled {
 
 .about-product-line code {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .about-section > p {
   margin: 0;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -1001,7 +1004,7 @@ textarea:disabled {
 .about-meta dd {
   margin: 0;
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .about-meta dd {
@@ -2706,7 +2709,7 @@ textarea:focus {
   padding: 0 16px;
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .workspace-list-heading strong {
@@ -2723,7 +2726,7 @@ textarea:focus {
 
 .workspace-row {
   display: grid;
-  min-height: 58px;
+  min-height: 66px;
   align-items: stretch;
   grid-template-columns: minmax(0, 1fr) 34px 34px;
   border-bottom: 1px solid var(--border);
@@ -2758,7 +2761,7 @@ textarea:focus {
 .workspace-select > span:last-child {
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2774,7 +2777,7 @@ textarea:focus {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2783,7 +2786,7 @@ textarea:focus {
 .workspace-row-title small {
   flex: 0 0 auto;
   color: var(--amber);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .workspace-row > .icon-button {
@@ -2806,12 +2809,19 @@ textarea:focus {
 .workspace-feedback {
   padding: 0 16px 12px;
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
 .workspace-feedback[data-error="true"] {
   color: var(--danger);
+}
+
+.capture-sidebar-panel .field-label,
+.workspace-sidebar-panel .field-label,
+.settings-sidebar-panel .field-label {
+  font-size: 13px;
 }
 
 .confirm-dialog {
