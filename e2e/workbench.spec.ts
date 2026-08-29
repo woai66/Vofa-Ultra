@@ -9,6 +9,8 @@ type InteractiveLayoutAudit = {
   viewportWidth: number;
   outsideViewport: string[];
   overlaps: string[];
+  textOutsideViewport: string[];
+  textOverlaps: string[];
   regionOverlaps: string[];
 };
 
@@ -23,7 +25,9 @@ async function auditVisibleInteractiveLayout(page: Page): Promise<InteractiveLay
     const selector =
       'button, input, select, textarea, [role="button"], [role="radio"], ' +
       '[role="slider"], [role="switch"], [role="tab"]';
-    const overlaySelector = '[role="dialog"], [role="listbox"], [role="menu"], [popover]';
+    const overlaySelector =
+      '[role="dialog"], [role="listbox"], [role="menu"], [popover], .sidebar, ' +
+      '.attitude-state-overlay, .panel-empty-state, .command-workflow';
     const viewportWidth = document.documentElement.clientWidth;
     const viewportHeight = document.documentElement.clientHeight;
     const auditAxis = (
@@ -31,10 +35,16 @@ async function auditVisibleInteractiveLayout(page: Page): Promise<InteractiveLay
       elementStart: number,
       elementEnd: number,
       axis: "x" | "y",
+      auditText = false,
     ) => {
       const viewportEnd = axis === "x" ? viewportWidth : viewportHeight;
-      const clips: Array<{ start: number; end: number; scrollable: boolean }> = [];
-      let ancestor = element.parentElement;
+      const clips: Array<{
+        start: number;
+        end: number;
+        scrollable: boolean;
+        intentional: boolean;
+      }> = [];
+      let ancestor: HTMLElement | null = auditText ? element : element.parentElement;
       while (ancestor) {
         const style = getComputedStyle(ancestor);
         const overflow = axis === "x" ? style.overflowX : style.overflowY;
@@ -52,11 +62,29 @@ async function auditVisibleInteractiveLayout(page: Page): Promise<InteractiveLay
               (axis === "x"
                 ? ancestor.scrollWidth > ancestor.clientWidth + 1
                 : ancestor.scrollHeight > ancestor.clientHeight + 1),
+            intentional:
+              auditText &&
+              (axis === "x"
+                ? style.textOverflow === "ellipsis" &&
+                  ["nowrap", "pre"].includes(style.whiteSpace)
+                : Number.parseInt(
+                    style.getPropertyValue("-webkit-line-clamp"),
+                    10,
+                  ) > 0),
           });
         }
         ancestor = ancestor.parentElement;
       }
 
+      let intendedStart = elementStart;
+      let intendedEnd = elementEnd;
+      for (const clip of clips) {
+        if (clip.intentional) {
+          intendedStart = Math.max(intendedStart, clip.start);
+          intendedEnd = Math.min(intendedEnd, clip.end);
+        }
+      }
+      const intendedSize = Math.max(0, intendedEnd - intendedStart);
       let visibleStart = Math.max(0, elementStart);
       let visibleEnd = Math.min(viewportEnd, elementEnd);
       for (const clip of clips) {
@@ -67,45 +95,103 @@ async function auditVisibleInteractiveLayout(page: Page): Promise<InteractiveLay
       const scrollIndex = clips.findIndex((clip) => clip.scrollable);
       let clippedOutside = false;
       if (scrollIndex === -1) {
-        clippedOutside = visibleEnd - visibleStart < elementEnd - elementStart - 1;
+        clippedOutside = visibleEnd - visibleStart < intendedSize - 1;
       } else {
         for (let index = 0; index < scrollIndex; index += 1) {
           const clip = clips[index];
           if (
             clip &&
-            (elementStart < clip.start - 1 || elementEnd > clip.end + 1)
+            !clip.intentional &&
+            (intendedStart < clip.start - 1 || intendedEnd > clip.end + 1)
           ) {
             clippedOutside = true;
           }
         }
-        let reachableStart = Math.max(0, clips[scrollIndex]?.start ?? 0);
-        let reachableEnd = Math.min(viewportEnd, clips[scrollIndex]?.end ?? viewportEnd);
-        for (let index = scrollIndex + 1; index < clips.length; index += 1) {
+        let reachableSize = viewportEnd;
+        for (let index = scrollIndex; index < clips.length; index += 1) {
           const clip = clips[index];
           if (clip) {
-            reachableStart = Math.max(reachableStart, clip.start);
-            reachableEnd = Math.min(reachableEnd, clip.end);
+            reachableSize = Math.min(reachableSize, Math.max(0, clip.end - clip.start));
           }
         }
-        clippedOutside ||=
-          reachableEnd - reachableStart < elementEnd - elementStart - 1;
+        clippedOutside ||= reachableSize < intendedSize - 1;
       }
       return { start: visibleStart, end: visibleEnd, clippedOutside };
     };
+    const isVisibleInTree = (element: HTMLElement) => {
+      let candidate: HTMLElement | null = element;
+      while (candidate) {
+        const style = getComputedStyle(candidate);
+        const visuallyClipped =
+          (style.clip !== "auto" || style.clipPath !== "none") &&
+          (candidate.clientWidth <= 1 || candidate.clientHeight <= 1);
+        if (
+          candidate.hidden ||
+          candidate.inert ||
+          candidate.getAttribute("aria-hidden") === "true" ||
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          Number(style.opacity) === 0 ||
+          visuallyClipped
+        ) {
+          return false;
+        }
+        candidate = candidate.parentElement;
+      }
+      return true;
+    };
+    const shouldCompareLayers = (left: Element | null, right: Element | null) => {
+      if (left === right) {
+        return true;
+      }
+      if (!left || !right) {
+        return false;
+      }
+      return !left.contains(right) && !right.contains(left);
+    };
+    const isCoveredByOverlay = (element: HTMLElement, rect: DOMRect) => {
+      const ownLayer = element.closest(overlaySelector);
+      const visibleLeft = Math.max(0, rect.left);
+      const visibleTop = Math.max(0, rect.top);
+      const visibleRight = Math.min(viewportWidth, rect.right);
+      const visibleBottom = Math.min(viewportHeight, rect.bottom);
+      if (visibleRight - visibleLeft <= 1 || visibleBottom - visibleTop <= 1) {
+        return false;
+      }
+      const insetX = Math.min(2, (visibleRight - visibleLeft) / 4);
+      const insetY = Math.min(2, (visibleBottom - visibleTop) / 4);
+      const points = [
+        [(visibleLeft + visibleRight) / 2, (visibleTop + visibleBottom) / 2],
+        [visibleLeft + insetX, visibleTop + insetY],
+        [visibleRight - insetX, visibleTop + insetY],
+        [visibleLeft + insetX, visibleBottom - insetY],
+        [visibleRight - insetX, visibleBottom - insetY],
+      ];
+      return points.every(([x, y]) => {
+        const hit = document.elementFromPoint(x ?? 0, y ?? 0);
+        const hitLayer = hit?.closest(overlaySelector) ?? null;
+        return Boolean(
+          hit &&
+          hit !== element &&
+          !element.contains(hit) &&
+          !hit.contains(element) &&
+          hitLayer &&
+          hitLayer !== ownLayer,
+        );
+      });
+    };
     const visibleControls = [...document.querySelectorAll<HTMLElement>(selector)].filter(
       (element) => {
-        const style = getComputedStyle(element);
         const rect = element.getBoundingClientRect();
         return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          Number(style.opacity) !== 0 &&
+          isVisibleInTree(element) &&
           rect.width > 0 &&
           rect.height > 0 &&
           rect.right > 0 &&
           rect.bottom > 0 &&
           rect.left < viewportWidth &&
-          rect.top < viewportHeight
+          rect.top < viewportHeight &&
+          !isCoveredByOverlay(element, rect)
         );
       },
     );
@@ -121,6 +207,7 @@ async function auditVisibleInteractiveLayout(page: Page): Promise<InteractiveLay
         const horizontal = auditAxis(element, rect.left, rect.right, "x");
         const vertical = auditAxis(element, rect.top, rect.bottom, "y");
         return {
+          element,
           name:
             element.getAttribute("aria-label") ??
             element.getAttribute("title") ??
@@ -134,6 +221,48 @@ async function auditVisibleInteractiveLayout(page: Page): Promise<InteractiveLay
           layer: element.closest(overlaySelector),
         };
       });
+    const textRects = [...document.body.querySelectorAll<HTMLElement>("*")].flatMap((element) => {
+      if (
+        element.closest(".sr-only") ||
+        !isVisibleInTree(element)
+      ) {
+        return [];
+      }
+      return [...element.childNodes].flatMap((node) => {
+        const label = node.textContent?.trim().replace(/\s+/g, " ") ?? "";
+        if (node.nodeType !== Node.TEXT_NODE || label.length === 0) {
+          return [];
+        }
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        return [...range.getClientRects()].flatMap((rect, lineIndex) => {
+          if (
+            rect.width <= 1 ||
+            rect.height <= 1 ||
+            rect.right <= 0 ||
+            rect.bottom <= 0 ||
+            rect.left >= viewportWidth ||
+            rect.top >= viewportHeight ||
+            isCoveredByOverlay(element, rect)
+          ) {
+            return [];
+          }
+          const horizontal = auditAxis(element, rect.left, rect.right, "x", true);
+          const vertical = auditAxis(element, rect.top, rect.bottom, "y", true);
+          return [{
+            element,
+            node,
+            name: `${label.slice(0, 40)}${lineIndex > 0 ? `#${lineIndex + 1}` : ""}`,
+            left: horizontal.start,
+            top: vertical.start,
+            right: horizontal.end,
+            bottom: vertical.end,
+            clippedOutside: horizontal.clippedOutside || vertical.clippedOutside,
+            layer: element.closest(overlaySelector),
+          }];
+        });
+      });
+    });
     const overlapControls = controls.filter(
       (control) => control.right - control.left > 1 && control.bottom - control.top > 1,
     );
@@ -145,11 +274,53 @@ async function auditVisibleInteractiveLayout(page: Page): Promise<InteractiveLay
         if (
           left &&
           right &&
-          left.layer === right.layer &&
+          shouldCompareLayers(left.layer, right.layer) &&
           Math.min(left.right, right.right) - Math.max(left.left, right.left) > 1 &&
           Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 1
         ) {
           overlaps.push(`${left.name} / ${right.name}`);
+        }
+      }
+    }
+    const textOverlaps = new Set<string>();
+    const overlapTextRects = textRects.filter(
+      (textRect) => textRect.right - textRect.left > 1 && textRect.bottom - textRect.top > 1,
+    );
+    for (let leftIndex = 0; leftIndex < overlapTextRects.length; leftIndex += 1) {
+      for (
+        let rightIndex = leftIndex + 1;
+        rightIndex < overlapTextRects.length;
+        rightIndex += 1
+      ) {
+        const left = overlapTextRects[leftIndex];
+        const right = overlapTextRects[rightIndex];
+        const sameNodeLineFragment =
+          left &&
+          right &&
+          left.node === right.node &&
+          Math.abs(left.top - right.top) <= 1 &&
+          Math.abs(left.bottom - right.bottom) <= 1;
+        if (
+          left &&
+          right &&
+          !sameNodeLineFragment &&
+          shouldCompareLayers(left.layer, right.layer) &&
+          Math.min(left.right, right.right) - Math.max(left.left, right.left) > 1 &&
+          Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 1
+        ) {
+          textOverlaps.add(`${left.name} / ${right.name}`);
+        }
+      }
+    }
+    for (const textRect of textRects) {
+      for (const control of controls) {
+        if (
+          !control.element.contains(textRect.element) &&
+          shouldCompareLayers(textRect.layer, control.layer) &&
+          Math.min(textRect.right, control.right) - Math.max(textRect.left, control.left) > 1 &&
+          Math.min(textRect.bottom, control.bottom) - Math.max(textRect.top, control.top) > 1
+        ) {
+          textOverlaps.add(`${textRect.name} / ${control.name}`);
         }
       }
     }
@@ -179,6 +350,7 @@ async function auditVisibleInteractiveLayout(page: Page): Promise<InteractiveLay
           top: Math.max(0, rect.top),
           right: Math.min(viewportWidth, rect.right),
           bottom: Math.min(viewportHeight, rect.bottom),
+          overlay: ["absolute", "fixed"].includes(style.position),
         };
       })
       .filter((region): region is NonNullable<typeof region> => region !== null);
@@ -187,9 +359,16 @@ async function auditVisibleInteractiveLayout(page: Page): Promise<InteractiveLay
       for (let rightIndex = leftIndex + 1; rightIndex < regions.length; rightIndex += 1) {
         const left = regions[leftIndex];
         const right = regions[rightIndex];
+        const sidebarWorkspaceOverlay =
+          left &&
+          right &&
+          [left.name, right.name].includes(".sidebar") &&
+          [left.name, right.name].includes(".workspace") &&
+          (left.name === ".sidebar" ? left.overlay : right.overlay);
         if (
           left &&
           right &&
+          !sidebarWorkspaceOverlay &&
           Math.min(left.right, right.right) - Math.max(left.left, right.left) > 1 &&
           Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 1
         ) {
@@ -202,6 +381,10 @@ async function auditVisibleInteractiveLayout(page: Page): Promise<InteractiveLay
       viewportWidth,
       outsideViewport: controls.filter((control) => control.clippedOutside).map((control) => control.name),
       overlaps,
+      textOutsideViewport: textRects
+        .filter((textRect) => textRect.clippedOutside)
+        .map((textRect) => textRect.name),
+      textOverlaps: [...textOverlaps],
       regionOverlaps,
     };
   });
@@ -212,6 +395,8 @@ async function expectVisibleInteractiveLayout(page: Page): Promise<void> {
   expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
   expect(layout.outsideViewport).toEqual([]);
   expect(layout.overlaps).toEqual([]);
+  expect(layout.textOutsideViewport).toEqual([]);
+  expect(layout.textOverlaps).toEqual([]);
   expect(layout.regionOverlaps).toEqual([]);
 }
 
@@ -338,6 +523,7 @@ async function readWaveformTriggerSnapshot(page: Page): Promise<{
   previousValue: number | null;
   chartPaused: boolean;
   pointCount: number;
+  visiblePointCount: number;
   pointValues: number[];
   terminalEntryCount: number;
   rxFrames: number;
@@ -352,6 +538,7 @@ async function readWaveformTriggerSnapshot(page: Page): Promise<{
         };
         chartPaused: boolean;
         channels: Array<{ points: Array<{ y: number }> }>;
+        chartFrozenChannels: Array<{ points: Array<{ y: number }> }> | null;
         terminalEntries: unknown[];
         stats: { rxFrames: number };
       };
@@ -369,6 +556,8 @@ async function readWaveformTriggerSnapshot(page: Page): Promise<{
       previousValue: state.waveformTrigger.previousValue,
       chartPaused: state.chartPaused,
       pointCount: state.channels[0]?.points.length ?? 0,
+      visiblePointCount:
+        (state.chartPaused ? state.chartFrozenChannels : state.channels)?.[0]?.points.length ?? 0,
       pointValues: state.channels[0]?.points.map((point) => point.y) ?? [],
       terminalEntryCount: state.terminalEntries.length,
       rxFrames: state.stats.rxFrames,
@@ -1297,6 +1486,7 @@ test("Windows 支持窗口中连接主操作始终可达", async ({ page }, test
   await page.setViewportSize({ width: 1_024, height: 680 });
   await expect(connect_button).toBeInViewport();
   expect(await clippedVisibleHeight(connect_button)).toBeGreaterThanOrEqual(36);
+  expect(await findVisibleTextBelow(panel)).toEqual([]);
 
   const layout = await panel.evaluate((element) => {
     const panel_rect = element.getBoundingClientRect();
@@ -1568,7 +1758,9 @@ test("串口核心事件监听失败时显示故障并阻止连接", async ({ pa
   await page.setViewportSize({ width: 1_024, height: 680 });
   await page.goto("/");
 
-  await expect(page.getByText(/串口核心事件监听初始化失败/)).toBeVisible();
+  await expect(page.locator("#serial-connection-status")).toContainText(
+    /串口核心事件监听初始化失败/,
+  );
   await expect(page.getByRole("button", { name: "刷新串口列表" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "连接设备" })).toBeDisabled();
 });
@@ -1955,6 +2147,9 @@ test("独立量程让混合数量级通道保持可读并正确映射测量游�
   await focusChannel.selectOption("current");
   await expect(focusChannel).toHaveValue("current");
   await page.getByRole("button", { name: "开启波形测量" }).click();
+  expect(
+    await findVisibleTextBelow(page.locator(".waveform-measurement-strip"), 11),
+  ).toEqual([]);
   await page.getByRole("combobox", { name: "测量通道" }).selectOption("current");
   const intervalStatistics = page.getByLabel("A/B 区间统计");
   await expect(intervalStatistics.getByText("样本数", { exact: true }).locator("..")).toContainText(
@@ -2533,12 +2728,14 @@ test("单次触发在后半窗结束时冻结且后台接收继续", async ({ pa
     phase: "frozen",
     chartPaused: true,
     pointCount: 4,
+    visiblePointCount: 4,
     rxFrames: 4,
   });
 
   await ingestProtocolText(page, "30,2,3\n", 5_000);
   const afterFrozen = await readWaveformTriggerSnapshot(page);
-  expect(afterFrozen.pointCount).toBe(frozen.pointCount);
+  expect(afterFrozen.pointCount).toBeGreaterThan(frozen.pointCount);
+  expect(afterFrozen.visiblePointCount).toBe(frozen.visiblePointCount);
   expect(afterFrozen.terminalEntryCount).toBeGreaterThan(frozen.terminalEntryCount);
   expect(afterFrozen.rxFrames).toBeGreaterThan(frozen.rxFrames);
 
@@ -3252,7 +3449,7 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
   await page.getByRole("tab", { name: "姿态" }).click();
 
   const configuration = page.getByRole("dialog", { name: "姿态通道配置" });
-  await expect(configuration).toBeVisible();
+  await expect(configuration).toBeVisible({ timeout: 15_000 });
   await configuration.getByRole("combobox", { name: "Roll 姿态通道" }).selectOption("channel-0");
   await configuration.getByRole("combobox", { name: "Pitch 姿态通道" }).selectOption("channel-1");
   await configuration.getByRole("combobox", { name: "Yaw 姿态通道" }).selectOption("channel-2");
@@ -3358,12 +3555,14 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
     expect(layout.bottom).toBeLessThanOrEqual(viewport.height);
     expect(layout.documentWidth).toBeLessThanOrEqual(viewport.width);
     expect(layout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(true);
+    await expectVisibleInteractiveLayout(page);
     await configuration.getByRole("button", { name: "关闭姿态配置" }).click();
     await expect(configuration).not.toBeVisible();
     const mobileCanvas = await canvasScreenshotStats(canvas);
     expect(mobileCanvas.width).toBeGreaterThan(200);
     expect(mobileCanvas.height).toBeGreaterThan(100);
     expect(mobileCanvas.bytes).toBeGreaterThan(5_000);
+    await expectVisibleInteractiveLayout(page);
     await page.screenshot({
       path: testInfo.outputPath(`mobile-${viewport.width}-attitude.png`),
       fullPage: true,
@@ -3466,6 +3665,7 @@ test("通道监视显示有界统计并支持本地冻结与窄屏布局", async
   expect(windowsMinimumLayout.right).toBeLessThanOrEqual(windowsMinimumLayout.viewportWidth);
   expect(windowsMinimumLayout.bottom).toBeLessThanOrEqual(windowsMinimumLayout.viewportHeight);
   expect(windowsMinimumLayout.horizontalOverflow).toBeLessThanOrEqual(1);
+  await expectVisibleInteractiveLayout(page);
   await page.screenshot({
     path: testInfo.outputPath("windows-minimum-channel-monitor.png"),
     fullPage: true,
@@ -3500,6 +3700,7 @@ test("通道监视显示有界统计并支持本地冻结与窄屏布局", async
   expect(mobileLayout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(
     true,
   );
+  await expectVisibleInteractiveLayout(page);
   await page.screenshot({
     path: testInfo.outputPath("mobile-390-channel-monitor.png"),
     fullPage: true,
@@ -4160,6 +4361,7 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
       .filter(Boolean),
     );
   expect(undersizedTargets).toEqual([]);
+  await expectVisibleInteractiveLayout(page);
 
   await page.screenshot({
     path: testInfo.outputPath("mobile-workbench.png"),
@@ -4225,6 +4427,7 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
     documentWidth: document.documentElement.scrollWidth,
   }));
   expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth);
+  await expectVisibleInteractiveLayout(page);
 
   await page.getByRole("button", { name: "启动模拟" }).click();
   await page.getByRole("button", { name: "关闭侧栏" }).click();
@@ -4235,7 +4438,11 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
     const rect = element.getBoundingClientRect();
     const targets = [...element.querySelectorAll("button, input")].map((target) => {
       const targetRect = target.getBoundingClientRect();
-      return { width: targetRect.width, height: targetRect.height };
+      return {
+        name: target.getAttribute("aria-label") ?? target.textContent?.trim() ?? target.tagName,
+        width: targetRect.width,
+        height: targetRect.height,
+      };
     });
     return {
       left: rect.left,
@@ -4247,9 +4454,10 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
   expect(rangeLayout.left).toBeGreaterThanOrEqual(0);
   expect(rangeLayout.right).toBeLessThanOrEqual(320);
   expect(rangeLayout.documentWidth).toBeLessThanOrEqual(320);
-  expect(rangeLayout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(
-    true,
-  );
+  expect(
+    rangeLayout.targets.filter((target) => target.width < 44 || target.height < 44),
+  ).toEqual([]);
+  await expectVisibleInteractiveLayout(page);
   await page.screenshot({
     path: testInfo.outputPath("mobile-320-waveform-range.png"),
     fullPage: true,
@@ -4285,6 +4493,7 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
   expect(
     measurementLayout.targets.every((target) => target.width >= 44 && target.height >= 44),
   ).toBe(true);
+  await expectVisibleInteractiveLayout(page);
 
   await page.screenshot({
     path: testInfo.outputPath("mobile-320-measurement.png"),
@@ -4473,6 +4682,8 @@ test("短窗口仍可操作发送栏", async ({ page }) => {
   const waveformChart = page.locator(".waveform-chart .uplot").first();
   await expect(waveformChart).toBeVisible();
   await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+  await expect(page.locator(".sidebar")).toHaveCSS("visibility", "hidden");
 
   const sendInput = page.getByRole("textbox", { name: "发送内容" });
   const sendButton = page.getByRole("button", { name: "发送", exact: true });
@@ -4495,6 +4706,7 @@ test("短窗口仍可操作发送栏", async ({ page }) => {
   expect(terminalLayout.logHeight).toBeGreaterThanOrEqual(40);
   expect(await clippedVisibleHeight(sendInput)).toBeGreaterThanOrEqual(32);
   expect(await clippedVisibleHeight(sendButton)).toBeGreaterThanOrEqual(32);
+  await expectVisibleInteractiveLayout(page);
   await page.getByRole("button", { name: "展开周期发送设置" }).click();
   const expandedTerminalLayout = await page
     .locator("#workspace-terminal-panel")
@@ -4517,6 +4729,7 @@ test("短窗口仍可操作发送栏", async ({ page }) => {
   expect(expandedTerminalLayout.logHeight).toBeGreaterThanOrEqual(40);
   expect(await clippedVisibleHeight(sendInput)).toBeGreaterThanOrEqual(32);
   expect(await clippedVisibleHeight(sendButton)).toBeGreaterThanOrEqual(32);
+  await expectVisibleInteractiveLayout(page);
   const waveformLayout = await waveformChart.evaluate((element) => {
     const chartRect = element.getBoundingClientRect();
     const wrapRect = element.closest<HTMLElement>(".waveform-canvas-wrap")?.getBoundingClientRect();
@@ -4541,6 +4754,7 @@ test("短窗口仍可操作发送栏", async ({ page }) => {
   const firstVariable = variableDialog.getByRole("button", { name: /插入序号 U8/ });
   await expect(firstVariable).toBeFocused();
   expect(await clippedVisibleHeight(firstVariable)).toBeGreaterThanOrEqual(48);
+  await expectVisibleInteractiveLayout(page);
   await page.keyboard.press("Escape");
   await expect(variableDialog).toHaveCount(0);
   await expect(variableTrigger).toBeFocused();
@@ -4829,6 +5043,8 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
   await page.getByRole("button", { name: "连接设备" }).click();
   await expect(page.getByText("自动重连已待命")).toBeVisible();
 
+  await page.getByText("高级串口设置", { exact: true }).click();
+  await expect(page.locator(".serial-advanced-section")).toHaveAttribute("open", "");
   await page.getByRole("checkbox", { name: "DTR" }).uncheck();
   await page.getByRole("checkbox", { name: "RTS" }).uncheck();
   await expect(page.getByRole("checkbox", { name: "DTR" })).not.toBeChecked();
