@@ -2,7 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
-import { APP_DISPLAY_VERSION } from "./core/appMetadata";
+import { APP_BUILD_ID, APP_DISPLAY_BUILD_ID, APP_DISPLAY_VERSION } from "./core/appMetadata";
 import { createEmptyProtocolHealth } from "./core/protocols";
 import { useWorkbenchStore } from "./store/workbenchStore";
 import App from "./App";
@@ -150,6 +150,10 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "启动模拟" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "处理" })).toBeEnabled();
     expect(screen.getByText(APP_DISPLAY_VERSION, { selector: ".version-label" })).toBeVisible();
+    expect(screen.getByText(APP_DISPLAY_BUILD_ID, { selector: ".build-id-label" })).toHaveAttribute(
+      "title",
+      `构建 ${APP_BUILD_ID}`,
+    );
   });
 
   it("在桌面工作区收起并恢复侧栏", async () => {

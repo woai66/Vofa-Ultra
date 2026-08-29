@@ -3016,7 +3016,8 @@ textarea:focus {
   color: var(--text-muted);
 }
 
-.version-label {
+.version-label,
+.build-id-label {
   padding-left: 7px;
   border-left: 1px solid var(--border);
   color: var(--text-subtle);
