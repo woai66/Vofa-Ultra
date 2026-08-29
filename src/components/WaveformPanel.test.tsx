@@ -11,6 +11,7 @@ import { WaveformPanel } from "./WaveformPanel";
 
 interface UPlotMockInstance {
   readonly options: UPlotMockOptions;
+  readonly initialData: unknown;
   readonly setData: ReturnType<typeof vi.fn>;
   readonly setScale: ReturnType<typeof vi.fn>;
   readonly scales: Record<string, { min?: number; max?: number }>;
@@ -53,6 +54,7 @@ vi.mock("uplot", () => ({
     );
     readonly valToPosScaleKeys: string[] = [];
     readonly options: UPlotMockOptions;
+    readonly initialData: unknown;
     width: number;
     height: number;
     private readonly hooks: {
@@ -62,12 +64,13 @@ vi.mock("uplot", () => ({
 
     constructor(
       options: UPlotMockOptions,
-      _data: unknown,
+      data: unknown,
       target: HTMLElement,
     ) {
       this.width = options.width;
       this.height = options.height;
       this.options = options;
+      this.initialData = data;
       this.hooks = options.hooks ?? {};
       this.over.className = "u-over";
       target.append(this.over);
@@ -209,6 +212,36 @@ describe("WaveformPanel 波形测量", () => {
 
     expect(screen.getByText("Raw Data 不生成波形")).toBeVisible();
     expect(screen.getByText("原始字节保留在数据终端中")).toBeVisible();
+  });
+
+  it("相同接收时刻仍按帧序号保留稀疏通道数据", () => {
+    useWorkbenchStore.setState({
+      channels: [
+        {
+          ...(TEST_CHANNELS[0] as ChannelSeries),
+          points: [
+            { x: 1, y: 1, frameSequence: 101 },
+            { x: 1, y: 2, frameSequence: 102 },
+            { x: 1, y: 3, frameSequence: 103 },
+          ],
+        },
+        {
+          ...(TEST_CHANNELS[1] as ChannelSeries),
+          points: [
+            { x: 1, y: 10, frameSequence: 101 },
+            { x: 1, y: 30, frameSequence: 103 },
+          ],
+        },
+      ],
+    });
+
+    render(<WaveformPanel theme="dark" />);
+
+    expect(latestUPlotMock().initialData).toEqual([
+      [1, 1, 1],
+      [1, 2, 3],
+      [10, null, 30],
+    ]);
   });
 
   it("按连接、暂停和回放状态显示真实的波形运行状态", () => {

@@ -13,6 +13,7 @@ import {
   simulateModbusRtuResponse,
 } from "../core/modbusRtu";
 import { createEmptyProtocolHealth } from "../core/protocols";
+import { calculateWaveformMeasurement } from "../core/waveformMeasurement";
 import { createArmedWaveformTriggerState } from "../core/waveformTrigger";
 import { createDefaultWorkspaceConfig, createWorkspaceProfile } from "../core/workspaces";
 import {
@@ -3749,7 +3750,7 @@ describe("workbenchStore", () => {
     ]);
   });
 
-  it("同一读取块的多帧使用稳定绘图顺序并保持派生通道对齐", () => {
+  it("同一读取块的多帧保留共同接收时间并保持派生通道对齐", () => {
     useWorkbenchStore.getState().setProcessingGraph({
       enabled: true,
       nodes: [
@@ -3771,22 +3772,29 @@ describe("workbenchStore", () => {
 
     const state = useWorkbenchStore.getState();
     const frameTimestamps = state.channels[0]?.points.map((point) => point.x) ?? [];
-    expect(frameTimestamps).toHaveLength(4);
-    expect(frameTimestamps[0]).toBe(1);
-    expect(frameTimestamps[1]).toBeGreaterThan(frameTimestamps[0] as number);
-    expect(frameTimestamps[2]).toBeGreaterThan(frameTimestamps[1] as number);
-    expect(frameTimestamps[3]).toBeGreaterThan(frameTimestamps[2] as number);
+    const frameSequences =
+      state.channels[0]?.points.map((point) => point.frameSequence) ?? [];
+    expect(frameTimestamps).toEqual([1, 1, 1, 1]);
+    expect(frameSequences.every((sequence) => Number.isSafeInteger(sequence))).toBe(true);
+    expect(new Set(frameSequences).size).toBe(4);
     expect(state.channels[0]?.points.map((point) => point.y)).toEqual([1, 2, 3, 4]);
-    expect(state.channels[1]?.points).toEqual([
-      { x: frameTimestamps[0], y: 10 },
-      { x: frameTimestamps[2], y: 30 },
+    expect(state.channels[1]?.points.map((point) => point.x)).toEqual([1, 1]);
+    expect(state.channels[1]?.points.map((point) => point.frameSequence)).toEqual([
+      frameSequences[0],
+      frameSequences[2],
     ]);
-    expect(state.processedChannels[0]?.points).toEqual([
-      { x: frameTimestamps[0], y: 1 },
-      { x: frameTimestamps[1], y: 2 },
-      { x: frameTimestamps[2], y: 3 },
-      { x: frameTimestamps[3], y: 4 },
-    ]);
+    expect(state.processedChannels[0]?.points.map((point) => point.x)).toEqual(
+      frameTimestamps,
+    );
+    expect(
+      state.processedChannels[0]?.points.map((point) => point.frameSequence),
+    ).toEqual(frameSequences);
+    expect(
+      calculateWaveformMeasurement(state.channels[0]?.points ?? [], 5, {
+        aTimestampSeconds: 1,
+        bTimestampSeconds: 1,
+      })?.frequencyHz,
+    ).toBeNull();
     expect(state.terminalEntries).toMatchObject([
       { timestamp: 1_000 },
       { timestamp: 1_000 },
@@ -6873,7 +6881,7 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().runtimeTransitionStatus).toBe("idle");
   });
 
-  it("回放单个记录内的多帧保留完整绘图顺序", () => {
+  it("回放单个记录内的多帧保留共同接收时间与完整帧序", () => {
     useWorkbenchStore.getState().handleReplayState(
       replayState("playing", {
         generation: 1,
@@ -6896,9 +6904,8 @@ describe("workbenchStore", () => {
     const state = useWorkbenchStore.getState();
     const points = state.channels[0]?.points ?? [];
     expect(points.map((point) => point.y)).toEqual([1, 2, 3]);
-    expect(points[0]?.x).toBe(1.001);
-    expect(points[1]?.x).toBeGreaterThan(points[0]?.x as number);
-    expect(points[2]?.x).toBeGreaterThan(points[1]?.x as number);
+    expect(points.map((point) => point.x)).toEqual([1.001, 1.001, 1.001]);
+    expect(new Set(points.map((point) => point.frameSequence)).size).toBe(3);
     expect(state.stats.rxFrames).toBe(3);
     expect(state.replayNextSequence).toBe(2);
   });

@@ -44,7 +44,7 @@ import {
   selectActiveProtocol,
   useWorkbenchStore,
 } from "../store/workbenchStore";
-import type { ChannelSeries } from "../types/workbench";
+import type { ChannelSeries, DataPoint } from "../types/workbench";
 import type { ChartWindowSeconds } from "../types/workspace";
 
 const MeasurementStrip = lazy(() => import("./WaveformMeasurementStrip"));
@@ -1593,15 +1593,45 @@ function pruneIndependentWaveformFixedRanges(
 }
 
 function createAlignedData(channels: ChannelSeries[], windowSeconds: number): AlignedData {
-  const referencePoints = channels[0]?.points ?? [];
-  const latestTime = referencePoints.at(-1)?.x ?? 0;
-  const visiblePoints = referencePoints.filter((point) => point.x >= latestTime - windowSeconds);
-  const timestamps = visiblePoints.map((point) => point.x);
+  const slotsByKey = new Map<
+    string,
+    { readonly key: string; readonly timestamp: number; readonly order: number }
+  >();
+  let order = 0;
+  for (const channel of channels) {
+    for (const point of channel.points) {
+      if (!Number.isFinite(point.x)) {
+        continue;
+      }
+      const key = waveformPointKey(point);
+      if (!slotsByKey.has(key)) {
+        slotsByKey.set(key, { key, timestamp: point.x, order });
+        order += 1;
+      }
+    }
+  }
+  const slots = [...slotsByKey.values()].sort((left, right) => {
+    const timestampDifference = left.timestamp - right.timestamp;
+    return timestampDifference === 0 ? left.order - right.order : timestampDifference;
+  });
+  const latestTime = slots.at(-1)?.timestamp ?? 0;
+  const visibleSlots = slots.filter(
+    (slot) => slot.timestamp >= latestTime - windowSeconds,
+  );
+  const timestamps = visibleSlots.map((slot) => slot.timestamp);
   const values = channels.map((channel) => {
-    const valueByTime = new Map(channel.points.map((point) => [point.x, point.y]));
-    return timestamps.map((timestamp) => valueByTime.get(timestamp) ?? null);
+    const valueBySlot = new Map(
+      channel.points.map((point) => [waveformPointKey(point), point.y]),
+    );
+    return visibleSlots.map((slot) => valueBySlot.get(slot.key) ?? null);
   });
   return [timestamps, ...values] as AlignedData;
+}
+
+function waveformPointKey(point: DataPoint): string {
+  return point.frameSequence === undefined
+    ? `timestamp:${point.x}`
+    : `frame:${point.frameSequence}`;
 }
 
 function formatValue(value: number): string {

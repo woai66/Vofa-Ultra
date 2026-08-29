@@ -36,6 +36,7 @@ export interface ProtocolHealthSnapshot {
 export interface DataPoint {
   x: number;
   y: number;
+  frameSequence?: number;
 }
 
 export interface ChannelSeries {
