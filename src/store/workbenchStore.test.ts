@@ -81,6 +81,7 @@ import type {
 import type { QuickCommand } from "../types/workbench";
 import {
   disposeWorkbenchRuntime,
+  MAX_POINTS_PER_CHANNEL,
   prepareWorkbenchForAppClose,
   selectEffectiveTerminalDisplayMode,
   selectEffectiveTerminalRxRecordMode,
@@ -3754,6 +3755,28 @@ describe("workbenchStore", () => {
       [1, 3, 5],
       [2, 4, 6],
     ]);
+  });
+
+  it("保留 200 Hz 模拟数据的完整 60 秒最大时间窗", () => {
+    const encoder = new TextEncoder();
+    const oneSecondOfSamples = encoder.encode(
+      Array.from({ length: 200 }, (_, index) => `${index}\n`).join(""),
+    );
+
+    for (let second = 1; second <= 60; second += 1) {
+      useWorkbenchStore.getState().ingestBytes(oneSecondOfSamples, second * 1_000);
+    }
+
+    const fullWindow = useWorkbenchStore.getState().channels[0]?.points ?? [];
+    expect(fullWindow).toHaveLength(MAX_POINTS_PER_CHANNEL);
+    expect(fullWindow[0]?.y).toBe(0);
+    expect(fullWindow.at(-1)?.y).toBe(199);
+
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("200\n"), 61_000);
+    const boundedWindow = useWorkbenchStore.getState().channels[0]?.points ?? [];
+    expect(boundedWindow).toHaveLength(MAX_POINTS_PER_CHANNEL);
+    expect(boundedWindow[0]?.y).toBe(1);
+    expect(boundedWindow.at(-1)?.y).toBe(200);
   });
 
   it("同一读取块的多帧保留共同接收时间并保持派生通道对齐", () => {

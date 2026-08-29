@@ -269,7 +269,8 @@ import {
   type ExtensionStatePayload,
 } from "../types/extensions";
 
-const MAX_POINTS_PER_CHANNEL = 2_000;
+// 覆盖内置模拟器 200 Hz 采样率下的完整 60 秒最大时间窗。
+export const MAX_POINTS_PER_CHANNEL = 12_000;
 const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY =
   MAX_TERMINAL_UNTERMINATED_LINE_BYTES + MAX_TERMINAL_LINE_ENDING_BYTES;
