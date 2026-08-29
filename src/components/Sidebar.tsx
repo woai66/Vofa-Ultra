@@ -94,6 +94,8 @@ const MIN_BAUD_RATE = 1;
 const MAX_BAUD_RATE = 12_000_000;
 const MAX_BAUD_RATE_OPTIONS_HEIGHT = 260;
 const MIN_BAUD_RATE_OPTIONS_HEIGHT = 42;
+// 能完整展示至少四个常用值时，向下展开更符合字段阅读顺序。
+const PREFERRED_BAUD_RATE_OPTIONS_HEIGHT = 152;
 const BAUD_RATE_OPTIONS_GAP = 6;
 
 interface SidebarProps {
@@ -153,7 +155,9 @@ function BaudRateField({ value, disabled, onChange, onValidityChange }: BaudRate
         scrollerRect.bottom - comboboxRect.bottom - BAUD_RATE_OPTIONS_GAP - 1,
       );
       const placement =
-        spaceBelow >= MAX_BAUD_RATE_OPTIONS_HEIGHT || spaceBelow >= spaceAbove
+        spaceBelow >= PREFERRED_BAUD_RATE_OPTIONS_HEIGHT ||
+        (spaceBelow >= MIN_BAUD_RATE_OPTIONS_HEIGHT && spaceBelow >= spaceAbove) ||
+        spaceAbove < MIN_BAUD_RATE_OPTIONS_HEIGHT
           ? "bottom"
           : "top";
       const availableHeight = placement === "bottom" ? spaceBelow : spaceAbove;

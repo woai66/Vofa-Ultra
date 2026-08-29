@@ -1053,7 +1053,7 @@ textarea:disabled {
 
 .baud-rate-combobox:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent-soft);
 }
 
 .baud-rate-combobox[data-invalid="true"] {
@@ -1061,7 +1061,7 @@ textarea:disabled {
 }
 
 .baud-rate-combobox[data-invalid="true"]:focus-within {
-  box-shadow: 0 0 0 2px var(--danger-soft);
+  box-shadow: 0 0 0 1px var(--danger-soft);
 }
 
 .baud-rate-combobox > input:focus,
@@ -1109,8 +1109,8 @@ textarea:disabled {
   padding: 5px;
   overflow-y: auto;
   border: 1px solid var(--border-strong);
-  border-radius: 7px;
-  box-shadow: 0 12px 28px rgb(0 0 0 / 34%);
+  border-radius: 5px;
+  box-shadow: 0 8px 20px rgb(0 0 0 / 28%);
   background: var(--surface-1);
   gap: 2px;
 }

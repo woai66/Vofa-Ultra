@@ -1423,10 +1423,12 @@ test("波特率可直接输入且常用值始终可选", async ({ page }, testIn
       list_bottom: list_rect.bottom,
       combobox_left: combobox_rect?.left ?? Number.NEGATIVE_INFINITY,
       combobox_right: combobox_rect?.right ?? Number.POSITIVE_INFINITY,
+      combobox_bottom: combobox_rect?.bottom ?? Number.POSITIVE_INFINITY,
       scroller_top: scroller_rect?.top ?? Number.NEGATIVE_INFINITY,
       scroller_bottom: scroller_rect?.bottom ?? Number.POSITIVE_INFINITY,
       selected_top: selected_rect?.top ?? Number.NEGATIVE_INFINITY,
       selected_bottom: selected_rect?.bottom ?? Number.POSITIVE_INFINITY,
+      placement: element.getAttribute("data-placement"),
       focus_shadow: combobox_style?.boxShadow ?? "none",
       input_outline_width: input_style?.outlineWidth ?? "",
       document_width: document.documentElement.scrollWidth,
@@ -1436,8 +1438,10 @@ test("波特率可直接输入且常用值始终可选", async ({ page }, testIn
   expect(open_layout.list_bottom).toBeLessThanOrEqual(open_layout.scroller_bottom + 1);
   expect(Math.abs(open_layout.list_left - open_layout.combobox_left)).toBeLessThanOrEqual(1);
   expect(Math.abs(open_layout.list_right - open_layout.combobox_right)).toBeLessThanOrEqual(1);
+  expect(open_layout.list_top).toBeGreaterThan(open_layout.combobox_bottom);
   expect(open_layout.selected_top).toBeGreaterThanOrEqual(open_layout.list_top - 1);
   expect(open_layout.selected_bottom).toBeLessThanOrEqual(open_layout.list_bottom + 1);
+  expect(open_layout.placement).toBe("bottom");
   expect(open_layout.focus_shadow).not.toBe("none");
   expect(open_layout.input_outline_width).toBe("0px");
   expect(open_layout.document_width).toBeLessThanOrEqual(1_024);
