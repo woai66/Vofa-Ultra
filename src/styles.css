@@ -1154,7 +1154,7 @@ textarea:disabled {
 
 .baud-rate-field .field-hint {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.4;
 }
 
@@ -1295,7 +1295,7 @@ textarea:focus {
   align-items: center;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
   gap: 5px;
 }
 
@@ -1893,7 +1893,7 @@ textarea:focus {
 
 .protocol-option small {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 :root[data-theme="light"] .protocol-option[data-active="true"] small {
@@ -4435,7 +4435,7 @@ textarea:focus {
 .attitude-channel-mapping label {
   display: grid;
   min-width: 0;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: 30px minmax(0, 1fr);
   align-items: center;
   gap: 4px;
 }
@@ -4521,7 +4521,7 @@ textarea:focus {
   border-radius: 4px;
   background: var(--surface-1);
   color: var(--text);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .measurement-cursor-selector {
@@ -4540,7 +4540,7 @@ textarea:focus {
   background: transparent;
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   cursor: pointer;
 }
@@ -4574,7 +4574,7 @@ textarea:focus {
   align-items: center;
   color: var(--accent);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   gap: 3px;
 }
@@ -4675,7 +4675,7 @@ textarea:focus {
 
 .measurement-readouts dt {
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 650;
 }
 
@@ -4685,7 +4685,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4721,15 +4721,15 @@ textarea:focus {
   top: 4px;
   left: 50%;
   display: grid;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   place-items: center;
   border: 1px solid var(--amber);
   border-radius: 3px;
   background: var(--surface-0);
   color: var(--amber);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   transform: translateX(-50%);
 }
@@ -4756,14 +4756,14 @@ textarea:focus {
   top: 4px;
   left: 50%;
   display: grid;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   place-items: center;
   border: 1px solid currentColor;
   border-radius: 3px;
   background: var(--surface-0);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   transform: translateX(-50%);
 }
@@ -7347,16 +7347,16 @@ textarea:focus {
   .channel-strip,
   .waveform-scale-tools,
   .channel-readout {
-    min-height: 44px;
-    height: 44px;
+    min-height: 46px;
+    height: 46px;
   }
 
   .channel-strip {
-    flex-basis: 44px;
+    flex-basis: 46px;
   }
 
   .waveform-scale-mode {
-    height: 44px;
+    height: 46px;
     grid-template-columns: repeat(2, 44px);
   }
 
@@ -7418,7 +7418,8 @@ textarea:focus {
 
   .waveform-range-actions .primary-button,
   .waveform-range-actions .secondary-button,
-  .waveform-range-actions .icon-button {
+  .waveform-range-actions .icon-button,
+  .waveform-range-actions .icon-button.compact {
     width: 44px;
     min-width: 44px;
     height: 44px;
@@ -7439,7 +7440,15 @@ textarea:focus {
 
   .waveform-panel .panel-actions {
     width: 100%;
-    justify-content: flex-end;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+
+  .waveform-panel .panel-actions::-webkit-scrollbar {
+    display: none;
   }
 
   .spectrum-control-strip {
@@ -7637,6 +7646,7 @@ textarea:focus {
   }
 
   .icon-button,
+  .panel-toolbar .icon-button,
   .sidebar .icon-button.compact,
   .attitude-configuration .icon-button.compact {
     width: 44px;
