@@ -27,7 +27,7 @@ interface UPlotMockOptions {
     string,
     { auto?: boolean; time?: boolean; range?: [number, number] }
   >;
-  axes?: Array<{ scale?: string; stroke?: string }>;
+  axes?: Array<{ scale?: string; size?: number; stroke?: string }>;
   series?: Array<{ label?: string; scale?: string; show?: boolean; stroke?: string }>;
   hooks?: {
     setScale?: Array<(chart: unknown, scaleKey: string) => void>;
@@ -323,6 +323,7 @@ describe("WaveformPanel 波形测量", () => {
       "y",
     ]);
     expect(sharedChart.options.axes?.map((axis) => axis.scale)).toEqual(["x", "y"]);
+    expect(sharedChart.options.axes?.[0]?.size).toBe(42);
     expect(screen.getByRole("button", { name: "共享" })).toHaveAttribute(
       "aria-pressed",
       "true",

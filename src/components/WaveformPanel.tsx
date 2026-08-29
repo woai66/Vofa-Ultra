@@ -1264,7 +1264,7 @@ function WaveformChart({
           grid: { stroke: computed.getPropertyValue("--chart-grid").trim(), width: 1 },
           ticks: { stroke: computed.getPropertyValue("--chart-grid-strong").trim(), width: 1 },
           font: "12px ui-monospace, SFMono-Regular, Consolas, monospace",
-          size: 34,
+          size: 42,
         },
         ...(focusedScaleKey
           ? [

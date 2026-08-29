@@ -1717,6 +1717,17 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   expect(canvasStats.opaquePixels).toBeGreaterThan(50);
   expect(canvasStats.chromaticPixels).toBeGreaterThan(100);
 
+  const [timeAxisBounds, waveformBounds] = await Promise.all([
+    page.locator(".waveform-chart .u-axis").first().boundingBox(),
+    page.locator(".waveform-canvas-wrap").boundingBox(),
+  ]);
+  expect(timeAxisBounds).not.toBeNull();
+  expect(waveformBounds).not.toBeNull();
+  expect(timeAxisBounds?.height ?? 0).toBeGreaterThanOrEqual(40);
+  expect((timeAxisBounds?.y ?? 0) + (timeAxisBounds?.height ?? 0)).toBeLessThanOrEqual(
+    (waveformBounds?.y ?? 0) + (waveformBounds?.height ?? 0),
+  );
+
   const terminalCount = async () => {
     const text = await page.locator(".terminal-toolbar .panel-subtitle").textContent();
     return Number(text?.match(/\d+/)?.[0] ?? 0);
