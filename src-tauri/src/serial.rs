@@ -25,6 +25,7 @@ const WRITE_QUEUE_CAPACITY: usize = 256;
 const MAX_WRITE_SIZE: usize = 64 * 1024;
 const WRITE_CHUNK_SIZE: usize = 4 * 1024;
 const WRITE_BUDGET_PER_TICK: usize = 32 * 1024;
+const WRITE_NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 // 零容量握手确保 reader 只预取下一块，通道本身不会再缓存第三个 64 KiB 块。
 const FILE_READ_CHANNEL_CAPACITY: usize = 0;
@@ -763,6 +764,7 @@ enum WorkerCommand {
     Write {
         data: Vec<u8>,
         text_encoding: Option<String>,
+        reply: mpsc::SyncSender<Result<(), SerialFailure>>,
     },
     SetControlLine(ControlLineCommand),
     StartModbus(ModbusCommand),
@@ -832,15 +834,52 @@ struct FileSendRuntime {
 }
 
 enum PendingWriteOrigin {
-    Normal { text_encoding: Option<String> },
+    Normal {
+        text_encoding: Option<String>,
+        reply: mpsc::SyncSender<Result<(), SerialFailure>>,
+    },
     Modbus(ModbusCommand),
-    FileSend { job_id: u64 },
+    FileSend {
+        job_id: u64,
+    },
 }
 
 struct PendingWrite {
     data: Vec<u8>,
     offset: usize,
+    last_progress_at: Instant,
     origin: PendingWriteOrigin,
+}
+
+impl PendingWrite {
+    fn new(data: Vec<u8>, origin: PendingWriteOrigin) -> Self {
+        Self {
+            data,
+            offset: 0,
+            last_progress_at: Instant::now(),
+            origin,
+        }
+    }
+
+    fn record_progress(
+        &mut self,
+        byte_count: usize,
+        progressed_at: Instant,
+    ) -> std::ops::Range<usize> {
+        let written_start = self.offset;
+        self.offset += byte_count;
+        self.last_progress_at = progressed_at;
+        written_start..self.offset
+    }
+
+    fn has_timed_out(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.last_progress_at) >= WRITE_NO_PROGRESS_TIMEOUT
+    }
+}
+
+struct NormalWriteFailureReply {
+    reply: mpsc::SyncSender<Result<(), SerialFailure>>,
+    failure: SerialFailure,
 }
 
 enum ModbusRuntime {
@@ -1518,7 +1557,7 @@ pub fn disconnect_serial(
 }
 
 #[tauri::command]
-pub fn send_serial(
+pub async fn send_serial(
     state: State<'_, SerialState>,
     data: Vec<u8>,
     text_encoding: Option<String>,
@@ -1539,31 +1578,40 @@ pub fn send_serial(
         return Err("发送文本编码无效".to_owned());
     }
 
-    let shared = state
-        .shared
-        .lock()
-        .map_err(|_| "串口状态锁已损坏".to_owned())?;
-    shared.ensure_send_admission()?;
+    let reply_rx = {
+        let shared = state
+            .shared
+            .lock()
+            .map_err(|_| "串口状态锁已损坏".to_owned())?;
+        shared.ensure_send_admission()?;
 
-    let worker = shared
-        .worker
-        .as_ref()
-        .filter(|worker| worker.generation == shared.generation)
-        .ok_or_else(|| "串口工作线程未运行".to_owned())?;
-    let command_tx = worker
-        .command_tx
-        .as_ref()
-        .ok_or_else(|| "串口工作线程已停止".to_owned())?;
+        let worker = shared
+            .worker
+            .as_ref()
+            .filter(|worker| worker.generation == shared.generation)
+            .ok_or_else(|| "串口工作线程未运行".to_owned())?;
+        let command_tx = worker
+            .command_tx
+            .as_ref()
+            .ok_or_else(|| "串口工作线程已停止".to_owned())?;
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
 
-    command_tx
-        .try_send(WorkerCommand::Write {
-            data,
-            text_encoding,
-        })
-        .map_err(|error| match error {
-            mpsc::TrySendError::Full(_) => "串口发送队列已满，请降低发送速率".to_owned(),
-            mpsc::TrySendError::Disconnected(_) => "串口工作线程已停止".to_owned(),
-        })
+        command_tx
+            .try_send(WorkerCommand::Write {
+                data,
+                text_encoding,
+                reply: reply_tx,
+            })
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => "串口发送队列已满，请降低发送速率".to_owned(),
+                mpsc::TrySendError::Disconnected(_) => "串口工作线程已停止".to_owned(),
+            })?;
+        reply_rx
+    };
+
+    tauri::async_runtime::spawn_blocking(move || wait_for_normal_write_reply(reply_rx))
+        .await
+        .map_err(|error| format!("串口发送任务异常退出: {error}"))?
 }
 
 #[tauri::command]
@@ -2215,6 +2263,71 @@ fn emit_serial_tx(app: &AppHandle, generation: u64, data: &[u8], text_encoding: 
     );
 }
 
+fn wait_for_normal_write_reply(
+    reply_rx: mpsc::Receiver<Result<(), SerialFailure>>,
+) -> Result<(), String> {
+    reply_rx
+        .recv()
+        .map_err(|_| "串口连接已结束，发送未完成".to_owned())?
+        .map_err(|failure| failure.message)
+}
+
+fn settle_normal_write_reply(
+    reply: mpsc::SyncSender<Result<(), SerialFailure>>,
+    emit_tx: impl FnOnce(),
+) {
+    emit_tx();
+    let _ = reply.send(Ok(()));
+}
+
+fn prepare_normal_write_failure(
+    pending_write: &mut Option<PendingWrite>,
+    failure: &SerialFailure,
+    emit_tx: impl FnOnce(&[u8], Option<&str>),
+) -> Option<NormalWriteFailureReply> {
+    if !pending_write
+        .as_ref()
+        .is_some_and(|pending| matches!(pending.origin, PendingWriteOrigin::Normal { .. }))
+    {
+        return None;
+    }
+
+    let pending = pending_write.take().expect("待发送普通帧应当存在");
+    let PendingWriteOrigin::Normal {
+        text_encoding,
+        reply,
+    } = pending.origin
+    else {
+        unreachable!("已确认待发送帧来自普通发送");
+    };
+    debug_assert!(pending.offset <= pending.data.len());
+    let written_bytes = pending.offset.min(pending.data.len());
+    if written_bytes > 0 {
+        emit_tx(&pending.data[..written_bytes], text_encoding.as_deref());
+    }
+    let failure = if written_bytes == 0 {
+        SerialFailure::new(failure.code, failure.message.clone())
+    } else {
+        SerialFailure::new(
+            failure.code,
+            format!(
+                "{}；已写入 {written_bytes}/{} 字节，设备可能已收到部分数据，请勿直接重试整帧",
+                failure.message,
+                pending.data.len()
+            ),
+        )
+    };
+    Some(NormalWriteFailureReply { reply, failure })
+}
+
+fn reply_normal_write_failure_after_terminal(
+    failure_reply: NormalWriteFailureReply,
+    publish_terminal: impl FnOnce(),
+) {
+    publish_terminal();
+    let _ = failure_reply.reply.send(Err(failure_reply.failure));
+}
+
 fn settle_file_send_bytes(
     app: &AppHandle,
     shared_state: &Arc<Mutex<SharedSerialState>>,
@@ -2438,11 +2551,10 @@ fn run_serial_worker(
                             "总线持续有数据，未能取得 Modbus RTU 帧间静默窗口",
                         );
                     } else if last_bus_activity.elapsed() >= modbus_silent_interval {
-                        pending_write = Some(PendingWrite {
-                            data: command.spec.request().to_vec(),
-                            offset: 0,
-                            origin: PendingWriteOrigin::Modbus(command),
-                        });
+                        pending_write = Some(PendingWrite::new(
+                            command.spec.request().to_vec(),
+                            PendingWriteOrigin::Modbus(command),
+                        ));
                     } else {
                         modbus_runtime = Some(ModbusRuntime::WaitingSilence {
                             command,
@@ -2534,11 +2646,10 @@ fn run_serial_worker(
                                 .as_ref()
                                 .expect("文件发送运行时应当存在")
                                 .job_id;
-                            pending_write = Some(PendingWrite {
+                            pending_write = Some(PendingWrite::new(
                                 data,
-                                offset: 0,
-                                origin: PendingWriteOrigin::FileSend { job_id },
-                            });
+                                PendingWriteOrigin::FileSend { job_id },
+                            ));
                         }
                         Ok(FileReadMessage::Eof) => {
                             let runtime = file_runtime.as_ref().expect("文件发送运行时应当存在");
@@ -2635,12 +2746,15 @@ fn run_serial_worker(
                         Ok(WorkerCommand::Write {
                             data,
                             text_encoding,
+                            reply,
                         }) => {
-                            pending_write = Some(PendingWrite {
+                            pending_write = Some(PendingWrite::new(
                                 data,
-                                offset: 0,
-                                origin: PendingWriteOrigin::Normal { text_encoding },
-                            });
+                                PendingWriteOrigin::Normal {
+                                    text_encoding,
+                                    reply,
+                                },
+                            ));
                         }
                         Ok(WorkerCommand::SetControlLine(command)) => {
                             if let Err(failure) = flush_pending_output_before_control_line(
@@ -2831,31 +2945,35 @@ fn run_serial_worker(
                     break 'worker;
                 }
                 Ok(byte_count) => {
-                    last_bus_activity = Instant::now();
+                    let progressed_at = Instant::now();
+                    last_bus_activity = progressed_at;
                     output_needs_drain = true;
-                    let written_start = pending.offset;
-                    let written_end = written_start + byte_count;
-                    pending.offset = written_end;
+                    let written_range = pending.record_progress(byte_count, progressed_at);
                     write_budget -= byte_count;
                     if let Some(session_id) = capture_session_id {
                         let _ = recorder.append_for_session(
                             &app,
                             session_id,
                             CaptureDirection::Tx,
-                            &pending.data[written_start..written_end],
+                            &pending.data[written_range],
                         );
                     }
 
                     if pending.offset == pending.data.len() {
                         let completed = pending_write.take().expect("待发送数据应当存在");
                         match completed.origin {
-                            PendingWriteOrigin::Normal { text_encoding } => {
-                                emit_serial_tx(
-                                    &app,
-                                    generation,
-                                    &completed.data,
-                                    text_encoding.as_deref(),
-                                );
+                            PendingWriteOrigin::Normal {
+                                text_encoding,
+                                reply,
+                            } => {
+                                settle_normal_write_reply(reply, || {
+                                    emit_serial_tx(
+                                        &app,
+                                        generation,
+                                        &completed.data,
+                                        text_encoding.as_deref(),
+                                    );
+                                });
                             }
                             PendingWriteOrigin::FileSend { job_id } => {
                                 let Some(runtime) = file_runtime.as_mut().filter(|runtime| {
@@ -2979,10 +3097,22 @@ fn run_serial_worker(
                         }
                     }
                 }
-                Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error)
-                    if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::Interrupted | ErrorKind::TimedOut | ErrorKind::WouldBlock
+                    ) =>
                 {
+                    if pending.has_timed_out(Instant::now()) {
+                        terminal_error = Some(SerialFailure::new(
+                            SerialErrorCode::WriteFailed,
+                            format!(
+                                "串口发送失败: 连续 {} 秒未取得写入进展",
+                                WRITE_NO_PROGRESS_TIMEOUT.as_secs()
+                            ),
+                        ));
+                        break 'worker;
+                    }
                     break;
                 }
                 Err(error) => {
@@ -3092,28 +3222,54 @@ fn run_serial_worker(
         }
     }
 
-    if let Some(failure) = terminal_error.as_ref() {
-        finish_active_file_send_after_serial_failure(
-            &app,
-            &shared_state,
-            &mut pending_write,
-            &mut file_runtime,
-            failure,
-        );
-    } else if let Some(runtime) = file_runtime.as_ref() {
-        let phase = runtime.phase.load(Ordering::Acquire);
-        if matches!(phase, FILE_SEND_QUEUED | FILE_SEND_TRANSMITTING) {
-            let _ = runtime.phase.compare_exchange(
-                phase,
-                FILE_SEND_CANCEL_REQUESTED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
+    let stopped_failure = SerialFailure::new(
+        SerialErrorCode::Unknown,
+        "串口连接已结束，发送未完成".to_owned(),
+    );
+    let normal_failure_reply = prepare_normal_write_failure(
+        &mut pending_write,
+        terminal_error.as_ref().unwrap_or(&stopped_failure),
+        |data, text_encoding| emit_serial_tx(&app, generation, data, text_encoding),
+    );
+
+    match terminal_error.as_ref() {
+        Some(failure) => {
+            finish_active_file_send_after_serial_failure(
+                &app,
+                &shared_state,
+                &mut pending_write,
+                &mut file_runtime,
+                failure,
             );
         }
-        settle_cancelled_file_send(&app, &shared_state, &mut pending_write, &mut file_runtime);
+        None => {
+            if let Some(runtime) = file_runtime.as_ref() {
+                let phase = runtime.phase.load(Ordering::Acquire);
+                if matches!(phase, FILE_SEND_QUEUED | FILE_SEND_TRANSMITTING) {
+                    let _ = runtime.phase.compare_exchange(
+                        phase,
+                        FILE_SEND_CANCEL_REQUESTED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                }
+                settle_cancelled_file_send(
+                    &app,
+                    &shared_state,
+                    &mut pending_write,
+                    &mut file_runtime,
+                );
+            }
+        }
     }
 
-    finish_worker(&app, &shared_state, generation, port_name, terminal_error);
+    if let Some(failure_reply) = normal_failure_reply {
+        reply_normal_write_failure_after_terminal(failure_reply, || {
+            finish_worker(&app, &shared_state, generation, port_name, terminal_error);
+        });
+    } else {
+        finish_worker(&app, &shared_state, generation, port_name, terminal_error);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4227,20 +4383,167 @@ mod tests {
         let mut pending = Some(PendingWrite {
             data: vec![1, 2, 3, 4, 5],
             offset: 3,
+            last_progress_at: Instant::now(),
             origin: PendingWriteOrigin::FileSend { job_id: 21 },
         });
         assert_eq!(take_file_send_prefix(&mut pending, 21), Some(vec![1, 2, 3]));
         assert!(take_file_send_prefix(&mut pending, 21).is_none());
 
+        let (reply_tx, _reply_rx) = mpsc::sync_channel(1);
         let mut normal = Some(PendingWrite {
             data: vec![7, 8],
             offset: 1,
+            last_progress_at: Instant::now(),
             origin: PendingWriteOrigin::Normal {
                 text_encoding: None,
+                reply: reply_tx,
             },
         });
         assert!(take_file_send_prefix(&mut normal, 21).is_none());
         assert!(normal.is_some());
+    }
+
+    #[test]
+    fn normal_write_acknowledges_only_after_tx_is_emitted() {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+
+        settle_normal_write_reply(reply_tx, || {
+            assert!(matches!(
+                reply_rx.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+        });
+
+        assert!(wait_for_normal_write_reply(reply_rx).is_ok());
+    }
+
+    #[test]
+    fn pending_write_timeout_reanchors_only_after_progress() {
+        let started_at = Instant::now();
+        let (reply_tx, _reply_rx) = mpsc::sync_channel(1);
+        let mut pending = PendingWrite {
+            data: vec![1, 2, 3],
+            offset: 0,
+            last_progress_at: started_at,
+            origin: PendingWriteOrigin::Normal {
+                text_encoding: None,
+                reply: reply_tx,
+            },
+        };
+
+        assert!(!pending
+            .has_timed_out(started_at + WRITE_NO_PROGRESS_TIMEOUT - Duration::from_millis(1)));
+        assert!(pending.has_timed_out(started_at + WRITE_NO_PROGRESS_TIMEOUT));
+
+        let progressed_at = started_at + WRITE_NO_PROGRESS_TIMEOUT;
+        assert_eq!(pending.record_progress(1, progressed_at), 0..1);
+        assert!(!pending
+            .has_timed_out(progressed_at + WRITE_NO_PROGRESS_TIMEOUT - Duration::from_millis(1)));
+        assert!(pending.has_timed_out(progressed_at + WRITE_NO_PROGRESS_TIMEOUT));
+    }
+
+    #[test]
+    fn partial_normal_write_emits_prefix_once_and_replies_after_terminal() {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let mut pending = Some(PendingWrite {
+            data: vec![1, 2, 3, 4],
+            offset: 2,
+            last_progress_at: Instant::now(),
+            origin: PendingWriteOrigin::Normal {
+                text_encoding: Some("utf-8".to_owned()),
+                reply: reply_tx,
+            },
+        });
+        let failure = SerialFailure::new(
+            SerialErrorCode::WriteFailed,
+            "串口发送失败: 设备已断开".to_owned(),
+        );
+        let mut emitted_data = Vec::new();
+        let mut emitted_encoding = None;
+        let mut emit_count = 0;
+
+        let failure_reply =
+            prepare_normal_write_failure(&mut pending, &failure, |data, text_encoding| {
+                emit_count += 1;
+                emitted_data.extend_from_slice(data);
+                emitted_encoding = text_encoding.map(str::to_owned);
+            })
+            .expect("部分写入应当准备失败回执");
+
+        assert!(pending.is_none());
+        assert_eq!(emitted_data, vec![1, 2]);
+        assert_eq!(emitted_encoding.as_deref(), Some("utf-8"));
+        assert_eq!(emit_count, 1);
+        assert!(
+            prepare_normal_write_failure(&mut pending, &failure, |_, _| {
+                emit_count += 1;
+            })
+            .is_none()
+        );
+        assert_eq!(emit_count, 1);
+        assert!(matches!(
+            reply_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        let mut terminal_published = false;
+        reply_normal_write_failure_after_terminal(failure_reply, || {
+            assert!(matches!(
+                reply_rx.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+            terminal_published = true;
+        });
+
+        assert!(terminal_published);
+        assert_eq!(
+            wait_for_normal_write_reply(reply_rx),
+            Err(concat!(
+                "串口发送失败: 设备已断开；已写入 2/4 字节，",
+                "设备可能已收到部分数据，请勿直接重试整帧"
+            )
+            .to_owned())
+        );
+    }
+
+    #[test]
+    fn zero_byte_normal_write_failure_preserves_the_original_reason() {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let mut pending = Some(PendingWrite {
+            data: vec![1, 2, 3],
+            offset: 0,
+            last_progress_at: Instant::now(),
+            origin: PendingWriteOrigin::Normal {
+                text_encoding: None,
+                reply: reply_tx,
+            },
+        });
+        let failure = SerialFailure::new(
+            SerialErrorCode::WriteFailed,
+            "串口发送失败: 写入操作未取得进展".to_owned(),
+        );
+
+        let failure_reply = prepare_normal_write_failure(&mut pending, &failure, |_, _| {
+            panic!("零字节失败不应发布 TX 事件");
+        })
+        .expect("零字节失败仍应准备回执");
+        reply_normal_write_failure_after_terminal(failure_reply, || {});
+
+        assert_eq!(
+            wait_for_normal_write_reply(reply_rx),
+            Err("串口发送失败: 写入操作未取得进展".to_owned())
+        );
+    }
+
+    #[test]
+    fn disconnected_normal_write_reply_channel_is_a_failure() {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        drop(reply_tx);
+
+        assert_eq!(
+            wait_for_normal_write_reply(reply_rx),
+            Err("串口连接已结束，发送未完成".to_owned())
+        );
     }
 
     #[test]
