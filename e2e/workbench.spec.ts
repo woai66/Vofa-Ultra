@@ -342,6 +342,8 @@ test("状态栏在主工作区持续显示数值 CSV 记录与失败", async ({ 
   });
   await expect(failure).toBeVisible();
   await expect(failure).toContainText("CSV 失败");
+  await page.setViewportSize({ width: 600, height: 700 });
+  await expect(failure).toBeVisible();
   const bounds = await failure.evaluate((element) => {
     const item = element.getBoundingClientRect();
     const statusBar = element.parentElement?.getBoundingClientRect();
@@ -4007,8 +4009,27 @@ test("短窗口仍可操作发送栏", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "关闭侧栏" }).click();
 
-  await expect(page.getByRole("textbox", { name: "发送内容" })).toBeInViewport();
-  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeInViewport();
+  const sendInput = page.getByRole("textbox", { name: "发送内容" });
+  const sendButton = page.getByRole("button", { name: "发送", exact: true });
+  await expect(sendInput).toBeInViewport();
+  await expect(sendButton).toBeInViewport();
+  const terminalLayout = await page.locator("#workspace-terminal-panel").evaluate((element) => {
+    const panelRect = element.getBoundingClientRect();
+    const composerRect = element.querySelector<HTMLElement>(".send-composer")?.getBoundingClientRect();
+    const logRect = element.querySelector<HTMLElement>(".terminal-log-shell")?.getBoundingClientRect();
+    const statusRect = document.querySelector<HTMLElement>(".status-bar")?.getBoundingClientRect();
+    return {
+      composerBottom: composerRect?.bottom ?? Number.POSITIVE_INFINITY,
+      logHeight: logRect?.height ?? 0,
+      panelBottom: panelRect.bottom,
+      statusTop: statusRect?.top ?? 0,
+    };
+  });
+  expect(terminalLayout.composerBottom).toBeLessThanOrEqual(terminalLayout.panelBottom + 1);
+  expect(Math.abs(terminalLayout.panelBottom - terminalLayout.statusTop)).toBeLessThanOrEqual(1);
+  expect(terminalLayout.logHeight).toBeGreaterThanOrEqual(40);
+  expect(await clippedVisibleHeight(sendInput)).toBeGreaterThanOrEqual(32);
+  expect(await clippedVisibleHeight(sendButton)).toBeGreaterThanOrEqual(32);
   await page
     .getByRole("group", { name: "发送格式" })
     .getByRole("button", { name: "HEX" })

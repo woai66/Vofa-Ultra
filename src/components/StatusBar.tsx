@@ -77,7 +77,7 @@ export function StatusBar() {
               : serialConfig.portName || "No port"}
         </span>
       </div>
-      <div className="status-item">
+      <div className="status-item protocol-status">
         <CircleGauge size={13} />
         <span>{getProtocolDefinition(activeProtocol).displayName}</span>
       </div>

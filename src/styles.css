@@ -7012,9 +7012,8 @@ textarea:focus {
     display: none;
   }
 
-  .status-item:nth-of-type(3),
-  .status-item:nth-of-type(5),
-  .transfer-rate span:last-child,
+  .protocol-status,
+  .transfer-rate,
   .transfer-stats span:last-child {
     display: none;
   }
@@ -7963,13 +7962,16 @@ textarea:focus {
   }
 }
 
-@media (max-height: 620px) {
+@media (min-width: 721px) and (max-height: 620px) {
   .workspace-content {
     grid-template-rows:
       minmax(150px, var(--workspace-primary-share)) 7px
-      minmax(145px, var(--workspace-terminal-share));
+      minmax(210px, var(--workspace-terminal-share));
+    overflow-y: auto;
   }
+}
 
+@media (max-height: 620px) {
   .terminal-log-shell {
     min-height: 40px;
   }
@@ -7979,7 +7981,8 @@ textarea:focus {
   .workspace-content,
   .workspace-content[data-layout-mode="primary"],
   .workspace-content[data-layout-mode="terminal"] {
-    grid-template-rows: minmax(150px, 1fr) minmax(145px, 1fr);
+    grid-template-rows: minmax(150px, 1fr) minmax(280px, 1fr);
+    overflow-y: auto;
   }
 }
 
