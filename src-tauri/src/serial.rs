@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -20,6 +20,10 @@ use crate::modbus_rtu::{
 
 const READ_BUFFER_SIZE: usize = 16 * 1024;
 const SERIAL_TIMEOUT_MS: u64 = 20;
+const SERIAL_PORT_SCAN_DEADLINE: Duration = Duration::from_secs(5);
+const SERIAL_PORT_OPEN_DEADLINE: Duration = Duration::from_secs(5);
+const MAX_OUTSTANDING_SERIAL_PORT_SCANS: usize = 2;
+const MAX_OUTSTANDING_SERIAL_PORT_OPENS: usize = 2;
 const MODEM_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const WRITE_QUEUE_CAPACITY: usize = 256;
 const MAX_WRITE_SIZE: usize = 64 * 1024;
@@ -39,6 +43,11 @@ const FILE_SEND_DRAINING: u8 = 3;
 const FILE_SEND_CANCELLED_MESSAGE: &str = "文件发送已取消；驱动已缓冲的字节仍可能发出";
 const FILE_SEND_CONNECTION_ENDED_MESSAGE: &str =
     "串口连接已结束，文件发送已取消；驱动已缓冲的字节仍可能发出";
+
+static SERIAL_PORT_SCAN_LIMITER: DriverCallLimiter =
+    DriverCallLimiter::new(MAX_OUTSTANDING_SERIAL_PORT_SCANS);
+static SERIAL_PORT_OPEN_LIMITER: DriverCallLimiter =
+    DriverCallLimiter::new(MAX_OUTSTANDING_SERIAL_PORT_OPENS);
 
 pub struct SerialState {
     transition: Arc<Mutex<()>>,
@@ -1057,7 +1066,16 @@ pub struct SerialFileSendPayload {
 
 #[tauri::command]
 pub async fn list_serial_ports() -> Result<Vec<SerialPortInfoDto>, String> {
-    run_serial_blocking_task("扫描串口", list_serial_ports_blocking).await
+    run_serial_blocking_task("扫描串口", || {
+        run_driver_call_with_deadline(
+            "vofa-serial-enumeration",
+            &SERIAL_PORT_SCAN_LIMITER,
+            SERIAL_PORT_SCAN_DEADLINE,
+            list_serial_ports_blocking,
+        )
+        .map_err(|error| driver_call_error_message("扫描串口", SERIAL_PORT_SCAN_DEADLINE, error))
+    })
+    .await
 }
 
 fn list_serial_ports_blocking() -> Result<Vec<SerialPortInfoDto>, String> {
@@ -1301,7 +1319,7 @@ fn connect_serial_blocking(
     request: u64,
 ) -> Result<SerialStatePayload, String> {
     let port_name = config.port_name.clone();
-    let _transition = transition.lock().map_err(|_| {
+    let transition_guard = transition.lock().map_err(|_| {
         fail_connection_task(
             &app,
             &shared_state,
@@ -1376,55 +1394,70 @@ fn connect_serial_blocking(
     );
 
     ensure_connection_attempt_current(&shared_state, request, generation)?;
-    let mut port = serialport::new(&config.port_name, config.baud_rate)
-        .data_bits(data_bits)
-        .parity(parity)
-        .stop_bits(stop_bits)
-        .flow_control(flow_control)
-        .timeout(Duration::from_millis(SERIAL_TIMEOUT_MS))
-        .open()
-        .map_err(|error| {
-            fail_connection(
-                &app,
-                &shared_state,
-                request,
-                generation,
-                &port_name,
-                SerialErrorCode::OpenFailed,
-                format!("无法打开串口 {}: {error}", config.port_name),
-            )
-        })?;
-    ensure_connection_attempt_current(&shared_state, request, generation)?;
+    drop(transition_guard);
 
+    let driver_port_name = config.port_name.clone();
+    let port = run_driver_call_with_deadline(
+        "vofa-serial-open",
+        &SERIAL_PORT_OPEN_LIMITER,
+        SERIAL_PORT_OPEN_DEADLINE,
+        move || {
+            let mut port = serialport::new(&config.port_name, config.baud_rate)
+                .data_bits(data_bits)
+                .parity(parity)
+                .stop_bits(stop_bits)
+                .flow_control(flow_control)
+                .timeout(Duration::from_millis(SERIAL_TIMEOUT_MS))
+                .open()
+                .map_err(|error| {
+                    SerialFailure::new(
+                        SerialErrorCode::OpenFailed,
+                        format!("无法打开串口 {}: {error}", config.port_name),
+                    )
+                })?;
+            port.write_data_terminal_ready(config.dtr)
+                .map_err(|error| {
+                    SerialFailure::new(
+                        SerialErrorCode::DtrFailed,
+                        format!("设置 DTR 失败: {error}"),
+                    )
+                })?;
+            if !hardware_flow_control {
+                port.write_request_to_send(config.rts).map_err(|error| {
+                    SerialFailure::new(
+                        SerialErrorCode::RtsFailed,
+                        format!("设置 RTS 失败: {error}"),
+                    )
+                })?;
+            }
+            Ok(port)
+        },
+    )
+    .map_err(|error| {
+        let failure = serial_open_driver_failure(&driver_port_name, error);
+        fail_connection(
+            &app,
+            &shared_state,
+            request,
+            generation,
+            &port_name,
+            failure.code,
+            failure.message,
+        )
+    })?;
+
+    let _transition = transition.lock().map_err(|_| {
+        fail_connection(
+            &app,
+            &shared_state,
+            request,
+            generation,
+            &port_name,
+            SerialErrorCode::Unknown,
+            "串口生命周期锁已损坏".to_owned(),
+        )
+    })?;
     ensure_connection_attempt_current(&shared_state, request, generation)?;
-    port.write_data_terminal_ready(config.dtr)
-        .map_err(|error| {
-            fail_connection(
-                &app,
-                &shared_state,
-                request,
-                generation,
-                &port_name,
-                SerialErrorCode::DtrFailed,
-                format!("设置 DTR 失败: {error}"),
-            )
-        })?;
-    ensure_connection_attempt_current(&shared_state, request, generation)?;
-    if !hardware_flow_control {
-        ensure_connection_attempt_current(&shared_state, request, generation)?;
-        port.write_request_to_send(config.rts).map_err(|error| {
-            fail_connection(
-                &app,
-                &shared_state,
-                request,
-                generation,
-                &port_name,
-                SerialErrorCode::RtsFailed,
-                format!("设置 RTS 失败: {error}"),
-            )
-        })?;
-        ensure_connection_attempt_current(&shared_state, request, generation)?;
-    }
 
     ensure_connection_attempt_current(&shared_state, request, generation)?;
     let (command_tx, command_rx) = mpsc::sync_channel(WRITE_QUEUE_CAPACITY);
@@ -1618,6 +1651,153 @@ where
     tauri::async_runtime::spawn_blocking(task)
         .await
         .map_err(|_| format!("{operation}任务异常退出"))?
+}
+
+struct DriverCallLimiter {
+    in_flight: AtomicUsize,
+    limit: usize,
+}
+
+impl DriverCallLimiter {
+    const fn new(limit: usize) -> Self {
+        Self {
+            in_flight: AtomicUsize::new(0),
+            limit,
+        }
+    }
+
+    fn try_acquire(&'static self) -> Option<DriverCallPermit> {
+        let mut current = self.in_flight.load(Ordering::Acquire);
+        loop {
+            if current >= self.limit {
+                return None;
+            }
+            match self.in_flight.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(DriverCallPermit { limiter: self }),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::Acquire)
+    }
+}
+
+struct DriverCallPermit {
+    limiter: &'static DriverCallLimiter,
+}
+
+impl Drop for DriverCallPermit {
+    fn drop(&mut self) {
+        self.limiter.in_flight.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DriverCallError<E> {
+    Operation(E),
+    ResourceLimitReached { limit: usize },
+    DeadlineExceeded,
+    Panicked(String),
+    ThreadStartFailed(String),
+    ResultChannelClosed,
+}
+
+enum DriverCallOutcome<T, E> {
+    Finished(Result<T, E>),
+    Panicked(String),
+}
+
+fn run_driver_call_with_deadline<T, E, F>(
+    thread_name: &str,
+    limiter: &'static DriverCallLimiter,
+    deadline: Duration,
+    task: F,
+) -> Result<T, DriverCallError<E>>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    F: FnOnce() -> Result<T, E> + Send + 'static,
+{
+    let permit = limiter
+        .try_acquire()
+        .ok_or(DriverCallError::ResourceLimitReached {
+            limit: limiter.limit,
+        })?;
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name(thread_name.to_owned())
+        .spawn(move || {
+            let _permit = permit;
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task))
+                .map(DriverCallOutcome::Finished)
+                .unwrap_or_else(|panic| DriverCallOutcome::Panicked(panic_message(panic)));
+            let _ = result_tx.send(outcome);
+        })
+        .map_err(|error| DriverCallError::ThreadStartFailed(error.to_string()))?;
+
+    match result_rx.recv_timeout(deadline) {
+        Ok(DriverCallOutcome::Finished(Ok(result))) => Ok(result),
+        Ok(DriverCallOutcome::Finished(Err(error))) => Err(DriverCallError::Operation(error)),
+        Ok(DriverCallOutcome::Panicked(message)) => Err(DriverCallError::Panicked(message)),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(DriverCallError::DeadlineExceeded),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(DriverCallError::ResultChannelClosed),
+    }
+}
+
+fn driver_call_error_message<E: std::fmt::Display>(
+    operation: &str,
+    deadline: Duration,
+    error: DriverCallError<E>,
+) -> String {
+    match error {
+        DriverCallError::Operation(message) => message.to_string(),
+        DriverCallError::ResourceLimitReached { limit } => format!(
+            "{operation}暂不可用：已有 {limit} 个驱动调用仍未返回；为避免后台线程累积，已拒绝新请求。请禁用异常设备或重启应用后重试"
+        ),
+        DriverCallError::DeadlineExceeded => format!(
+            "{operation}超过 {} 秒仍未完成，可能是蓝牙或虚拟串口驱动无响应；请禁用异常设备后重试",
+            deadline.as_secs()
+        ),
+        DriverCallError::Panicked(message) => format!("{operation}驱动调用异常退出: {message}"),
+        DriverCallError::ThreadStartFailed(message) => {
+            format!("无法启动{operation}驱动任务: {message}")
+        }
+        DriverCallError::ResultChannelClosed => format!("{operation}驱动任务未返回结果"),
+    }
+}
+
+fn serial_open_driver_failure(
+    port_name: &str,
+    error: DriverCallError<SerialFailure>,
+) -> SerialFailure {
+    let message = match error {
+        DriverCallError::Operation(failure) => return failure,
+        DriverCallError::ResourceLimitReached { limit } => format!(
+            "打开串口 {port_name} 暂不可用：已有 {limit} 个打开调用仍未返回；为避免后台线程累积，已拒绝新请求。请禁用异常设备或重启应用后重试"
+        ),
+        DriverCallError::DeadlineExceeded => format!(
+            "打开串口 {port_name} 超过 {} 秒仍未完成，可能是蓝牙或虚拟串口驱动无响应；请禁用异常设备后重试",
+            SERIAL_PORT_OPEN_DEADLINE.as_secs()
+        ),
+        DriverCallError::Panicked(message) => {
+            format!("打开串口 {port_name} 时驱动调用异常退出: {message}")
+        }
+        DriverCallError::ThreadStartFailed(message) => {
+            format!("无法启动串口 {port_name} 的驱动任务: {message}")
+        }
+        DriverCallError::ResultChannelClosed => {
+            format!("打开串口 {port_name} 的驱动任务未返回结果")
+        }
+    };
+    SerialFailure::new(SerialErrorCode::OpenFailed, message)
 }
 
 #[tauri::command]
@@ -3722,6 +3902,169 @@ mod tests {
             }))
             .unwrap_err();
         assert_eq!(error, "驱动枚举失败");
+    }
+
+    #[test]
+    fn driver_call_deadline_returns_and_drops_a_late_result() {
+        static LIMITER: DriverCallLimiter = DriverCallLimiter::new(1);
+
+        struct LateResult(Arc<AtomicBool>);
+
+        impl Drop for LateResult {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let (release_tx, release_rx) = mpsc::channel();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = Arc::clone(&dropped);
+        let started = Instant::now();
+        let result = run_driver_call_with_deadline(
+            "test-late-driver-result",
+            &LIMITER,
+            Duration::from_millis(20),
+            move || {
+                release_rx.recv().unwrap();
+                Ok::<_, String>(LateResult(task_dropped))
+            },
+        );
+
+        assert!(matches!(result, Err(DriverCallError::DeadlineExceeded)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!dropped.load(Ordering::Acquire));
+
+        release_tx.send(()).unwrap();
+        let drop_deadline = Instant::now() + Duration::from_secs(1);
+        while !dropped.load(Ordering::Acquire) && Instant::now() < drop_deadline {
+            thread::yield_now();
+        }
+        assert!(dropped.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn timed_out_driver_call_does_not_block_a_subsequent_retry() {
+        static LIMITER: DriverCallLimiter = DriverCallLimiter::new(2);
+
+        let (release_tx, release_rx) = mpsc::channel();
+        let first = run_driver_call_with_deadline(
+            "test-blocked-driver-call",
+            &LIMITER,
+            Duration::from_millis(20),
+            move || {
+                release_rx.recv().unwrap();
+                Ok::<_, String>(1_u8)
+            },
+        );
+        assert!(matches!(first, Err(DriverCallError::DeadlineExceeded)));
+
+        let retry = run_driver_call_with_deadline(
+            "test-driver-retry",
+            &LIMITER,
+            Duration::from_secs(1),
+            || Ok::<_, String>(2_u8),
+        );
+        assert_eq!(retry, Ok(2));
+        release_tx.send(()).unwrap();
+    }
+
+    #[test]
+    fn driver_call_limit_bounds_stuck_threads_and_recovers_after_release() {
+        static LIMITER: DriverCallLimiter = DriverCallLimiter::new(2);
+
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let run_blocked_call = || {
+            let task_gate = Arc::clone(&gate);
+            run_driver_call_with_deadline(
+                "test-resource-limited-driver",
+                &LIMITER,
+                Duration::from_millis(20),
+                move || {
+                    let (released, wake) = &*task_gate;
+                    let released = released.lock().unwrap();
+                    let _released = wake.wait_while(released, |released| !*released).unwrap();
+                    Ok::<_, String>(())
+                },
+            )
+        };
+
+        let first = run_blocked_call();
+        let second = run_blocked_call();
+        let in_flight_at_limit = LIMITER.in_flight();
+        let third_ran = Arc::new(AtomicBool::new(false));
+        let task_third_ran = Arc::clone(&third_ran);
+        let rejected_at = Instant::now();
+        let third = run_driver_call_with_deadline(
+            "test-rejected-driver",
+            &LIMITER,
+            Duration::from_secs(1),
+            move || {
+                task_third_ran.store(true, Ordering::Release);
+                Ok::<_, String>(())
+            },
+        );
+        let rejection_elapsed = rejected_at.elapsed();
+
+        {
+            let (released, wake) = &*gate;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+        }
+        let release_deadline = Instant::now() + Duration::from_secs(1);
+        while LIMITER.in_flight() != 0 && Instant::now() < release_deadline {
+            thread::yield_now();
+        }
+
+        assert!(matches!(first, Err(DriverCallError::DeadlineExceeded)));
+        assert!(matches!(second, Err(DriverCallError::DeadlineExceeded)));
+        assert_eq!(in_flight_at_limit, 2);
+        assert_eq!(
+            third,
+            Err(DriverCallError::ResourceLimitReached { limit: 2 })
+        );
+        assert!(rejection_elapsed < Duration::from_millis(100));
+        assert!(!third_ran.load(Ordering::Acquire));
+        assert_eq!(LIMITER.in_flight(), 0);
+
+        let retry = run_driver_call_with_deadline(
+            "test-recovered-driver",
+            &LIMITER,
+            Duration::from_secs(1),
+            || Ok::<_, String>(7_u8),
+        );
+        assert_eq!(retry, Ok(7));
+    }
+
+    #[test]
+    fn driver_call_errors_remain_diagnostic() {
+        static LIMITER: DriverCallLimiter = DriverCallLimiter::new(1);
+
+        let operation = run_driver_call_with_deadline(
+            "test-driver-error",
+            &LIMITER,
+            Duration::from_secs(1),
+            || Err::<(), _>("驱动拒绝访问".to_owned()),
+        );
+        assert_eq!(
+            operation,
+            Err(DriverCallError::Operation("驱动拒绝访问".to_owned()))
+        );
+
+        let timeout = driver_call_error_message(
+            "扫描串口",
+            Duration::from_secs(5),
+            DriverCallError::<String>::DeadlineExceeded,
+        );
+        assert!(timeout.contains("超过 5 秒"));
+        assert!(timeout.contains("蓝牙或虚拟串口驱动无响应"));
+
+        let saturated = driver_call_error_message(
+            "扫描串口",
+            Duration::from_secs(5),
+            DriverCallError::<String>::ResourceLimitReached { limit: 2 },
+        );
+        assert!(saturated.contains("已有 2 个驱动调用仍未返回"));
+        assert!(saturated.contains("为避免后台线程累积"));
     }
 
     #[test]
