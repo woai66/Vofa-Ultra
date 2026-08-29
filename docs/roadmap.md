@@ -74,7 +74,8 @@ Linux 和其他高级方向暂停，不作为首个 Beta 的门槛。
 
 - [x] Tauri 2 + Rust 串口枚举、前台静默刷新、脱敏设备摘要、连接、断开、参数配置、在线 DTR / RTS 控制，
   以及 CTS / DSR / RI / DCD 三态监视
-- [x] 有界 TX 队列、分块公平写入、状态 revision 与可诊断错误
+- [x] 枚举与打开驱动调用的 5 秒 deadline、2+2 未返回调用上限、有界 TX 队列、分块公平写入、状态 revision 与
+  可诊断错误
 - [x] 文本 / HEX 收发、TX 行尾与文本编码、按读取块/文本行记录的 RX 终端、可选接收行尾与文本编码、有界残行、统计，
   以及全部缓存/当前筛选视图日志导出
 - [x] FireWater、JustFloat、Raw Data
