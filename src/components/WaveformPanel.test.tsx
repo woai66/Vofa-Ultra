@@ -203,6 +203,31 @@ describe("WaveformPanel 波形测量", () => {
     expect(screen.getByRole("button", { name: "开启波形测量" })).toBeDisabled();
   });
 
+  it("按连接、暂停和回放状态显示真实的波形运行状态", () => {
+    useWorkbenchStore.setState({ connectionStatus: "disconnected" });
+    const { container } = render(<WaveformPanel theme="dark" />);
+    const live_state = container.querySelector(".waveform-panel .live-state");
+
+    expect(live_state).toHaveAttribute("data-state", "idle");
+    expect(live_state).toHaveTextContent("IDLE");
+
+    act(() => useWorkbenchStore.setState({ connectionStatus: "connecting" }));
+    expect(live_state).toHaveAttribute("data-state", "connecting");
+    expect(live_state).toHaveTextContent("CONNECTING");
+
+    act(() => useWorkbenchStore.setState({ connectionStatus: "connected" }));
+    expect(live_state).toHaveAttribute("data-state", "live");
+    expect(live_state).toHaveTextContent("LIVE");
+
+    act(() => useWorkbenchStore.setState({ chartPaused: true }));
+    expect(live_state).toHaveAttribute("data-state", "history");
+    expect(live_state).toHaveTextContent("HISTORY");
+
+    act(() => useWorkbenchStore.setState({ chartPaused: false, replayStatus: "paused" }));
+    expect(live_state).toHaveAttribute("data-state", "history");
+    expect(live_state).toHaveTextContent("HISTORY");
+  });
+
   it("在读数、触发和测量中应用别名、单位与颜色且保留原始序列标签", async () => {
     const user = userEvent.setup();
     useWorkbenchStore.setState({

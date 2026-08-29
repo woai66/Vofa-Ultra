@@ -166,6 +166,14 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     triggerThreshold.trim().length > 0 &&
     Number.isFinite(parsedTriggerThreshold) &&
     (!chartPaused || waveformTrigger.phase === "frozen");
+  const liveState =
+    replayStatus !== "idle" || chartPaused
+      ? "history"
+      : connectionStatus === "connected"
+        ? "live"
+        : connectionStatus === "connecting"
+          ? "connecting"
+          : "idle";
   const visibleScaleChannels = useMemo(
     () => channels.filter((channel) => channel.visible),
     [channels],
@@ -606,9 +614,9 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
             <h2 id="waveform-title">{viewMode === "time" ? "实时波形" : "频谱分析"}</h2>
             <span className="panel-subtitle">{channels.length} 个通道</span>
           </div>
-          <span className="live-state" data-paused={chartPaused}>
+          <span className="live-state" data-state={liveState}>
             <span />
-            {chartPaused ? "HISTORY" : "LIVE"}
+            {liveState.toUpperCase()}
           </span>
         </div>
         <div className="panel-actions">

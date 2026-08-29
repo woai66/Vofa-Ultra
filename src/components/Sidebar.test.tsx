@@ -17,6 +17,7 @@ describe("Sidebar 串口恢复界面", () => {
       source: "serial",
       connectionStatus: "error",
       serialRuntimeError: "",
+      connectionMessage: "设备已移除",
       statusMessage: "设备已移除",
       ports: [
         {
@@ -89,6 +90,28 @@ describe("Sidebar 串口恢复界面", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "关闭侧栏" }));
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("未连接时显示连接摘要而不复用其他模块的瞬时消息", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      connectionMessage: "COM3 已就绪",
+      statusMessage: "回放已关闭",
+      serialRuntimeError: "",
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const connection_status = screen.getByRole("status");
+    expect(connection_status).toHaveTextContent("COM3 已就绪");
+    expect(connection_status).not.toHaveTextContent("回放已关闭");
   });
 
   it("为串口配置字段提供稳定表单标识", () => {
@@ -388,6 +411,7 @@ describe("Sidebar 串口恢复界面", () => {
       "title",
       "COM3 当前不可用，请刷新或选择其他串口",
     );
+    expect(screen.getByRole("status")).toHaveTextContent("COM3 当前不可用");
 
     fireEvent.change(screen.getByLabelText("串口设备"), { target: { value: "COM4" } });
     expect(connectButton).toBeEnabled();
@@ -637,6 +661,7 @@ describe("Sidebar 串口恢复界面", () => {
     const setSerialControlLine = vi.fn().mockResolvedValue(true);
     useWorkbenchStore.setState((state) => ({
       connectionStatus: "connected",
+      connectionMessage: "DTR 已设为有效",
       statusMessage: "DTR 已设为有效",
       serialRecovery: { ...state.serialRecovery, phase: "armed" },
       serialConfig: { ...state.serialConfig, dtr: true, rts: true, flowControl: "none" },

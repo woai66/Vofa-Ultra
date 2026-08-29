@@ -49,6 +49,8 @@ import { presentSerialPort, sortSerialPorts } from "../core/serialPorts";
 import type { ThemePreference } from "../App";
 import {
   BAUD_RATES,
+  type ConnectionStatus,
+  type DataSource,
   type ProtocolKind,
   type SerialDiagnosticsReport,
   type SerialRecoveryPhase,
@@ -454,7 +456,7 @@ function ConnectionPanel() {
   const source = useWorkbenchStore((state) => state.source);
   const protocol = useWorkbenchStore((state) => state.protocol);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
-  const statusMessage = useWorkbenchStore((state) => state.statusMessage);
+  const connectionStatusMessage = useWorkbenchStore((state) => state.connectionMessage);
   const ports = useWorkbenchStore((state) => state.ports);
   const isRefreshingPorts = useWorkbenchStore((state) => state.isRefreshingPorts);
   const config = useWorkbenchStore((state) => state.serialConfig);
@@ -561,6 +563,17 @@ function ConnectionPanel() {
     isCancellingSerialConnection ||
     (!canCancelConnection &&
       (isBusy || (!isConnected && serialConnectUnavailable)));
+  const connectionMessage = resolveConnectionMessage({
+    source,
+    connectionStatus,
+    portName: config.portName,
+    portAvailable: selectedPortPresentation !== null,
+    connectionStatusMessage,
+    serialRuntimeError,
+    isCancelling: isCancellingSerialConnection,
+    recoveryActive,
+    recoveryMessage: serialRecovery.message,
+  });
 
   useEffect(() => {
     if (isNativeRuntime && source === "serial") {
@@ -983,7 +996,7 @@ function ConnectionPanel() {
           role="status"
         >
           <span className="status-dot" />
-          <span>{serialRuntimeError || statusMessage}</span>
+          <span>{connectionMessage}</span>
         </div>
         <button
           className="primary-button connect-button"
@@ -1033,6 +1046,67 @@ function ConnectionPanel() {
         </button>
       </div>
     </div>
+  );
+}
+
+interface ConnectionMessageInput {
+  source: DataSource;
+  connectionStatus: ConnectionStatus;
+  portName: string;
+  portAvailable: boolean;
+  connectionStatusMessage: string;
+  serialRuntimeError: string;
+  isCancelling: boolean;
+  recoveryActive: boolean;
+  recoveryMessage: string;
+}
+
+function resolveConnectionMessage(input: ConnectionMessageInput): string {
+  if (input.serialRuntimeError) {
+    return input.serialRuntimeError;
+  }
+  if (input.isCancelling) {
+    return input.recoveryActive ? "正在取消自动重连" : "正在取消串口连接";
+  }
+  if (input.recoveryActive) {
+    return input.recoveryMessage;
+  }
+  if (input.connectionStatus === "connecting") {
+    return (
+      input.connectionStatusMessage ||
+      (input.source === "serial" && input.portName
+        ? `正在打开 ${input.portName}`
+        : "正在启动模拟数据")
+    );
+  }
+  if (input.connectionStatus === "connected") {
+    return (
+      input.connectionStatusMessage ||
+      (input.source === "serial"
+        ? input.portName
+          ? `${input.portName} 已连接`
+          : "串口已连接"
+        : "模拟数据正在运行")
+    );
+  }
+  if (input.connectionStatus === "error") {
+    return (
+      input.connectionStatusMessage ||
+      (input.source === "serial" ? "串口连接发生错误" : "模拟数据发生错误")
+    );
+  }
+  if (input.source === "simulator") {
+    return input.connectionStatusMessage || "模拟数据源已就绪";
+  }
+  if (!input.portName) {
+    return "选择设备后连接";
+  }
+  if (!input.portAvailable) {
+    return `${input.portName} 当前不可用`;
+  }
+  return (
+    input.connectionStatusMessage ||
+    `${input.portName} 已就绪`
   );
 }
 

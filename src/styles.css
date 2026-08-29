@@ -224,13 +224,22 @@ textarea:disabled {
   background: #55e4aa;
 }
 
-.rail-wordmark {
-  margin-bottom: 12px;
-  color: #849188;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
-  line-height: 1;
-  writing-mode: vertical-rl;
+.rail-button[data-group="advanced"][data-group-start="true"] {
+  margin-top: 9px;
+}
+
+.rail-button[data-group="advanced"][data-group-start="true"]::after {
+  position: absolute;
+  top: -6px;
+  left: 6px;
+  width: 28px;
+  border-top: 1px solid #222824;
+  content: "";
+}
+
+.rail-button[data-group="settings"] {
+  margin-top: auto;
+  margin-bottom: 8px;
 }
 
 .sidebar {
@@ -3212,7 +3221,7 @@ textarea:focus {
   margin-left: 7px;
   color: var(--accent);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   gap: 5px;
 }
@@ -3227,6 +3236,24 @@ textarea:focus {
 
 .live-state[data-paused="true"] {
   color: var(--amber);
+}
+
+.live-state[data-state="idle"] {
+  color: var(--text-subtle);
+}
+
+.live-state[data-state="connecting"] {
+  color: var(--cyan);
+}
+
+.live-state[data-state="history"] {
+  color: var(--amber);
+}
+
+.live-state[data-state="idle"] > span,
+.live-state[data-state="connecting"] > span,
+.live-state[data-state="history"] > span {
+  box-shadow: none;
 }
 
 .channel-monitor-panel {
@@ -7004,8 +7031,16 @@ textarea:focus {
     height: 48px;
   }
 
-  .rail-button::before,
-  .rail-wordmark {
+  .rail-button::before {
+    display: none;
+  }
+
+  .rail-button[data-group="advanced"][data-group-start="true"],
+  .rail-button[data-group="settings"] {
+    margin: 0;
+  }
+
+  .rail-button[data-group="advanced"][data-group-start="true"]::after {
     display: none;
   }
 
