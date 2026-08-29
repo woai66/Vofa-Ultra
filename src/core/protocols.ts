@@ -496,41 +496,53 @@ function findJustFloatTail(
   frameStart: number,
   allowUnaligned: boolean,
 ): number {
-  const candidates: number[] = [];
+  let firstUnalignedCandidate = -1;
+  let firstCandidateByAlignment: number[] | null = null;
+  let repeatedAlignmentMask = 0;
   const lastStart = buffer.length - JUSTFLOAT_TAIL.length;
   for (let start = frameStart; start <= lastStart; start += 1) {
-    let matches = true;
-    for (let index = 0; index < JUSTFLOAT_TAIL.length; index += 1) {
-      if (buffer[start + index] !== JUSTFLOAT_TAIL[index]) {
-        matches = false;
-        break;
-      }
+    if (
+      buffer[start] !== JUSTFLOAT_TAIL[0] ||
+      buffer[start + 1] !== JUSTFLOAT_TAIL[1] ||
+      buffer[start + 2] !== JUSTFLOAT_TAIL[2] ||
+      buffer[start + 3] !== JUSTFLOAT_TAIL[3]
+    ) {
+      continue;
     }
-    if (matches) {
-      candidates.push(start);
+    if ((start - frameStart) % Float32Array.BYTES_PER_ELEMENT === 0) {
+      return start;
+    }
+
+    if (firstUnalignedCandidate < 0) {
+      firstUnalignedCandidate = start;
+    }
+    if (!allowUnaligned) {
+      firstCandidateByAlignment ??= [-1, -1, -1, -1];
+      const alignment = start % Float32Array.BYTES_PER_ELEMENT;
+      if ((firstCandidateByAlignment[alignment] ?? -1) < 0) {
+        firstCandidateByAlignment[alignment] = start;
+      } else {
+        repeatedAlignmentMask |= 1 << alignment;
+      }
     }
   }
 
-  const aligned = candidates.find(
-    (candidate) => (candidate - frameStart) % Float32Array.BYTES_PER_ELEMENT === 0,
-  );
-  if (aligned !== undefined) {
-    return aligned;
-  }
   if (allowUnaligned) {
-    return candidates[0] ?? -1;
+    return firstUnalignedCandidate;
   }
-  for (const candidate of candidates) {
-    const nextFrameStart = candidate + JUSTFLOAT_TAIL.length;
-    if (
-      candidates.some(
-        (next) =>
-          next > candidate &&
-          (next - nextFrameStart) % Float32Array.BYTES_PER_ELEMENT === 0,
-      )
-    ) {
-      return candidate;
+  if (!firstCandidateByAlignment || repeatedAlignmentMask === 0) {
+    return -1;
+  }
+
+  let recoveryCandidate = -1;
+  for (let alignment = 0; alignment < Float32Array.BYTES_PER_ELEMENT; alignment += 1) {
+    if ((repeatedAlignmentMask & (1 << alignment)) === 0) {
+      continue;
+    }
+    const candidate = firstCandidateByAlignment[alignment] ?? -1;
+    if (candidate >= 0 && (recoveryCandidate < 0 || candidate < recoveryCandidate)) {
+      recoveryCandidate = candidate;
     }
   }
-  return -1;
+  return recoveryCandidate;
 }
