@@ -220,7 +220,7 @@ describe("workbenchStore 协议扩展", () => {
     });
   });
 
-  it("相同接收时间的跨批输出保持非递减时间轴", async () => {
+  it("相同接收时间的跨批输出保持严格递增的绘图时间轴", async () => {
     vi.mocked(pushExtensionBatch)
       .mockResolvedValueOnce({
         sessionId: 7,
@@ -249,11 +249,11 @@ describe("workbenchStore 协议扩展", () => {
       expect(useWorkbenchStore.getState().extensionChannels[0]?.points).toHaveLength(3);
     });
 
-    expect(useWorkbenchStore.getState().extensionChannels[0]?.points).toEqual([
-      { x: 1, y: 1 },
-      { x: 1, y: 2 },
-      { x: 1, y: 3 },
-    ]);
+    const points = useWorkbenchStore.getState().extensionChannels[0]?.points ?? [];
+    expect(points.map((point) => point.y)).toEqual([1, 2, 3]);
+    expect(points[0]?.x).toBe(1);
+    expect(points[1]?.x).toBeGreaterThan(points[0]?.x as number);
+    expect(points[2]?.x).toBeGreaterThan(points[1]?.x as number);
   });
 
   it("扩展状态和显隐不会写入工作区持久化数据", async () => {

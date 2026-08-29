@@ -3746,6 +3746,50 @@ describe("workbenchStore", () => {
     ]);
   });
 
+  it("同一读取块的多帧使用稳定绘图顺序并保持派生通道对齐", () => {
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        {
+          id: "result",
+          kind: "output",
+          input: "source",
+          name: "Result",
+          color: "#55bde8",
+        },
+      ],
+    });
+
+    useWorkbenchStore
+      .getState()
+      .ingestBytes(new TextEncoder().encode("1,10\n2\n3,30\n"), 1_000);
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("4\n"), 1_000);
+
+    const state = useWorkbenchStore.getState();
+    const frameTimestamps = state.channels[0]?.points.map((point) => point.x) ?? [];
+    expect(frameTimestamps).toHaveLength(4);
+    expect(frameTimestamps[0]).toBe(1);
+    expect(frameTimestamps[1]).toBeGreaterThan(frameTimestamps[0] as number);
+    expect(frameTimestamps[2]).toBeGreaterThan(frameTimestamps[1] as number);
+    expect(frameTimestamps[3]).toBeGreaterThan(frameTimestamps[2] as number);
+    expect(state.channels[0]?.points.map((point) => point.y)).toEqual([1, 2, 3, 4]);
+    expect(state.channels[1]?.points).toEqual([
+      { x: frameTimestamps[0], y: 10 },
+      { x: frameTimestamps[2], y: 30 },
+    ]);
+    expect(state.processedChannels[0]?.points).toEqual([
+      { x: frameTimestamps[0], y: 1 },
+      { x: frameTimestamps[1], y: 2 },
+      { x: frameTimestamps[2], y: 3 },
+      { x: frameTimestamps[3], y: 4 },
+    ]);
+    expect(state.terminalEntries).toMatchObject([
+      { timestamp: 1_000 },
+      { timestamp: 1_000 },
+    ]);
+  });
+
   it("单次触发完整写入冻结批次且冻结后后台数据链路继续", () => {
     useWorkbenchStore.setState({
       connectionStatus: "connected",
@@ -6788,6 +6832,36 @@ describe("workbenchStore", () => {
     resolveSelection?.(null);
     await opening;
     expect(useWorkbenchStore.getState().runtimeTransitionStatus).toBe("idle");
+  });
+
+  it("回放单个记录内的多帧保留完整绘图顺序", () => {
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("playing", {
+        generation: 1,
+        timelineRevision: 1,
+        revision: 2,
+      }),
+    );
+
+    const data = Array.from(new TextEncoder().encode("1\n2\n3\n"));
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_000,
+      dataBytes: data.length,
+      records: [{ direction: "rx", timestampUs: 1_000, data }],
+    });
+
+    const state = useWorkbenchStore.getState();
+    const points = state.channels[0]?.points ?? [];
+    expect(points.map((point) => point.y)).toEqual([1, 2, 3]);
+    expect(points[0]?.x).toBe(1.001);
+    expect(points[1]?.x).toBeGreaterThan(points[0]?.x as number);
+    expect(points[2]?.x).toBeGreaterThan(points[1]?.x as number);
+    expect(state.stats.rxFrames).toBe(3);
+    expect(state.replayNextSequence).toBe(2);
   });
 
   it("回放批次只更新一次状态并保持跨批解析和 TX 解码", async () => {

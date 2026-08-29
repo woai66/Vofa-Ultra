@@ -355,6 +355,14 @@ describe("内置协议贡献契约", () => {
     expect(randomized).toEqual([{ values: [...values], timestamp: 7_300 }]);
   });
 
+  it.each(STRUCTURED_CASES)("$id 的同批多帧保留读取块时间戳", ({ id, values, encode }) => {
+    const parser = createProtocolParser(id);
+    const frames = parser.push(concatBytes(encode(values), encode(values)), 7_350);
+
+    expect(frames).toHaveLength(2);
+    expect(frames.map((frame) => frame.timestamp)).toEqual([7_350, 7_350]);
+  });
+
   it.each(STRUCTURED_CASES)("$id 的 reset 幂等且实例残片相互隔离", ({ id, values, encode }) => {
     const bytes = encode(values);
     const split = bytes.length - 1;

@@ -270,6 +270,7 @@ import {
 } from "../types/extensions";
 
 const MAX_POINTS_PER_CHANNEL = 2_000;
+const MIN_CHART_FRAME_STEP_SECONDS = 0.000_001;
 const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY =
   MAX_TERMINAL_UNTERMINATED_LINE_BYTES + MAX_TERMINAL_LINE_ENDING_BYTES;
@@ -2018,9 +2019,18 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             handleNumericLogQueueError,
           );
         }
+        const chartFrameTimestamps = state.chartPaused
+          ? []
+          : createChartFrameTimestamps(frames, state.channels[0]?.points.at(-1)?.x);
         const nextChannels = state.chartPaused
           ? state.channels
-          : appendFrames(state.channels, frames, state.channelVisibility);
+          : appendFrames(
+              state.channels,
+              frames,
+              state.channelVisibility,
+              channelBuffers,
+              chartFrameTimestamps,
+            );
         const nextProcessedChannels = state.chartPaused
           ? state.processedChannels
           : appendProcessedSamples(
@@ -2028,6 +2038,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               processedSamples,
               state.channelVisibility,
               processingChannelBuffers,
+              chartFrameTimestamps,
             );
         const terminalEntries = state.terminalPaused
           ? []
@@ -5496,12 +5507,16 @@ function ingestReplayBatch(
       }
     }
   }
+  const chartFrameTimestamps = state.chartPaused
+    ? []
+    : createChartFrameTimestamps(processingFrames, channels[0]?.points.at(-1)?.x);
   if (!state.chartPaused) {
     channels = appendFrames(
       channels,
       processingFrames,
       state.channelVisibility,
       replayChannelBuffers,
+      chartFrameTimestamps,
     );
   }
   const processedSamples = replayProcessingRuntime.process(processingFrames);
@@ -5516,6 +5531,7 @@ function ingestReplayBatch(
       processedSamples,
       state.channelVisibility,
       replayProcessingChannelBuffers,
+      chartFrameTimestamps,
     );
   }
 
@@ -5541,11 +5557,44 @@ function ingestReplayBatch(
   };
 }
 
+function createChartFrameTimestamps(
+  frames: readonly ParsedFrame[],
+  previousTimestampSeconds: number | undefined,
+): number[] {
+  return createMonotonicChartTimestamps(
+    frames.map((frame) => frame.timestamp / 1_000),
+    previousTimestampSeconds,
+  );
+}
+
+function createMonotonicChartTimestamps(
+  timestamps: readonly number[],
+  previousTimestampSeconds: number | undefined,
+): number[] {
+  let lastTimestamp = Number.isFinite(previousTimestampSeconds)
+    ? (previousTimestampSeconds as number)
+    : null;
+
+  return timestamps.map((candidate) => {
+    let timestamp = candidate;
+    if (!Number.isFinite(timestamp)) {
+      return timestamp;
+    }
+    if (lastTimestamp !== null && timestamp <= lastTimestamp) {
+      const representableStep = Math.abs(lastTimestamp) * Number.EPSILON * 2;
+      timestamp = lastTimestamp + Math.max(MIN_CHART_FRAME_STEP_SECONDS, representableStep);
+    }
+    lastTimestamp = timestamp;
+    return timestamp;
+  });
+}
+
 function appendFrames(
   channels: ChannelSeries[],
   frames: ParsedFrame[],
   channelVisibility: Record<string, boolean>,
   buffers: Map<string, RingBuffer<DataPoint>> = channelBuffers,
+  chartFrameTimestamps: readonly number[] = frames.map((frame) => frame.timestamp / 1_000),
 ): ChannelSeries[] {
   if (frames.length === 0) {
     return channels;
@@ -5553,7 +5602,11 @@ function appendFrames(
 
   const nextChannels = channels.map((channel) => ({ ...channel }));
   const updatedChannelIndexes = new Set<number>();
-  for (const frame of frames) {
+  for (const [frameIndex, frame] of frames.entries()) {
+    const chartTimestamp = chartFrameTimestamps[frameIndex];
+    if (chartTimestamp === undefined || !Number.isFinite(chartTimestamp)) {
+      continue;
+    }
     const channelCount = Math.min(frame.values.length, MAX_PROTOCOL_CHANNELS);
     for (let index = 0; index < channelCount; index += 1) {
       const value = frame.values[index];
@@ -5567,7 +5620,7 @@ function appendFrames(
         buffer = new RingBuffer<DataPoint>(MAX_POINTS_PER_CHANNEL);
         buffers.set(channelId, buffer);
       }
-      buffer.push({ x: frame.timestamp / 1_000, y: value });
+      buffer.push({ x: chartTimestamp, y: value });
 
       const label = frame.labels?.[index]?.trim();
       const existing = nextChannels[index];
@@ -5610,7 +5663,19 @@ function appendExtensionFrames(
   }
   const nextChannels = channels.map((channel) => ({ ...channel }));
   const updatedIndexes = new Set<number>();
-  for (const frame of payload.frames) {
+  const firstChannelId = `extension:${extensionId}:0`;
+  const previousTimestamp = channels
+    .find((channel) => channel.id === firstChannelId)
+    ?.points.at(-1)?.x;
+  const chartFrameTimestamps = createMonotonicChartTimestamps(
+    payload.frames.map(() => payload.receivedAt / 1_000),
+    previousTimestamp,
+  );
+  for (const [frameIndex, frame] of payload.frames.entries()) {
+    const chartTimestamp = chartFrameTimestamps[frameIndex];
+    if (chartTimestamp === undefined || !Number.isFinite(chartTimestamp)) {
+      continue;
+    }
     for (const [channelIndex, value] of frame.values.entries()) {
       if (!Number.isFinite(value)) {
         continue;
@@ -5622,7 +5687,7 @@ function appendExtensionFrames(
         extensionChannelBuffers.set(channelId, buffer);
       }
       buffer.push({
-        x: payload.receivedAt / 1_000,
+        x: chartTimestamp,
         y: value,
       });
       const label = frame.labels?.[channelIndex]?.trim();
@@ -5798,6 +5863,7 @@ function appendProcessedSamples(
   samples: readonly ProcessingOutputSample[],
   channelVisibility: Record<string, boolean>,
   buffers: Map<string, RingBuffer<DataPoint>>,
+  chartFrameTimestamps: readonly number[] = [],
 ): ChannelSeries[] {
   if (samples.length === 0) {
     return channels;
@@ -5817,7 +5883,10 @@ function appendProcessedSamples(
       buffer = new RingBuffer<DataPoint>(MAX_POINTS_PER_CHANNEL);
       buffers.set(sample.channelId, buffer);
     }
-    buffer.push({ x: sample.timestamp / 1_000, y: sample.value });
+    buffer.push({
+      x: chartFrameTimestamps[sample.frameIndex] ?? sample.timestamp / 1_000,
+      y: sample.value,
+    });
 
     const existingIndex = channelIndexes.get(sample.channelId);
     if (existingIndex === undefined) {
