@@ -18,6 +18,30 @@ Linux 和其他高级方向暂停，不作为首个 Beta 的门槛。
   安装、连接、收发、波形、异常恢复和卸载结果。
 - 可见布局、品牌和主色方向先由用户确认；可靠性、状态真实性和可访问性缺陷可以直接修复。
 
+## 参考项目经验门禁
+
+参考项目的 issue 和 PR 只用于发现失败模式，不直接转化为 Vofa-Ultra 的功能清单：
+
+- [vofa-NEXT #20](https://github.com/Horldsence/vofa-NEXT/issues/20) 说明“源码已修”不代表发布包闭环。
+  每个候选 EXE 都必须显示短构建号，并重新验证断开、刷新、重连和协议切换后的前后端状态。
+- [vofa-NEXT #3](https://github.com/Horldsence/vofa-NEXT/issues/3) 与
+  [#4](https://github.com/Horldsence/vofa-NEXT/issues/4) 分别暴露固定波特率和设备辨识不足。Windows 验收必须同时覆盖
+  常用值选择、自定义输入、禁止滚轮误改，以及设备友好名、VID/PID 和序列号。
+- [vofa-NEXT #1](https://github.com/Horldsence/vofa-NEXT/issues/1)、
+  [#2](https://github.com/Horldsence/vofa-NEXT/issues/2) 与
+  [#10](https://github.com/Horldsence/vofa-NEXT/issues/10) 暴露底栏异常、面板无法恢复和尺寸问题。最小窗口、断点前后、
+  侧栏开关、弹层展开和布局恢复必须进入碰撞回归。
+- [vofa-NEXT #11](https://github.com/Horldsence/vofa-NEXT/issues/11) 说明缩放和拖动不应隐式暂停采集。波形必须明确区分
+  暂停跟随、暂停显示和后台接收，并持续显示 `LIVE` / `HISTORY` 等真实状态。
+- [vofa-NEXT PR #13](https://github.com/Horldsence/vofa-NEXT/pull/13) 同时暴露 RawData 选择事件冲突和只测开发态的不足。
+  Vofa-Ultra 保留跨行原生选择回归，并在安装后的 NSIS EXE 上完成启动冒烟。
+- [vofa-NEXT PR #14](https://github.com/Horldsence/vofa-NEXT/pull/14) 证明绿色测试可能固化错误语义。协议、CRC、过滤和
+  时间轴必须包含独立已知向量、负例和跨批边界，不以当前实现生成期望值。
+- [vofa-NEXT PR #15](https://github.com/Horldsence/vofa-NEXT/pull/15) 说明 PR 构建不应依赖发布签名密钥。首个 Beta 继续采用
+  无签名 Windows 候选包和最小化检查，不引入跨平台、自动更新和复杂发布 workflow。
+- [vofa-NEXT #19](https://github.com/Horldsence/vofa-NEXT/issues/19) 说明 Demo 级控件会被用户当成正式承诺。未完成命名、
+  范围、键鼠、反馈和恢复闭环的能力不得进入默认工作台。
+
 ## 首个 Beta 范围
 
 ### 保留并重点验收
