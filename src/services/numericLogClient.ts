@@ -8,9 +8,9 @@ import type {
 } from "../types/numericLog";
 import { isTauriRuntime } from "./serialClient";
 
-const MAX_BATCH_SAMPLES = 256;
-const MAX_QUEUE_SAMPLES = 2_048;
-const MAX_QUEUE_BYTES = 1024 * 1024;
+const MAX_BATCH_SAMPLES = 512;
+const MAX_QUEUE_SAMPLES = 16 * 1024;
+const MAX_QUEUE_BYTES = 4 * 1024 * 1024;
 const SETTLE_POLL_MS = 50;
 const SETTLE_TIMEOUT_MS = 10_000;
 const UTF8_ENCODER = new TextEncoder();

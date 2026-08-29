@@ -65,7 +65,7 @@ describe("numericLogClient", () => {
     });
   });
 
-  it("按 256 条拆批并保持 IPC 串行顺序", async () => {
+  it("按后端上限拆批并保持 IPC 串行顺序", async () => {
     let resolveFirst: (() => void) | undefined;
     invokeMock
       .mockImplementationOnce(
@@ -76,27 +76,46 @@ describe("numericLogClient", () => {
       )
       .mockResolvedValueOnce(undefined);
     const onError = vi.fn();
-    const samples = Array.from({ length: 300 }, (_, index) => sample(index));
+    const samples = Array.from({ length: 600 }, (_, index) => sample(index));
 
     expect(enqueueNumericLogSamples(7, samples, onError)).toBe(true);
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock.mock.calls[0]?.[1]).toMatchObject({
       sessionId: 7,
-      samples: expect.arrayContaining([samples[0], samples[255]]),
+      samples: expect.arrayContaining([samples[0], samples[511]]),
     });
-    expect((invokeMock.mock.calls[0]?.[1] as { samples: unknown[] }).samples).toHaveLength(256);
+    expect((invokeMock.mock.calls[0]?.[1] as { samples: unknown[] }).samples).toHaveLength(512);
 
     resolveFirst?.();
     await flushNumericLogQueue();
 
     expect(invokeMock).toHaveBeenCalledTimes(2);
-    expect((invokeMock.mock.calls[1]?.[1] as { samples: unknown[] }).samples).toHaveLength(44);
+    expect((invokeMock.mock.calls[1]?.[1] as { samples: unknown[] }).samples).toHaveLength(88);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("容纳单个 16 KiB FireWater 读块的最密集数值样本", async () => {
+    invokeMock.mockResolvedValue(undefined);
+    const onError = vi.fn();
+    const samples = Array.from({ length: 8_192 }, (_, index) => sample(index));
+
+    expect(enqueueNumericLogSamples(7, samples, onError)).toBe(true);
+    await flushNumericLogQueue();
+
+    expect(invokeMock).toHaveBeenCalledTimes(16);
+    expect(
+      invokeMock.mock.calls.every(
+        ([command, request]) =>
+          command === "append_numeric_log" &&
+          (request as { samples: unknown[] }).samples.length <= 512,
+      ),
+    ).toBe(true);
     expect(onError).not.toHaveBeenCalled();
   });
 
   it("同时限制前端队列条数和估算字节数", () => {
     const onError = vi.fn();
-    const tooMany = Array.from({ length: 2_049 }, (_, index) => sample(index));
+    const tooMany = Array.from({ length: 16_385 }, (_, index) => sample(index));
 
     expect(enqueueNumericLogSamples(1, tooMany, onError)).toBe(false);
     expect(onError).toHaveBeenCalledWith(
@@ -107,7 +126,7 @@ describe("numericLogClient", () => {
     resetNumericLogQueue();
     onError.mockClear();
     expect(
-      enqueueNumericLogSamples(1, [sample(0, "x".repeat(1024 * 1024))], onError),
+      enqueueNumericLogSamples(1, [sample(0, "x".repeat(4 * 1024 * 1024))], onError),
     ).toBe(false);
     expect(onError).toHaveBeenCalledOnce();
     expect(invokeMock).not.toHaveBeenCalled();

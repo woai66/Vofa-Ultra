@@ -322,6 +322,43 @@ test("状态栏显示当前双向吞吐并在空闲后归零", async ({ page }) 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 });
 
+test("状态栏在主工作区持续显示数值 CSV 记录与失败", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+  await setWorkbenchState(page, {
+    numericLogStatus: "recording",
+    numericLogOutputBytes: 2_048,
+    numericLogMessage: "",
+  });
+
+  await expect(page.getByLabel("数值 CSV 记录中：2.0 KB")).toBeVisible();
+  await setWorkbenchState(page, {
+    numericLogStatus: "error",
+    numericLogMessage: "磁盘空间不足",
+  });
+
+  const failure = page.getByRole("status", {
+    name: "数值 CSV 记录失败：磁盘空间不足",
+  });
+  await expect(failure).toBeVisible();
+  await expect(failure).toContainText("CSV 失败");
+  const bounds = await failure.evaluate((element) => {
+    const item = element.getBoundingClientRect();
+    const statusBar = element.parentElement?.getBoundingClientRect();
+    return {
+      itemLeft: item.left,
+      itemRight: item.right,
+      statusLeft: statusBar?.left ?? 0,
+      statusRight: statusBar?.right ?? 0,
+    };
+  });
+  expect(bounds.itemLeft).toBeGreaterThanOrEqual(bounds.statusLeft);
+  expect(bounds.itemRight).toBeLessThanOrEqual(bounds.statusRight);
+  await page.screenshot({
+    path: testInfo.outputPath("numeric-log-status-error.png"),
+  });
+});
+
 test("模拟信号实验室支持十六通道配置、运行锁定与可复现重启", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));

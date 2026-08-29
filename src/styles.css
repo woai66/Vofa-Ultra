@@ -895,6 +895,15 @@ textarea:disabled {
   color: var(--danger);
 }
 
+.numeric-log-status-item {
+  color: var(--danger);
+}
+
+.recording-error-status {
+  color: var(--danger);
+  font-weight: 700;
+}
+
 .recovery-status-item {
   color: var(--amber);
 }
@@ -903,7 +912,8 @@ textarea:disabled {
   color: var(--amber);
 }
 
-.capture-status-item svg {
+.capture-status-item svg,
+.numeric-log-status-item svg {
   animation: capture-pulse 1.4s ease-in-out infinite;
 }
 

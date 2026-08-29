@@ -17,6 +17,10 @@ describe("StatusBar", () => {
       replayStatus: "idle",
       replaySessionId: 0,
       captureStatus: "idle",
+      captureMessage: "",
+      numericLogStatus: "idle",
+      numericLogOutputBytes: 0,
+      numericLogMessage: "",
       channels: [],
       processedChannels: [],
       extensionChannels: [],
@@ -103,5 +107,29 @@ describe("StatusBar", () => {
 
     unmount();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("离开记录面板后仍显示数值 CSV 记录进度和失败", () => {
+    render(<StatusBar />);
+
+    act(() => {
+      useWorkbenchStore.setState({
+        numericLogStatus: "recording",
+        numericLogOutputBytes: 2_048,
+      });
+    });
+    expect(screen.getByLabelText("数值 CSV 记录中：2.0 KB")).toHaveTextContent(
+      "CSV 2.0 KB",
+    );
+
+    act(() => {
+      useWorkbenchStore.setState({
+        numericLogStatus: "error",
+        numericLogMessage: "磁盘空间不足",
+      });
+    });
+    expect(screen.queryByLabelText(/数值 CSV 记录中/)).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "数值 CSV 记录失败：磁盘空间不足" }))
+      .toHaveTextContent("CSV 失败");
   });
 });

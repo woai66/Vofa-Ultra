@@ -5781,6 +5781,29 @@ describe("workbenchStore", () => {
     });
   });
 
+  it("单个 16 KiB FireWater 读块完整进入数值记录队列", () => {
+    const bytes = new TextEncoder().encode("0\n".repeat(8_192));
+    expect(bytes).toHaveLength(16 * 1024);
+    useWorkbenchStore.setState({
+      protocol: "firewater",
+      numericLogStatus: "recording",
+      numericLogSessionId: 17,
+      terminalPaused: true,
+      chartPaused: true,
+      connectionStatus: "connected",
+    });
+
+    useWorkbenchStore.getState().ingestBytes(bytes, 1_000);
+
+    expect(enqueueNumericLogSamplesMock).toHaveBeenCalledOnce();
+    expect(enqueueNumericLogSamplesMock.mock.calls[0]?.[1]).toHaveLength(8_192);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      channels: [],
+      terminalEntries: [],
+      stats: { rxBytes: 16 * 1024, rxFrames: 8_192 },
+    });
+  });
+
   it("断开数据源前并行完成两类记录", async () => {
     stopCaptureMock.mockResolvedValue({
       status: "idle",
