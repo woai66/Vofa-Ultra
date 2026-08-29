@@ -4,6 +4,217 @@ import type { ProcessingGraphConfig } from "../src/types/processingGraph";
 import { DEFAULT_SERIAL_CONFIG } from "../src/types/serial";
 import type { TerminalEntry } from "../src/types/workbench";
 
+type InteractiveLayoutAudit = {
+  documentWidth: number;
+  viewportWidth: number;
+  outsideViewport: string[];
+  overlaps: string[];
+  regionOverlaps: string[];
+};
+
+async function auditVisibleInteractiveLayout(page: Page): Promise<InteractiveLayoutAudit> {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }),
+  );
+  return page.evaluate(() => {
+    const selector =
+      'button, input, select, textarea, [role="button"], [role="radio"], ' +
+      '[role="slider"], [role="switch"], [role="tab"]';
+    const overlaySelector = '[role="dialog"], [role="listbox"], [role="menu"], [popover]';
+    const viewportWidth = document.documentElement.clientWidth;
+    const viewportHeight = document.documentElement.clientHeight;
+    const auditAxis = (
+      element: HTMLElement,
+      elementStart: number,
+      elementEnd: number,
+      axis: "x" | "y",
+    ) => {
+      const viewportEnd = axis === "x" ? viewportWidth : viewportHeight;
+      const clips: Array<{ start: number; end: number; scrollable: boolean }> = [];
+      let ancestor = element.parentElement;
+      while (ancestor) {
+        const style = getComputedStyle(ancestor);
+        const overflow = axis === "x" ? style.overflowX : style.overflowY;
+        if (overflow !== "visible") {
+          const rect = ancestor.getBoundingClientRect();
+          const start =
+            (axis === "x" ? rect.left : rect.top) +
+            (axis === "x" ? ancestor.clientLeft : ancestor.clientTop);
+          const size = axis === "x" ? ancestor.clientWidth : ancestor.clientHeight;
+          clips.push({
+            start,
+            end: start + size,
+            scrollable:
+              ["auto", "scroll"].includes(overflow) &&
+              (axis === "x"
+                ? ancestor.scrollWidth > ancestor.clientWidth + 1
+                : ancestor.scrollHeight > ancestor.clientHeight + 1),
+          });
+        }
+        ancestor = ancestor.parentElement;
+      }
+
+      let visibleStart = Math.max(0, elementStart);
+      let visibleEnd = Math.min(viewportEnd, elementEnd);
+      for (const clip of clips) {
+        visibleStart = Math.max(visibleStart, clip.start);
+        visibleEnd = Math.min(visibleEnd, clip.end);
+      }
+
+      const scrollIndex = clips.findIndex((clip) => clip.scrollable);
+      let clippedOutside = false;
+      if (scrollIndex === -1) {
+        clippedOutside = visibleEnd - visibleStart < elementEnd - elementStart - 1;
+      } else {
+        for (let index = 0; index < scrollIndex; index += 1) {
+          const clip = clips[index];
+          if (
+            clip &&
+            (elementStart < clip.start - 1 || elementEnd > clip.end + 1)
+          ) {
+            clippedOutside = true;
+          }
+        }
+        let reachableStart = Math.max(0, clips[scrollIndex]?.start ?? 0);
+        let reachableEnd = Math.min(viewportEnd, clips[scrollIndex]?.end ?? viewportEnd);
+        for (let index = scrollIndex + 1; index < clips.length; index += 1) {
+          const clip = clips[index];
+          if (clip) {
+            reachableStart = Math.max(reachableStart, clip.start);
+            reachableEnd = Math.min(reachableEnd, clip.end);
+          }
+        }
+        clippedOutside ||=
+          reachableEnd - reachableStart < elementEnd - elementStart - 1;
+      }
+      return { start: visibleStart, end: visibleEnd, clippedOutside };
+    };
+    const visibleControls = [...document.querySelectorAll<HTMLElement>(selector)].filter(
+      (element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity) !== 0 &&
+          rect.width > 0 &&
+          rect.height > 0 &&
+          rect.right > 0 &&
+          rect.bottom > 0 &&
+          rect.left < viewportWidth &&
+          rect.top < viewportHeight
+        );
+      },
+    );
+    const controls = visibleControls
+      .filter(
+        (element) =>
+          !visibleControls.some(
+            (candidate) => candidate !== element && element.contains(candidate),
+          ),
+      )
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const horizontal = auditAxis(element, rect.left, rect.right, "x");
+        const vertical = auditAxis(element, rect.top, rect.bottom, "y");
+        return {
+          name:
+            element.getAttribute("aria-label") ??
+            element.getAttribute("title") ??
+            element.textContent?.trim().replace(/\s+/g, " ").slice(0, 48) ??
+            element.tagName,
+          left: horizontal.start,
+          top: vertical.start,
+          right: horizontal.end,
+          bottom: vertical.end,
+          clippedOutside: horizontal.clippedOutside || vertical.clippedOutside,
+          layer: element.closest(overlaySelector),
+        };
+      });
+    const overlapControls = controls.filter(
+      (control) => control.right - control.left > 1 && control.bottom - control.top > 1,
+    );
+    const overlaps: string[] = [];
+    for (let leftIndex = 0; leftIndex < overlapControls.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < overlapControls.length; rightIndex += 1) {
+        const left = overlapControls[leftIndex];
+        const right = overlapControls[rightIndex];
+        if (
+          left &&
+          right &&
+          left.layer === right.layer &&
+          Math.min(left.right, right.right) - Math.max(left.left, right.left) > 1 &&
+          Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 1
+        ) {
+          overlaps.push(`${left.name} / ${right.name}`);
+        }
+      }
+    }
+    const regions = [".activity-rail", ".sidebar", ".workspace", ".status-bar"]
+      .map((regionSelector) => {
+        const element = document.querySelector<HTMLElement>(regionSelector);
+        if (!element) {
+          return null;
+        }
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          rect.width <= 0 ||
+          rect.height <= 0 ||
+          rect.right <= 0 ||
+          rect.bottom <= 0 ||
+          rect.left >= viewportWidth ||
+          rect.top >= viewportHeight
+        ) {
+          return null;
+        }
+        return {
+          name: regionSelector,
+          left: Math.max(0, rect.left),
+          top: Math.max(0, rect.top),
+          right: Math.min(viewportWidth, rect.right),
+          bottom: Math.min(viewportHeight, rect.bottom),
+        };
+      })
+      .filter((region): region is NonNullable<typeof region> => region !== null);
+    const regionOverlaps: string[] = [];
+    for (let leftIndex = 0; leftIndex < regions.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < regions.length; rightIndex += 1) {
+        const left = regions[leftIndex];
+        const right = regions[rightIndex];
+        if (
+          left &&
+          right &&
+          Math.min(left.right, right.right) - Math.max(left.left, right.left) > 1 &&
+          Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 1
+        ) {
+          regionOverlaps.push(`${left.name} / ${right.name}`);
+        }
+      }
+    }
+    return {
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth,
+      outsideViewport: controls.filter((control) => control.clippedOutside).map((control) => control.name),
+      overlaps,
+      regionOverlaps,
+    };
+  });
+}
+
+async function expectVisibleInteractiveLayout(page: Page): Promise<void> {
+  const layout = await auditVisibleInteractiveLayout(page);
+  expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.outsideViewport).toEqual([]);
+  expect(layout.overlaps).toEqual([]);
+  expect(layout.regionOverlaps).toEqual([]);
+}
+
 async function expectValidTabPanelReferences(page: Page, tablistName: string): Promise<void> {
   const tabs = page.getByRole("tablist", { name: tablistName }).getByRole("tab");
   const count = await tabs.count();
@@ -786,6 +997,14 @@ test("工作台分栏支持拖拽、键盘、持久化、专注模式和窄屏�
 });
 
 test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离", async ({ page }, testInfo) => {
+  const widthSweep = Array.from({ length: 27 }, (_, index) => ({
+    width: 1_440 - index * 16,
+    height: 680,
+  }));
+  const heightSweep = Array.from({ length: 12 }, (_, index) => ({
+    width: 1_024,
+    height: 680 + index * 20,
+  }));
   const viewports = [
     { width: 1_440, height: 900 },
     { width: 1_366, height: 768 },
@@ -796,7 +1015,15 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
     { width: 1_101, height: 680 },
     { width: 1_100, height: 680 },
     { width: 1_024, height: 680 },
-  ];
+    ...widthSweep,
+    ...heightSweep,
+  ].filter(
+    (viewport, index, candidates) =>
+      candidates.findIndex(
+        (candidate) =>
+          candidate.width === viewport.width && candidate.height === viewport.height,
+      ) === index,
+  );
   await page.setViewportSize(viewports[0]);
   await page.goto("/");
 
@@ -904,6 +1131,8 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
     expect(header_layout.outside).toEqual([]);
     expect(header_layout.overlaps).toEqual([]);
     expect(header_layout.primary_title_truncated).toBe(false);
+
+    await expectVisibleInteractiveLayout(page);
   }
 
   await page.setViewportSize({ width: 900, height: 520 });
@@ -980,6 +1209,7 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
   await sidebar_toggle.click();
   await expect(app_shell).toHaveAttribute("data-sidebar-open", "true");
   await expect(sidebar).toBeVisible();
+  await expectVisibleInteractiveLayout(page);
 
   await page.screenshot({
     path: testInfo.outputPath("windows-minimum-responsive-layout.png"),
@@ -987,7 +1217,7 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
   });
 });
 
-test("Windows 最小窗口中连接主操作始终可达", async ({ page }, testInfo) => {
+test("Windows 支持窗口中连接主操作始终可达", async ({ page }, testInfo) => {
   await installTauriSerialMock(page);
   await page.setViewportSize({ width: 1_024, height: 680 });
   await page.goto("/");
@@ -996,6 +1226,19 @@ test("Windows 最小窗口中连接主操作始终可达", async ({ page }, test
   const scroller = page.locator(".connection-panel-scroll");
   const connect_button = page.getByRole("button", { name: "连接设备" });
 
+  for (const viewport of [
+    { width: 1_024, height: 680 },
+    { width: 1_100, height: 680 },
+    { width: 1_101, height: 680 },
+    { width: 1_280, height: 720 },
+    { width: 1_344, height: 768 },
+    { width: 1_345, height: 768 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect(connect_button).toBeInViewport();
+    await expectVisibleInteractiveLayout(page);
+  }
+  await page.setViewportSize({ width: 1_024, height: 680 });
   await expect(connect_button).toBeInViewport();
   expect(await clippedVisibleHeight(connect_button)).toBeGreaterThanOrEqual(36);
 
@@ -1198,6 +1441,7 @@ test("波特率可直接输入且常用值始终可选", async ({ page }, testIn
   expect(open_layout.focus_shadow).not.toBe("none");
   expect(open_layout.input_outline_width).toBe("0px");
   expect(open_layout.document_width).toBeLessThanOrEqual(1_024);
+  await expectVisibleInteractiveLayout(page);
   await page.screenshot({
     path: testInfo.outputPath("baud-rate-options-windows-minimum.png"),
     fullPage: false,
