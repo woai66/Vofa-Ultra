@@ -800,6 +800,15 @@ describe("workbenchStore", () => {
       serialStateRevision: 8,
       runtimeTransitionStatus: "idle",
     });
+    expect(useWorkbenchStore.getState().getSerialDiagnostics().events).toContainEqual(
+      expect.objectContaining({
+        kind: "disconnect_command_failed",
+        generation: 3,
+        revision: 8,
+        errorCode: "command-failed",
+        outcome: "disconnected",
+      }),
+    );
   });
 
   it("串口断开失败且后端仍连接时不伪造错误连接态", async () => {
@@ -824,6 +833,17 @@ describe("workbenchStore", () => {
       connectionMessage: "断开失败：串口服务无响应",
       runtimeTransitionStatus: "idle",
     });
+    const diagnostics = useWorkbenchStore.getState().getSerialDiagnostics();
+    expect(diagnostics.events).toContainEqual(
+      expect.objectContaining({
+        kind: "disconnect_command_failed",
+        generation: 3,
+        revision: 8,
+        errorCode: "command-failed",
+        outcome: "connected",
+      }),
+    );
+    expect(JSON.stringify(diagnostics)).not.toContain("串口服务无响应");
   });
 
   it("仅在成功发送后记录会话历史并合并连续重复项", async () => {
@@ -1607,6 +1627,16 @@ describe("workbenchStore", () => {
       commandHistory: [],
       isSendingCommand: false,
     });
+    const diagnostics = useWorkbenchStore.getState().getSerialDiagnostics();
+    expect(diagnostics.events).toContainEqual(
+      expect.objectContaining({
+        kind: "serial_send_failed",
+        generation: 1,
+        errorCode: "command-failed",
+        outcome: "manual",
+      }),
+    );
+    expect(JSON.stringify(diagnostics)).not.toContain("TX 队列已满");
 
     await expect(
       useWorkbenchStore.getState().send("PING", "text", "none"),
@@ -5049,6 +5079,15 @@ describe("workbenchStore", () => {
       statusMessage: "扫描串口失败：串口驱动不可用",
       isRefreshingPorts: false,
     });
+    const diagnostics = useWorkbenchStore.getState().getSerialDiagnostics();
+    expect(diagnostics.events).toContainEqual(
+      expect.objectContaining({
+        kind: "port_discovery_failed",
+        errorCode: "enumeration-failed",
+        outcome: "manual",
+      }),
+    );
+    expect(JSON.stringify(diagnostics)).not.toContain("串口驱动不可用");
 
     listSerialPortsMock.mockResolvedValue([{ name: "COM7", kind: "usb" }]);
     await useWorkbenchStore.getState().refreshPorts();

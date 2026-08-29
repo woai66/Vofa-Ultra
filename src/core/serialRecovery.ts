@@ -191,6 +191,42 @@ export class SerialReconnectCoordinator {
     });
   }
 
+  recordPortDiscoveryFailure(mode: "manual" | "background"): void {
+    this.record({
+      kind: "port_discovery_failed",
+      errorCode: "enumeration-failed",
+      outcome: mode,
+    });
+  }
+
+  recordSerialSendFailure(input: {
+    origin: "manual" | "scheduler" | "auto-responder";
+    generation: number;
+    revision: number;
+  }): void {
+    this.record({
+      kind: "serial_send_failed",
+      generation: input.generation,
+      revision: input.revision,
+      errorCode: "command-failed",
+      outcome: input.origin,
+    });
+  }
+
+  recordDisconnectCommandFailure(input: {
+    generation: number;
+    revision: number;
+    outcome: ConnectionStatus | "state-unavailable";
+  }): void {
+    this.record({
+      kind: "disconnect_command_failed",
+      generation: input.generation,
+      revision: input.revision,
+      errorCode: "command-failed",
+      outcome: input.outcome,
+    });
+  }
+
   recordManualConnectionFailure(input: {
     generation?: number;
     revision?: number;

@@ -1446,6 +1446,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           if (!ownsSerialPortRefresh(operation, context, get())) {
             return;
           }
+          getSerialRecoveryCoordinator().recordPortDiscoveryFailure(mode);
           const message = getErrorMessage(error);
           const discoveryMessage = `扫描串口失败：${message}`;
           if (mode === "manual") {
@@ -4637,6 +4638,14 @@ function executePreparedCommand(
       }));
     } catch (error) {
       set({ isSendingCommand: false, commandSendOrigin: null });
+      const latest = get();
+      if (state.source === "serial") {
+        getSerialRecoveryCoordinator().recordSerialSendFailure({
+          origin,
+          generation: latest.serialGeneration,
+          revision: latest.serialStateRevision,
+        });
+      }
       throw error;
     }
   });
@@ -5116,6 +5125,12 @@ async function disconnectCurrentSource(
     try {
       const payload = await getSerialState();
       get().handleSerialState(payload);
+      const latest = get();
+      getSerialRecoveryCoordinator().recordDisconnectCommandFailure({
+        generation: latest.serialGeneration,
+        revision: latest.serialStateRevision,
+        outcome: payload.status,
+      });
       if (payload.status === "disconnected") {
         return true;
       }
@@ -5130,6 +5145,12 @@ async function disconnectCurrentSource(
     } catch {
       // 无法读取真实状态时保留原始断开错误，避免用二次错误覆盖用户原因。
     }
+    const latest = get();
+    getSerialRecoveryCoordinator().recordDisconnectCommandFailure({
+      generation: latest.serialGeneration,
+      revision: latest.serialStateRevision,
+      outcome: "state-unavailable",
+    });
     set({
       connectionStatus: "error",
       connectionMessage: message,
