@@ -5816,6 +5816,7 @@ function createNumericLogSamples(
   channels: readonly ChannelSeries[],
 ): NumericLogSample[] {
   const samples: NumericLogSample[] = [];
+  const channelNames = channels.map((channel) => channel.name);
   for (const frame of frames) {
     const timestampUnixUs = toUnixMicroseconds(frame.timestamp);
     if (timestampUnixUs === null) {
@@ -5828,11 +5829,14 @@ function createNumericLogSamples(
         continue;
       }
       const label = frame.labels?.[index]?.trim();
+      if (label) {
+        channelNames[index] = label;
+      }
       samples.push({
         timestampUnixUs,
         channelKind: "base",
         channelId: `channel-${index}`,
-        channelName: label || channels[index]?.name || `CH ${index + 1}`,
+        channelName: channelNames[index] || `CH ${index + 1}`,
         value,
       });
     }

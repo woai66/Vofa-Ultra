@@ -6009,6 +6009,42 @@ describe("workbenchStore", () => {
     });
   });
 
+  it("数值日志通道名不受串口读块边界影响", () => {
+    const recordChannelNames = (chunks: readonly string[]): string[] => {
+      useWorkbenchStore.setState({
+        numericLogStatus: "idle",
+        connectionStatus: "connected",
+      });
+      useWorkbenchStore.getState().setProtocol("raw");
+      useWorkbenchStore.getState().setProtocol("firewater");
+      enqueueNumericLogSamplesMock.mockClear();
+      useWorkbenchStore.setState({
+        numericLogStatus: "recording",
+        numericLogSessionId: 17,
+        terminalPaused: true,
+        chartPaused: false,
+        connectionStatus: "connected",
+      });
+
+      chunks.forEach((chunk, index) => {
+        useWorkbenchStore.getState().ingestBytes(
+          new TextEncoder().encode(chunk),
+          1_000 + index,
+        );
+      });
+
+      return enqueueNumericLogSamplesMock.mock.calls.flatMap((call) =>
+        call[1].map((sample) => sample.channelName),
+      );
+    };
+
+    const singleReadNames = recordChannelNames(["temp:1\n2\n"]);
+    const splitReadNames = recordChannelNames(["temp:1\n", "2\n"]);
+
+    expect(singleReadNames).toEqual(["temp", "temp"]);
+    expect(splitReadNames).toEqual(singleReadNames);
+  });
+
   it("单个 16 KiB FireWater 读块完整进入数值记录队列", () => {
     const bytes = new TextEncoder().encode("0\n".repeat(8_192));
     expect(bytes).toHaveLength(16 * 1024);
