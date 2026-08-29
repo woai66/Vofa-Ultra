@@ -757,7 +757,7 @@ textarea:disabled {
 .replay-marker-heading strong {
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .replay-marker-list {
@@ -1153,7 +1153,7 @@ textarea:disabled {
 
 .baud-rate-field .field-hint {
   color: var(--text-subtle);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
@@ -1370,19 +1370,19 @@ textarea:focus {
 
 .recovery-state strong {
   color: var(--text);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .recovery-state span:last-child {
   color: var(--text-subtle);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
 .recovery-state code {
   color: var(--amber);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .recovery-diagnostics {
@@ -1391,7 +1391,7 @@ textarea:focus {
   align-items: center;
   justify-content: space-between;
   color: var(--text-subtle);
-  font-size: 11px;
+  font-size: 12px;
   gap: 8px;
 }
 
@@ -1738,7 +1738,7 @@ textarea:focus {
 .modem-status-item dt {
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -1748,7 +1748,7 @@ textarea:focus {
   align-items: center;
   margin: 0;
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 12px;
   white-space: nowrap;
   gap: 5px;
 }
@@ -3269,7 +3269,7 @@ textarea:focus {
 .terminal-export-menu small {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -5149,18 +5149,18 @@ textarea:focus {
 
 .command-count-badge {
   position: absolute;
-  top: -4px;
-  right: -4px;
+  top: -7px;
+  right: -7px;
   display: grid;
-  min-width: 14px;
-  height: 14px;
+  min-width: 20px;
+  height: 20px;
   place-items: center;
-  padding: 0 3px;
+  padding: 0 4px;
   border: 1px solid var(--surface-0);
-  border-radius: 7px;
+  border-radius: 10px;
   background: var(--border-strong);
   color: var(--text);
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -5359,7 +5359,7 @@ textarea:focus {
 
 .serial-file-send-header strong {
   color: var(--text);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .serial-file-send-body {
@@ -5400,12 +5400,12 @@ textarea:focus {
 
 .serial-file-selection strong {
   color: var(--text);
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .serial-file-selection span {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .serial-file-selection .secondary-button {
@@ -5440,13 +5440,13 @@ textarea:focus {
 
 .serial-file-send-progress > div:first-child span,
 .serial-file-send-progress > div:first-child strong {
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .serial-file-send-progress > div:last-child {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .serial-file-send-progress > div:last-child span {
@@ -5471,8 +5471,8 @@ textarea:focus {
   padding: 0 10px 10px;
   overflow-wrap: anywhere;
   color: var(--text-muted);
-  font-size: 9px;
-  line-height: 15px;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .serial-file-send-message[data-error="true"] {
@@ -5494,7 +5494,7 @@ textarea:focus {
   min-width: 0;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6027,14 +6027,14 @@ textarea:focus {
 .command-variable-header strong,
 .quick-command-header strong {
   color: var(--text);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .command-history-header span,
 .command-variable-header span,
 .quick-command-header span {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .command-reference-tabs {
@@ -6088,12 +6088,12 @@ textarea:focus {
 .command-variable-list code {
   color: var(--cyan);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .command-variable-list span {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .ascii-reference-panel {
@@ -6581,12 +6581,12 @@ textarea:focus {
 
 .command-history-list code {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .command-history-list span {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .quick-command-save-row {
@@ -6604,7 +6604,7 @@ textarea:focus {
   min-width: 0;
   height: 30px;
   padding: 0 8px;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .quick-command-list {
@@ -6618,7 +6618,7 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 12px;
   gap: 8px;
 }
 
@@ -6658,17 +6658,17 @@ textarea:focus {
 }
 
 .quick-command-load strong {
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .quick-command-load code {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .quick-command-load span {
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .quick-command-actions {
@@ -6695,7 +6695,7 @@ textarea:focus {
   padding: 7px 10px;
   border-top: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .quick-command-feedback[role="alert"] {
@@ -6710,7 +6710,7 @@ textarea:focus {
   border-radius: 4px;
   background: var(--surface-0);
   color: var(--danger);
-  font-size: 10px;
+  font-size: 12px;
   box-shadow: var(--shadow);
 }
 

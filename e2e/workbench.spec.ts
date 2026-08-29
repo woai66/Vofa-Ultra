@@ -215,6 +215,51 @@ async function expectVisibleInteractiveLayout(page: Page): Promise<void> {
   expect(layout.regionOverlaps).toEqual([]);
 }
 
+async function findVisibleTextBelow(
+  root: Locator,
+  minimumFontSize = 12,
+): Promise<Array<{ label: string; fontSize: number }>> {
+  return root.evaluate((element, minimum) => {
+    const candidates = [element, ...element.querySelectorAll<HTMLElement>("*")];
+    return candidates.flatMap((candidate) => {
+      if (!(candidate instanceof HTMLElement)) {
+        return [];
+      }
+      const style = getComputedStyle(candidate);
+      const rect = candidate.getBoundingClientRect();
+      const directText = [...candidate.childNodes]
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent?.trim() ?? "")
+        .filter(Boolean)
+        .join(" ");
+      const isTextControl = candidate.matches("input, select, textarea");
+      if (
+        (!directText && !isTextControl) ||
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        Number(style.opacity) === 0 ||
+        rect.width <= 0 ||
+        rect.height <= 0
+      ) {
+        return [];
+      }
+      const fontSize = Number.parseFloat(style.fontSize);
+      if (!Number.isFinite(fontSize) || fontSize >= minimum) {
+        return [];
+      }
+      return [
+        {
+          label:
+            candidate.getAttribute("aria-label") ||
+            directText ||
+            candidate.tagName.toLowerCase(),
+          fontSize,
+        },
+      ];
+    });
+  }, minimumFontSize);
+}
+
 async function expectValidTabPanelReferences(page: Page, tablistName: string): Promise<void> {
   const tabs = page.getByRole("tablist", { name: tablistName }).getByRole("tab");
   const count = await tabs.count();
@@ -817,6 +862,7 @@ test("串口输入握手线状态在桌面与窄屏保持可读", async ({ page 
   await expect
     .poll(() => items.evaluateAll((elements) => elements.map((element) => element.dataset.state)))
     .toEqual(["asserted", "deasserted", "unavailable", "asserted"]);
+  expect(await findVisibleTextBelow(status)).toEqual([]);
 
   const desktopLayout = await items.evaluateAll((elements) =>
     elements.map((element) => {
@@ -1408,6 +1454,7 @@ test("波特率可直接输入且常用值始终可选", async ({ page }, testIn
     "aria-selected",
     "true",
   );
+  expect(await findVisibleTextBelow(page.locator(".baud-rate-field"))).toEqual([]);
   const open_layout = await baud_rate_presets.evaluate((element) => {
     const list_rect = element.getBoundingClientRect();
     const scroller_rect = element
@@ -3704,6 +3751,8 @@ test("快捷命令持久载入且只经显式发送产生 TX", async ({ page }, 
   await dialog.getByRole("textbox", { name: "快捷命令名称" }).fill("状态查询");
   await dialog.getByRole("button", { name: "保存当前草稿为快捷命令" }).click();
   await expect(dialog.getByRole("button", { name: "载入快捷命令 状态查询" })).toBeVisible();
+  expect(await findVisibleTextBelow(dialog)).toEqual([]);
+  expect(await findVisibleTextBelow(page.locator(".send-composer"))).toEqual([]);
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
 
   await dialog.getByRole("button", { name: "关闭快捷命令" }).click();
@@ -5011,6 +5060,7 @@ test("桌面串口原始文件需显式开始并可观察地取消", async ({ pa
   await expect(dialog.getByText("2.0 KiB / 4.0 KiB", { exact: true })).toBeVisible();
   await expect(txStats).toHaveText("TX 2.0 KB");
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(1);
+  expect(await findVisibleTextBelow(dialog)).toEqual([]);
 
   await page.getByRole("textbox", { name: "发送内容" }).fill("PING");
   await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
