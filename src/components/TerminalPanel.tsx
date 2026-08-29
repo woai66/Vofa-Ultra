@@ -91,7 +91,12 @@ import {
   type ModbusRtuRequest,
 } from "../core/modbusRtu";
 import { selectSerialFilePath } from "../services/serialClient";
-import { useWorkbenchStore } from "../store/workbenchStore";
+import {
+  selectEffectiveTerminalDisplayMode,
+  selectEffectiveTerminalRxRecordMode,
+  selectUsesBinaryTerminalDefaults,
+  useWorkbenchStore,
+} from "../store/workbenchStore";
 import type { DisplayMode, LineEnding, SerialFileSendStatus } from "../types/serial";
 import type {
   CommandTaskSnapshot,
@@ -297,11 +302,12 @@ interface CopiedConverterOutput {
 
 export function TerminalPanel() {
   const entries = useWorkbenchStore((state) => state.terminalEntries);
-  const displayMode = useWorkbenchStore((state) => state.displayMode);
+  const displayMode = useWorkbenchStore(selectEffectiveTerminalDisplayMode);
   const sendMode = useWorkbenchStore((state) => state.sendMode);
   const lineEnding = useWorkbenchStore((state) => state.lineEnding);
   const commandChecksum = useWorkbenchStore((state) => state.commandChecksum);
-  const terminalRxRecordMode = useWorkbenchStore((state) => state.terminalRxRecordMode);
+  const terminalRxRecordMode = useWorkbenchStore(selectEffectiveTerminalRxRecordMode);
+  const usesBinaryTerminalDefaults = useWorkbenchStore(selectUsesBinaryTerminalDefaults);
   const terminalRxLineEnding = useWorkbenchStore((state) => state.terminalRxLineEnding);
   const terminalRxTextEncoding = useWorkbenchStore((state) => state.terminalRxTextEncoding);
   const terminalTxTextEncoding = useWorkbenchStore((state) => state.terminalTxTextEncoding);
@@ -1056,7 +1062,16 @@ export function TerminalPanel() {
           </div>
         </div>
         <div className="panel-actions">
-          <div className="segmented-control compact-segments" role="group" aria-label="接收显示格式">
+          <div
+            className="segmented-control compact-segments"
+            role="group"
+            aria-label="接收显示格式"
+            title={
+              usesBinaryTerminalDefaults
+                ? "二进制协议默认使用 HEX 显示，可在当前会话中手动切换"
+                : undefined
+            }
+          >
             <button
               type="button"
               aria-pressed={displayMode === "text"}
@@ -1139,6 +1154,11 @@ export function TerminalPanel() {
             className="segmented-control compact-segments terminal-rx-record-mode"
             role="group"
             aria-label="接收记录方式"
+            title={
+              usesBinaryTerminalDefaults
+                ? "二进制协议默认按读取块记录，可在当前会话中手动切换"
+                : undefined
+            }
           >
             <button
               type="button"

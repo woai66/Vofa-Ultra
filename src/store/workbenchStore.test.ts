@@ -81,6 +81,8 @@ import type { QuickCommand } from "../types/workbench";
 import {
   disposeWorkbenchRuntime,
   prepareWorkbenchForAppClose,
+  selectEffectiveTerminalDisplayMode,
+  selectEffectiveTerminalRxRecordMode,
   selectIsWorkspaceDirty,
   useWorkbenchStore,
   WORKBENCH_MIGRATABLE_STORAGE_VERSIONS,
@@ -432,7 +434,7 @@ describe("workbenchStore", () => {
       processedChannels: [],
       attitudeSample: null,
       terminalEntries: [],
-      displayModeBeforeSimulatorRaw: null,
+      terminalPresentationOverride: null,
       commandHistory: [],
       commandTask: createInitialCommandTaskSnapshot(),
       autoResponderRules: [],
@@ -2186,44 +2188,160 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().channels).toHaveLength(1);
   });
 
-  it("模拟器 Raw 临时使用 HEX 并在离开时恢复用户显示选择", async () => {
+  it("二进制协议使用会话级终端默认值且不污染工作区偏好", async () => {
     useWorkbenchStore.setState({
       source: "simulator",
       protocol: "firewater",
       displayMode: "text",
-      displayModeBeforeSimulatorRaw: null,
+      terminalRxRecordMode: "line",
+      terminalPresentationOverride: null,
     });
 
     useWorkbenchStore.getState().setProtocol("raw");
-    expect(useWorkbenchStore.getState().displayMode).toBe("hex");
-    expect(useWorkbenchStore.getState().displayModeBeforeSimulatorRaw).toBe("text");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      displayMode: "text",
+      terminalRxRecordMode: "line",
+    });
+
+    useWorkbenchStore.getState().setDisplayMode("text");
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("line");
 
     useWorkbenchStore.getState().setProtocol("firewater");
-    expect(useWorkbenchStore.getState().displayMode).toBe("text");
-    expect(useWorkbenchStore.getState().displayModeBeforeSimulatorRaw).toBeNull();
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("line");
+    expect(useWorkbenchStore.getState().terminalPresentationOverride).toBeNull();
 
-    useWorkbenchStore.getState().setDisplayMode("hex");
-    useWorkbenchStore.getState().setProtocol("raw");
     useWorkbenchStore.getState().setProtocol("justfloat");
-    expect(useWorkbenchStore.getState().displayMode).toBe("hex");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
+
+    useWorkbenchStore.setState({ terminalEntries: [] });
+    useWorkbenchStore.getState().ingestBytes(
+      new Uint8Array([0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x7f]),
+      1_000,
+    );
+    expect(useWorkbenchStore.getState().terminalEntries).toHaveLength(1);
+    expect(useWorkbenchStore.getState().terminalEntries[0]?.hex).toBe(
+      "00 00 80 3F 00 00 80 7F",
+    );
 
     useWorkbenchStore.setState({
       isNativeRuntime: true,
       source: "serial",
       protocol: "firewater",
       displayMode: "text",
-      displayModeBeforeSimulatorRaw: null,
+      terminalRxRecordMode: "line",
+      terminalPresentationOverride: null,
     });
-    useWorkbenchStore.getState().setProtocol("raw");
-    expect(useWorkbenchStore.getState().displayMode).toBe("text");
+    useWorkbenchStore.getState().setProtocol("justfloat");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
 
     await useWorkbenchStore.getState().setSource("simulator");
-    expect(useWorkbenchStore.getState().displayMode).toBe("hex");
-    expect(useWorkbenchStore.getState().displayModeBeforeSimulatorRaw).toBe("text");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
 
     await useWorkbenchStore.getState().setSource("serial");
-    expect(useWorkbenchStore.getState().displayMode).toBe("text");
-    expect(useWorkbenchStore.getState().displayModeBeforeSimulatorRaw).toBeNull();
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
+  });
+
+  it("二进制会话覆盖不制造工作区未保存状态", () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.protocol = "justfloat";
+    config.displayMode = "text";
+    config.terminalRxRecordMode = "line";
+    const workspace = createWorkspaceProfile("JustFloat 台架", config, "justfloat-bench", 200);
+    useWorkbenchStore.setState({
+      ...config,
+      workspaces: [workspace],
+      activeWorkspaceId: workspace.id,
+      terminalPresentationOverride: null,
+    });
+
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+
+    useWorkbenchStore.getState().setDisplayMode("text");
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+    expect(useWorkbenchStore.getState().createActiveWorkspaceExport("JustFloat 台架").config)
+      .toMatchObject({
+        displayMode: "text",
+        terminalRxRecordMode: "line",
+      });
+  });
+
+  it("二进制会话反向覆盖仍保留工作区 HEX 与块偏好", () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.protocol = "justfloat";
+    config.displayMode = "hex";
+    config.terminalRxRecordMode = "chunk";
+    const workspace = createWorkspaceProfile("二进制台架", config, "binary-bench", 200);
+    useWorkbenchStore.setState({
+      ...config,
+      workspaces: [workspace],
+      activeWorkspaceId: workspace.id,
+      terminalPresentationOverride: null,
+    });
+
+    useWorkbenchStore.getState().setDisplayMode("text");
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("line");
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      displayMode: "hex",
+      terminalRxRecordMode: "chunk",
+    });
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+    expect(useWorkbenchStore.getState().createActiveWorkspaceExport("二进制台架").config)
+      .toMatchObject({
+        displayMode: "hex",
+        terminalRxRecordMode: "chunk",
+      });
+  });
+
+  it("JustFloat 回放使用独立的二进制终端会话", () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      protocol: "firewater",
+      displayMode: "text",
+      terminalRxRecordMode: "line",
+      terminalPresentationOverride: null,
+      replayStatus: "ready",
+      replaySessionId: 41,
+      replayHeader: { ...TEST_REPLAY_HEADER, protocol: "justfloat" },
+    });
+
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
+    useWorkbenchStore.getState().setDisplayMode("text");
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("line");
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("idle", {
+        sessionId: 0,
+        revision: 2,
+        path: "",
+        header: undefined,
+        formatVersion: 0,
+        complete: false,
+        durationUs: 0,
+        dataBytes: 0,
+        recordCount: 0,
+      }),
+    );
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("line");
+    expect(useWorkbenchStore.getState().terminalPresentationOverride).toBeNull();
   });
 
   it("视图暂停时仍诊断坏帧，清统计不会丢弃等待中的半帧", () => {
@@ -6508,6 +6626,56 @@ describe("workbenchStore", () => {
         byteCount: 6,
       },
     ]);
+  });
+
+  it("JustFloat 回放批次使用二进制会话的按块终端默认值", () => {
+    const justFloatHeader: ReplayCaptureHeader = {
+      ...TEST_REPLAY_HEADER,
+      protocol: "justfloat",
+    };
+    useWorkbenchStore.setState({
+      protocol: "firewater",
+      displayMode: "text",
+      terminalRxRecordMode: "line",
+      terminalPresentationOverride: null,
+      replayStatus: "playing",
+      replaySessionId: 7,
+      replayGeneration: 1,
+      replayRevision: 1,
+      replayHeader: justFloatHeader,
+      replayNextSequence: 1,
+      terminalEntries: [],
+    });
+
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_000,
+      dataBytes: 8,
+      records: [
+        {
+          direction: "rx",
+          timestampUs: 1_000,
+          data: [0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x7f],
+        },
+      ],
+    });
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      {
+        direction: "rx",
+        hex: "00 00 80 3F 00 00 80 7F",
+        byteCount: 8,
+      },
+    ]);
+    expect(useWorkbenchStore.getState().channels.map((channel) => channel.lastValue)).toEqual([1]);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      displayMode: "text",
+      terminalRxRecordMode: "line",
+      replayNextSequence: 2,
+    });
   });
 
   it("回放 RX 使用工作区选择的 GB18030 编码且不改变原始字节", () => {

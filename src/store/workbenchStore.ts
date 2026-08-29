@@ -273,6 +273,18 @@ const MAX_POINTS_PER_CHANNEL = 2_000;
 const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY =
   MAX_TERMINAL_UNTERMINATED_LINE_BYTES + MAX_TERMINAL_LINE_ENDING_BYTES;
+
+type TerminalPresentationContext =
+  | "live:justfloat"
+  | "live:simulator-raw"
+  | `replay:${number}:justfloat`;
+
+interface TerminalPresentationOverride {
+  context: TerminalPresentationContext;
+  displayMode: DisplayMode;
+  recordMode: TerminalRxRecordMode;
+}
+
 export const WORKBENCH_STORAGE_KEY = "vofa-ultra-workbench";
 export const WORKBENCH_STORAGE_VERSION = 13;
 export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [
@@ -426,7 +438,7 @@ export interface WorkbenchStore {
   attitudeSample: (AttitudeSample & { readonly receivedAt: number }) | null;
   terminalEntries: TerminalEntry[];
   displayMode: DisplayMode;
-  displayModeBeforeSimulatorRaw: DisplayMode | null;
+  terminalPresentationOverride: TerminalPresentationOverride | null;
   sendMode: DisplayMode;
   lineEnding: LineEnding;
   commandChecksum: CommandChecksumMode;
@@ -710,7 +722,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       attitudeSample: null,
       terminalEntries: [],
       displayMode: INITIAL_WORKSPACE_CONFIG.displayMode,
-      displayModeBeforeSimulatorRaw: null,
+      terminalPresentationOverride: null,
       sendMode: INITIAL_WORKSPACE_CONFIG.sendMode,
       lineEnding: INITIAL_WORKSPACE_CONFIG.lineEnding,
       commandChecksum: INITIAL_WORKSPACE_CONFIG.commandChecksum,
@@ -1175,34 +1187,23 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             `数据源：${dataSourceDisplayName(latest.source)} → ${dataSourceDisplayName(source)}`,
           );
           resetProtocolState(get().protocol);
-          set((state) => ({
+          set({
             source,
-            displayMode:
-              source === "simulator" && state.protocol === "raw"
-                ? "hex"
-                : state.source === "simulator" && state.protocol === "raw"
-                  ? state.displayModeBeforeSimulatorRaw ?? "text"
-                  : state.displayMode,
-            displayModeBeforeSimulatorRaw:
-              source === "simulator" && state.protocol === "raw"
-                ? state.displayMode
-                : state.source === "simulator" && state.protocol === "raw"
-                  ? null
-                  : state.displayModeBeforeSimulatorRaw,
+            terminalPresentationOverride: null,
             channels: [],
             processedChannels: [],
             attitudeSample: null,
-            chartDataRevision: state.chartDataRevision + 1,
+            chartDataRevision: latest.chartDataRevision + 1,
             waveformTrigger: createIdleWaveformTriggerState(),
             processingStatus: liveProcessingRuntime.getSnapshot(),
             protocolHealth: protocolParser.getHealthSnapshot(),
             terminalEntries,
             connectionStatus: "disconnected",
-            serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
+            serialModemStatus: createUnavailableSerialModemStatus(latest.serialGeneration),
             connectionMessage:
               source === "serial" ? "选择设备后连接" : "模拟数据源已就绪",
             statusMessage: source === "serial" ? "选择设备后连接" : "模拟数据源已就绪",
-          }));
+          });
         } finally {
           endRuntimeTransition(get, set, "switching-source");
         }
@@ -1233,38 +1234,19 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           `协议：${protocolDisplayName(currentState.protocol)} → ${protocolDisplayName(protocol)}`,
         );
         resetProtocolState(protocol);
-        set((state) => ({
+        set({
           protocol,
-          displayMode:
-            state.source === "simulator" &&
-            state.protocol !== "raw" &&
-            protocol === "raw"
-              ? "hex"
-              : state.source === "simulator" &&
-                  state.protocol === "raw" &&
-                  protocol !== "raw"
-                ? state.displayModeBeforeSimulatorRaw ?? "text"
-                : state.displayMode,
-          displayModeBeforeSimulatorRaw:
-            state.source === "simulator" &&
-            state.protocol !== "raw" &&
-            protocol === "raw"
-              ? state.displayMode
-              : state.source === "simulator" &&
-                  state.protocol === "raw" &&
-                  protocol !== "raw"
-                ? null
-                : state.displayModeBeforeSimulatorRaw,
+          terminalPresentationOverride: null,
           channels: [],
           processedChannels: [],
           attitudeSample: null,
-          chartDataRevision: state.chartDataRevision + 1,
+          chartDataRevision: currentState.chartDataRevision + 1,
           waveformTrigger: createIdleWaveformTriggerState(),
           processingStatus: liveProcessingRuntime.getSnapshot(),
           protocolHealth: protocolParser.getHealthSnapshot(),
           terminalEntries,
           statusMessage: protocolDisplayName(protocol) + " 已启用",
-        }));
+        });
       },
 
       updateSerialConfig: (key, value) => {
@@ -2050,7 +2032,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           : createRxTerminalEntries(
               bytes,
               timestamp,
-              state.terminalRxRecordMode,
+              selectEffectiveTerminalRxRecordMode(state),
               state.terminalRxLineEnding,
               terminalLineAssembler,
               terminalDecoder,
@@ -2339,15 +2321,22 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       setDisplayMode: (displayMode) => {
-        if (get().workspaceTransitionStatus === "idle") {
-          set((state) => ({
-            displayMode,
-            displayModeBeforeSimulatorRaw:
-              state.source === "simulator" && state.protocol === "raw"
-                ? displayMode
-                : state.displayModeBeforeSimulatorRaw,
-          }));
+        const state = get();
+        if (state.workspaceTransitionStatus !== "idle") {
+          return;
         }
+        const context = terminalPresentationContext(state);
+        if (!context) {
+          set({ displayMode });
+          return;
+        }
+        set({
+          terminalPresentationOverride: {
+            context,
+            displayMode,
+            recordMode: selectEffectiveTerminalRxRecordMode(state),
+          },
+        });
       },
       setSendMode: (sendMode) => {
         if (get().workspaceTransitionStatus === "idle") {
@@ -2366,18 +2355,28 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
       setTerminalRxRecordMode: (terminalRxRecordMode) => {
         const state = get();
+        const effectiveRecordMode = selectEffectiveTerminalRxRecordMode(state);
         if (
           state.workspaceTransitionStatus !== "idle" ||
-          terminalRxRecordMode === state.terminalRxRecordMode
+          terminalRxRecordMode === effectiveRecordMode
         ) {
           return;
         }
         const terminalEntries = settleActiveTerminalPresentation(state);
         resetRxTerminalPresentationState();
-        set({
-          terminalRxRecordMode,
-          terminalEntries,
-        });
+        const context = terminalPresentationContext(state);
+        set(
+          context
+            ? {
+                terminalPresentationOverride: {
+                  context,
+                  displayMode: selectEffectiveTerminalDisplayMode(state),
+                  recordMode: terminalRxRecordMode,
+                },
+                terminalEntries,
+              }
+            : { terminalRxRecordMode, terminalEntries },
+        );
       },
       setTerminalRxLineEnding: (terminalRxLineEnding) => {
         const state = get();
@@ -3425,6 +3424,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           replayMarkerCount: payload.markerCount,
           replayMarkers:
             replaySessionChanged || payload.status === "idle" ? [] : latest.replayMarkers,
+          terminalPresentationOverride:
+            replaySessionChanged || payload.status === "idle"
+              ? null
+              : latest.terminalPresentationOverride,
           replayProtocolHealth:
             replaySessionChanged || timelineChanged || payload.status === "idle"
               ? replayProtocolParser.getHealthSnapshot()
@@ -3660,10 +3663,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         protocol: state.protocol,
         serialConfig: state.serialConfig,
         simulatorConfig: state.simulatorConfig,
-        displayMode:
-          state.source === "simulator" && state.protocol === "raw"
-            ? state.displayModeBeforeSimulatorRaw ?? state.displayMode
-            : state.displayMode,
+        displayMode: state.displayMode,
         sendMode: state.sendMode,
         lineEnding: state.lineEnding,
         commandChecksum: state.commandChecksum,
@@ -3888,6 +3888,49 @@ export function selectActiveProtocol(state: WorkbenchStore): ProtocolKind {
     : state.protocol;
 }
 
+export function selectEffectiveTerminalDisplayMode(state: WorkbenchStore): DisplayMode {
+  const context = terminalPresentationContext(state);
+  if (!context) {
+    return state.displayMode;
+  }
+  return state.terminalPresentationOverride?.context === context
+    ? state.terminalPresentationOverride.displayMode
+    : "hex";
+}
+
+export function selectEffectiveTerminalRxRecordMode(
+  state: WorkbenchStore,
+): TerminalRxRecordMode {
+  const context = terminalPresentationContext(state);
+  if (!context) {
+    return state.terminalRxRecordMode;
+  }
+  return state.terminalPresentationOverride?.context === context
+    ? state.terminalPresentationOverride.recordMode
+    : "chunk";
+}
+
+export function selectUsesBinaryTerminalDefaults(state: WorkbenchStore): boolean {
+  return terminalPresentationContext(state) !== null;
+}
+
+function terminalPresentationContext(
+  state: WorkbenchStore,
+): TerminalPresentationContext | null {
+  if (hasReplaySession(state) && state.replayHeader?.protocol === "justfloat") {
+    return `replay:${state.replaySessionId}:justfloat`;
+  }
+  if (hasReplaySession(state)) {
+    return null;
+  }
+  if (state.protocol === "justfloat") {
+    return "live:justfloat";
+  }
+  return state.source === "simulator" && state.protocol === "raw"
+    ? "live:simulator-raw"
+    : null;
+}
+
 export function selectActiveProtocolHealth(state: WorkbenchStore): ProtocolHealthSnapshot {
   return hasReplaySession(state) ? state.replayProtocolHealth : state.protocolHealth;
 }
@@ -3918,15 +3961,7 @@ function captureWorkspaceConfigForSave(state: WorkbenchStore) {
 }
 
 function captureWorkbenchWorkspaceConfig(state: WorkbenchStore) {
-  const config = captureWorkspaceConfig(state);
-  if (
-    state.source === "simulator" &&
-    state.protocol === "raw" &&
-    state.displayModeBeforeSimulatorRaw
-  ) {
-    config.displayMode = state.displayModeBeforeSimulatorRaw;
-  }
-  return config;
+  return captureWorkspaceConfig(state);
 }
 
 function assertWorkspaceIdle(state: WorkbenchStore): void {
@@ -5150,7 +5185,6 @@ async function applyWorkspaceSnapshot(
   const config = cloneWorkspaceConfig(latestTarget.config);
   const usesBrowserFallback = !get().isNativeRuntime && config.source === "serial";
   const source = usesBrowserFallback ? "simulator" : config.source;
-  const usesSimulatorRaw = source === "simulator" && config.protocol === "raw";
   const processingGraph = configureProcessingGraph(config.processingGraph);
   resetProtocolState(config.protocol, config.terminalRxTextEncoding);
   set((state) => ({
@@ -5159,8 +5193,8 @@ async function applyWorkspaceSnapshot(
     protocol: config.protocol,
     serialConfig: config.serialConfig,
     simulatorConfig: cloneSimulatorConfig(config.simulatorConfig),
-    displayMode: usesSimulatorRaw ? "hex" : config.displayMode,
-    displayModeBeforeSimulatorRaw: usesSimulatorRaw ? config.displayMode : null,
+    displayMode: config.displayMode,
+    terminalPresentationOverride: null,
     sendMode: config.sendMode,
     lineEnding: config.lineEnding,
     commandChecksum: config.commandChecksum,
@@ -5344,7 +5378,7 @@ function ingestReplayBatch(
           ...createRxTerminalEntries(
             bytes,
             timestamp,
-            state.terminalRxRecordMode,
+            selectEffectiveTerminalRxRecordMode(state),
             state.terminalRxLineEnding,
             replayRxLineAssembler,
             replayRxDecoder,
@@ -5804,7 +5838,7 @@ function settleTerminalPresentation(
 ): TerminalEntry[] {
   const decoder = assembler === replayRxLineAssembler ? replayRxDecoder : terminalDecoder;
   let terminalEntries = state.terminalEntries;
-  if (!state.terminalPaused && state.terminalRxRecordMode === "line") {
+  if (!state.terminalPaused && selectEffectiveTerminalRxRecordMode(state) === "line") {
     const line = assembler.flush();
     if (line) {
       terminalEntries = appendBounded(
@@ -6002,15 +6036,14 @@ function restorePersistedWorkbenchState(
     !currentState.isNativeRuntime && persistedConfig.source === "serial"
       ? "simulator"
       : persistedConfig.source;
-  const usesSimulatorRaw = source === "simulator" && persistedConfig.protocol === "raw";
   const processingGraph = configureProcessingGraph(persistedConfig.processingGraph);
 
   return {
     ...currentState,
     ...persistedConfig,
     source,
-    displayMode: usesSimulatorRaw ? "hex" : persistedConfig.displayMode,
-    displayModeBeforeSimulatorRaw: usesSimulatorRaw ? persistedConfig.displayMode : null,
+    displayMode: persistedConfig.displayMode,
+    terminalPresentationOverride: null,
     processingGraph,
     processingStatus: liveProcessingRuntime.getSnapshot(),
     processedChannels: [],
