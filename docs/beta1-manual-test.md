@@ -9,10 +9,11 @@
 | --- | --- |
 | 安装包 | `artifacts/windows/Vofa-Ultra_0.1.0-beta.1_x64-setup.exe` |
 | 应用版本 | `0.1.0-beta.1` |
-| 对应 commit | `1945103` |
+| 对应 commit | `9495173` |
+| 应用内构建 ID | `94951733aa16` |
 | 目标平台 | Windows 10/11 x64 |
-| 文件大小 | `3,113,812` 字节 |
-| SHA-256 | `048D23BCEBD2799214CBBDFD4BE6871A36B8475CDBD0E965D0A281B842DC6CD6` |
+| 文件大小 | `3,139,032` 字节 |
+| SHA-256 | `A075A41851A2C1692C52A70694FFABC5217F8EB3264FDD2E8D8D949C3E1E07A1` |
 
 在 PowerShell 中可执行：
 
