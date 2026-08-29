@@ -6,6 +6,7 @@ import {
   createProtocolParser,
   encodeFireWaterFrame,
   encodeJustFloatFrame,
+  encodeRawSimulatorRecord,
   FireWaterParser,
   getProtocolDefinition,
   incrementProtocolHealthCount,
@@ -461,6 +462,27 @@ describe("内置协议贡献契约", () => {
     expect(parser.getHealthSnapshot()).toBe(health);
   });
 
+  it("Raw 模拟器编码确定性二进制记录且不产生波形帧", () => {
+    const bytes = encodeRawSimulatorRecord([1.5, -2.25, 3], 12);
+
+    expect([...bytes]).toEqual([
+      0x56, 0x55, 0x01, 0x03, 0x0c, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0xc0, 0x3f,
+      0x00, 0x00, 0x10, 0xc0,
+      0x00, 0x00, 0x40, 0x40,
+    ]);
+    expect(createProtocolParser("raw").push(bytes, 8_055)).toEqual([]);
+  });
+
+  it("Raw 模拟器校验通道值并按 u32 回绕样本序号", () => {
+    expect(() => encodeRawSimulatorRecord([], 0)).toThrow(/1 到 16/);
+    expect(() => encodeRawSimulatorRecord([Number.MAX_VALUE], 0)).toThrow(/float32/);
+    expect(() => encodeRawSimulatorRecord([1], -1)).toThrow(/非负安全整数/);
+
+    const bytes = encodeRawSimulatorRecord([1], 0x1_0000_0001);
+    expect(new DataView(bytes.buffer).getUint32(4, true)).toBe(1);
+  });
+
   it("健康计数达到 32 位无符号上限后保持饱和", () => {
     expect(incrementProtocolHealthCount(MAX_PROTOCOL_HEALTH_COUNT - 1)).toBe(
       MAX_PROTOCOL_HEALTH_COUNT,
@@ -476,9 +498,9 @@ describe("内置协议贡献契约", () => {
       const frames = definition.createParser().push(bytes, 8_000);
       if (definition.id === "raw") {
         expect(frames).toEqual([]);
-        expect(new TextDecoder().decode(bytes)).toBe(
-          "sample=00012 ch1=1.50 ch2=-2.25 ch3=3.00\n",
-        );
+        expect([...bytes.slice(0, 8)]).toEqual([
+          0x56, 0x55, 0x01, 0x03, 0x0c, 0x00, 0x00, 0x00,
+        ]);
       } else {
         expect(frames).toHaveLength(1);
         expectFrameContract(frames[0]);

@@ -2062,6 +2062,29 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().channels).toEqual([]);
   });
 
+  it("模拟器进入 Raw 时默认显示 HEX，真实串口 Raw 保留用户显示选择", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      protocol: "firewater",
+      displayMode: "text",
+    });
+
+    useWorkbenchStore.getState().setProtocol("raw");
+    expect(useWorkbenchStore.getState().displayMode).toBe("hex");
+
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      protocol: "firewater",
+      displayMode: "text",
+    });
+    useWorkbenchStore.getState().setProtocol("raw");
+    expect(useWorkbenchStore.getState().displayMode).toBe("text");
+
+    await useWorkbenchStore.getState().setSource("simulator");
+    expect(useWorkbenchStore.getState().displayMode).toBe("hex");
+  });
+
   it("视图暂停时仍诊断坏帧，清统计不会丢弃等待中的半帧", () => {
     useWorkbenchStore.getState().setTerminalPaused(true);
     useWorkbenchStore.getState().setChartPaused(true);

@@ -1155,6 +1155,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           resetProtocolState(get().protocol);
           set((state) => ({
             source,
+            displayMode:
+              source === "simulator" && state.protocol === "raw"
+                ? "hex"
+                : state.displayMode,
             channels: [],
             processedChannels: [],
             attitudeSample: null,
@@ -1198,6 +1202,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         resetProtocolState(protocol);
         set((state) => ({
           protocol,
+          displayMode:
+            state.source === "simulator" && protocol === "raw"
+              ? "hex"
+              : state.displayMode,
           channels: [],
           processedChannels: [],
           attitudeSample: null,

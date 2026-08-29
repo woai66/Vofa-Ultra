@@ -2,8 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SimulatorConfig } from "../types/simulator";
 import { startSimulator } from "./simulator";
 
-const decoder = new TextDecoder();
-
 describe("模拟器服务", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -20,10 +18,24 @@ describe("模拟器服务", () => {
     vi.advanceTimersByTime(30);
 
     expect(onData).toHaveBeenCalledTimes(3);
-    expect(decoder.decode(onData.mock.calls[0]?.[0])).toBe(
-      "sample=00000 ch1=9.80 ch2=10.20\n",
+    const firstBytes = onData.mock.calls[0]?.[0] as Uint8Array;
+    const thirdBytes = onData.mock.calls[2]?.[0] as Uint8Array;
+    const firstView = new DataView(
+      firstBytes.buffer,
+      firstBytes.byteOffset,
+      firstBytes.byteLength,
     );
-    expect(decoder.decode(onData.mock.calls[2]?.[0])).toContain("sample=00002");
+    const thirdView = new DataView(
+      thirdBytes.buffer,
+      thirdBytes.byteOffset,
+      thirdBytes.byteLength,
+    );
+    expect([...firstBytes.slice(0, 8)]).toEqual([
+      0x56, 0x55, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    expect(firstView.getFloat32(8, true)).toBeCloseTo(9.8);
+    expect(firstView.getFloat32(12, true)).toBeCloseTo(10.2);
+    expect(thirdView.getUint32(4, true)).toBe(2);
     expect(onData.mock.calls[0]?.[1]).toBe(1_010);
 
     stop();
@@ -34,17 +46,17 @@ describe("模拟器服务", () => {
   it("停止再启动时从样本零复现同一随机序列", () => {
     vi.useFakeTimers();
     const config = { signal: "white-noise", channelCount: 3, sampleRate: 25 } as const;
-    const firstRun: string[] = [];
-    const secondRun: string[] = [];
+    const firstRun: number[][] = [];
+    const secondRun: number[][] = [];
 
     const stopFirst = startSimulator("raw", config, (bytes) => {
-      firstRun.push(decoder.decode(bytes));
+      firstRun.push([...bytes]);
     });
     vi.advanceTimersByTime(120);
     stopFirst();
 
     const stopSecond = startSimulator("raw", config, (bytes) => {
-      secondRun.push(decoder.decode(bytes));
+      secondRun.push([...bytes]);
     });
     vi.advanceTimersByTime(120);
     stopSecond();

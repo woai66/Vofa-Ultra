@@ -199,7 +199,37 @@ export function encodeJustFloatFrame(values: readonly number[]): Uint8Array {
   return bytes;
 }
 
-const RAW_ENCODER = new TextEncoder();
+export function encodeRawSimulatorRecord(
+  values: readonly number[],
+  sampleIndex: number,
+): Uint8Array {
+  assertEncodableValues(values);
+  if (values.some((value) => !Number.isFinite(Math.fround(value)))) {
+    throw new RangeError("Raw 模拟值必须能表示为有限 float32");
+  }
+  if (!Number.isSafeInteger(sampleIndex) || sampleIndex < 0) {
+    throw new RangeError("Raw 模拟样本序号必须是非负安全整数");
+  }
+
+  const headerLength = 8;
+  const bytes = new Uint8Array(
+    headerLength + values.length * Float32Array.BYTES_PER_ELEMENT,
+  );
+  const view = new DataView(bytes.buffer);
+  bytes[0] = 0x56;
+  bytes[1] = 0x55;
+  bytes[2] = 0x01;
+  bytes[3] = values.length;
+  view.setUint32(4, sampleIndex % 0x1_0000_0000, true);
+  values.forEach((value, index) => {
+    view.setFloat32(
+      headerLength + index * Float32Array.BYTES_PER_ELEMENT,
+      value,
+      true,
+    );
+  });
+  return bytes;
+}
 
 const protocolRegistry = {
   firewater: Object.freeze({
@@ -233,13 +263,7 @@ const protocolRegistry = {
       };
     },
     encodeSimulatorSample: (values: readonly number[], sampleIndex: number) =>
-      RAW_ENCODER.encode(
-        `sample=${sampleIndex.toString().padStart(5, "0")} ` +
-          values
-            .map((value, index) => `ch${index + 1}=${formatSimulatorValue(value)}`)
-            .join(" ") +
-          "\n",
-      ),
+      encodeRawSimulatorRecord(values, sampleIndex),
   }),
 } as const satisfies Readonly<Record<ProtocolKind, BuiltinProtocolDefinition>>;
 
@@ -458,10 +482,6 @@ function isValidProtocolLabel(label: string): boolean {
       );
     })
   );
-}
-
-function formatSimulatorValue(value: number | undefined): string {
-  return Number.isFinite(value) ? Number(value).toFixed(2) : "n/a";
 }
 
 function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
