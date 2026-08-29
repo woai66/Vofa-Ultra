@@ -165,6 +165,12 @@ textarea:disabled {
   color: #55e4aa;
 }
 
+.brand-mark img {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+
 .rail-actions {
   display: flex;
   width: 100%;
@@ -912,17 +918,14 @@ textarea:disabled {
 }
 
 .sidebar-heading h1 {
-  margin: 2px 0 0;
-  font-size: 17px;
+  margin: 0;
+  font-size: 18px;
   font-weight: 650;
   line-height: 1.2;
 }
 
 .eyebrow {
-  color: var(--accent);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
-  font-weight: 700;
+  display: none;
 }
 
 .sidebar-section {
@@ -986,8 +989,9 @@ textarea:disabled {
 .field-label {
   display: block;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
+  line-height: 1.35;
 }
 
 .baud-rate-field {
@@ -996,56 +1000,130 @@ textarea:disabled {
 }
 
 .baud-rate-combobox {
+  position: relative;
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(0, 1fr) 36px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-1);
+  grid-template-columns: minmax(0, 1fr) 42px;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
 .baud-rate-combobox > input {
+  height: 36px;
+  padding: 0 11px;
+  border: 0;
   border-radius: 5px 0 0 5px;
+  outline: 0;
+  background: transparent;
+  font-size: 14px;
 }
 
-.baud-rate-combobox > input[aria-invalid="true"] {
+.baud-rate-combobox:hover {
+  border-color: var(--border-strong);
+}
+
+.baud-rate-combobox:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.baud-rate-combobox[data-invalid="true"] {
   border-color: var(--danger);
 }
 
-.baud-rate-preset-control {
-  position: relative;
-  display: block;
-  min-width: 0;
+.baud-rate-combobox[data-invalid="true"]:focus-within {
+  box-shadow: 0 0 0 2px var(--danger-soft);
 }
 
-.baud-rate-preset-control select {
-  height: 34px;
+.baud-rate-combobox > input:focus,
+.baud-rate-combobox > input:focus-visible,
+.baud-rate-toggle:focus-visible {
+  border-color: transparent;
+  outline: 0;
+}
+
+.baud-rate-toggle {
+  display: grid;
+  width: 42px;
+  height: 36px;
+  place-items: center;
   padding: 0;
-  border-left: 0;
+  border: 0;
+  border-left: 1px solid var(--border);
   border-radius: 0 5px 5px 0;
-  appearance: none;
-  color: transparent;
+  background: transparent;
+  color: var(--text-muted);
   cursor: pointer;
 }
 
-.baud-rate-preset-control select option {
-  background: var(--surface-1);
+.baud-rate-toggle:hover:not(:disabled) {
+  background: var(--surface-hover);
   color: var(--text);
 }
 
-.baud-rate-preset-control svg {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  color: var(--text-muted);
-  pointer-events: none;
-  transform: translate(-50%, -50%);
+.baud-rate-toggle svg {
+  transition: transform 120ms ease;
 }
 
-.baud-rate-preset-control select:disabled + svg {
-  opacity: 0.48;
+.baud-rate-combobox[data-open="true"] .baud-rate-toggle svg {
+  transform: rotate(180deg);
+}
+
+.baud-rate-options {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  display: grid;
+  max-height: 260px;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  background: var(--surface-1);
+  gap: 2px;
+}
+
+.baud-rate-options[data-placement="top"] {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.baud-rate-options button {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+}
+
+.baud-rate-options button:hover,
+.baud-rate-options button[data-active="true"] {
+  background: var(--surface-hover);
+}
+
+.baud-rate-options button[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 650;
 }
 
 .baud-rate-field .field-hint {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.4;
 }
 
@@ -1068,7 +1146,7 @@ textarea {
 
 input,
 select {
-  height: 34px;
+  height: 36px;
   padding: 0 9px;
 }
 
@@ -1136,7 +1214,7 @@ textarea:focus {
   min-width: 0;
   padding: 1px 1px 4px;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
   gap: 3px;
 }
 
@@ -1158,6 +1236,10 @@ textarea:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.serial-port-summary-name strong {
+  font-size: 12px;
 }
 
 .serial-port-summary-meta {
@@ -1231,12 +1313,12 @@ textarea:focus {
 
 .recovery-state strong {
   color: var(--text);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .recovery-state span:last-child {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -1252,7 +1334,7 @@ textarea:focus {
   align-items: center;
   justify-content: space-between;
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 11px;
   gap: 8px;
 }
 
@@ -1643,7 +1725,7 @@ textarea:focus {
 .protocol-option {
   display: flex;
   width: 100%;
-  min-height: 43px;
+  min-height: 47px;
   align-items: center;
   padding: 7px 8px;
   border: 0;
@@ -1689,13 +1771,13 @@ textarea:focus {
 }
 
 .protocol-option strong {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
 .protocol-option small {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 :root[data-theme="light"] .protocol-option[data-active="true"] small {
@@ -1716,7 +1798,7 @@ textarea:focus {
   min-width: 0;
   align-items: flex-start;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   gap: 7px;
 }
 
@@ -2728,9 +2810,7 @@ textarea:focus {
 }
 
 .empty-signal {
-  font-family: Georgia, serif;
-  font-size: 32px;
-  line-height: 1;
+  color: var(--text-muted);
 }
 
 .icon-segments svg {
@@ -2766,31 +2846,37 @@ textarea:focus {
 .workspace-title {
   display: flex;
   min-width: 0;
+  flex: 1 1 auto;
   align-items: baseline;
+  overflow: hidden;
   gap: 8px;
 }
 
 .workspace-title strong {
+  flex: 0 0 auto;
   overflow: hidden;
-  font-size: 13px;
+  font-size: 14px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .workspace-title span {
   min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 11px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .workspace-header-meta {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
+  white-space: nowrap;
   gap: 7px;
 }
 
@@ -2816,7 +2902,7 @@ textarea:focus {
   border-radius: 4px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
   cursor: pointer;
   gap: 5px;
 }
@@ -3019,14 +3105,14 @@ textarea:focus {
 .panel-title-group h2 {
   margin: 0;
   color: var(--text);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
   white-space: nowrap;
 }
 
 .panel-subtitle {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -4562,7 +4648,7 @@ textarea:focus {
   height: 25px;
   padding: 0 8px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .terminal-filter-bar {
@@ -4607,7 +4693,7 @@ textarea:focus {
   height: 28px;
   padding: 0 5px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .terminal-rx-line-ending select:disabled {
@@ -4646,7 +4732,7 @@ textarea:focus {
   background: transparent;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .terminal-search-field input::placeholder {
@@ -4702,7 +4788,7 @@ textarea:focus {
   background: var(--surface-1);
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   user-select: text;
 }
 
@@ -4752,7 +4838,7 @@ textarea:focus {
 .terminal-line time,
 .terminal-line small {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 10px;
   white-space: nowrap;
 }
 
@@ -4770,7 +4856,7 @@ textarea:focus {
 
 .direction-label {
   color: var(--cyan);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -4820,7 +4906,7 @@ textarea:focus {
   justify-content: center;
   color: var(--text-subtle);
   font-family: inherit;
-  font-size: 10px;
+  font-size: 11px;
   gap: 5px;
 }
 
@@ -4857,7 +4943,7 @@ textarea:focus {
   width: 76px;
   height: 29px;
   padding: 0 6px;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .send-line-ending-field {
@@ -4903,7 +4989,7 @@ textarea:focus {
 
 .send-field-caption {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 10px;
   white-space: nowrap;
 }
 
@@ -4913,7 +4999,7 @@ textarea:focus {
   resize: vertical;
   padding: 6px 9px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 18px;
 }
 
@@ -6517,7 +6603,7 @@ textarea:focus {
   background: #111815;
   color: #94a099;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 :root[data-theme="light"] .status-bar {
@@ -6681,6 +6767,12 @@ textarea:focus {
 
   .send-composer textarea {
     resize: none;
+  }
+}
+
+@container workspace (max-width: 820px) {
+  .workspace-header-meta {
+    display: none;
   }
 }
 

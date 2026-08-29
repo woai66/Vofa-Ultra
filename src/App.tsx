@@ -17,6 +17,7 @@ import {
   PanelBottom,
   PanelTop,
   Rows2,
+  Table2,
 } from "lucide-react";
 import { APP_DISPLAY_VERSION } from "./core/appMetadata";
 import { getHorizontalTabTarget } from "./core/tabNavigation";
@@ -37,7 +38,7 @@ export type ThemePreference = "system" | ThemeMode;
 
 const WORKSPACE_VIEW_TABS = [
   ["waveform", "波形", ChartNoAxesCombined],
-  ["monitor", "监视", Rows2],
+  ["monitor", "监视", Table2],
   ["attitude", "姿态", Orbit],
 ] as const;
 type WorkspaceView = (typeof WORKSPACE_VIEW_TABS)[number][0];

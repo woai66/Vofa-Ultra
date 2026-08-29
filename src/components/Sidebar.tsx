@@ -1,6 +1,15 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Cable,
+  ChartNoAxesCombined,
   Check,
   ChevronDown,
   CircleCheck,
@@ -81,6 +90,9 @@ const ExtensionPanel = lazy(() =>
 
 const MIN_BAUD_RATE = 1;
 const MAX_BAUD_RATE = 12_000_000;
+const MAX_BAUD_RATE_OPTIONS_HEIGHT = 260;
+const MIN_BAUD_RATE_OPTIONS_HEIGHT = 42;
+const BAUD_RATE_OPTIONS_GAP = 6;
 
 interface SidebarProps {
   activePanel: SidebarPanel;
@@ -98,12 +110,83 @@ interface BaudRateFieldProps {
 
 function BaudRateField({ value, disabled, onChange, onValidityChange }: BaudRateFieldProps) {
   const [draftValue, setDraftValue] = useState(String(value));
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [optionsPlacement, setOptionsPlacement] = useState<"top" | "bottom">("bottom");
+  const [optionsMaxHeight, setOptionsMaxHeight] = useState(MAX_BAUD_RATE_OPTIONS_HEIGHT);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const comboboxRef = useRef<HTMLDivElement>(null);
+  const optionsRef = useRef<HTMLDivElement>(null);
+  const activeOptionRef = useRef<HTMLButtonElement>(null);
   const parsedDraftValue = parseBaudRate(draftValue);
 
   useEffect(() => {
     setDraftValue(String(value));
     onValidityChange(true);
   }, [onValidityChange, value]);
+
+  useEffect(() => {
+    if (disabled) {
+      setOpen(false);
+    }
+  }, [disabled]);
+
+  useLayoutEffect(() => {
+    const combobox = comboboxRef.current;
+    const options = optionsRef.current;
+    const scroller = combobox?.closest<HTMLElement>(".connection-panel-scroll");
+    if (!open || !combobox || !options || !scroller) {
+      return;
+    }
+
+    const updatePlacement = () => {
+      const comboboxRect = combobox.getBoundingClientRect();
+      const scrollerRect = scroller.getBoundingClientRect();
+      const spaceAbove = Math.max(
+        0,
+        comboboxRect.top - scrollerRect.top - BAUD_RATE_OPTIONS_GAP - 1,
+      );
+      const spaceBelow = Math.max(
+        0,
+        scrollerRect.bottom - comboboxRect.bottom - BAUD_RATE_OPTIONS_GAP - 1,
+      );
+      const placement =
+        spaceBelow >= MAX_BAUD_RATE_OPTIONS_HEIGHT || spaceBelow >= spaceAbove
+          ? "bottom"
+          : "top";
+      const availableHeight = placement === "bottom" ? spaceBelow : spaceAbove;
+      setOptionsPlacement(placement);
+      setOptionsMaxHeight(
+        Math.max(
+          MIN_BAUD_RATE_OPTIONS_HEIGHT,
+          Math.min(MAX_BAUD_RATE_OPTIONS_HEIGHT, Math.floor(availableHeight)),
+        ),
+      );
+    };
+
+    updatePlacement();
+    window.addEventListener("resize", updatePlacement);
+    scroller.addEventListener("scroll", updatePlacement, { passive: true });
+    return () => {
+      window.removeEventListener("resize", updatePlacement);
+      scroller.removeEventListener("scroll", updatePlacement);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    const options = optionsRef.current;
+    const activeOption = activeOptionRef.current;
+    if (!open || !options || !activeOption) {
+      return;
+    }
+    const optionTop = activeOption.offsetTop;
+    const optionBottom = optionTop + activeOption.offsetHeight;
+    if (optionTop < options.scrollTop) {
+      options.scrollTop = optionTop;
+    } else if (optionBottom > options.scrollTop + options.clientHeight) {
+      options.scrollTop = optionBottom - options.clientHeight;
+    }
+  }, [activeIndex, open, optionsMaxHeight]);
 
   const commitDraftValue = () => {
     const parsed = parseBaudRate(draftValue);
@@ -118,17 +201,76 @@ function BaudRateField({ value, disabled, onChange, onValidityChange }: BaudRate
     }
   };
 
+  const openPresetList = (direction: "first" | "last" | "current" = "current") => {
+    const currentIndex = BAUD_RATES.findIndex((rate) => rate === value);
+    setActiveIndex(
+      direction === "first"
+        ? 0
+        : direction === "last"
+          ? BAUD_RATES.length - 1
+          : Math.max(0, currentIndex),
+    );
+    setOpen(true);
+  };
+
+  const selectPreset = (baudRate: number) => {
+    setDraftValue(String(baudRate));
+    onValidityChange(true);
+    setOpen(false);
+    if (baudRate !== value) {
+      onChange(baudRate);
+    }
+    inputRef.current?.focus({ preventScroll: true });
+  };
+
+  const moveActivePreset = (direction: 1 | -1) => {
+    if (!open) {
+      const currentIndex = BAUD_RATES.findIndex((rate) => rate === value);
+      const fallbackIndex = direction === 1 ? 0 : BAUD_RATES.length - 1;
+      setActiveIndex(
+        currentIndex < 0
+          ? fallbackIndex
+          : Math.min(BAUD_RATES.length - 1, Math.max(0, currentIndex + direction)),
+      );
+      setOpen(true);
+      return;
+    }
+    setActiveIndex((index) =>
+      Math.min(BAUD_RATES.length - 1, Math.max(0, index + direction)),
+    );
+  };
+
   return (
-    <div className="baud-rate-field">
+    <div
+      className="baud-rate-field"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setOpen(false);
+          commitDraftValue();
+        }
+      }}
+    >
       <label className="field-label" htmlFor="baud-rate">
         波特率
       </label>
-      <div className="baud-rate-combobox">
+      <div
+        ref={comboboxRef}
+        className="baud-rate-combobox"
+        data-invalid={parsedDraftValue === null}
+        data-open={open}
+      >
         <input
+          ref={inputRef}
           id="baud-rate"
           name="baud-rate"
           aria-describedby="baud-rate-hint"
           aria-invalid={parsedDraftValue === null}
+          aria-autocomplete="none"
+          aria-controls="baud-rate-options"
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          aria-activedescendant={open ? `baud-rate-option-${BAUD_RATES[activeIndex]}` : undefined}
+          role="combobox"
           type="text"
           inputMode="numeric"
           pattern="[0-9]*"
@@ -142,46 +284,82 @@ function BaudRateField({ value, disabled, onChange, onValidityChange }: BaudRate
             setDraftValue(nextValue);
             onValidityChange(parseBaudRate(nextValue) !== null);
           }}
-          onBlur={commitDraftValue}
           onKeyDown={(event) => {
-            if (event.key === "Enter") {
+            if (event.key === "ArrowDown") {
               event.preventDefault();
-              commitDraftValue();
+              moveActivePreset(1);
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              moveActivePreset(-1);
+            } else if (event.key === "Enter") {
+              event.preventDefault();
+              if (open) {
+                const activeRate = BAUD_RATES[activeIndex];
+                if (activeRate !== undefined) {
+                  selectPreset(activeRate);
+                }
+              } else {
+                commitDraftValue();
+              }
             } else if (event.key === "Escape") {
               event.preventDefault();
-              setDraftValue(String(value));
-              onValidityChange(true);
+              if (open) {
+                setOpen(false);
+              } else {
+                setDraftValue(String(value));
+                onValidityChange(true);
+              }
             }
           }}
         />
-        <span className="baud-rate-preset-control">
-          <select
-            id="baud-rate-preset"
-            name="baud-rate-preset"
-            aria-label="选择常用波特率"
-            title="选择常用波特率"
-            value={isPresetBaudRate(value) ? String(value) : ""}
-            disabled={disabled}
-            onChange={(event) => {
-              const baudRate = Number(event.target.value);
-              setDraftValue(String(baudRate));
-              onValidityChange(true);
-              if (baudRate !== value) {
-                onChange(baudRate);
-              }
-            }}
+        <button
+          className="baud-rate-toggle"
+          type="button"
+          aria-label={open ? "收起常用波特率" : "展开常用波特率"}
+          title={open ? "收起常用波特率" : "选择常用波特率"}
+          aria-controls="baud-rate-options"
+          aria-expanded={open}
+          disabled={disabled}
+          onClick={() => {
+            if (open) {
+              setOpen(false);
+            } else {
+              openPresetList();
+            }
+            inputRef.current?.focus({ preventScroll: true });
+          }}
+        >
+          <ChevronDown aria-hidden="true" size={17} />
+        </button>
+        {open && (
+          <div
+            ref={optionsRef}
+            className="baud-rate-options"
+            id="baud-rate-options"
+            role="listbox"
+            aria-label="常用波特率"
+            data-placement={optionsPlacement}
+            style={{ maxHeight: `${optionsMaxHeight}px` }}
           >
-            <option value="" disabled>
-              常用波特率
-            </option>
             {BAUD_RATES.map((rate) => (
-              <option key={rate} value={rate}>
+              <button
+                key={rate}
+                ref={rate === BAUD_RATES[activeIndex] ? activeOptionRef : undefined}
+                id={`baud-rate-option-${rate}`}
+                type="button"
+                role="option"
+                aria-selected={rate === value}
+                data-active={rate === BAUD_RATES[activeIndex]}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseMove={() => setActiveIndex(BAUD_RATES.indexOf(rate))}
+                onClick={() => selectPreset(rate)}
+              >
                 {rate}
-              </option>
+                {rate === value && <Check aria-hidden="true" size={15} />}
+              </button>
             ))}
-          </select>
-          <ChevronDown aria-hidden="true" size={15} />
-        </span>
+          </div>
+        )}
       </div>
       <span
         className={parsedDraftValue === null ? "field-hint" : "sr-only"}
@@ -191,10 +369,6 @@ function BaudRateField({ value, disabled, onChange, onValidityChange }: BaudRate
       </span>
     </div>
   );
-}
-
-function isPresetBaudRate(value: number): boolean {
-  return BAUD_RATES.some((rate) => rate === value);
 }
 
 function parseBaudRate(value: string): number | null {
@@ -1433,7 +1607,7 @@ function formatProtocolDropTime(timestamp: number): string {
 }
 
 function AudioEmptyIcon() {
-  return <span className="empty-signal" aria-hidden="true">~</span>;
+  return <ChartNoAxesCombined className="empty-signal" aria-hidden="true" size={28} />;
 }
 
 function formatChannelValue(value: number): string {

@@ -408,17 +408,59 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    const baud_rate = screen.getByRole("textbox", { name: "波特率" });
-    const baud_rate_presets = screen.getByRole("combobox", {
-      name: "选择常用波特率",
-    });
+    const baud_rate = screen.getByRole("combobox", { name: "波特率" });
     expect(baud_rate).toHaveValue("115200");
+    fireEvent.click(screen.getByRole("button", { name: "展开常用波特率" }));
+    const baud_rate_presets = screen.getByRole("listbox", { name: "常用波特率" });
     expect(within(baud_rate_presets).getByRole("option", { name: "9600" })).toBeInTheDocument();
-    expect(within(baud_rate_presets).getAllByRole("option")).toHaveLength(14);
+    expect(within(baud_rate_presets).getAllByRole("option")).toHaveLength(13);
 
-    fireEvent.change(baud_rate_presets, { target: { value: "9600" } });
+    fireEvent.click(within(baud_rate_presets).getByRole("option", { name: "9600" }));
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(9_600);
     expect(baud_rate).toHaveValue("9600");
+  });
+
+  it("用方向键浏览常用波特率并用回车选择或 Escape 关闭", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      serialConfig: { ...state.serialConfig, baudRate: 115_200 },
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const baud_rate = screen.getByRole("combobox", { name: "波特率" });
+    fireEvent.keyDown(baud_rate, { key: "ArrowDown" });
+    expect(baud_rate).toHaveAttribute(
+      "aria-activedescendant",
+      "baud-rate-option-230400",
+    );
+    fireEvent.keyDown(baud_rate, { key: "ArrowDown" });
+    expect(baud_rate).toHaveAttribute(
+      "aria-activedescendant",
+      "baud-rate-option-460800",
+    );
+    fireEvent.keyDown(baud_rate, { key: "ArrowUp" });
+    expect(baud_rate).toHaveAttribute(
+      "aria-activedescendant",
+      "baud-rate-option-230400",
+    );
+    fireEvent.keyDown(baud_rate, { key: "Enter" });
+    expect(baud_rate).toHaveValue("230400");
+    expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(230_400);
+    expect(screen.queryByRole("listbox", { name: "常用波特率" })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(baud_rate, { key: "ArrowUp" });
+    expect(screen.getByRole("listbox", { name: "常用波特率" })).toBeInTheDocument();
+    fireEvent.keyDown(baud_rate, { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: "常用波特率" })).not.toBeInTheDocument();
+    expect(baud_rate).toHaveValue("230400");
   });
 
   it("用无步进文本框提交自定义波特率并可从下拉切回预设", () => {
@@ -436,7 +478,7 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    const baud_rate = screen.getByRole("textbox", { name: "波特率" }) as HTMLInputElement;
+    const baud_rate = screen.getByRole("combobox", { name: "波特率" }) as HTMLInputElement;
     expect(baud_rate).toHaveAttribute("type", "text");
     expect(baud_rate).toHaveAttribute("inputmode", "numeric");
 
@@ -455,9 +497,8 @@ describe("Sidebar 串口恢复界面", () => {
     expect(baud_rate).toHaveValue("12000000");
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(12_000_000);
 
-    fireEvent.change(screen.getByRole("combobox", { name: "选择常用波特率" }), {
-      target: { value: "115200" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "展开常用波特率" }));
+    fireEvent.click(screen.getByRole("option", { name: "115200" }));
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(115_200);
     expect(baud_rate).toHaveValue("115200");
   });
@@ -477,7 +518,7 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    const baud_rate = screen.getByRole("textbox", { name: "波特率" });
+    const baud_rate = screen.getByRole("combobox", { name: "波特率" });
     const connect_button = screen.getByRole("button", { name: "连接设备" });
     fireEvent.change(baud_rate, { target: { value: "0" } });
     expect(baud_rate).toHaveAttribute("aria-invalid", "true");
@@ -492,6 +533,29 @@ describe("Sidebar 串口恢复界面", () => {
     fireEvent.keyDown(baud_rate, { key: "Escape" });
     expect(baud_rate).toHaveValue("250000");
     expect(connect_button).toBeEnabled();
+  });
+
+  it("有效自定义波特率在焦点离开组合框时提交", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      serialConfig: { ...state.serialConfig, baudRate: 115_200 },
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const baud_rate = screen.getByRole("combobox", { name: "波特率" });
+    fireEvent.change(baud_rate, { target: { value: "250000" } });
+    fireEvent.blur(baud_rate, { relatedTarget: document.body });
+
+    expect(baud_rate).toHaveValue("250000");
+    expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(250_000);
   });
 
   it("串口核心监听故障时显示原因并阻止刷新和连接", () => {
@@ -535,8 +599,8 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    expect(screen.getByRole("textbox", { name: "波特率" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "选择常用波特率" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "波特率" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "展开常用波特率" })).toBeDisabled();
   });
 
   it("打开桌面串口连接面板时请求后台刷新", () => {

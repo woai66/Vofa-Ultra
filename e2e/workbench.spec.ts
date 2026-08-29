@@ -334,6 +334,11 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   await page.goto("/");
   await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
   await page.getByRole("radio", { name: /Raw Data/ }).click();
+  const receive_display = page.getByRole("group", { name: "接收显示格式" });
+  await expect(receive_display.getByRole("button", { name: "HEX" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 
   const signal = page.getByLabel("信号类型");
   const channelCount = page.getByRole("spinbutton", { name: "模拟器通道数" });
@@ -355,10 +360,11 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   await expect.poll(() => rxLines.count()).toBeGreaterThanOrEqual(3);
   const firstRun = (await rxLines.locator("code").allTextContents()).slice(0, 3);
   expect(firstRun).toHaveLength(3);
-  expect(firstRun[0]).toContain("sample=00000");
-  expect(firstRun[1]).toContain("sample=00001");
-  expect(firstRun[2]).toContain("sample=00002");
-  expect(firstRun.every((line) => line.includes("ch16="))).toBe(true);
+  expect(firstRun[0]).toMatch(/^56 55 01 10 00 00 00 00 /);
+  expect(firstRun[1]).toMatch(/^56 55 01 10 01 00 00 00 /);
+  expect(firstRun[2]).toMatch(/^56 55 01 10 02 00 00 00 /);
+  expect(firstRun.every((line) => line.split(/\s+/).length === 72)).toBe(true);
+  expect(firstRun.every((line) => !line.includes("sample="))).toBe(true);
   await page.screenshot({
     path: testInfo.outputPath("simulator-signals-desktop.png"),
     fullPage: true,
@@ -704,6 +710,7 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
   const app_shell = page.locator(".app-shell");
   const sidebar = page.locator(".sidebar");
   const send_row = page.locator(".send-main-row");
+  const workspace_header = page.locator(".workspace-header");
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
     await expect(app_shell).toHaveAttribute("data-sidebar-open", "true");
@@ -753,6 +760,57 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
     expect(layout.overflow).toBeLessThanOrEqual(1);
     expect(layout.outside).toEqual([]);
     expect(layout.overlaps).toEqual([]);
+
+    const header_layout = await workspace_header.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const controls = [...element.children]
+        .filter((child): child is HTMLElement => child instanceof HTMLElement)
+        .filter((control) => {
+          const control_rect = control.getBoundingClientRect();
+          return control_rect.width > 0 && control_rect.height > 0;
+        })
+        .map((control) => {
+          const control_rect = control.getBoundingClientRect();
+          return {
+            name: control.className,
+            left: control_rect.left,
+            top: control_rect.top,
+            right: control_rect.right,
+            bottom: control_rect.bottom,
+          };
+        });
+      const overlaps: string[] = [];
+      for (let left_index = 0; left_index < controls.length; left_index += 1) {
+        for (let right_index = left_index + 1; right_index < controls.length; right_index += 1) {
+          const left = controls[left_index];
+          const right = controls[right_index];
+          if (
+            left &&
+            right &&
+            Math.min(left.right, right.right) - Math.max(left.left, right.left) > 0.5 &&
+            Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 0.5
+          ) {
+            overlaps.push(`${left.name} / ${right.name}`);
+          }
+        }
+      }
+      const primary_title = element.querySelector<HTMLElement>(".workspace-title strong");
+      return {
+        outside: controls.filter(
+          (control) =>
+            control.left < rect.left - 1 ||
+            control.right > rect.right + 1 ||
+            control.top < rect.top - 1 ||
+            control.bottom > rect.bottom + 1,
+        ),
+        overlaps,
+        primary_title_truncated:
+          (primary_title?.scrollWidth ?? 0) > (primary_title?.clientWidth ?? 0) + 1,
+      };
+    });
+    expect(header_layout.outside).toEqual([]);
+    expect(header_layout.overlaps).toEqual([]);
+    expect(header_layout.primary_title_truncated).toBe(false);
   }
 
   const message = page.getByRole("textbox", { name: "发送内容" });
@@ -873,18 +931,75 @@ test("Windows 最小窗口中连接主操作始终可达", async ({ page }, test
   });
 });
 
-test("波特率可直接输入且常用值始终可选", async ({ page }) => {
+test("波特率可直接输入且常用值始终可选", async ({ page }, testInfo) => {
   await installTauriSerialMock(page);
   await page.setViewportSize({ width: 1_024, height: 680 });
   await page.goto("/");
 
-  const baud_rate = page.getByRole("textbox", { name: "波特率" });
-  const baud_rate_presets = page.getByRole("combobox", { name: "选择常用波特率" });
+  const baud_rate = page.getByRole("combobox", { name: "波特率" });
 
   await expect(baud_rate).toHaveValue("115200");
-  await expect(baud_rate_presets.locator("option")).toHaveCount(14);
-  await baud_rate_presets.selectOption("9600");
+  await page.getByRole("button", { name: "展开常用波特率" }).click();
+  const baud_rate_presets = page.getByRole("listbox", { name: "常用波特率" });
+  await expect(baud_rate_presets.getByRole("option")).toHaveCount(13);
+  await expect(baud_rate_presets.getByRole("option", { name: "115200" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  const open_layout = await baud_rate_presets.evaluate((element) => {
+    const list_rect = element.getBoundingClientRect();
+    const scroller_rect = element
+      .closest<HTMLElement>(".connection-panel-scroll")
+      ?.getBoundingClientRect();
+    const selected_rect = element
+      .querySelector<HTMLElement>('[aria-selected="true"]')
+      ?.getBoundingClientRect();
+    const combobox = element.closest<HTMLElement>(".baud-rate-combobox");
+    const input = combobox?.querySelector<HTMLInputElement>("input");
+    const combobox_style = combobox ? getComputedStyle(combobox) : null;
+    const input_style = input ? getComputedStyle(input) : null;
+    return {
+      list_top: list_rect.top,
+      list_bottom: list_rect.bottom,
+      scroller_top: scroller_rect?.top ?? Number.NEGATIVE_INFINITY,
+      scroller_bottom: scroller_rect?.bottom ?? Number.POSITIVE_INFINITY,
+      selected_top: selected_rect?.top ?? Number.NEGATIVE_INFINITY,
+      selected_bottom: selected_rect?.bottom ?? Number.POSITIVE_INFINITY,
+      focus_shadow: combobox_style?.boxShadow ?? "none",
+      input_outline_width: input_style?.outlineWidth ?? "",
+      document_width: document.documentElement.scrollWidth,
+    };
+  });
+  expect(open_layout.list_top).toBeGreaterThanOrEqual(open_layout.scroller_top - 1);
+  expect(open_layout.list_bottom).toBeLessThanOrEqual(open_layout.scroller_bottom + 1);
+  expect(open_layout.selected_top).toBeGreaterThanOrEqual(open_layout.list_top - 1);
+  expect(open_layout.selected_bottom).toBeLessThanOrEqual(open_layout.list_bottom + 1);
+  expect(open_layout.focus_shadow).not.toBe("none");
+  expect(open_layout.input_outline_width).toBe("0px");
+  expect(open_layout.document_width).toBeLessThanOrEqual(1_024);
+  await page.screenshot({
+    path: testInfo.outputPath("baud-rate-options-windows-minimum.png"),
+    fullPage: false,
+  });
+  await baud_rate_presets.getByRole("option", { name: "9600" }).click();
   await expect(baud_rate).toHaveValue("9600");
+
+  await baud_rate.press("ArrowDown");
+  await expect(baud_rate).toHaveAttribute(
+    "aria-activedescendant",
+    "baud-rate-option-19200",
+  );
+  await baud_rate.press("ArrowDown");
+  await baud_rate.press("ArrowUp");
+  await baud_rate.press("Enter");
+  await expect(baud_rate).toHaveValue("19200");
+  await expect(baud_rate_presets).toBeHidden();
+
+  await baud_rate.press("ArrowUp");
+  await expect(baud_rate_presets).toBeVisible();
+  await baud_rate.press("Escape");
+  await expect(baud_rate_presets).toBeHidden();
+  await expect(baud_rate).toHaveValue("19200");
 
   await baud_rate.fill("250000");
   await baud_rate.hover();
