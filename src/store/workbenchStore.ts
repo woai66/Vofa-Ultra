@@ -421,6 +421,7 @@ export interface WorkbenchStore {
   attitudeSample: (AttitudeSample & { readonly receivedAt: number }) | null;
   terminalEntries: TerminalEntry[];
   displayMode: DisplayMode;
+  displayModeBeforeSimulatorRaw: DisplayMode | null;
   sendMode: DisplayMode;
   lineEnding: LineEnding;
   commandChecksum: CommandChecksumMode;
@@ -701,6 +702,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       attitudeSample: null,
       terminalEntries: [],
       displayMode: INITIAL_WORKSPACE_CONFIG.displayMode,
+      displayModeBeforeSimulatorRaw: null,
       sendMode: INITIAL_WORKSPACE_CONFIG.sendMode,
       lineEnding: INITIAL_WORKSPACE_CONFIG.lineEnding,
       commandChecksum: INITIAL_WORKSPACE_CONFIG.commandChecksum,
@@ -1158,7 +1160,15 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             displayMode:
               source === "simulator" && state.protocol === "raw"
                 ? "hex"
-                : state.displayMode,
+                : state.source === "simulator" && state.protocol === "raw"
+                  ? state.displayModeBeforeSimulatorRaw ?? "text"
+                  : state.displayMode,
+            displayModeBeforeSimulatorRaw:
+              source === "simulator" && state.protocol === "raw"
+                ? state.displayMode
+                : state.source === "simulator" && state.protocol === "raw"
+                  ? null
+                  : state.displayModeBeforeSimulatorRaw,
             channels: [],
             processedChannels: [],
             attitudeSample: null,
@@ -1203,9 +1213,25 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         set((state) => ({
           protocol,
           displayMode:
-            state.source === "simulator" && protocol === "raw"
+            state.source === "simulator" &&
+            state.protocol !== "raw" &&
+            protocol === "raw"
               ? "hex"
-              : state.displayMode,
+              : state.source === "simulator" &&
+                  state.protocol === "raw" &&
+                  protocol !== "raw"
+                ? state.displayModeBeforeSimulatorRaw ?? "text"
+                : state.displayMode,
+          displayModeBeforeSimulatorRaw:
+            state.source === "simulator" &&
+            state.protocol !== "raw" &&
+            protocol === "raw"
+              ? state.displayMode
+              : state.source === "simulator" &&
+                  state.protocol === "raw" &&
+                  protocol !== "raw"
+                ? null
+                : state.displayModeBeforeSimulatorRaw,
           channels: [],
           processedChannels: [],
           attitudeSample: null,
@@ -2191,7 +2217,13 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       setDisplayMode: (displayMode) => {
         if (get().workspaceTransitionStatus === "idle") {
-          set({ displayMode });
+          set((state) => ({
+            displayMode,
+            displayModeBeforeSimulatorRaw:
+              state.source === "simulator" && state.protocol === "raw"
+                ? displayMode
+                : state.displayModeBeforeSimulatorRaw,
+          }));
         }
       },
       setSendMode: (sendMode) => {
@@ -3505,7 +3537,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         protocol: state.protocol,
         serialConfig: state.serialConfig,
         simulatorConfig: state.simulatorConfig,
-        displayMode: state.displayMode,
+        displayMode:
+          state.source === "simulator" && state.protocol === "raw"
+            ? state.displayModeBeforeSimulatorRaw ?? state.displayMode
+            : state.displayMode,
         sendMode: state.sendMode,
         lineEnding: state.lineEnding,
         commandChecksum: state.commandChecksum,
@@ -3743,11 +3778,11 @@ export function selectIsWorkspaceDirty(state: WorkbenchStore): boolean {
   if (!state.isNativeRuntime && savedConfig.source === "serial") {
     savedConfig.source = "simulator";
   }
-  return !areWorkspaceConfigsEqual(captureWorkspaceConfig(state), savedConfig);
+  return !areWorkspaceConfigsEqual(captureWorkbenchWorkspaceConfig(state), savedConfig);
 }
 
 function captureWorkspaceConfigForSave(state: WorkbenchStore) {
-  const config = captureWorkspaceConfig(state);
+  const config = captureWorkbenchWorkspaceConfig(state);
   const activeWorkspace = selectActiveWorkspace(state);
   if (
     !state.isNativeRuntime &&
@@ -3755,6 +3790,18 @@ function captureWorkspaceConfigForSave(state: WorkbenchStore) {
     activeWorkspace?.config.source === "serial"
   ) {
     config.source = "serial";
+  }
+  return config;
+}
+
+function captureWorkbenchWorkspaceConfig(state: WorkbenchStore) {
+  const config = captureWorkspaceConfig(state);
+  if (
+    state.source === "simulator" &&
+    state.protocol === "raw" &&
+    state.displayModeBeforeSimulatorRaw
+  ) {
+    config.displayMode = state.displayModeBeforeSimulatorRaw;
   }
   return config;
 }
@@ -4950,15 +4997,18 @@ async function applyWorkspaceSnapshot(
   }
   const config = cloneWorkspaceConfig(latestTarget.config);
   const usesBrowserFallback = !get().isNativeRuntime && config.source === "serial";
+  const source = usesBrowserFallback ? "simulator" : config.source;
+  const usesSimulatorRaw = source === "simulator" && config.protocol === "raw";
   const processingGraph = configureProcessingGraph(config.processingGraph);
   resetProtocolState(config.protocol, config.terminalRxTextEncoding);
   set((state) => ({
     activeWorkspaceId: latestTarget.id,
-    source: usesBrowserFallback ? "simulator" : config.source,
+    source,
     protocol: config.protocol,
     serialConfig: config.serialConfig,
     simulatorConfig: cloneSimulatorConfig(config.simulatorConfig),
-    displayMode: config.displayMode,
+    displayMode: usesSimulatorRaw ? "hex" : config.displayMode,
+    displayModeBeforeSimulatorRaw: usesSimulatorRaw ? config.displayMode : null,
     sendMode: config.sendMode,
     lineEnding: config.lineEnding,
     commandChecksum: config.commandChecksum,
@@ -5779,12 +5829,15 @@ function restorePersistedWorkbenchState(
     !currentState.isNativeRuntime && persistedConfig.source === "serial"
       ? "simulator"
       : persistedConfig.source;
+  const usesSimulatorRaw = source === "simulator" && persistedConfig.protocol === "raw";
   const processingGraph = configureProcessingGraph(persistedConfig.processingGraph);
 
   return {
     ...currentState,
     ...persistedConfig,
     source,
+    displayMode: usesSimulatorRaw ? "hex" : persistedConfig.displayMode,
+    displayModeBeforeSimulatorRaw: usesSimulatorRaw ? persistedConfig.displayMode : null,
     processingGraph,
     processingStatus: liveProcessingRuntime.getSnapshot(),
     processedChannels: [],

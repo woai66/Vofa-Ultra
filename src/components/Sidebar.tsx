@@ -543,6 +543,17 @@ function ConnectionPanel() {
     const selectedPort = ports.find((port) => port.name === config.portName);
     return selectedPort ? presentSerialPort(selectedPort) : null;
   }, [config.portName, ports]);
+  const selectedPortDescription = selectedPortPresentation
+    ? [
+        selectedPortPresentation.primaryLabel,
+        selectedPortPresentation.secondaryLabel,
+        [
+          selectedPortPresentation.kindLabel,
+          selectedPortPresentation.usbIdentifier,
+        ].filter(Boolean).join(" "),
+        selectedPortPresentation.hasUniqueUsbIdentity ? "支持唯一设备识别" : "",
+      ].filter(Boolean).join(" · ")
+    : "";
   const serialConnectUnavailable =
     source === "serial" &&
     (selectedPortPresentation === null || !baudRateDraftValid || Boolean(serialRuntimeError));
@@ -702,24 +713,26 @@ function ConnectionPanel() {
             ))}
           </select>
           {selectedPortPresentation && (
-            <div className="serial-port-summary" role="group" aria-label="已选端口信息">
+            <div
+              className="serial-port-summary"
+              role="group"
+              aria-label={`已选端口信息：${selectedPortDescription}`}
+              title={selectedPortDescription}
+            >
               <div className="serial-port-summary-name">
                 <Cable size={14} aria-hidden="true" />
-                <strong title={selectedPortPresentation.primaryLabel}>
-                  {selectedPortPresentation.primaryLabel}
-                </strong>
+                <strong>{selectedPortPresentation.primaryLabel}</strong>
               </div>
-              {selectedPortPresentation.secondaryLabel && (
-                <span title={selectedPortPresentation.secondaryLabel}>
-                  {selectedPortPresentation.secondaryLabel}
-                </span>
-              )}
               <div className="serial-port-summary-meta">
-                <span>{selectedPortPresentation.kindLabel}</span>
-                {selectedPortPresentation.usbIdentifier && (
-                  <code>{selectedPortPresentation.usbIdentifier}</code>
+                {selectedPortPresentation.secondaryLabel && (
+                  <span>{selectedPortPresentation.secondaryLabel}</span>
                 )}
-                {selectedPortPresentation.hasUniqueUsbIdentity && <span>唯一身份</span>}
+                <span>
+                  {selectedPortPresentation.kindLabel}
+                  {selectedPortPresentation.usbIdentifier && (
+                    <code>{` ${selectedPortPresentation.usbIdentifier}`}</code>
+                  )}
+                </span>
               </div>
             </div>
           )}

@@ -1214,8 +1214,7 @@ textarea:focus {
   min-width: 0;
   padding: 1px 1px 4px;
   color: var(--text-muted);
-  font-size: 11px;
-  gap: 3px;
+  gap: 4px;
 }
 
 .serial-port-summary-name {
@@ -1231,24 +1230,36 @@ textarea:focus {
   color: var(--accent);
 }
 
-.serial-port-summary-name strong,
-.serial-port-summary > span {
+.serial-port-summary-name strong {
   overflow: hidden;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.serial-port-summary-name strong {
-  font-size: 12px;
 }
 
 .serial-port-summary-meta {
   display: flex;
   min-width: 0;
-  flex-wrap: wrap;
   align-items: center;
+  overflow: hidden;
   color: var(--text-subtle);
+  font-size: 12px;
   gap: 5px;
+}
+
+.serial-port-summary-meta > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serial-port-summary-meta > span:first-child {
+  flex: 1 1 auto;
+}
+
+.serial-port-summary-meta > span:last-child {
+  flex: 0 0 auto;
 }
 
 .serial-port-summary-meta > * + *::before {

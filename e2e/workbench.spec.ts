@@ -333,12 +333,22 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   await page.setViewportSize({ width: 1_280, height: 800 });
   await page.goto("/");
   await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
-  await page.getByRole("radio", { name: /Raw Data/ }).click();
   const receive_display = page.getByRole("group", { name: "接收显示格式" });
+  await expect(receive_display.getByRole("button", { name: "TEXT" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("radio", { name: /Raw Data/ }).click();
   await expect(receive_display.getByRole("button", { name: "HEX" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
+  await page.getByRole("radio", { name: /FireWater/ }).click();
+  await expect(receive_display.getByRole("button", { name: "TEXT" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("radio", { name: /Raw Data/ }).click();
 
   const signal = page.getByLabel("信号类型");
   const channelCount = page.getByRole("spinbutton", { name: "模拟器通道数" });
@@ -958,9 +968,14 @@ test("波特率可直接输入且常用值始终可选", async ({ page }, testIn
     const input = combobox?.querySelector<HTMLInputElement>("input");
     const combobox_style = combobox ? getComputedStyle(combobox) : null;
     const input_style = input ? getComputedStyle(input) : null;
+    const combobox_rect = combobox?.getBoundingClientRect();
     return {
+      list_left: list_rect.left,
+      list_right: list_rect.right,
       list_top: list_rect.top,
       list_bottom: list_rect.bottom,
+      combobox_left: combobox_rect?.left ?? Number.NEGATIVE_INFINITY,
+      combobox_right: combobox_rect?.right ?? Number.POSITIVE_INFINITY,
       scroller_top: scroller_rect?.top ?? Number.NEGATIVE_INFINITY,
       scroller_bottom: scroller_rect?.bottom ?? Number.POSITIVE_INFINITY,
       selected_top: selected_rect?.top ?? Number.NEGATIVE_INFINITY,
@@ -972,6 +987,8 @@ test("波特率可直接输入且常用值始终可选", async ({ page }, testIn
   });
   expect(open_layout.list_top).toBeGreaterThanOrEqual(open_layout.scroller_top - 1);
   expect(open_layout.list_bottom).toBeLessThanOrEqual(open_layout.scroller_bottom + 1);
+  expect(Math.abs(open_layout.list_left - open_layout.combobox_left)).toBeLessThanOrEqual(1);
+  expect(Math.abs(open_layout.list_right - open_layout.combobox_right)).toBeLessThanOrEqual(1);
   expect(open_layout.selected_top).toBeGreaterThanOrEqual(open_layout.list_top - 1);
   expect(open_layout.selected_bottom).toBeLessThanOrEqual(open_layout.list_bottom + 1);
   expect(open_layout.focus_shadow).not.toBe("none");
@@ -979,6 +996,12 @@ test("波特率可直接输入且常用值始终可选", async ({ page }, testIn
   expect(open_layout.document_width).toBeLessThanOrEqual(1_024);
   await page.screenshot({
     path: testInfo.outputPath("baud-rate-options-windows-minimum.png"),
+    fullPage: false,
+  });
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.screenshot({
+    path: testInfo.outputPath("baud-rate-options-windows-minimum-light.png"),
     fullPage: false,
   });
   await baud_rate_presets.getByRole("option", { name: "9600" }).click();
@@ -4072,11 +4095,12 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
 
   await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
   await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
-  const deviceInfo = page.getByRole("group", { name: "已选端口信息" });
+  const deviceInfo = page.getByRole("group", { name: /已选端口信息/ });
   await expect(deviceInfo).toContainText("Telemetry");
   await expect(deviceInfo).toContainText("Acme Devices");
   await expect(deviceInfo).toContainText("1234:5678");
-  await expect(deviceInfo).toContainText("唯一身份");
+  await expect(deviceInfo).not.toContainText("唯一身份");
+  await expect(deviceInfo).toHaveAccessibleName(/支持唯一设备识别/);
   await expect(deviceInfo).not.toContainText("DEVICE-001");
 
   const desktopViewport = page.viewportSize();

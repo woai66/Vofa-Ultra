@@ -430,6 +430,7 @@ describe("workbenchStore", () => {
       processedChannels: [],
       attitudeSample: null,
       terminalEntries: [],
+      displayModeBeforeSimulatorRaw: null,
       commandHistory: [],
       commandTask: createInitialCommandTaskSnapshot(),
       autoResponderRules: [],
@@ -2062,14 +2063,25 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().channels).toEqual([]);
   });
 
-  it("模拟器进入 Raw 时默认显示 HEX，真实串口 Raw 保留用户显示选择", async () => {
+  it("模拟器 Raw 临时使用 HEX 并在离开时恢复用户显示选择", async () => {
     useWorkbenchStore.setState({
       source: "simulator",
       protocol: "firewater",
       displayMode: "text",
+      displayModeBeforeSimulatorRaw: null,
     });
 
     useWorkbenchStore.getState().setProtocol("raw");
+    expect(useWorkbenchStore.getState().displayMode).toBe("hex");
+    expect(useWorkbenchStore.getState().displayModeBeforeSimulatorRaw).toBe("text");
+
+    useWorkbenchStore.getState().setProtocol("firewater");
+    expect(useWorkbenchStore.getState().displayMode).toBe("text");
+    expect(useWorkbenchStore.getState().displayModeBeforeSimulatorRaw).toBeNull();
+
+    useWorkbenchStore.getState().setDisplayMode("hex");
+    useWorkbenchStore.getState().setProtocol("raw");
+    useWorkbenchStore.getState().setProtocol("justfloat");
     expect(useWorkbenchStore.getState().displayMode).toBe("hex");
 
     useWorkbenchStore.setState({
@@ -2077,12 +2089,18 @@ describe("workbenchStore", () => {
       source: "serial",
       protocol: "firewater",
       displayMode: "text",
+      displayModeBeforeSimulatorRaw: null,
     });
     useWorkbenchStore.getState().setProtocol("raw");
     expect(useWorkbenchStore.getState().displayMode).toBe("text");
 
     await useWorkbenchStore.getState().setSource("simulator");
     expect(useWorkbenchStore.getState().displayMode).toBe("hex");
+    expect(useWorkbenchStore.getState().displayModeBeforeSimulatorRaw).toBe("text");
+
+    await useWorkbenchStore.getState().setSource("serial");
+    expect(useWorkbenchStore.getState().displayMode).toBe("text");
+    expect(useWorkbenchStore.getState().displayModeBeforeSimulatorRaw).toBeNull();
   });
 
   it("视图暂停时仍诊断坏帧，清统计不会丢弃等待中的半帧", () => {

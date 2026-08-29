@@ -239,12 +239,13 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    const summary = screen.getByRole("group", { name: "已选端口信息" });
+    const summary = screen.getByRole("group", { name: /已选端口信息/ });
     expect(summary).toHaveTextContent("Telemetry");
     expect(summary).toHaveTextContent("Acme Devices");
     expect(summary).toHaveTextContent("USB");
     expect(summary).toHaveTextContent("1234:5678");
-    expect(summary).toHaveTextContent("唯一身份");
+    expect(summary).not.toHaveTextContent("唯一身份");
+    expect(summary).toHaveAccessibleName(/支持唯一设备识别/);
     expect(summary).not.toHaveTextContent("DEVICE-001");
   });
 
