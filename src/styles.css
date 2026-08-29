@@ -4906,6 +4906,18 @@ textarea:focus {
   color: var(--danger);
 }
 
+.terminal-line[data-session-boundary="true"] .direction-label {
+  color: var(--text-subtle);
+}
+
+.terminal-line[data-session-boundary="true"] {
+  background: var(--surface-0);
+}
+
+.terminal-line[data-session-boundary="true"] code {
+  color: var(--text-muted);
+}
+
 .terminal-line code {
   min-width: 0;
   overflow-wrap: anywhere;

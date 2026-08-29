@@ -18,7 +18,7 @@ interface TerminalSearchOptions {
 }
 
 export function terminalEntryPayload(entry: TerminalEntry, displayMode: DisplayMode): string {
-  return displayMode === "text" ? entry.text : entry.hex;
+  return entry.direction === "system" || displayMode === "text" ? entry.text : entry.hex;
 }
 
 export function filterTerminalEntries(

@@ -515,6 +515,9 @@ describe("workbenchStore", () => {
       replayNextSequence: 1,
       replayMessage: "",
     });
+    useWorkbenchStore.setState({
+      protocol: config.protocol === "firewater" ? "raw" : "firewater",
+    });
     useWorkbenchStore.getState().setProtocol(config.protocol);
     useWorkbenchStore.getState().setProcessingGraph(config.processingGraph);
     useWorkbenchStore.getState().clearTerminal();
@@ -743,6 +746,56 @@ describe("workbenchStore", () => {
       { text: "session-one", rxBoundary: "unterminated" },
       { text: "session-two\\n", timestamp: 200 },
     ]);
+  });
+
+  it("串口断开响应丢失时读取后端快照并恢复真实断开状态", async () => {
+    disconnectSerialMock.mockRejectedValueOnce(new Error("IPC 响应丢失"));
+    getSerialStateMock.mockResolvedValueOnce({
+      status: "disconnected",
+      portName: "COM3",
+      generation: 3,
+      revision: 8,
+    });
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 3,
+      serialStateRevision: 7,
+    });
+
+    await expect(useWorkbenchStore.getState().disconnect()).resolves.toBe(true);
+    expect(getSerialStateMock).toHaveBeenCalledOnce();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "disconnected",
+      serialGeneration: 3,
+      serialStateRevision: 8,
+      runtimeTransitionStatus: "idle",
+    });
+  });
+
+  it("串口断开失败且后端仍连接时不伪造错误连接态", async () => {
+    disconnectSerialMock.mockRejectedValueOnce(new Error("串口服务无响应"));
+    getSerialStateMock.mockResolvedValueOnce({
+      status: "connected",
+      portName: "COM3",
+      generation: 3,
+      revision: 8,
+    });
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 3,
+      serialStateRevision: 7,
+    });
+
+    await expect(useWorkbenchStore.getState().disconnect()).resolves.toBe(false);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connected",
+      connectionMessage: "断开失败：串口服务无响应",
+      runtimeTransitionStatus: "idle",
+    });
   });
 
   it("仅在成功发送后记录会话历史并合并连续重复项", async () => {
@@ -2045,6 +2098,16 @@ describe("workbenchStore", () => {
   it("切换数据源时清空上一数据源的通道", async () => {
     useWorkbenchStore.setState({
       isNativeRuntime: true,
+      terminalEntries: [
+        {
+          id: 900,
+          direction: "rx",
+          timestamp: 100,
+          text: "sample=1 ch1=2\n",
+          hex: "73 61 6D 70 6C 65",
+          byteCount: 18,
+        },
+      ],
       channels: [
         {
           id: "channel-0",
@@ -2061,6 +2124,40 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState().source).toBe("serial");
     expect(useWorkbenchStore.getState().channels).toEqual([]);
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { id: 900, direction: "rx", text: "sample=1 ch1=2\n" },
+      {
+        direction: "system",
+        text: "数据源：模拟器 → 串口",
+        byteCount: 0,
+        sessionBoundary: true,
+      },
+    ]);
+
+    useWorkbenchStore.getState().setProtocol("raw");
+    expect(useWorkbenchStore.getState().terminalEntries.at(-1)).toMatchObject({
+      direction: "system",
+      text: "协议：FireWater → Raw Data",
+      byteCount: 0,
+      sessionBoundary: true,
+    });
+
+    useWorkbenchStore.setState({
+      channels: [
+        {
+          id: "channel-1",
+          name: "CH 1",
+          color: "#46d89c",
+          visible: true,
+          points: [{ x: 2, y: 3 }],
+          lastValue: 3,
+        },
+      ],
+    });
+    const boundaryCount = useWorkbenchStore.getState().terminalEntries.length;
+    useWorkbenchStore.getState().setProtocol("raw");
+    expect(useWorkbenchStore.getState().terminalEntries).toHaveLength(boundaryCount);
+    expect(useWorkbenchStore.getState().channels).toHaveLength(1);
   });
 
   it("模拟器 Raw 临时使用 HEX 并在离开时恢复用户显示选择", async () => {

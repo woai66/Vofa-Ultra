@@ -139,6 +139,7 @@ describe("workbenchStore 协议扩展", () => {
       runtimeTransitionStatus: "idle",
     });
     useWorkbenchStore.getState().setProtocol("firewater");
+    useWorkbenchStore.getState().clearTerminal();
     useWorkbenchStore.setState({ connectionStatus: "connected" });
   });
 

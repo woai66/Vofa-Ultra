@@ -1164,7 +1164,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           }
           revokeExtensionForBoundary(get, set, "数据源已切换，扩展会话已撤销");
           const latest = get();
-          const terminalEntries = settleTerminalPresentation(latest, terminalLineAssembler);
+          const terminalEntries = appendTerminalSessionBoundary(
+            settleTerminalPresentation(latest, terminalLineAssembler),
+            `数据源：${dataSourceDisplayName(latest.source)} → ${dataSourceDisplayName(source)}`,
+          );
           resetProtocolState(get().protocol);
           set((state) => ({
             source,
@@ -1214,13 +1217,14 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return;
         }
         const currentState = get();
-        if (protocol !== currentState.protocol) {
-          getAutoResponderRuntime().stop("protocol-change");
-          revokeExtensionForBoundary(get, set, "基础协议已切换，扩展会话已撤销");
+        if (protocol === currentState.protocol) {
+          return;
         }
-        const terminalEntries = settleTerminalPresentation(
-          currentState,
-          terminalLineAssembler,
+        getAutoResponderRuntime().stop("protocol-change");
+        revokeExtensionForBoundary(get, set, "基础协议已切换，扩展会话已撤销");
+        const terminalEntries = appendTerminalSessionBoundary(
+          settleTerminalPresentation(currentState, terminalLineAssembler),
+          `协议：${protocolDisplayName(currentState.protocol)} → ${protocolDisplayName(protocol)}`,
         );
         resetProtocolState(protocol);
         set((state) => ({
@@ -5013,10 +5017,28 @@ async function disconnectCurrentSource(
     get().handleSerialState(payload);
     return payload.status === "disconnected";
   } catch (error) {
+    const message = getErrorMessage(error);
+    try {
+      const payload = await getSerialState();
+      get().handleSerialState(payload);
+      if (payload.status === "disconnected") {
+        return true;
+      }
+      if (payload.status === "connected") {
+        set({
+          connectionMessage: `断开失败：${message}`,
+          statusMessage: `断开失败：${message}`,
+        });
+        return false;
+      }
+      return false;
+    } catch {
+      // 无法读取真实状态时保留原始断开错误，避免用二次错误覆盖用户原因。
+    }
     set({
       connectionStatus: "error",
-      connectionMessage: getErrorMessage(error),
-      statusMessage: getErrorMessage(error),
+      connectionMessage: message,
+      statusMessage: message,
       serialModemStatus: createUnavailableSerialModemStatus(get().serialGeneration),
       waveformTrigger: createIdleWaveformTriggerState(),
     });
@@ -5659,6 +5681,18 @@ function createTerminalEntry(
   };
 }
 
+function appendTerminalSessionBoundary(
+  terminalEntries: TerminalEntry[],
+  message: string,
+): TerminalEntry[] {
+  const entry = createTerminalEntry("system", new Uint8Array(), Date.now(), message);
+  return appendBounded(
+    terminalEntries,
+    { ...entry, sessionBoundary: true },
+    MAX_TERMINAL_ENTRIES,
+  );
+}
+
 function createRxTerminalEntries(
   bytes: Uint8Array,
   timestamp: number,
@@ -5990,6 +6024,10 @@ function getErrorMessage(error: unknown): string {
 
 function protocolDisplayName(protocol: ProtocolKind): string {
   return getProtocolDefinition(protocol).displayName;
+}
+
+function dataSourceDisplayName(source: DataSource): string {
+  return source === "serial" ? "串口" : "模拟器";
 }
 
 function serialStatusMessage(status: ConnectionStatus, portName: string): string {

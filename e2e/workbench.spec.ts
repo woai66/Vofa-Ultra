@@ -349,6 +349,11 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
     "true",
   );
   await page.getByRole("radio", { name: /Raw Data/ }).click();
+  const protocolBoundary = page.locator('.terminal-line[data-direction="system"]').last();
+  await expect(protocolBoundary).toContainText("协议：FireWater → Raw Data");
+  await expect(protocolBoundary).toHaveAttribute("data-session-boundary", "true");
+  await expect(protocolBoundary.locator(".direction-label")).toHaveText("SYS");
+  await expect(protocolBoundary.locator("small")).toHaveText("边界");
 
   const signal = page.getByLabel("信号类型");
   const channelCount = page.getByRole("spinbutton", { name: "模拟器通道数" });

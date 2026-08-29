@@ -54,6 +54,7 @@ export interface TerminalEntry {
   text: string;
   hex: string;
   byteCount: number;
+  sessionBoundary?: boolean;
   rxBoundary?: "overflow" | "unterminated";
 }
 

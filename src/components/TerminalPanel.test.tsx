@@ -268,6 +268,43 @@ describe("TerminalPanel", () => {
     viewportHeight.mockRestore();
   });
 
+  it("只把显式会话边界标记为边界，不误标普通系统消息", async () => {
+    const viewportHeight = vi
+      .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+      .mockReturnValue(240);
+    useWorkbenchStore.setState({
+      terminalEntries: [
+        {
+          id: 151,
+          direction: "system",
+          timestamp: 100,
+          text: "Connected",
+          hex: "",
+          byteCount: 0,
+        },
+        {
+          id: 152,
+          direction: "system",
+          timestamp: 101,
+          text: "协议：FireWater → Raw Data",
+          hex: "",
+          byteCount: 0,
+          sessionBoundary: true,
+        },
+      ],
+    });
+    render(<TerminalPanel />);
+
+    const statusLine = (await screen.findByText("Connected")).closest(".terminal-line");
+    const boundaryLine = screen.getByText("协议：FireWater → Raw Data").closest(".terminal-line");
+    expect(statusLine).not.toHaveAttribute("data-session-boundary");
+    expect(within(statusLine as HTMLElement).getByText("0 B")).toBeVisible();
+    expect(boundaryLine).toHaveAttribute("data-session-boundary", "true");
+    expect(within(boundaryLine as HTMLElement).getByText("边界")).toBeVisible();
+    expect(within(boundaryLine as HTMLElement).getByTitle("会话边界")).toBeVisible();
+    viewportHeight.mockRestore();
+  });
+
   it("上滚时挂起自动跟随且回到最新后继续接收记录", async () => {
     const initialEntries = Array.from(
       { length: 20 },

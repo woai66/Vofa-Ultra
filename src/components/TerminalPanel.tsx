@@ -1357,6 +1357,7 @@ export function TerminalPanel() {
                     ref={rowVirtualizer.measureElement}
                     className="terminal-line"
                     data-direction={entry.direction}
+                    data-session-boundary={entry.sessionBoundary || undefined}
                     data-index={virtualRow.index}
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
@@ -1368,7 +1369,12 @@ export function TerminalPanel() {
                     >
                       {timeLabel}
                     </time>
-                    <span className="direction-label">{entry.direction.toUpperCase()}</span>
+                    <span
+                      className="direction-label"
+                      title={entry.sessionBoundary ? "会话边界" : undefined}
+                    >
+                      {entry.direction === "system" ? "SYS" : entry.direction.toUpperCase()}
+                    </span>
                     <code>
                       <HighlightedTerminalPayload
                         value={terminalEntryPayload(entry, displayMode)}
@@ -1376,7 +1382,7 @@ export function TerminalPanel() {
                       />
                     </code>
                     <small>
-                      {entry.byteCount} B
+                      {entry.sessionBoundary ? "边界" : `${entry.byteCount} B`}
                       {entry.rxBoundary ? (
                         <span
                           className="terminal-rx-boundary"
