@@ -3243,7 +3243,7 @@ textarea:focus {
 
 .terminal-export-menu span {
   overflow: hidden;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3252,8 +3252,17 @@ textarea:focus {
 .terminal-export-menu small {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 11px;
   white-space: nowrap;
+}
+
+.terminal-export-menu .terminal-export-error {
+  padding: 7px 9px;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: normal;
 }
 
 .live-state {

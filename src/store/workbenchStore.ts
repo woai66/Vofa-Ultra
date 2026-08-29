@@ -5729,12 +5729,14 @@ function createTerminalEntry(
 ): TerminalEntry {
   const visibleBytes = bytes.slice(0, MAX_TERMINAL_BYTES_PER_ENTRY);
   const truncatedSuffix = bytes.length > visibleBytes.length ? " …" : "";
+  const decodedText = text.slice(0, MAX_TERMINAL_BYTES_PER_ENTRY);
   terminalEntryId += 1;
   return {
     id: terminalEntryId,
     direction,
     timestamp,
-    text: sanitizeText(text.slice(0, MAX_TERMINAL_BYTES_PER_ENTRY)) + truncatedSuffix,
+    text: sanitizeText(decodedText) + truncatedSuffix,
+    decodedText: decodedText + truncatedSuffix,
     hex: formatHex(visibleBytes) + truncatedSuffix,
     byteCount: bytes.length,
     ...(rxBoundary ? { rxBoundary } : {}),
@@ -5834,6 +5836,7 @@ function appendDecoderRemainder(
     nextEntries[index] = {
       ...entry,
       text: entry.text + sanitizeText(remainder),
+      decodedText: (entry.decodedText ?? entry.text) + remainder,
     };
     return nextEntries;
   }
@@ -5900,6 +5903,9 @@ function sanitizeText(value: string): string {
     .replace(/\t/g, "\\t");
   return Array.from(escapedWhitespace, (character) => {
     const code = character.charCodeAt(0);
+    if ((code >= 0x80 && code <= 0x9f) || code === 0x2028 || code === 0x2029) {
+      return `\\u${code.toString(16).toUpperCase().padStart(4, "0")}`;
+    }
     return (code >= 0 && code <= 31) || code === 127 ? "·" : character;
   }).join("");
 }

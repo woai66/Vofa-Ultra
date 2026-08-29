@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createInitialAutoResponderSnapshot } from "../core/autoResponder";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
 import { createInitialModbusPollSnapshot } from "../core/modbusPoller";
 import {
@@ -86,6 +87,7 @@ describe("TerminalPanel", () => {
       },
       serialControlLineOperation: "idle",
       commandTask: createInitialCommandTaskSnapshot(),
+      autoResponder: createInitialAutoResponderSnapshot(),
       isSendingCommand: false,
       displayMode: "text",
       sendMode: "text",
@@ -482,6 +484,56 @@ describe("TerminalPanel", () => {
     ).toBeDisabled();
   });
 
+  it("终端下载失败时保留菜单、显示原因并回收对象 URL", async () => {
+    useWorkbenchStore.setState({ terminalEntries: SEARCH_ENTRIES });
+    const createDescriptor = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+    const revokeDescriptor = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+    const createObjectUrl = vi
+      .fn<() => string>()
+      .mockImplementationOnce(() => {
+        throw new Error("无法创建下载资源");
+      })
+      .mockReturnValue("blob:terminal-export");
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectUrl,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrl,
+    });
+    const anchorClick = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {
+        throw new Error("系统拒绝下载");
+      });
+
+    try {
+      const user = userEvent.setup();
+      render(<TerminalPanel />);
+      await user.click(screen.getByRole("button", { name: "导出终端记录" }));
+      const exportMenu = await screen.findByRole("menu", { name: "终端导出范围" });
+      const exportAll = within(exportMenu).getByRole("menuitem", { name: "全部缓存 3 条" });
+
+      await user.click(exportAll);
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "终端导出失败：无法创建下载资源",
+      );
+      expect(exportMenu).toBeVisible();
+      expect(revokeObjectUrl).not.toHaveBeenCalled();
+
+      await user.click(exportAll);
+      expect(screen.getByRole("alert")).toHaveTextContent("终端导出失败：系统拒绝下载");
+      expect(exportMenu).toBeVisible();
+      expect(revokeObjectUrl).toHaveBeenCalledWith("blob:terminal-export");
+    } finally {
+      anchorClick.mockRestore();
+      restoreProperty(URL, "createObjectURL", createDescriptor);
+      restoreProperty(URL, "revokeObjectURL", revokeDescriptor);
+    }
+  });
+
   it("搜索当前显示格式并在 TEXT 与 HEX 间重新计算结果", async () => {
     useWorkbenchStore.setState({ terminalEntries: SEARCH_ENTRIES });
     const user = userEvent.setup();
@@ -511,6 +563,29 @@ describe("TerminalPanel", () => {
     );
     expect(search).toHaveAttribute("placeholder", "搜索 HEX 内容");
     expect(screen.getByText("1 / 3 条记录")).toBeVisible();
+  });
+
+  it("自动应答运行时仍允许切换终端显示格式并锁定相关编码", async () => {
+    useWorkbenchStore.setState({
+      displayMode: "hex",
+      autoResponder: {
+        ...createInitialAutoResponderSnapshot(),
+        status: "armed",
+        sessionId: 7,
+        enabledRuleCount: 1,
+      },
+    });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    const displayFormat = screen.getByRole("group", { name: "接收显示格式" });
+    const textDisplay = within(displayFormat).getByRole("button", { name: "TEXT" });
+    expect(textDisplay).toBeEnabled();
+    await user.click(textDisplay);
+
+    expect(useWorkbenchStore.getState().displayMode).toBe("text");
+    expect(screen.getByRole("combobox", { name: "接收文本编码" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "发送文本编码" })).toBeDisabled();
   });
 
   it("用上下键恢复命令格式并在末尾返回原草稿", async () => {
@@ -1715,3 +1790,15 @@ describe("TerminalPanel", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeVisible();
   });
 });
+
+function restoreProperty(
+  target: typeof URL,
+  property: "createObjectURL" | "revokeObjectURL",
+  descriptor: PropertyDescriptor | undefined,
+): void {
+  if (descriptor) {
+    Object.defineProperty(target, property, descriptor);
+    return;
+  }
+  Reflect.deleteProperty(target, property);
+}

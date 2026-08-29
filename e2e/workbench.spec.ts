@@ -1881,6 +1881,14 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
       hex: "66 61 75 6C 74 20 73 65 6E 73 6F 72",
       byteCount: 12,
     },
+    {
+      id: 44_004,
+      direction: "system",
+      timestamp: 1_700_000_200_300,
+      text: "协议：FireWater → Raw Data",
+      hex: "",
+      byteCount: 0,
+    },
   ];
   await replaceTerminalEntries(page, entries);
 
@@ -1894,13 +1902,13 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
     .getByRole("group", { name: "终端方向筛选" })
     .getByRole("button", { name: "RX" })
     .click();
-  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 3 条记录");
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 4 条记录");
 
   const exportTrigger = page.getByRole("button", { name: "导出终端记录" });
   const viewDownloadPromise = page.waitForEvent("download");
   await exportTrigger.click();
   const exportMenu = page.getByRole("menu", { name: "终端导出范围" });
-  await expect(exportMenu.getByRole("menuitem", { name: "全部缓存 3 条" })).toBeEnabled();
+  await expect(exportMenu.getByRole("menuitem", { name: "全部缓存 4 条" })).toBeEnabled();
   await exportMenu.getByRole("menuitem", { name: "当前视图 1 条" }).click();
   const viewDownload = await viewDownloadPromise;
   expect(viewDownload.suggestedFilename()).toMatch(
@@ -1917,10 +1925,10 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
     .getByRole("button", { name: "HEX" })
     .click();
   await search.fill("66 61");
-  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 3 条记录");
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 4 条记录");
   const allDownloadPromise = page.waitForEvent("download");
   await exportTrigger.click();
-  await exportMenu.getByRole("menuitem", { name: "全部缓存 3 条" }).click();
+  await exportMenu.getByRole("menuitem", { name: "全部缓存 4 条" }).click();
   const allDownload = await allDownloadPromise;
   expect(allDownload.suggestedFilename()).toMatch(/^vofa-ultra-terminal-all-.+\.log$/);
   const allPath = testInfo.outputPath("terminal-all.log");
@@ -1930,15 +1938,31 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
       .map(
         (entry) =>
           `${new Date(entry.timestamp).toISOString()}\t${entry.direction.toUpperCase()}` +
-          `\t${entry.byteCount}\t${entry.hex}`,
+          `\t${entry.byteCount}\t${entry.direction === "system" ? entry.text : entry.hex}`,
       )
       .join("\n"),
+  );
+
+  await page
+    .getByRole("group", { name: "终端方向筛选" })
+    .getByRole("button", { name: "全部" })
+    .click();
+  await search.fill("协议");
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 4 条记录");
+  const systemDownloadPromise = page.waitForEvent("download");
+  await exportTrigger.click();
+  await exportMenu.getByRole("menuitem", { name: "当前视图 1 条" }).click();
+  const systemDownload = await systemDownloadPromise;
+  const systemPath = testInfo.outputPath("terminal-system-view.log");
+  await systemDownload.saveAs(systemPath);
+  expect(await readFile(systemPath, "utf8")).toBe(
+    `${new Date(entries[3].timestamp).toISOString()}\tSYSTEM\t0\t${entries[3].text}`,
   );
 
   await search.fill("FF FF");
   await exportTrigger.click();
   await expect(exportMenu.getByRole("menuitem", { name: "当前视图 0 条" })).toBeDisabled();
-  await expect(exportMenu.getByRole("menuitem", { name: "全部缓存 3 条" })).toBeEnabled();
+  await expect(exportMenu.getByRole("menuitem", { name: "全部缓存 4 条" })).toBeEnabled();
   await page.keyboard.press("Escape");
   await expect(exportTrigger).toBeFocused();
 

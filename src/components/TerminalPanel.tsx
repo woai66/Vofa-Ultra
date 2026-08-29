@@ -1061,7 +1061,7 @@ export function TerminalPanel() {
               type="button"
               aria-pressed={displayMode === "text"}
               data-active={displayMode === "text"}
-              disabled={isWorkspaceTransitioning || autoResponderActive}
+              disabled={isWorkspaceTransitioning}
               onClick={() => setDisplayMode("text")}
             >
               TEXT
@@ -1189,7 +1189,7 @@ export function TerminalPanel() {
               aria-label="接收文本编码"
               title="接收文本编码"
               value={terminalRxTextEncoding}
-              disabled={isWorkspaceTransitioning}
+              disabled={isWorkspaceTransitioning || autoResponderActive}
               onChange={(event) =>
                 setTerminalRxTextEncoding(event.target.value as typeof terminalRxTextEncoding)
               }

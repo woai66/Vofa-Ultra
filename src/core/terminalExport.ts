@@ -8,7 +8,10 @@ export function serializeTerminalEntries(
   return entries
     .map((entry) => {
       const timestamp = new Date(entry.timestamp).toISOString();
-      const payload = displayMode === "text" ? entry.text : entry.hex;
+      const payload =
+        entry.direction === "system" || displayMode === "text"
+          ? (entry.decodedText ?? entry.text)
+          : entry.hex;
       return (
         `${timestamp}\t${entry.direction.toUpperCase()}\t${entry.byteCount}\t` +
         escapeTerminalPayload(payload)
@@ -18,9 +21,26 @@ export function serializeTerminalEntries(
 }
 
 function escapeTerminalPayload(payload: string): string {
-  return payload
+  const escapedWhitespace = payload
     .replace(/\\/g, "\\\\")
     .replace(/\t/g, "\\t")
     .replace(/\r/g, "\\r")
     .replace(/\n/g, "\\n");
+  return Array.from(escapedWhitespace, (character) =>
+    isTerminalControlCharacter(character) ? unicodeEscape(character) : character,
+  ).join("");
+}
+
+function isTerminalControlCharacter(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return (
+    (code >= 0 && code <= 0x1f) ||
+    (code >= 0x7f && code <= 0x9f) ||
+    code === 0x2028 ||
+    code === 0x2029
+  );
+}
+
+function unicodeEscape(character: string): string {
+  return `\\u${character.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
 }

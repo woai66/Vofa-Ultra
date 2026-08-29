@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { serializeTerminalEntries } from "../core/terminalExport";
 import type { DisplayMode } from "../types/serial";
 import type { TerminalEntry } from "../types/workbench";
@@ -20,6 +20,7 @@ export default function TerminalExportMenu({
 }: TerminalExportMenuProps) {
   const allRef = useRef<HTMLButtonElement>(null);
   const currentViewRef = useRef<HTMLButtonElement>(null);
+  const [exportError, setExportError] = useState("");
   const canExportCurrentView = filtersActive && currentViewEntries.length > 0;
 
   useEffect(() => {
@@ -51,8 +52,13 @@ export default function TerminalExportMenu({
   };
 
   const exportEntries = (entries: readonly TerminalEntry[], scope: "all" | "view") => {
-    downloadTerminalEntries(entries, displayMode, scope);
-    onClose();
+    setExportError("");
+    try {
+      downloadTerminalEntries(entries, displayMode, scope);
+      onClose();
+    } catch (error) {
+      setExportError(`终端导出失败：${error instanceof Error ? error.message : String(error)}`);
+    }
   };
 
   return (
@@ -91,6 +97,11 @@ export default function TerminalExportMenu({
         <span>当前视图</span>
         <small>{currentViewEntries.length} 条</small>
       </button>
+      {exportError ? (
+        <span className="terminal-export-error" role="alert">
+          {exportError}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -103,11 +114,14 @@ function downloadTerminalEntries(
   const content = serializeTerminalEntries(entries, displayMode);
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `vofa-ultra-terminal-${scope}-${new Date()
-    .toISOString()
-    .replace(/[:.]/g, "-")}.log`;
-  anchor.click();
-  URL.revokeObjectURL(url);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `vofa-ultra-terminal-${scope}-${new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-")}.log`;
+    anchor.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }

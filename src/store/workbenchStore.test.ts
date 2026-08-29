@@ -547,6 +547,14 @@ describe("workbenchStore", () => {
     ]);
   });
 
+  it("读取块超出单条展示上限时在解码原文中保留省略标记", () => {
+    useWorkbenchStore.getState().ingestBytes(new Uint8Array(2_051).fill(0x41), 100);
+
+    const [entry] = useWorkbenchStore.getState().terminalEntries;
+    expect(entry?.text.endsWith(" …")).toBe(true);
+    expect(entry?.decodedText?.endsWith(" …")).toBe(true);
+  });
+
   it("文本行模式跨任意读取块恢复 UTF-8、空行和原始 CRLF", () => {
     const encoder = new TextEncoder();
     const first = encoder.encode("温度=23.5\r");
@@ -563,6 +571,7 @@ describe("workbenchStore", () => {
         direction: "rx",
         timestamp: 100,
         text: "温度=23.5\\r\\n",
+        decodedText: "温度=23.5\r\n",
         hex: "E6 B8 A9 E5 BA A6 3D 32 33 2E 35 0D 0A",
         byteCount: 13,
       },
@@ -573,6 +582,21 @@ describe("workbenchStore", () => {
         text: "next\\r\\n",
         hex: "6E 65 78 74 0D 0A",
         byteCount: 6,
+      },
+    ]);
+  });
+
+  it("把 C1 和 Unicode 行分隔符显示为单行可见转义", () => {
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    useWorkbenchStore.getState().ingestBytes(
+      new TextEncoder().encode("A\u0085B\u2028C\u2029D\n"),
+      100,
+    );
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      {
+        text: "A\\u0085B\\u2028C\\u2029D\\n",
+        decodedText: "A\u0085B\u2028C\u2029D\n",
       },
     ]);
   });

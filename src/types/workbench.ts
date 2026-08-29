@@ -52,6 +52,7 @@ export interface TerminalEntry {
   direction: "rx" | "tx" | "system";
   timestamp: number;
   text: string;
+  decodedText?: string;
   hex: string;
   byteCount: number;
   sessionBoundary?: boolean;
