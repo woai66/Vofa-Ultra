@@ -2809,9 +2809,30 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   await expect(page.locator(".protocol-warning-status")).toContainText("丢帧 1");
   await page.getByRole("button", { name: "通道", exact: true }).click();
   const health = page.getByRole("region", { name: "协议解析健康度" });
+  const channelPanel = health.locator("..");
   await expect(health).toContainText("已丢弃 1 帧");
   await expect(health).toContainText("最近：包含非有限数值");
   await expect(health).toContainText("FireWater：每行 1–16 个有限数值，命名字段使用 : 或 =");
+  const emptyTypography = await channelPanel.evaluate((element) => {
+    const fontSize = (selector: string) => {
+      const target = element.querySelector<HTMLElement>(selector);
+      return target ? Number.parseFloat(getComputedStyle(target).fontSize) : 0;
+    };
+    return {
+      summary: fontSize(".channel-summary span"),
+      healthLabel: fontSize(".protocol-health-heading > div"),
+      healthStatus: fontSize(".protocol-health-heading > strong"),
+      counter: fontSize(".protocol-health-counters span"),
+      empty: fontSize(".sidebar-empty span"),
+    };
+  });
+  expect(emptyTypography).toEqual({
+    summary: 12,
+    healthLabel: 12,
+    healthStatus: 12,
+    counter: 12,
+    empty: 12,
+  });
 
   await page.getByRole("button", { name: "清空解析统计" }).click();
   await expect(health).toContainText("等待完整帧");
@@ -2827,6 +2848,17 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
     "pitch",
     "cur",
   ]);
+  const channelTypography = await channelPanel.evaluate((element) => {
+    const fontSize = (selector: string) => {
+      const target = element.querySelector<HTMLElement>(selector);
+      return target ? Number.parseFloat(getComputedStyle(target).fontSize) : 0;
+    };
+    return {
+      group: fontSize(".channel-group-label"),
+      value: fontSize(".channel-row strong"),
+    };
+  });
+  expect(channelTypography).toEqual({ group: 12, value: 13 });
   await expect(page.locator(".terminal-line").last()).toContainText(
     "yaw=1.234 pitch=0.567 cur=0.8",
   );

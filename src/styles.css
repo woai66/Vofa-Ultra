@@ -1977,7 +1977,7 @@ textarea:focus {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .channel-summary strong {
@@ -2010,7 +2010,7 @@ textarea:focus {
   min-width: 0;
   align-items: center;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   gap: 6px;
 }
@@ -2028,7 +2028,7 @@ textarea:focus {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2043,7 +2043,7 @@ textarea:focus {
   margin-top: 9px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
   gap: 8px;
 }
 
@@ -2070,7 +2070,7 @@ textarea:focus {
   padding-top: 8px;
   border-top: 1px solid var(--border);
   color: var(--amber);
-  font-size: 10px;
+  font-size: 12px;
   gap: 3px;
 }
 
@@ -2083,7 +2083,7 @@ textarea:focus {
 .protocol-health-detail small,
 .protocol-health-inactive {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -2100,20 +2100,20 @@ textarea:focus {
 
 .channel-group-label {
   display: flex;
-  height: 28px;
+  height: 32px;
   align-items: center;
   padding: 0 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-1);
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .channel-row {
   display: grid;
   width: 100%;
-  min-height: 48px;
+  min-height: 54px;
   align-items: center;
   grid-template-columns: 40px minmax(0, 1fr) auto 30px;
   padding: 0 10px 0 8px;
@@ -2179,7 +2179,7 @@ textarea:focus {
 .channel-labels small {
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2189,7 +2189,7 @@ textarea:focus {
   align-items: baseline;
   justify-content: flex-end;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 500;
   gap: 4px;
 }
@@ -2198,7 +2198,7 @@ textarea:focus {
   max-width: 48px;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2228,7 +2228,7 @@ textarea:focus {
   min-width: 0;
   flex-direction: column;
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
   gap: 4px;
 }
 
@@ -2261,7 +2261,7 @@ textarea:focus {
 }
 
 .channel-editor-error {
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .primary-icon-button {
@@ -2276,7 +2276,7 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   color: var(--text-subtle);
-  font-size: 11px;
+  font-size: 12px;
   gap: 9px;
 }
 
