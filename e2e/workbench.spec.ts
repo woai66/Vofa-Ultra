@@ -3301,6 +3301,30 @@ test("通道监视显示有界统计并支持本地冻结与窄屏布局", async
   await expect(table.getByRole("columnheader", { name: "变化" })).toBeVisible();
   await expect(table.getByRole("columnheader", { name: "均值" })).toBeVisible();
   await expect(table.getByRole("columnheader", { name: "RMS" })).toBeVisible();
+  const monitorTypography = await monitor.evaluate((element) => {
+    const fontSize = (selector: string) => {
+      const target = element.querySelector<HTMLElement>(selector);
+      return target ? Number.parseFloat(getComputedStyle(target).fontSize) : 0;
+    };
+    return {
+      scope: fontSize(".channel-monitor-scope button"),
+      heading: fontSize("thead th"),
+      group: fontSize(".channel-monitor-group-row th"),
+      groupDetail: fontSize(".channel-monitor-group-row small"),
+      value: fontSize(".channel-monitor-data-row td"),
+      channel: fontSize(".channel-monitor-channel-label strong"),
+      detail: fontSize(".channel-monitor-channel-label small"),
+    };
+  });
+  expect(monitorTypography).toEqual({
+    scope: 12,
+    heading: 12,
+    group: 12,
+    groupDetail: 12,
+    value: 12,
+    channel: 13,
+    detail: 12,
+  });
 
   await page.getByRole("button", { name: "冻结通道监视" }).click();
   await expect(monitor.locator(".live-state")).toContainText("HOLD");
@@ -3318,6 +3342,28 @@ test("通道监视显示有界统计并支持本地冻结与窄屏布局", async
     .toBeGreaterThan(Number.parseInt(frozenSamples ?? "0", 10));
   await page.screenshot({
     path: testInfo.outputPath("desktop-channel-monitor.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  const windowsMinimumLayout = await monitor.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const scroller = element.querySelector<HTMLElement>(".channel-monitor-scroll");
+    return {
+      left: rect.left,
+      right: rect.right,
+      bottom: rect.bottom,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      horizontalOverflow: scroller ? scroller.scrollWidth - scroller.clientWidth : 0,
+    };
+  });
+  expect(windowsMinimumLayout.left).toBeGreaterThanOrEqual(0);
+  expect(windowsMinimumLayout.right).toBeLessThanOrEqual(windowsMinimumLayout.viewportWidth);
+  expect(windowsMinimumLayout.bottom).toBeLessThanOrEqual(windowsMinimumLayout.viewportHeight);
+  expect(windowsMinimumLayout.horizontalOverflow).toBeLessThanOrEqual(1);
+  await page.screenshot({
+    path: testInfo.outputPath("windows-minimum-channel-monitor.png"),
     fullPage: true,
   });
 
