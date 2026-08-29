@@ -67,9 +67,21 @@ type IndependentWaveformFixedRanges = Record<string, WaveformFixedRange>;
 type WaveformViewMode = "time" | "spectrum";
 
 export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelProps) {
-  const rawChannels = useWorkbenchStore((state) => state.channels);
-  const processedChannels = useWorkbenchStore((state) => state.processedChannels);
-  const extensionChannels = useWorkbenchStore((state) => state.extensionChannels);
+  const chartPaused = useWorkbenchStore((state) => state.chartPaused);
+  const rawChannels = useWorkbenchStore((state) =>
+    state.chartPaused ? (state.chartFrozenChannels ?? state.channels) : state.channels,
+  );
+  const processedChannels = useWorkbenchStore((state) =>
+    state.chartPaused
+      ? (state.chartFrozenProcessedChannels ?? state.processedChannels)
+      : state.processedChannels,
+  );
+  const extensionChannels = useWorkbenchStore((state) =>
+    state.chartPaused
+      ? (state.chartFrozenExtensionChannels ?? state.extensionChannels)
+      : state.extensionChannels,
+  );
+  const chartDataRevision = useWorkbenchStore((state) => state.chartDataRevision);
   const channelPresentations = useWorkbenchStore((state) => state.channelPresentations);
   const activeProtocol = useWorkbenchStore(selectActiveProtocol);
   const presentedRawChannels = useMemo(
@@ -112,9 +124,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     .map((channel) => `${channel.id}:${channel.color}:${channel.visible}`)
     .join("|");
   const channelIdSignature = channels.map((channel) => channel.id).join("\u001f");
-  const chartPaused = useWorkbenchStore((state) => state.chartPaused);
   const chartWindowSeconds = useWorkbenchStore((state) => state.chartWindowSeconds);
-  const chartDataRevision = useWorkbenchStore((state) => state.chartDataRevision);
   const waveformTrigger = useWorkbenchStore((state) => state.waveformTrigger);
   const setChartPaused = useWorkbenchStore((state) => state.setChartPaused);
   const setChartWindowSeconds = useWorkbenchStore((state) => state.setChartWindowSeconds);

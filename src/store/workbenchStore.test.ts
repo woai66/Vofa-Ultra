@@ -433,6 +433,9 @@ describe("workbenchStore", () => {
       isCancellingSerialConnection: false,
       channels: [],
       processedChannels: [],
+      chartFrozenChannels: null,
+      chartFrozenProcessedChannels: null,
+      chartFrozenExtensionChannels: null,
       attitudeSample: null,
       terminalEntries: [],
       terminalPresentationOverride: null,
@@ -2405,7 +2408,6 @@ describe("workbenchStore", () => {
     });
     useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode(",34\n"), 1_100);
     expect(useWorkbenchStore.getState()).toMatchObject({
-      channels: [],
       terminalEntries: [],
       stats: { rxFrames: 1 },
       protocolHealth: {
@@ -2413,6 +2415,10 @@ describe("workbenchStore", () => {
         droppedFrames: 0,
       },
     });
+    expect(useWorkbenchStore.getState().channels.map((channel) => channel.lastValue)).toEqual([
+      12,
+      34,
+    ]);
 
     useWorkbenchStore.getState().setProtocol("justfloat");
     expect(useWorkbenchStore.getState().protocolHealth).toMatchObject({
@@ -3801,6 +3807,31 @@ describe("workbenchStore", () => {
     ]);
   });
 
+  it("暂停波形显示时继续把样本写入有界缓存", () => {
+    const encoder = new TextEncoder();
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("1\n"), 1_000);
+    useWorkbenchStore.getState().setChartPaused(true);
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("2\n"), 2_000);
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      chartPaused: true,
+      stats: { rxFrames: 2 },
+    });
+    expect(
+      useWorkbenchStore.getState().channels[0]?.points.map((point) => point.y),
+    ).toEqual([1, 2]);
+    expect(
+      useWorkbenchStore.getState().chartFrozenChannels?.[0]?.points.map((point) => point.y),
+    ).toEqual([1]);
+
+    useWorkbenchStore.getState().setChartPaused(false);
+    expect(useWorkbenchStore.getState().chartFrozenChannels).toBeNull();
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("3\n"), 3_000);
+    expect(
+      useWorkbenchStore.getState().channels[0]?.points.map((point) => point.y),
+    ).toEqual([1, 2, 3]);
+  });
+
   it("单次触发完整写入冻结批次且冻结后后台数据链路继续", () => {
     useWorkbenchStore.setState({
       connectionStatus: "connected",
@@ -3830,7 +3861,7 @@ describe("workbenchStore", () => {
 
     useWorkbenchStore.getState().ingestBytes(encoder.encode("20\n21\n"), 4_500);
     const frozenState = useWorkbenchStore.getState();
-    const frozenPoints = frozenState.channels[0]?.points;
+    const frozenPoints = frozenState.chartFrozenChannels?.[0]?.points;
     expect(frozenState).toMatchObject({
       chartPaused: true,
       waveformTrigger: { phase: "frozen", triggerTimestampSeconds: 2 },
@@ -3840,7 +3871,16 @@ describe("workbenchStore", () => {
     const terminalEntryCount = frozenState.terminalEntries.length;
     useWorkbenchStore.getState().ingestBytes(encoder.encode("30\n"), 5_000);
     const afterFrozen = useWorkbenchStore.getState();
-    expect(afterFrozen.channels[0]?.points).toBe(frozenPoints);
+    expect(afterFrozen.channels[0]?.points).not.toBe(frozenPoints);
+    expect(afterFrozen.chartFrozenChannels?.[0]?.points).toBe(frozenPoints);
+    expect(afterFrozen.channels[0]?.points.map((point) => point.y)).toEqual([
+      1,
+      2,
+      10,
+      20,
+      21,
+      30,
+    ]);
     expect(afterFrozen.terminalEntries.length).toBeGreaterThan(terminalEntryCount);
     expect(afterFrozen.stats.rxFrames).toBe(6);
     expect(enqueueSimulatorCaptureMock).toHaveBeenCalledTimes(4);
@@ -4093,7 +4133,7 @@ describe("workbenchStore", () => {
     });
   });
 
-  it("波形暂停时继续推进滤波状态但不追加派生显示点", () => {
+  it("波形暂停时继续推进滤波状态并缓存派生点", () => {
     useWorkbenchStore.getState().setProcessingGraph({
       enabled: true,
       nodes: [
@@ -4118,7 +4158,7 @@ describe("workbenchStore", () => {
 
     expect(
       useWorkbenchStore.getState().processedChannels[0]?.points.map((point) => point.y),
-    ).toEqual([0, 7.5]);
+    ).toEqual([0, 5, 7.5]);
     expect(useWorkbenchStore.getState().processingStatus.processedFrames).toBe(3);
   });
 
@@ -4150,7 +4190,11 @@ describe("workbenchStore", () => {
 
     useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("10,20,30\n"), 2_000);
 
-    expect(useWorkbenchStore.getState().channels).toEqual([]);
+    expect(useWorkbenchStore.getState().channels.map((channel) => channel.lastValue)).toEqual([
+      10,
+      20,
+      30,
+    ]);
     expect(useWorkbenchStore.getState().attitudeSample?.sourceValues).toEqual({
       inputMode: "euler",
       roll: 10,
@@ -6009,12 +6053,11 @@ describe("workbenchStore", () => {
       ],
       expect.any(Function),
     );
-    expect(useWorkbenchStore.getState()).toMatchObject({
-      channels: [],
-      processedChannels: [],
-      terminalEntries: [],
-      stats: { rxFrames: 1 },
-    });
+    const state = useWorkbenchStore.getState();
+    expect(state.terminalEntries).toEqual([]);
+    expect(state.stats.rxFrames).toBe(1);
+    expect(state.channels.map((channel) => channel.lastValue)).toEqual([1, 2]);
+    expect(state.processedChannels.map((channel) => channel.lastValue)).toEqual([3]);
   });
 
   it("数值日志通道名不受串口读块边界影响", () => {
@@ -6069,11 +6112,11 @@ describe("workbenchStore", () => {
 
     expect(enqueueNumericLogSamplesMock).toHaveBeenCalledOnce();
     expect(enqueueNumericLogSamplesMock.mock.calls[0]?.[1]).toHaveLength(8_192);
-    expect(useWorkbenchStore.getState()).toMatchObject({
-      channels: [],
-      terminalEntries: [],
-      stats: { rxBytes: 16 * 1024, rxFrames: 8_192 },
-    });
+    const state = useWorkbenchStore.getState();
+    expect(state.channels[0]).toMatchObject({ lastValue: 0 });
+    expect(state.channels[0]?.points.length).toBeGreaterThan(0);
+    expect(state.terminalEntries).toEqual([]);
+    expect(state.stats).toMatchObject({ rxBytes: 16 * 1024, rxFrames: 8_192 });
   });
 
   it("断开数据源前并行完成两类记录", async () => {

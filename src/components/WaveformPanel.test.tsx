@@ -181,6 +181,9 @@ describe("WaveformPanel 波形测量", () => {
       processedChannels: [],
       extensionChannels: [],
       chartPaused: false,
+      chartFrozenChannels: null,
+      chartFrozenProcessedChannels: null,
+      chartFrozenExtensionChannels: null,
       chartWindowSeconds: 5,
       chartDataRevision: 0,
       waveformTrigger: createIdleWaveformTriggerState(),
@@ -267,6 +270,45 @@ describe("WaveformPanel 波形测量", () => {
     act(() => useWorkbenchStore.setState({ chartPaused: false, replayStatus: "paused" }));
     expect(live_state).toHaveAttribute("data-state", "history");
     expect(live_state).toHaveTextContent("HISTORY");
+  });
+
+  it("暂停只冻结图表快照，恢复后显示后台累积样本", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<WaveformPanel theme="dark" />);
+    const chart = latestUPlotMock();
+
+    await user.click(screen.getByRole("button", { name: "暂停波形显示" }));
+    const setDataCallsWhileFrozen = chart.setData.mock.calls.length;
+    act(() => {
+      useWorkbenchStore.setState({
+        channels: TEST_CHANNELS.map((channel) => ({
+          ...channel,
+          points: [...channel.points, { x: 6, y: channel.lastValue + 1 }],
+        })),
+      });
+    });
+
+    expect(useWorkbenchStore.getState().channels[0]?.points.at(-1)?.x).toBe(6);
+    expect(chart.setData).toHaveBeenCalledTimes(setDataCallsWhileFrozen);
+
+    unmount();
+    render(<WaveformPanel theme="dark" />);
+    const remountedChart = latestUPlotMock();
+    expect(remountedChart.initialData).toEqual([
+      [1, 2, 3, 4, 5],
+      [10, 20, 30, 40, 50],
+      [1, 2, 3, 4, 5],
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "继续波形显示" }));
+    expect(remountedChart.setData.mock.calls.at(-1)?.[0]?.[0]).toEqual([
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+    ]);
   });
 
   it("在读数、触发和测量中应用别名、单位与颜色且保留原始序列标签", async () => {

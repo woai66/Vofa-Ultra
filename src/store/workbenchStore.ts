@@ -423,9 +423,12 @@ export interface WorkbenchStore {
   isCancellingSerialConnection: boolean;
   channels: ChannelSeries[];
   processedChannels: ChannelSeries[];
+  chartFrozenChannels: ChannelSeries[] | null;
+  chartFrozenProcessedChannels: ChannelSeries[] | null;
   channelVisibility: Record<string, boolean>;
   channelPresentations: ChannelPresentations;
   extensionChannels: ChannelSeries[];
+  chartFrozenExtensionChannels: ChannelSeries[] | null;
   extensionChannelVisibility: Record<string, boolean>;
   extensionInspection: ExtensionInspectionPayload | null;
   extensionPackagePath: string;
@@ -705,11 +708,14 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       isCancellingSerialConnection: false,
       channels: [],
       processedChannels: [],
+      chartFrozenChannels: null,
+      chartFrozenProcessedChannels: null,
       channelVisibility: {},
       channelPresentations: cloneChannelPresentations(
         INITIAL_WORKSPACE_CONFIG.channelPresentations,
       ),
       extensionChannels: [],
+      chartFrozenExtensionChannels: null,
       extensionChannelVisibility: {},
       extensionInspection: null,
       extensionPackagePath: "",
@@ -840,6 +846,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             extensionOperation: "idle",
             extensionMessage: "扩展运行时已就绪",
             extensionChannels: [],
+            chartFrozenExtensionChannels: null,
             extensionChannelVisibility: {},
             extensionQueue: createIdleExtensionQueue(),
           });
@@ -949,6 +956,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             extensionOperation: "idle",
             extensionMessage: payload.message ?? "协议扩展已启用",
             extensionChannels: [],
+            chartFrozenExtensionChannels: null,
             extensionChannelVisibility: {},
           });
           return true;
@@ -991,6 +999,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             extensionOperation: "idle",
             extensionMessage: payload.message ?? "协议扩展已停用",
             extensionChannels: [],
+            chartFrozenExtensionChannels: null,
             extensionChannelVisibility: {},
           });
           return payload.status === "idle";
@@ -1035,6 +1044,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             extensionOperation: "idle",
             extensionMessage: payload.message ?? "扩展解析状态已重置",
             extensionChannels: [],
+            chartFrozenExtensionChannels: null,
           });
           return payload.status === "active";
         } catch (error) {
@@ -1078,6 +1088,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             extensionChannels: state.extensionChannels.map((candidate) =>
               candidate.id === channelId ? { ...candidate, visible } : candidate,
             ),
+            chartFrozenExtensionChannels: state.chartFrozenExtensionChannels
+              ? state.chartFrozenExtensionChannels.map((candidate) =>
+                  candidate.id === channelId ? { ...candidate, visible } : candidate,
+                )
+              : null,
           };
         });
       },
@@ -1194,6 +1209,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             terminalPresentationOverride: null,
             channels: [],
             processedChannels: [],
+            chartFrozenChannels: latest.chartPaused ? [] : null,
+            chartFrozenProcessedChannels: latest.chartPaused ? [] : null,
+            chartFrozenExtensionChannels: latest.chartPaused ? [] : null,
             attitudeSample: null,
             chartDataRevision: latest.chartDataRevision + 1,
             waveformTrigger: createIdleWaveformTriggerState(),
@@ -1241,6 +1259,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           terminalPresentationOverride: null,
           channels: [],
           processedChannels: [],
+          chartFrozenChannels: currentState.chartPaused ? [] : null,
+          chartFrozenProcessedChannels: currentState.chartPaused ? [] : null,
+          chartFrozenExtensionChannels: currentState.chartPaused ? [] : null,
           attitudeSample: null,
           chartDataRevision: currentState.chartDataRevision + 1,
           waveformTrigger: createIdleWaveformTriggerState(),
@@ -2020,32 +2041,27 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             handleNumericLogQueueError,
           );
         }
-        const chartFrameTimestamps = state.chartPaused
-          ? []
-          : createChartFrameTimestamps(frames, state.channels[0]?.points.at(-1)?.x);
-        const chartFrameSequences = state.chartPaused
-          ? []
-          : createChartFrameSequences(frames.length);
-        const nextChannels = state.chartPaused
-          ? state.channels
-          : appendFrames(
-              state.channels,
-              frames,
-              state.channelVisibility,
-              channelBuffers,
-              chartFrameTimestamps,
-              chartFrameSequences,
-            );
-        const nextProcessedChannels = state.chartPaused
-          ? state.processedChannels
-          : appendProcessedSamples(
-              state.processedChannels,
-              processedSamples,
-              state.channelVisibility,
-              processingChannelBuffers,
-              chartFrameTimestamps,
-              chartFrameSequences,
-            );
+        const chartFrameTimestamps = createChartFrameTimestamps(
+          frames,
+          state.channels[0]?.points.at(-1)?.x,
+        );
+        const chartFrameSequences = createChartFrameSequences(frames.length);
+        const nextChannels = appendFrames(
+          state.channels,
+          frames,
+          state.channelVisibility,
+          channelBuffers,
+          chartFrameTimestamps,
+          chartFrameSequences,
+        );
+        const nextProcessedChannels = appendProcessedSamples(
+          state.processedChannels,
+          processedSamples,
+          state.channelVisibility,
+          processingChannelBuffers,
+          chartFrameTimestamps,
+          chartFrameSequences,
+        );
         const terminalEntries = state.terminalPaused
           ? []
           : createRxTerminalEntries(
@@ -2060,6 +2076,21 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         set({
           channels: nextChannels,
           processedChannels: nextProcessedChannels,
+          chartFrozenChannels: state.chartPaused
+            ? (state.chartFrozenChannels ?? state.channels)
+            : waveformTriggerAdvance.shouldFreeze
+              ? nextChannels
+              : null,
+          chartFrozenProcessedChannels: state.chartPaused
+            ? (state.chartFrozenProcessedChannels ?? state.processedChannels)
+            : waveformTriggerAdvance.shouldFreeze
+              ? nextProcessedChannels
+              : null,
+          chartFrozenExtensionChannels: state.chartPaused
+            ? (state.chartFrozenExtensionChannels ?? state.extensionChannels)
+            : waveformTriggerAdvance.shouldFreeze
+              ? state.extensionChannels
+              : null,
           processingStatus,
           attitudeSample: attitudeSample ?? state.attitudeSample,
           chartPaused: state.chartPaused || waveformTriggerAdvance.shouldFreeze,
@@ -2456,11 +2487,19 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           set({ terminalAutoScroll });
         }
       },
-      setChartPaused: (chartPaused) =>
+      setChartPaused: (chartPaused) => {
+        const state = get();
+        if (chartPaused === state.chartPaused) {
+          return;
+        }
         set({
           chartPaused,
+          chartFrozenChannels: chartPaused ? state.channels : null,
+          chartFrozenProcessedChannels: chartPaused ? state.processedChannels : null,
+          chartFrozenExtensionChannels: chartPaused ? state.extensionChannels : null,
           waveformTrigger: createIdleWaveformTriggerState(),
-        }),
+        });
+      },
       setChartWindowSeconds: (chartWindowSeconds) => {
         const state = get();
         if (
@@ -2495,6 +2534,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         );
         set({
           chartPaused: false,
+          chartFrozenChannels: null,
+          chartFrozenProcessedChannels: null,
+          chartFrozenExtensionChannels: null,
           waveformTrigger: armedState,
         });
         return true;
@@ -2513,6 +2555,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           processingGraph: configuredGraph,
           processingStatus: activeProcessingRuntime(state).getSnapshot(),
           processedChannels: [],
+          chartFrozenProcessedChannels: state.chartPaused ? [] : null,
           attitudeConfig: pruneAttitudeConfigForGraph(state.attitudeConfig, configuredGraph),
           attitudeSample: null,
           chartDataRevision: state.chartDataRevision + 1,
@@ -2533,6 +2576,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         replayProcessingChannelBuffers.clear();
         set((state) => ({
           processedChannels: [],
+          chartFrozenProcessedChannels: state.chartPaused ? [] : null,
           attitudeSample: null,
           chartDataRevision: state.chartDataRevision + 1,
           waveformTrigger: createIdleWaveformTriggerState(),
@@ -2573,6 +2617,20 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             processedChannels: state.processedChannels.map((candidate) =>
               candidate.id === channelId ? { ...candidate, visible: nextVisible } : candidate,
             ),
+            chartFrozenChannels: state.chartFrozenChannels
+              ? state.chartFrozenChannels.map((candidate) =>
+                  candidate.id === channelId
+                    ? { ...candidate, visible: nextVisible }
+                    : candidate,
+                )
+              : null,
+            chartFrozenProcessedChannels: state.chartFrozenProcessedChannels
+              ? state.chartFrozenProcessedChannels.map((candidate) =>
+                  candidate.id === channelId
+                    ? { ...candidate, visible: nextVisible }
+                    : candidate,
+                )
+              : null,
           };
         });
       },
@@ -2607,6 +2665,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           channels: [],
           processedChannels: [],
           extensionChannels: [],
+          chartFrozenChannels: state.chartPaused ? [] : null,
+          chartFrozenProcessedChannels: state.chartPaused ? [] : null,
+          chartFrozenExtensionChannels: state.chartPaused ? [] : null,
           chartDataRevision: state.chartDataRevision + 1,
           waveformTrigger: createIdleWaveformTriggerState(),
         }));
@@ -4128,6 +4189,7 @@ function revokeExtensionForBoundary(
     extensionOperation: "idle",
     extensionMessage: message,
     extensionChannels: [],
+    chartFrozenExtensionChannels: null,
     extensionChannelVisibility: {},
     extensionQueue: createIdleExtensionQueue(),
     ...(clearInspection
@@ -4156,7 +4218,7 @@ function handleExtensionBatch(payload: ExtensionBatchPayload, appendFrames: bool
       return state;
     }
     const manifest = state.extensionState.manifest;
-    const extensionChannels = state.chartPaused || !manifest || !appendFrames
+    const extensionChannels = !manifest || !appendFrames
       ? state.extensionChannels
       : appendExtensionFrames(
           state.extensionChannels,
@@ -4166,6 +4228,9 @@ function handleExtensionBatch(payload: ExtensionBatchPayload, appendFrames: bool
         );
     return {
       extensionChannels,
+      chartFrozenExtensionChannels: state.chartPaused
+        ? (state.chartFrozenExtensionChannels ?? state.extensionChannels)
+        : null,
       extensionState: {
         ...state.extensionState,
         nextSequence: payload.sequence + 1,
@@ -5328,6 +5393,9 @@ async function applyWorkspaceSnapshot(
     attitudeSample: null,
     channels: [],
     processedChannels: [],
+    chartFrozenChannels: null,
+    chartFrozenProcessedChannels: null,
+    chartFrozenExtensionChannels: null,
     chartDataRevision: state.chartDataRevision + 1,
     terminalEntries: [],
     terminalPaused: false,
@@ -5411,6 +5479,9 @@ function resetLiveView(protocol: ProtocolKind, set: WorkbenchSet): void {
     channels: [],
     processedChannels: [],
     extensionChannels: [],
+    chartFrozenChannels: null,
+    chartFrozenProcessedChannels: null,
+    chartFrozenExtensionChannels: null,
     attitudeSample: null,
     chartDataRevision: state.chartDataRevision + 1,
     processingStatus: liveProcessingRuntime.getSnapshot(),
@@ -5449,6 +5520,9 @@ function resetReplayView(protocol: ProtocolKind, set: WorkbenchSet): void {
     channels: [],
     processedChannels: [],
     extensionChannels: [],
+    chartFrozenChannels: null,
+    chartFrozenProcessedChannels: null,
+    chartFrozenExtensionChannels: null,
     attitudeSample: null,
     chartDataRevision: state.chartDataRevision + 1,
     processingStatus: replayProcessingRuntime.getSnapshot(),
@@ -5513,42 +5587,46 @@ function ingestReplayBatch(
       }
     }
   }
-  const chartFrameTimestamps = state.chartPaused
-    ? []
-    : createChartFrameTimestamps(processingFrames, channels[0]?.points.at(-1)?.x);
-  const chartFrameSequences = state.chartPaused
-    ? []
-    : createChartFrameSequences(processingFrames.length);
-  if (!state.chartPaused) {
-    channels = appendFrames(
-      channels,
-      processingFrames,
-      state.channelVisibility,
-      replayChannelBuffers,
-      chartFrameTimestamps,
-      chartFrameSequences,
-    );
-  }
+  const chartFrameTimestamps = createChartFrameTimestamps(
+    processingFrames,
+    channels[0]?.points.at(-1)?.x,
+  );
+  const chartFrameSequences = createChartFrameSequences(processingFrames.length);
+  channels = appendFrames(
+    channels,
+    processingFrames,
+    state.channelVisibility,
+    replayChannelBuffers,
+    chartFrameTimestamps,
+    chartFrameSequences,
+  );
   const processedSamples = replayProcessingRuntime.process(processingFrames);
   const attitudeSample = extractRuntimeAttitudeSample(
     state.attitudeConfig,
     processingFrames,
     processedSamples,
   );
-  if (!state.chartPaused) {
-    processedChannels = appendProcessedSamples(
-      processedChannels,
-      processedSamples,
-      state.channelVisibility,
-      replayProcessingChannelBuffers,
-      chartFrameTimestamps,
-      chartFrameSequences,
-    );
-  }
+  processedChannels = appendProcessedSamples(
+    processedChannels,
+    processedSamples,
+    state.channelVisibility,
+    replayProcessingChannelBuffers,
+    chartFrameTimestamps,
+    chartFrameSequences,
+  );
 
   return {
     channels,
     processedChannels,
+    chartFrozenChannels: state.chartPaused
+      ? (state.chartFrozenChannels ?? state.channels)
+      : null,
+    chartFrozenProcessedChannels: state.chartPaused
+      ? (state.chartFrozenProcessedChannels ?? state.processedChannels)
+      : null,
+    chartFrozenExtensionChannels: state.chartPaused
+      ? (state.chartFrozenExtensionChannels ?? state.extensionChannels)
+      : null,
     processingStatus: replayProcessingRuntime.getSnapshot(),
     attitudeSample: attitudeSample ?? state.attitudeSample,
     terminalEntries:
