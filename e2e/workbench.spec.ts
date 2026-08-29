@@ -906,6 +906,7 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
     expect(header_layout.primary_title_truncated).toBe(false);
   }
 
+  await page.setViewportSize({ width: 900, height: 520 });
   const message = page.getByRole("textbox", { name: "发送内容" });
   await message.fill("PING");
   await page.getByRole("button", { name: "展开周期发送设置" }).click();
@@ -925,7 +926,7 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
   expect(vertical_layout.composer_bottom).toBeLessThanOrEqual(vertical_layout.panel_bottom + 1);
   expect(Math.abs(vertical_layout.panel_bottom - vertical_layout.status_top)).toBeLessThanOrEqual(1);
   expect(vertical_layout.log_height).toBeGreaterThanOrEqual(20);
-  expect(vertical_layout.document_height).toBeLessThanOrEqual(680);
+  expect(vertical_layout.document_height).toBeLessThanOrEqual(520);
 
   await page.getByRole("group", { name: "波形视图" }).getByRole("button", { name: "频谱" }).click();
   const spectrum = page.getByLabel("频谱设置", { exact: true });
@@ -953,10 +954,22 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
   expect(spectrum_layout.overflow).toBeLessThanOrEqual(1);
   expect(spectrum_layout.outside).toEqual([]);
 
+  const sidebar_toggle = page.getByRole("button", { name: "显示或隐藏侧栏" });
+  await expect(sidebar_toggle).toBeHidden();
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(app_shell).toHaveAttribute("data-sidebar-open", "false");
+  await expect(sidebar).toBeHidden();
+  await expect(sidebar_toggle).toBeVisible();
+  await sidebar_toggle.click();
+  await expect(app_shell).toHaveAttribute("data-sidebar-open", "true");
+  await expect(sidebar).toBeVisible();
+  await expect(sidebar_toggle).toBeHidden();
+
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await expect(sidebar_toggle).toBeVisible();
   const workspace_width_before_collapse = await page
     .locator(".workspace")
     .evaluate((element) => element.getBoundingClientRect().width);
-  const sidebar_toggle = page.getByRole("button", { name: "显示或隐藏侧栏" });
   await sidebar_toggle.click();
   await expect(app_shell).toHaveAttribute("data-sidebar-open", "false");
   await expect(sidebar).toBeHidden();

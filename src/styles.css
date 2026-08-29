@@ -6826,6 +6826,11 @@ textarea:focus {
   .sidebar-toggle {
     display: inline-grid;
   }
+
+  .app-shell[data-sidebar-open="true"] .sidebar-toggle {
+    visibility: hidden;
+    pointer-events: none;
+  }
 }
 
 @container workspace (max-width: 1000px) {
@@ -8008,7 +8013,7 @@ textarea:focus {
 
 @media (max-height: 620px) {
   .terminal-log-shell {
-    min-height: 40px;
+    min-height: 20px;
   }
 }
 
