@@ -374,12 +374,18 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   await page.goto("/");
   await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
   const receive_display = page.getByRole("group", { name: "接收显示格式" });
+  const receive_records = page.getByRole("group", { name: "接收记录方式" });
   await expect(receive_display.getByRole("button", { name: "TEXT" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
+  await receive_records.getByRole("button", { name: "按文本行记录" }).click();
   await page.getByRole("radio", { name: /Raw Data/ }).click();
   await expect(receive_display.getByRole("button", { name: "HEX" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(receive_records.getByRole("button", { name: "按读取块记录" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
@@ -388,6 +394,36 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
     "aria-pressed",
     "true",
   );
+  await expect(receive_records.getByRole("button", { name: "按文本行记录" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("radio", { name: /JustFloat/ }).click();
+  await expect(receive_display.getByRole("button", { name: "HEX" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(receive_records.getByRole("button", { name: "按读取块记录" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await receive_display.getByRole("button", { name: "TEXT" }).click();
+  await receive_records.getByRole("button", { name: "按文本行记录" }).click();
+  await expect(receive_display.getByRole("button", { name: "TEXT" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("radio", { name: /FireWater/ }).click();
+  await page.getByRole("radio", { name: /JustFloat/ }).click();
+  await expect(receive_display.getByRole("button", { name: "HEX" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(receive_records.getByRole("button", { name: "按读取块记录" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("radio", { name: /FireWater/ }).click();
   await page.getByRole("radio", { name: /Raw Data/ }).click();
   const protocolBoundary = page.locator('.terminal-line[data-direction="system"]').last();
   await expect(protocolBoundary).toContainText("协议：FireWater → Raw Data");
@@ -410,6 +446,8 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   await expect(signal).toBeDisabled();
   await expect(channelCount).toBeDisabled();
   await expect(sampleRate).toBeDisabled();
+  await expect(page.getByRole("button", { name: "停止模拟" })).toBeEnabled();
+  await expect(page.getByText("Raw Data 不生成波形")).toBeVisible();
 
   const rxLines = page.locator('.terminal-line[data-direction="rx"]');
   await expect.poll(() => rxLines.count()).toBeGreaterThanOrEqual(3);
@@ -425,7 +463,7 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
     fullPage: true,
   });
 
-  await page.getByRole("button", { name: "断开连接" }).click();
+  await page.getByRole("button", { name: "停止模拟" }).click();
   await expect(page.getByText("模拟数据已停止")).toBeVisible();
   await page.getByRole("button", { name: "清空终端", exact: true }).click();
   await expect(rxLines).toHaveCount(0);
@@ -434,7 +472,7 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   await expect.poll(() => rxLines.count()).toBeGreaterThanOrEqual(3);
   const secondRun = (await rxLines.locator("code").allTextContents()).slice(0, 3);
   expect(secondRun).toEqual(firstRun);
-  await page.getByRole("button", { name: "断开连接" }).click();
+  await page.getByRole("button", { name: "停止模拟" }).click();
 
   await page.setViewportSize({ width: 320, height: 700 });
   await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
@@ -4007,6 +4045,9 @@ test("命名工作区可保存、切换、导出并重新导入", async ({ page 
 test("短窗口仍可操作发送栏", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 520 });
   await page.goto("/");
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  const waveformChart = page.locator(".waveform-chart .uplot").first();
+  await expect(waveformChart).toBeVisible();
   await page.getByRole("button", { name: "关闭侧栏" }).click();
 
   const sendInput = page.getByRole("textbox", { name: "发送内容" });
@@ -4030,6 +4071,42 @@ test("短窗口仍可操作发送栏", async ({ page }) => {
   expect(terminalLayout.logHeight).toBeGreaterThanOrEqual(40);
   expect(await clippedVisibleHeight(sendInput)).toBeGreaterThanOrEqual(32);
   expect(await clippedVisibleHeight(sendButton)).toBeGreaterThanOrEqual(32);
+  await page.getByRole("button", { name: "展开周期发送设置" }).click();
+  const expandedTerminalLayout = await page
+    .locator("#workspace-terminal-panel")
+    .evaluate((element) => {
+      const panelRect = element.getBoundingClientRect();
+      const composerRect = element.querySelector<HTMLElement>(".send-composer")?.getBoundingClientRect();
+      const logRect = element.querySelector<HTMLElement>(".terminal-log-shell")?.getBoundingClientRect();
+      const statusRect = document.querySelector<HTMLElement>(".status-bar")?.getBoundingClientRect();
+      return {
+        composerBottom: composerRect?.bottom ?? Number.POSITIVE_INFINITY,
+        logHeight: logRect?.height ?? 0,
+        panelBottom: panelRect.bottom,
+        statusTop: statusRect?.top ?? 0,
+      };
+    });
+  expect(expandedTerminalLayout.composerBottom).toBeLessThanOrEqual(
+    expandedTerminalLayout.panelBottom + 1,
+  );
+  expect(Math.abs(expandedTerminalLayout.panelBottom - expandedTerminalLayout.statusTop)).toBeLessThanOrEqual(1);
+  expect(expandedTerminalLayout.logHeight).toBeGreaterThanOrEqual(40);
+  expect(await clippedVisibleHeight(sendInput)).toBeGreaterThanOrEqual(32);
+  expect(await clippedVisibleHeight(sendButton)).toBeGreaterThanOrEqual(32);
+  const waveformLayout = await waveformChart.evaluate((element) => {
+    const chartRect = element.getBoundingClientRect();
+    const wrapRect = element.closest<HTMLElement>(".waveform-canvas-wrap")?.getBoundingClientRect();
+    return {
+      chartTop: chartRect.top,
+      chartBottom: chartRect.bottom,
+      chartHeight: chartRect.height,
+      wrapTop: wrapRect?.top ?? Number.NEGATIVE_INFINITY,
+      wrapBottom: wrapRect?.bottom ?? Number.POSITIVE_INFINITY,
+    };
+  });
+  expect(waveformLayout.chartTop).toBeGreaterThanOrEqual(waveformLayout.wrapTop - 1);
+  expect(waveformLayout.chartBottom).toBeLessThanOrEqual(waveformLayout.wrapBottom + 1);
+  expect(waveformLayout.chartHeight).toBeGreaterThanOrEqual(96);
   await page
     .getByRole("group", { name: "发送格式" })
     .getByRole("button", { name: "HEX" })
