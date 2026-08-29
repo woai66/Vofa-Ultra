@@ -1022,7 +1022,11 @@ pub struct SerialFileSendPayload {
 }
 
 #[tauri::command]
-pub fn list_serial_ports() -> Result<Vec<SerialPortInfoDto>, String> {
+pub async fn list_serial_ports() -> Result<Vec<SerialPortInfoDto>, String> {
+    run_serial_blocking_task("扫描串口", list_serial_ports_blocking).await
+}
+
+fn list_serial_ports_blocking() -> Result<Vec<SerialPortInfoDto>, String> {
     let ports = serialport::available_ports().map_err(|error| error.to_string())?;
 
     Ok(ports
@@ -1527,19 +1531,35 @@ pub fn cancel_serial_connect(
 }
 
 #[tauri::command]
-pub fn disconnect_serial(
+pub async fn disconnect_serial(
     app: AppHandle,
     state: State<'_, SerialState>,
 ) -> Result<SerialStatePayload, String> {
-    let _transition = state
-        .transition
+    let request = register_disconnect_attempt(&state.shared)?;
+    let transition = Arc::clone(&state.transition);
+    let shared_state = Arc::clone(&state.shared);
+    run_serial_blocking_task("断开串口", move || {
+        disconnect_serial_blocking(app, transition, shared_state, request)
+    })
+    .await
+}
+
+fn disconnect_serial_blocking(
+    app: AppHandle,
+    transition: Arc<Mutex<()>>,
+    shared_state: Arc<Mutex<SharedSerialState>>,
+    request: u64,
+) -> Result<SerialStatePayload, String> {
+    let _transition = transition
         .lock()
         .map_err(|_| "串口生命周期锁已损坏".to_owned())?;
-    stop_current_worker(&app, &state.shared)?;
+    if let Some(payload) = snapshot_if_lifecycle_request_stale(&shared_state, request)? {
+        return Ok(payload);
+    }
+    stop_current_worker(&app, &shared_state)?;
 
     let payload = {
-        let mut shared = state
-            .shared
+        let mut shared = shared_state
             .lock()
             .map_err(|_| "串口状态锁已损坏".to_owned())?;
         if shared.status != SerialStatus::Disconnected
@@ -1554,6 +1574,16 @@ pub fn disconnect_serial(
     };
     emit_state(&app, payload.clone());
     Ok(payload)
+}
+
+async fn run_serial_blocking_task<T, F>(operation: &'static str, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|_| format!("{operation}任务异常退出"))?
 }
 
 #[tauri::command]
@@ -1879,13 +1909,38 @@ fn register_connection_attempt(
     let mut shared = shared_state
         .lock()
         .map_err(|_| "串口状态锁已损坏".to_owned())?;
+    let request = advance_lifecycle_request(&mut shared)?;
+    shared.pending_connection_request = Some(request);
+    Ok(request)
+}
+
+fn register_disconnect_attempt(
+    shared_state: &Arc<Mutex<SharedSerialState>>,
+) -> Result<u64, String> {
+    let mut shared = shared_state
+        .lock()
+        .map_err(|_| "串口状态锁已损坏".to_owned())?;
+    let request = advance_lifecycle_request(&mut shared)?;
+    shared.pending_connection_request = None;
+    Ok(request)
+}
+
+fn advance_lifecycle_request(shared: &mut SharedSerialState) -> Result<u64, String> {
     shared.connection_request = shared
         .connection_request
         .checked_add(1)
-        .ok_or_else(|| "串口连接请求序号已耗尽，请重启应用".to_owned())?;
-    let request = shared.connection_request;
-    shared.pending_connection_request = Some(request);
-    Ok(request)
+        .ok_or_else(|| "串口生命周期请求序号已耗尽，请重启应用".to_owned())?;
+    Ok(shared.connection_request)
+}
+
+fn snapshot_if_lifecycle_request_stale(
+    shared_state: &Arc<Mutex<SharedSerialState>>,
+    request: u64,
+) -> Result<Option<SerialStatePayload>, String> {
+    let shared = shared_state
+        .lock()
+        .map_err(|_| "串口状态锁已损坏".to_owned())?;
+    Ok((shared.connection_request != request).then(|| shared.snapshot()))
 }
 
 fn begin_connection_state(
@@ -3615,6 +3670,52 @@ mod tests {
             parse_flow_control("hardware"),
             Ok(FlowControl::Hardware)
         ));
+    }
+
+    #[test]
+    fn blocking_serial_tasks_run_off_the_caller_and_preserve_operation_errors() {
+        let caller_thread = thread::current().id();
+        let worker_thread =
+            tauri::async_runtime::block_on(run_serial_blocking_task("测试串口", || {
+                Ok(thread::current().id())
+            }))
+            .unwrap();
+        assert_ne!(worker_thread, caller_thread);
+
+        let error =
+            tauri::async_runtime::block_on(run_serial_blocking_task("测试串口", || {
+                Err::<(), _>("驱动枚举失败".to_owned())
+            }))
+            .unwrap_err();
+        assert_eq!(error, "驱动枚举失败");
+    }
+
+    #[test]
+    fn lifecycle_sequence_cancels_older_connect_and_supersedes_queued_disconnect() {
+        let shared_state = Arc::new(Mutex::new(SharedSerialState::default()));
+        let first_connect = register_connection_attempt(&shared_state).unwrap();
+        let disconnect = register_disconnect_attempt(&shared_state).unwrap();
+        {
+            let shared = shared_state.lock().unwrap();
+            assert_eq!(shared.connection_request, disconnect);
+            assert!(shared.pending_connection_request.is_none());
+            assert!(disconnect > first_connect);
+        }
+        assert!(
+            snapshot_if_lifecycle_request_stale(&shared_state, disconnect)
+                .unwrap()
+                .is_none()
+        );
+
+        let latest_connect = register_connection_attempt(&shared_state).unwrap();
+        let stale_snapshot = snapshot_if_lifecycle_request_stale(&shared_state, disconnect)
+            .unwrap()
+            .unwrap();
+        let shared = shared_state.lock().unwrap();
+        assert_eq!(shared.pending_connection_request, Some(latest_connect));
+        assert_eq!(stale_snapshot.status, shared.status.as_str());
+        assert_eq!(stale_snapshot.generation, shared.generation);
+        assert_eq!(stale_snapshot.revision, shared.revision);
     }
 
     #[test]
