@@ -855,6 +855,7 @@ test("串口输入握手线状态在桌面与窄屏保持可读", async ({ page 
     },
   });
 
+  await page.getByText("高级串口设置", { exact: true }).click();
   const status = page.locator('dl[aria-label="串口输入握手线状态"]');
   const items = status.locator(".modem-status-item");
   await expect(status).toBeVisible();
@@ -1276,6 +1277,10 @@ test("Windows 支持窗口中连接主操作始终可达", async ({ page }, test
   const panel = page.locator(".connection-panel");
   const scroller = page.locator(".connection-panel-scroll");
   const connect_button = page.getByRole("button", { name: "连接设备" });
+  const advanced_serial = page.locator(".serial-advanced-section");
+
+  await expect(advanced_serial).not.toHaveAttribute("open", "");
+  await expect(page.getByRole("radio", { name: /FireWater/ })).toBeInViewport();
 
   for (const viewport of [
     { width: 1_024, height: 680 },
@@ -1527,6 +1532,21 @@ test("波特率可直接输入且常用值始终可选", async ({ page }, testIn
   await baud_rate.press("Escape");
   await expect(baud_rate_presets).toBeHidden();
   await expect(baud_rate).toHaveValue("19200");
+
+  await baud_rate.press("ArrowDown");
+  await expect(baud_rate_presets).toBeVisible();
+  expect(
+    await baud_rate_presets
+      .getByRole("option")
+      .evaluateAll((options) => options.every((option) => option.tabIndex === -1)),
+  ).toBe(true);
+  await expect(page.getByRole("button", { name: "收起常用波特率" })).toHaveAttribute(
+    "tabindex",
+    "-1",
+  );
+  await page.keyboard.press("Tab");
+  await expect(baud_rate_presets).toBeHidden();
+  await expect(page.getByRole("radio", { name: /FireWater/ })).toBeFocused();
 
   await baud_rate.fill("250000");
   await baud_rate.hover();

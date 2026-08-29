@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { APP_BUILD_ID, APP_DISPLAY_VERSION } from "../core/appMetadata";
 import { createInitialModbusPollSnapshot } from "../core/modbusPoller";
@@ -612,6 +613,66 @@ describe("Sidebar 串口恢复界面", () => {
     fireEvent.keyDown(baud_rate, { key: "Escape" });
     expect(screen.queryByRole("listbox", { name: "常用波特率" })).not.toBeInTheDocument();
     expect(baud_rate).toHaveValue("230400");
+  });
+
+  it("波特率弹层保持单一 Tab 停靠点并提交后进入协议选择", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      protocol: "firewater",
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const baud_rate = screen.getByRole("combobox", { name: "波特率" });
+    baud_rate.focus();
+    await user.keyboard("{ArrowDown}");
+    const listbox = screen.getByRole("listbox", { name: "常用波特率" });
+    const options = within(listbox).getAllByRole("option");
+    expect(options.every((option) => option.tabIndex === -1)).toBe(true);
+    expect(screen.getByRole("button", { name: "收起常用波特率" })).toHaveAttribute(
+      "tabindex",
+      "-1",
+    );
+
+    await user.tab();
+    expect(screen.queryByRole("listbox", { name: "常用波特率" })).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /FireWater/ })).toHaveFocus();
+  });
+
+  it("协议选择先于默认折叠的高级串口参数", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      protocol: "firewater",
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const firewater = screen.getByRole("radio", { name: /FireWater/ });
+    const advanced_summary = screen.getByText("高级串口设置").closest("summary");
+    const advanced_details = advanced_summary?.closest("details");
+    expect(advanced_details).not.toHaveAttribute("open");
+    expect(
+      firewater.compareDocumentPosition(advanced_summary as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+
+    expect(screen.getByRole("radio", { name: /Raw Data/ })).toHaveTextContent(
+      "原始字节 · 无波形",
+    );
   });
 
   it("用无步进文本框提交自定义波特率并可从下拉切回预设", () => {

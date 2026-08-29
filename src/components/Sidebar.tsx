@@ -307,6 +307,11 @@ function BaudRateField({ value, disabled, onChange, onValidityChange }: BaudRate
               } else {
                 commitDraftValue();
               }
+            } else if (event.key === "Tab") {
+              if (open) {
+                setOpen(false);
+              }
+              commitDraftValue();
             } else if (event.key === "Escape") {
               event.preventDefault();
               if (open) {
@@ -321,6 +326,7 @@ function BaudRateField({ value, disabled, onChange, onValidityChange }: BaudRate
         <button
           className="baud-rate-toggle"
           type="button"
+          tabIndex={-1}
           aria-label={open ? "收起常用波特率" : "展开常用波特率"}
           title={open ? "收起常用波特率" : "选择常用波特率"}
           aria-controls="baud-rate-options"
@@ -354,6 +360,7 @@ function BaudRateField({ value, disabled, onChange, onValidityChange }: BaudRate
                 id={`baud-rate-option-${rate}`}
                 type="button"
                 role="option"
+                tabIndex={-1}
                 aria-selected={rate === value}
                 data-active={rate === BAUD_RATES[activeIndex]}
                 onMouseDown={(event) => event.preventDefault()}
@@ -629,7 +636,6 @@ function ConnectionPanel() {
     <div className="sidebar-panel connection-panel">
       <div className="sidebar-heading">
         <div>
-          <span className="eyebrow">DATA SOURCE</span>
           <h1>设备连接</h1>
         </div>
         <Cable size={20} />
@@ -806,6 +812,44 @@ function ConnectionPanel() {
             onChange={(baudRate) => updateConfig("baudRate", baudRate)}
             onValidityChange={setBaudRateDraftValid}
           />
+        </section>
+      )}
+
+      <section className="sidebar-section">
+        <span className="field-label" id="protocol-parser-label">协议解析</span>
+        <div
+          className="protocol-list"
+          role="radiogroup"
+          aria-labelledby="protocol-parser-label"
+        >
+          {BUILTIN_PROTOCOLS.map(({ id, displayName, description }) => (
+            <button
+              key={id}
+              className="protocol-option"
+              type="button"
+              role="radio"
+              aria-checked={protocol === id}
+              data-active={protocol === id}
+              disabled={configDisabled}
+              onClick={() => setProtocol(id)}
+            >
+              <span className="protocol-dot" />
+              <span>
+                <strong>{displayName}</strong>
+                <small>{description}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {source === "serial" && (
+        <details className="sidebar-section serial-advanced-section">
+          <summary>
+            <span>高级串口设置</span>
+            <ChevronDown size={16} aria-hidden="true" />
+          </summary>
+          <div className="connection-fields serial-advanced-fields">
 
           <div className="field-grid three-columns">
             <label htmlFor="serial-data-bits">
@@ -945,7 +989,8 @@ function ConnectionPanel() {
               ))}
             </dl>
           )}
-        </section>
+          </div>
+        </details>
       )}
 
       {source === "serial" && (
@@ -1010,33 +1055,6 @@ function ConnectionPanel() {
         </section>
       )}
 
-      <section className="sidebar-section">
-        <span className="field-label" id="protocol-parser-label">协议解析</span>
-        <div
-          className="protocol-list"
-          role="radiogroup"
-          aria-labelledby="protocol-parser-label"
-        >
-          {BUILTIN_PROTOCOLS.map(({ id, displayName, description }) => (
-            <button
-              key={id}
-              className="protocol-option"
-              type="button"
-              role="radio"
-              aria-checked={protocol === id}
-              data-active={protocol === id}
-              disabled={configDisabled}
-              onClick={() => setProtocol(id)}
-            >
-              <span className="protocol-dot" />
-              <span>
-                <strong>{displayName}</strong>
-                <small>{description}</small>
-              </span>
-            </button>
-          ))}
-        </div>
-      </section>
       </div>
 
       <div className="connection-action-area">
@@ -1239,7 +1257,6 @@ function ChannelPanel() {
     <div className="sidebar-panel">
       <div className="sidebar-heading">
         <div>
-          <span className="eyebrow">SIGNALS</span>
           <h1>数据通道</h1>
         </div>
         <Gauge size={20} />
@@ -1630,7 +1647,6 @@ function SettingsPanel({
     <div className="sidebar-panel settings-sidebar-panel">
       <div className="sidebar-heading">
         <div>
-          <span className="eyebrow">PREFERENCES</span>
           <h1>工作台设置</h1>
         </div>
         <Settings size={20} />

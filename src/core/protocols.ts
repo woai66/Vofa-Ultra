@@ -251,7 +251,7 @@ const protocolRegistry = {
   raw: Object.freeze({
     id: "raw",
     displayName: "Raw Data",
-    description: "原始字节",
+    description: "原始字节 · 无波形",
     replaySeekMode: "record-boundary",
     createParser: (): ProtocolParser => {
       const health = createEmptyProtocolHealth();

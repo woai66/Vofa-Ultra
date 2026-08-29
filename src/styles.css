@@ -1076,13 +1076,14 @@ textarea:disabled {
 
 .baud-rate-toggle {
   display: grid;
-  width: 32px;
-  height: 32px;
-  margin: 2px;
+  width: 36px;
+  height: 36px;
+  margin: 0;
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 4px;
+  border-left: 1px solid var(--border);
+  border-radius: 0 5px 5px 0;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -1190,6 +1191,11 @@ input:focus,
 select:focus,
 textarea:focus {
   border-color: var(--focus);
+}
+
+.connection-panel select:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .segmented-control {
@@ -1317,6 +1323,58 @@ textarea:focus {
 .serial-port-summary-meta code {
   color: inherit;
   font-size: inherit;
+}
+
+.serial-advanced-section {
+  display: block;
+  padding: 0;
+}
+
+.serial-advanced-section > summary {
+  display: grid;
+  min-height: 44px;
+  align-items: center;
+  padding: 0 16px;
+  color: var(--text);
+  cursor: pointer;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  list-style: none;
+}
+
+.serial-advanced-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.serial-advanced-section > summary:hover {
+  background: var(--surface-hover);
+}
+
+.serial-advanced-section > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.serial-advanced-section > summary > span:first-child {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.serial-advanced-section > summary svg {
+  color: var(--text-subtle);
+  transition: transform 120ms ease;
+}
+
+.serial-advanced-section[open] > summary svg {
+  transform: rotate(180deg);
+}
+
+.serial-advanced-fields {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 16px 14px;
+  border-top: 1px solid var(--border);
+  gap: 8px;
 }
 
 .recovery-section {
@@ -1798,7 +1856,7 @@ textarea:focus {
   border-top: 1px solid var(--border);
 }
 
-.protocol-option:hover {
+.protocol-option:hover:not(:disabled) {
   background: var(--surface-hover);
 }
 
