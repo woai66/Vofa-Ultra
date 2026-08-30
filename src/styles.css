@@ -1976,6 +1976,13 @@ textarea:focus {
   color: #ffffff;
 }
 
+.primary-button:disabled {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--text-subtle);
+  opacity: 1;
+}
+
 .primary-button:hover:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent);

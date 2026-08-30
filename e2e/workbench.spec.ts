@@ -924,6 +924,13 @@ test("模拟器只生成结构化协议并明确 Raw Data 边界", async ({ page
   await page.getByRole("button", { name: "清空终端", exact: true }).click();
   await expect(rxLines).toHaveCount(0);
 
+  const enabledActionAppearance = await page
+    .getByRole("button", { name: "启动模拟" })
+    .evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { backgroundColor: style.backgroundColor, opacity: style.opacity };
+    });
+
   await page.getByRole("radio", { name: /Raw Data/ }).click();
   await page.setViewportSize({ width: 1_024, height: 680 });
   await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
@@ -936,6 +943,18 @@ test("模拟器只生成结构化协议并明确 Raw Data 边界", async ({ page
   await expect(startSimulator).toHaveAttribute(
     "title",
     "Raw Data 不提供模拟，请选择串口或回放",
+  );
+  const disabledActionAppearance = await startSimulator.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      backgroundColor: style.backgroundColor,
+      cursor: style.cursor,
+      opacity: style.opacity,
+    };
+  });
+  expect(disabledActionAppearance).toMatchObject({ cursor: "not-allowed", opacity: "1" });
+  expect(disabledActionAppearance.backgroundColor).not.toBe(
+    enabledActionAppearance.backgroundColor,
   );
   await expect(page.locator("#serial-connection-status")).toContainText(
     "Raw Data 不提供模拟，请选择串口或回放",
