@@ -9,8 +9,10 @@ import type {
   SerialReconnectTarget,
   SerialRecoveryPhase,
   SerialRecoverySnapshot,
+  SerialRxObservabilitySnapshot,
   SerialStatePayload,
 } from "../types/serial";
+import { createIdleSerialRxObservability } from "./serialRxObservability";
 
 export const SERIAL_RECOVERY_DELAYS_MS = [
   0,
@@ -78,6 +80,7 @@ interface DiagnosticsContext {
   generation: number;
   revision: number;
   serialConfig: SerialConfig;
+  rxObservability?: SerialRxObservabilitySnapshot;
 }
 
 export class SerialReconnectCoordinator {
@@ -720,7 +723,7 @@ function createDiagnosticsReport(
   };
   return {
     format: "vofa-ultra.serial-diagnostics",
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt,
     appVersion: context.appVersion,
     buildId: context.buildId,
@@ -732,6 +735,9 @@ function createDiagnosticsReport(
       revision: context.revision,
     },
     serial,
+    rxObservability: context.rxObservability
+      ? { ...context.rxObservability }
+      : createIdleSerialRxObservability(),
     target: context.target
       ? {
           kind: "usb",

@@ -13,6 +13,7 @@ import {
   simulateModbusRtuResponse,
 } from "../core/modbusRtu";
 import { createEmptyProtocolHealth } from "../core/protocols";
+import { createIdleSerialRxObservability } from "../core/serialRxObservability";
 import {
   calculateWaveformMeasurement,
   getVisibleMeasurementPoints,
@@ -77,6 +78,7 @@ import type {
   ReplayStatus,
 } from "../types/replay";
 import type {
+  SerialDataPayload,
   SerialFileSendPayload,
   SerialPortInfo,
   SerialStatePayload,
@@ -246,6 +248,27 @@ function quickCommand(overrides: Partial<QuickCommand> = {}): QuickCommand {
 
 function testBase64(bytes: Uint8Array): string {
   return btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
+}
+
+function serialDataPayload(
+  text: string,
+  generation: number,
+  sequence: number,
+  streamOffset: number,
+  receivedAt: number,
+): SerialDataPayload {
+  const bytes = new TextEncoder().encode(text);
+  return {
+    data: testBase64(bytes),
+    receivedAt,
+    receivedAtMonotonicUs: receivedAt * 1_000,
+    generation,
+    sequence,
+    streamOffset,
+    byteCount: bytes.length,
+    backendRxBytes: streamOffset + bytes.length,
+    backendRxEvents: sequence + 1,
+  };
 }
 
 function serialFileSendState(
@@ -436,6 +459,7 @@ describe("workbenchStore", () => {
         diagnosticEventCount: 0,
         diagnosticDroppedEvents: 0,
       },
+      serialRxObservability: createIdleSerialRxObservability(),
       isCancellingSerialConnection: false,
       channels: [],
       processedChannels: [],
@@ -480,6 +504,13 @@ describe("workbenchStore", () => {
       captureDataBytes: 0,
       captureRecordCount: 0,
       captureMarkerCount: 0,
+      captureQueueBytes: 0,
+      captureQueueCapacityBytes: 4 * 1024 * 1024,
+      captureQueueRecords: 0,
+      captureQueueCapacityRecords: 4096,
+      captureQueuePeakBytes: 0,
+      captureQueuePeakRecords: 0,
+      captureTerminationReason: "",
       captureMessage: "",
       numericLogStatus: "idle",
       numericLogSessionId: 0,
@@ -545,8 +576,10 @@ describe("workbenchStore", () => {
 
   it("诊断报告使用构建注入的应用版本", () => {
     expect(useWorkbenchStore.getState().getSerialDiagnostics()).toMatchObject({
+      schemaVersion: 2,
       appVersion: APP_VERSION,
       buildId: APP_BUILD_ID,
+      rxObservability: createIdleSerialRxObservability(),
     });
   });
 
@@ -2637,15 +2670,18 @@ describe("workbenchStore", () => {
       useWorkbenchStore.setState({
         source: "serial",
         protocol: "firewater",
-        connectionStatus: "connected",
-        serialGeneration: 7,
-        serialStateRevision: 2,
       });
-      useWorkbenchStore.getState().handleSerialData({
-        data: btoa("1,2\n"),
-        receivedAt: 1_000,
+      useWorkbenchStore.getState().handleSerialState({
+        status: "connected",
+        portName: "COM7",
         generation: 7,
+        revision: 2,
+        backendRxBytes: 0,
+        backendRxEvents: 0,
       });
+      useWorkbenchStore
+        .getState()
+        .handleSerialData(serialDataPayload("1,2\n", 7, 0, 0, 1_000));
       expect(useWorkbenchStore.getState()).toMatchObject({
         stats: { rxBytes: 4, rxFrames: 1 },
       });
@@ -2656,14 +2692,12 @@ describe("workbenchStore", () => {
         message: terminalStatus === "error" ? "设备已移除" : undefined,
         generation: 7,
         revision: 3,
+        backendRxBytes: 4,
+        backendRxEvents: 1,
       });
       const stateAtBoundary = useWorkbenchStore.getState();
 
-      stateAtBoundary.handleSerialData({
-        data: btoa("3,4\n"),
-        receivedAt: 1_100,
-        generation: 7,
-      });
+      stateAtBoundary.handleSerialData(serialDataPayload("3,4\n", 7, 1, 4, 1_100));
 
       expect(useWorkbenchStore.getState()).toMatchObject({
         connectionStatus: terminalStatus,
@@ -2673,6 +2707,36 @@ describe("workbenchStore", () => {
       });
     },
   );
+
+  it("RX 序号缺口会留下诊断证据且缺失后的可见块仍可解析", () => {
+    useWorkbenchStore.setState({ source: "serial", protocol: "firewater" });
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connected",
+      portName: "COM7",
+      generation: 7,
+      revision: 1,
+      backendRxBytes: 0,
+      backendRxEvents: 0,
+    });
+
+    useWorkbenchStore
+      .getState()
+      .handleSerialData(serialDataPayload("1,2\n", 7, 0, 0, 1_000));
+    useWorkbenchStore
+      .getState()
+      .handleSerialData(serialDataPayload("3,4\n", 7, 2, 8, 1_100));
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      stats: { rxBytes: 8, rxFrames: 2 },
+      serialRxObservability: {
+        status: "degraded",
+        acceptedRxBytes: 8,
+        acceptedRxEvents: 2,
+        ipcGapBytes: 4,
+        ipcGapEvents: 1,
+      },
+    });
+  });
 
   it("输入握手线只接受当前连接递增修订，并在换代时重新开始", () => {
     useWorkbenchStore.setState({

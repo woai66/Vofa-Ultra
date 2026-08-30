@@ -86,6 +86,11 @@ import {
 import { RingBuffer } from "../core/ringBuffer";
 import { sortSerialPorts } from "../core/serialPorts";
 import {
+  createIdleSerialRxObservability,
+  observeSerialRxData,
+  observeSerialRxState,
+} from "../core/serialRxObservability";
+import {
   MAX_TERMINAL_LINE_ENDING_BYTES,
   MAX_TERMINAL_UNTERMINATED_LINE_BYTES,
   TerminalLineAssembler,
@@ -220,6 +225,7 @@ import type {
   SerialModbusTransactionPayload,
   SerialPortInfo,
   SerialRecoverySnapshot,
+  SerialRxObservabilitySnapshot,
   SerialStatePayload,
   SerialTxPayload,
 } from "../types/serial";
@@ -421,6 +427,7 @@ export interface WorkbenchStore {
   serialControlLineOperation: "idle" | SerialControlLine;
   serialModemStatus: SerialModemStatusPayload;
   serialRecovery: SerialRecoverySnapshot;
+  serialRxObservability: SerialRxObservabilitySnapshot;
   isCancellingSerialConnection: boolean;
   channels: ChannelSeries[];
   processedChannels: ChannelSeries[];
@@ -491,6 +498,13 @@ export interface WorkbenchStore {
   captureDataBytes: number;
   captureRecordCount: number;
   captureMarkerCount: number;
+  captureQueueBytes: number;
+  captureQueueCapacityBytes: number;
+  captureQueueRecords: number;
+  captureQueueCapacityRecords: number;
+  captureQueuePeakBytes: number;
+  captureQueuePeakRecords: number;
+  captureTerminationReason: string;
   captureMessage: string;
   numericLogStatus: NumericLogUiStatus;
   numericLogSessionId: number;
@@ -707,6 +721,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       serialControlLineOperation: "idle",
       serialModemStatus: createUnavailableSerialModemStatus(),
       serialRecovery: { ...INITIAL_SERIAL_RECOVERY },
+      serialRxObservability: createIdleSerialRxObservability(),
       isCancellingSerialConnection: false,
       channels: [],
       processedChannels: [],
@@ -777,6 +792,13 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       captureDataBytes: 0,
       captureRecordCount: 0,
       captureMarkerCount: 0,
+      captureQueueBytes: 0,
+      captureQueueCapacityBytes: 4 * 1024 * 1024,
+      captureQueueRecords: 0,
+      captureQueueCapacityRecords: 4096,
+      captureQueuePeakBytes: 0,
+      captureQueuePeakRecords: 0,
+      captureTerminationReason: "",
       captureMessage: "",
       numericLogStatus: "idle",
       numericLogSessionId: 0,
@@ -1793,6 +1815,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           generation: state.serialGeneration,
           revision: state.serialStateRevision,
           serialConfig: state.serialConfig,
+          rxObservability: state.serialRxObservability,
         });
       },
 
@@ -2153,15 +2176,35 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       handleSerialData: (payload) => {
         const state = get();
+        if (hasReplaySession(state) || state.source !== "serial") {
+          return;
+        }
+        let bytes: Uint8Array;
+        try {
+          bytes = decodeBase64(payload.data);
+        } catch {
+          const observation = observeSerialRxData(
+            state.serialRxObservability,
+            payload,
+            -1,
+          );
+          set({ serialRxObservability: observation.snapshot });
+          return;
+        }
+        const observation = observeSerialRxData(
+          state.serialRxObservability,
+          payload,
+          bytes.length,
+        );
+        set({ serialRxObservability: observation.snapshot });
         if (
-          hasReplaySession(state) ||
-          state.source !== "serial" ||
+          !observation.accept ||
           state.connectionStatus !== "connected" ||
           payload.generation !== state.serialGeneration
         ) {
           return;
         }
-        get().ingestBytes(decodeBase64(payload.data), payload.receivedAt);
+        get().ingestBytes(bytes, payload.receivedAt);
       },
 
       handleSerialState: (payload) => {
@@ -2186,6 +2229,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           payload.generation === state.serialModemStatus.generation
             ? state.serialModemStatus
             : createUnavailableSerialModemStatus(payload.generation);
+        const serialRxObservability = observeSerialRxState(
+          state.serialRxObservability,
+          payload,
+        );
         if (payload.status !== "connected") {
           serialControlLineOperation += 1;
           stopCurrentModbusPolling("connection-lost", false);
@@ -2232,6 +2279,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             statusMessage: payload.message ?? "串口发生未知错误",
             serialControlLineOperation: "idle",
             serialModemStatus,
+            serialRxObservability,
             waveformTrigger: createIdleWaveformTriggerState(),
             terminalEntries: terminalEntries ?? state.terminalEntries,
           });
@@ -2261,6 +2309,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           serialControlLineOperation:
             payload.status === "connected" ? state.serialControlLineOperation : "idle",
           serialModemStatus,
+          serialRxObservability,
           waveformTrigger:
             payload.status === state.connectionStatus &&
             payload.generation === state.serialGeneration
@@ -2867,6 +2916,13 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           captureDataBytes: payload.dataBytes,
           captureRecordCount: payload.recordCount,
           captureMarkerCount: payload.markerCount,
+          captureQueueBytes: payload.queueBytes ?? 0,
+          captureQueueCapacityBytes: payload.queueCapacityBytes ?? 4 * 1024 * 1024,
+          captureQueueRecords: payload.queueRecords ?? 0,
+          captureQueueCapacityRecords: payload.queueCapacityRecords ?? 4096,
+          captureQueuePeakBytes: payload.queuePeakBytes ?? 0,
+          captureQueuePeakRecords: payload.queuePeakRecords ?? 0,
+          captureTerminationReason: payload.terminationReason ?? "",
           captureMessage: preserveLocalStatus
             ? state.captureMessage
             : (payload.message ?? ""),

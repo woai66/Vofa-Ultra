@@ -468,6 +468,86 @@ textarea:disabled {
   padding-inline: 12px;
 }
 
+.capture-queue-section {
+  align-items: stretch;
+  gap: 9px;
+}
+
+.capture-queue-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.capture-queue-heading > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  gap: 7px;
+}
+
+.capture-queue-heading svg {
+  flex: 0 0 auto;
+  color: var(--text-subtle);
+}
+
+.capture-queue-heading strong {
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+
+.capture-queue-section[data-pressure="medium"] .capture-queue-heading strong {
+  color: var(--amber);
+}
+
+.capture-queue-section[data-pressure="high"] .capture-queue-heading strong {
+  color: var(--danger);
+}
+
+.capture-queue-section[data-pressure="medium"] .capture-queue-progress::-webkit-progress-value {
+  background: var(--amber);
+}
+
+.capture-queue-section[data-pressure="medium"] .capture-queue-progress::-moz-progress-bar {
+  background: var(--amber);
+}
+
+.capture-queue-section[data-pressure="high"] .capture-queue-progress::-webkit-progress-value {
+  background: var(--danger);
+}
+
+.capture-queue-section[data-pressure="high"] .capture-queue-progress::-moz-progress-bar {
+  background: var(--danger);
+}
+
+.capture-queue-details {
+  display: grid;
+  gap: 5px;
+}
+
+.capture-queue-details > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture-queue-termination {
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .capture-action-section {
   align-items: stretch;
 }
@@ -1462,6 +1542,45 @@ textarea:focus {
   display: flex;
   flex: 0 0 auto;
   gap: 4px;
+}
+
+.serial-rx-integrity {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+  gap: 3px;
+}
+
+.serial-rx-integrity > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.serial-rx-integrity > div > span,
+.serial-rx-integrity strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.serial-rx-integrity strong {
+  font-weight: 600;
+}
+
+.serial-rx-integrity[data-status="monitoring"] strong {
+  color: var(--accent);
+}
+
+.serial-rx-integrity[data-status="verified"] strong {
+  color: var(--cyan);
+}
+
+.serial-rx-integrity[data-status="degraded"] strong {
+  color: var(--danger);
 }
 
 .automation-runtime {

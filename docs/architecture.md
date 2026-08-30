@@ -12,7 +12,7 @@ flowchart TB
     Device[串口设备] <--> Worker[Rust 串口 worker]
     FileSource[本机原始文件] --> FileReader[有界文件 reader]
     FileReader -->|单块预取| Worker
-    Worker -->|Base64 RX / 状态事件| Bridge[Tauri 命令与事件边界]
+    Worker -->|Base64 RX + 序号/偏移 / 状态事件| Bridge[Tauri 命令与事件边界]
     Worker -->|原始 RX / TX| Recorder[有界 VUCAP writer]
     CaptureFile[VUCAP 文件] --> Replayer[有界 replay worker]
     CaptureFile --> Exporter[单任务 export worker]
@@ -122,6 +122,16 @@ RTU 事务期间也保持控制线不变。最后一次成功值会同步给恢�
 串口连接；只有快照变化时才发布 `serial://modem-status`。该事件使用独立 generation 和 revision，前端先订阅事件、
 再读取 `get_serial_modem_status` 快照，并只接受当前连接的递增 revision。输入线状态是会话级只读数据，不进入
 `SerialConfig`、工作区持久化、协议解析、处理图或录制链路。
+
+每个 worker 的 RX 计数从零开始。Rust 成功读取一个非空块后，先递增 `sequence`、`streamOffset`、后端累计字节数和
+事件数，再投递录制队列和 Tauri 数据事件；事件同时携带块字节数、连接内单调微秒时间和递增后的后端计数。
+前端按 generation 独立核对这些字段，只把边界可信且未重复、未乱序的事件交给协议解析器。序号或流偏移向前跳跃
+会累计为 IPC 缺口，重复、乱序、迟到代次、字节数不符和单调时间倒退分别保留计数。
+
+worker 终止时，状态事件带上最终后端累计字节数和事件数。前端用它核对最后一个可见数据事件之后的尾部缺口，
+并把结果标为“本次完整”或“发现异常”；同一终态重复到达不会重复累计缺口。诊断 JSON schema v2 包含该快照，
+但不包含原始 RX 内容。这个完整性范围从 Rust `read` 成功开始，到前端 Store 接受事件为止；它不能证明串口芯片、
+USB 链路、驱动或操作系统在 `read` 之前没有丢数据，也不能替代真实设备的长稳与高波特率验证。
 
 ## 可控串口恢复与诊断
 
@@ -560,9 +570,10 @@ v10；v1-v10 补充 `commandChecksum: "none"` 归一为 v11，再由 v1-v11 补�
 ## 原始会话录制
 
 `.vucap` 记录平面独立于 Zustand、终端虚拟列表和波形环形缓冲。原生串口 worker 在 Base64 事件之前投递 RX，
-每次 `write` 成功后投递实际写入的 TX 字节分片；投递只使用按命令数和 payload / 标签字节数双重限制的
-`try_send`，不会等待磁盘。连续 TX record 按顺序拼接后才是线上的 TX 字节流，record 边界不表示一次发送命令。
-独立 writer 线程负责 VUCAP v2 格式编码、定期进度事件、flush、同步和带标记计数的完成 footer。
+每次 `write` 成功后投递实际写入的 TX 字节分片；投递只使用同时受 4 MiB 与 4,096 条约束的 `try_send`，不会等待
+磁盘。连续 TX record 按顺序拼接后才是线上的 TX 字节流，record 边界不表示一次发送命令。独立 writer 线程负责
+VUCAP v2 格式编码、定期进度事件、flush、同步和带标记计数的完成 footer。状态事件同时公布队列当前占用、容量、
+字节/条目最高水位和结构化终止原因，能够区分两类容量耗尽、writer 断开、panic 与收尾故障。
 
 录制开始时冻结数据源、协议、串口参数、Unix 起始时间和单调时钟基准。记录和命名标记只保存相对单调微秒
 时间，避免系统时钟跳变影响后续回放排序。Tauri 模拟器数据和标记通过前端 1 MiB 有界 FIFO 串行调用同一
