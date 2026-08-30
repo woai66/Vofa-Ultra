@@ -15,7 +15,7 @@
   --border-strong: #454d58;
   --text: #edf0f4;
   --text-muted: #a3abb6;
-  --text-subtle: #818b98;
+  --text-subtle: #909aa6;
   --accent: #3dcc8d;
   --accent-strong: #24b979;
   --accent-soft: rgb(61 204 141 / 12%);
@@ -42,7 +42,7 @@
   --border-strong: #aab2bc;
   --text: #1b2027;
   --text-muted: #596370;
-  --text-subtle: #6e7885;
+  --text-subtle: #626d79;
   --accent: #137a55;
   --accent-strong: #0f714d;
   --accent-soft: rgb(19 122 85 / 10%);
@@ -1232,9 +1232,9 @@ textarea:focus {
 }
 
 .segmented-control button[data-active="true"] {
-  background: var(--surface-1);
+  background: var(--surface-hover);
   color: var(--text);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 16%);
+  box-shadow: inset 0 -2px var(--accent);
 }
 
 .connection-fields {
@@ -3048,9 +3048,9 @@ textarea:focus {
 }
 
 .workspace-view-tabs button[aria-selected="true"] {
-  background: var(--surface-1);
+  background: var(--surface-hover);
   color: var(--text);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 16%);
+  box-shadow: inset 0 -2px var(--accent);
 }
 
 .workspace-layout-controls {
@@ -3082,9 +3082,9 @@ textarea:focus {
 }
 
 .workspace-layout-controls button[data-active="true"] {
-  background: var(--surface-1);
+  background: var(--surface-hover);
   color: var(--text);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 16%);
+  box-shadow: inset 0 -2px var(--accent);
 }
 
 .build-label {
