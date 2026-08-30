@@ -12,9 +12,7 @@ use serde::Serialize;
 use serialport::{DataBits, FlowControl, Parity, SerialPortType, StopBits};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::capture::{
-    CaptureDirection, CaptureRecorderHandle, CaptureRxStreamMetadata, CaptureState,
-};
+use crate::capture::{CaptureRecorderHandle, CaptureRxStreamMetadata, CaptureState};
 use crate::modbus_rtu::{
     silent_interval, ModbusRequestSpec, ModbusResponseCollector, ResponseErrorCode, ResponseMatch,
     BUS_ACQUIRE_TIMEOUT, MAX_TRANSACTION_TIMEOUT_MS, MIN_TRANSACTION_TIMEOUT_MS,
@@ -3687,7 +3685,7 @@ fn run_serial_worker(
             let remaining = pending.data.len() - pending.offset;
             let chunk_length = remaining.min(WRITE_CHUNK_SIZE).min(write_budget);
             let chunk_end = pending.offset + chunk_length;
-            let capture_session_id = recorder.active_session_id();
+            let capture_session_id = recorder.active_serial_session_id();
 
             match port.write(&pending.data[pending.offset..chunk_end]) {
                 Ok(0) => {
@@ -3704,10 +3702,9 @@ fn run_serial_worker(
                     let written_range = pending.record_progress(byte_count, progressed_at);
                     write_budget -= byte_count;
                     if let Some(session_id) = capture_session_id {
-                        let _ = recorder.append_for_session(
+                        let _ = recorder.append_serial_tx_for_session(
                             &app,
                             session_id,
-                            CaptureDirection::Tx,
                             &pending.data[written_range],
                         );
                     }
@@ -3882,7 +3879,7 @@ fn run_serial_worker(
             break;
         }
 
-        let capture_session_id = recorder.active_session_id();
+        let capture_session_id = recorder.active_serial_session_id();
         match port.read(&mut read_buffer) {
             Ok(byte_count) if byte_count > 0 => {
                 last_bus_activity = Instant::now();

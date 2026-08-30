@@ -52,6 +52,29 @@ const WRITER_PHASE_ABORTED: u8 = 3;
 const WRITER_PHASE_COMPLETED: u8 = 4;
 const SUPPORTED_CAPTURE_PROTOCOLS: &[&str] = &["firewater", "justfloat", "raw"];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureSource {
+    Serial,
+    Simulator,
+}
+
+impl CaptureSource {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "serial" => Ok(Self::Serial),
+            "simulator" => Ok(Self::Simulator),
+            _ => Err(format!("不支持的录制数据源: {value}")),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Serial => "serial",
+            Self::Simulator => "simulator",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureHeader {
@@ -68,16 +91,15 @@ pub struct CaptureHeader {
 
 impl CaptureHeader {
     fn validate(&self, version: u16) -> Result<(), String> {
-        if !matches!(self.source.as_str(), "serial" | "simulator") {
-            return Err(format!("不支持的录制数据源: {}", self.source));
-        }
+        let source = CaptureSource::parse(&self.source)?;
         if !SUPPORTED_CAPTURE_PROTOCOLS.contains(&self.protocol.as_str()) {
             return Err(format!("不支持的录制协议: {}", self.protocol));
         }
         if self.time_unit != "microseconds" {
             return Err(format!("不支持的录制时间单位: {}", self.time_unit));
         }
-        self.serial_config.validate(self.source == "serial")?;
+        self.serial_config
+            .validate(source == CaptureSource::Serial)?;
         if version < CAPTURE_VERSION_V3 {
             if self.application.is_some() || self.device.is_some() {
                 return Err("VUCAP v1/v2 文件头不能包含 v3 会话元数据".to_owned());
@@ -89,7 +111,7 @@ impl CaptureHeader {
             .ok_or_else(|| "VUCAP v3 文件头缺少应用元数据".to_owned())?
             .validate()?;
         if let Some(device) = &self.device {
-            if self.source != "serial" {
+            if source != CaptureSource::Serial {
                 return Err("模拟器捕获不能包含物理设备元数据".to_owned());
             }
             device.validate()?;
@@ -206,6 +228,41 @@ pub struct CaptureRxStreamMetadata {
     pub sequence: u64,
     pub stream_offset: u64,
     pub received_at_monotonic_us: u64,
+}
+
+fn validate_v3_record_source(
+    source: CaptureSource,
+    direction: CaptureDirection,
+    rx_stream: Option<CaptureRxStreamMetadata>,
+) -> Result<(), String> {
+    if rx_stream.is_some() && direction != CaptureDirection::Rx {
+        return Err("只有 RX 记录可以携带流位置".to_owned());
+    }
+    match source {
+        CaptureSource::Serial if direction == CaptureDirection::Rx && rx_stream.is_none() => {
+            Err("串口来源的 VUCAP v3 RX 记录必须携带流位置".to_owned())
+        }
+        CaptureSource::Simulator if rx_stream.is_some() => {
+            Err("模拟器来源的 VUCAP v3 记录不能携带流位置".to_owned())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_capture_append(
+    capture_source: CaptureSource,
+    producer_source: CaptureSource,
+    direction: CaptureDirection,
+    rx_stream: Option<CaptureRxStreamMetadata>,
+) -> Result<(), String> {
+    if capture_source != producer_source {
+        return Err(format!(
+            "录制来源为 {}，拒绝 {} 数据",
+            capture_source.as_str(),
+            producer_source.as_str()
+        ));
+    }
+    validate_v3_record_source(capture_source, direction, rx_stream)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -442,6 +499,7 @@ impl std::error::Error for CaptureReadError {
 pub struct CaptureReader<R: Read> {
     reader: R,
     version: u16,
+    source: CaptureSource,
     header: CaptureHeader,
     stats: CaptureRecordStats,
     done: bool,
@@ -492,10 +550,13 @@ impl<R: Read> CaptureReader<R> {
         header
             .validate(version)
             .map_err(CaptureReadError::InvalidHeader)?;
+        let source =
+            CaptureSource::parse(&header.source).map_err(CaptureReadError::InvalidHeader)?;
 
         Ok(Self {
             reader,
             version,
+            source,
             header,
             stats: CaptureRecordStats::default(),
             done: false,
@@ -561,6 +622,10 @@ impl<R: Read> CaptureReader<R> {
         } else {
             None
         };
+        if self.version >= CAPTURE_VERSION_V3 {
+            validate_v3_record_source(self.source, direction, rx_stream)
+                .map_err(CaptureReadError::Corrupt)?;
+        }
 
         let mut payload = vec![0_u8; payload_size as usize];
         read_exact_section(&mut self.reader, &mut payload, "记录数据")?;
@@ -928,11 +993,12 @@ pub struct CaptureRecorderHandle {
 }
 
 impl CaptureRecorderHandle {
-    pub fn active_session_id(&self) -> Option<u64> {
+    pub fn active_serial_session_id(&self) -> Option<u64> {
         self.core.shared.lock().ok().and_then(|shared| {
-            let worker_session_id = shared.worker.as_ref().map(|worker| worker.session_id);
+            let worker = shared.worker.as_ref()?;
             if shared.status == CaptureStatus::Recording
-                && worker_session_id == Some(shared.session_id)
+                && worker.session_id == shared.session_id
+                && worker.source == CaptureSource::Serial
             {
                 Some(shared.session_id)
             } else {
@@ -941,14 +1007,20 @@ impl CaptureRecorderHandle {
         })
     }
 
-    pub fn append_for_session(
+    pub fn append_serial_tx_for_session(
         &self,
         app: &AppHandle,
         session_id: u64,
-        direction: CaptureDirection,
         payload: &[u8],
     ) -> Result<(), String> {
-        self.core.append(app, session_id, direction, payload, None)
+        self.core.append(
+            app,
+            session_id,
+            CaptureSource::Serial,
+            CaptureDirection::Tx,
+            payload,
+            None,
+        )
     }
 
     pub fn append_serial_rx_for_session(
@@ -961,9 +1033,27 @@ impl CaptureRecorderHandle {
         self.core.append(
             app,
             session_id,
+            CaptureSource::Serial,
             CaptureDirection::Rx,
             payload,
             Some(rx_stream),
+        )
+    }
+
+    fn append_simulator_for_session(
+        &self,
+        app: &AppHandle,
+        session_id: u64,
+        direction: CaptureDirection,
+        payload: &[u8],
+    ) -> Result<(), String> {
+        self.core.append(
+            app,
+            session_id,
+            CaptureSource::Simulator,
+            direction,
+            payload,
+            None,
         )
     }
 
@@ -1077,6 +1167,7 @@ impl CaptureStatus {
 
 struct CaptureWorker {
     session_id: u64,
+    source: CaptureSource,
     sender: Option<mpsc::SyncSender<WriterCommand>>,
     control: Arc<WriterControl>,
     budget: Arc<ByteBudget>,
@@ -1506,6 +1597,7 @@ impl CaptureCore {
         &self,
         app: &AppHandle,
         expected_session_id: u64,
+        producer_source: CaptureSource,
         direction: CaptureDirection,
         payload: &[u8],
         rx_stream: Option<CaptureRxStreamMetadata>,
@@ -1523,6 +1615,9 @@ impl CaptureCore {
             {
                 return Ok(());
             }
+            let Some(capture_source) = shared.worker.as_ref().map(|worker| worker.source) else {
+                return Ok(());
+            };
 
             match shared.status {
                 CaptureStatus::Idle | CaptureStatus::Stopping => Ok(()),
@@ -1543,13 +1638,19 @@ impl CaptureCore {
                             message.clone(),
                         ));
                         Err(message)
-                    } else if rx_stream.is_some() && direction != CaptureDirection::Rx {
-                        let message = "只有 RX 记录可以携带流位置，录制已中止".to_owned();
-                        event = Some(fail_active_capture(
-                            &mut shared,
-                            "invalid-rx-stream-metadata",
-                            message.clone(),
-                        ));
+                    } else if let Err(validation_message) = validate_capture_append(
+                        capture_source,
+                        producer_source,
+                        direction,
+                        rx_stream,
+                    ) {
+                        let reason = if capture_source != producer_source {
+                            "capture-source-mismatch"
+                        } else {
+                            "invalid-rx-stream-metadata"
+                        };
+                        let message = format!("{validation_message}，录制已中止");
+                        event = Some(fail_active_capture(&mut shared, reason, message.clone()));
                         Err(message)
                     } else if let Some(worker) = shared.worker.as_ref() {
                         let worker_session_id = worker.session_id;
@@ -1964,6 +2065,7 @@ fn start_capture_blocking(
         device,
         destination_directory,
     } = request;
+    let capture_source = CaptureSource::parse(&source)?;
     let device = device
         .map(|device| device.into_metadata(&serial_config.port_name))
         .transpose()?;
@@ -2016,6 +2118,7 @@ fn start_capture_blocking(
                     worker_app,
                     worker_core,
                     session_id,
+                    capture_source,
                     file,
                     header_bytes,
                     receiver,
@@ -2046,6 +2149,7 @@ fn start_capture_blocking(
 
     let worker = CaptureWorker {
         session_id,
+        source: capture_source,
         sender: Some(sender),
         control,
         budget: Arc::clone(&budget),
@@ -2229,7 +2333,7 @@ pub fn append_simulator_capture(
     let direction = CaptureDirection::parse(&direction)?;
     state
         .recorder_handle()
-        .append_for_session(&app, session_id, direction, &data)
+        .append_simulator_for_session(&app, session_id, direction, &data)
 }
 
 #[tauri::command]
@@ -2250,6 +2354,7 @@ fn run_capture_writer(
     app: AppHandle,
     core: Arc<CaptureCore>,
     session_id: u64,
+    source: CaptureSource,
     file: File,
     header_bytes: Vec<u8>,
     receiver: mpsc::Receiver<WriterCommand>,
@@ -2300,7 +2405,7 @@ fn run_capture_writer(
                     outcome = Some(WriterOutcome::Failed(message));
                     continue;
                 }
-                if let Err(error) = write_record(&mut writer, &record) {
+                if let Err(error) = write_record(&mut writer, source, &record) {
                     outcome = Some(WriterOutcome::Failed(format!("写入录制数据失败: {error}")));
                     continue;
                 }
@@ -2427,7 +2532,11 @@ fn write_file_header<W: Write>(writer: &mut W, header_bytes: &[u8]) -> io::Resul
     write_sha256(writer, &[&prefix, header_bytes])
 }
 
-fn write_record<W: Write>(writer: &mut W, record: &QueuedRecord) -> io::Result<()> {
+fn write_record<W: Write>(
+    writer: &mut W,
+    source: CaptureSource,
+    record: &QueuedRecord,
+) -> io::Result<()> {
     let payload_size = u32::try_from(record.payload.len())
         .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "录制数据过长"))?;
     if record.payload.len() > MAX_CAPTURE_RECORD_BYTES {
@@ -2437,12 +2546,8 @@ fn write_record<W: Write>(writer: &mut W, record: &QueuedRecord) -> io::Result<(
         ));
     }
 
-    if record.rx_stream.is_some() && record.direction != CaptureDirection::Rx {
-        return Err(io::Error::new(
-            ErrorKind::InvalidInput,
-            "只有 RX 记录可以携带流位置",
-        ));
-    }
+    validate_v3_record_source(source, record.direction, record.rx_stream)
+        .map_err(|message| io::Error::new(ErrorKind::InvalidInput, message))?;
     let mut header = [0_u8; V3_RECORD_HEADER_SIZE];
     header[0] = RECORD_TAG;
     header[1] = record.direction.code();
@@ -3056,6 +3161,19 @@ mod tests {
         bytes
     }
 
+    fn simulator_header() -> CaptureHeader {
+        let mut header = sample_header();
+        header.source = "simulator".to_owned();
+        header.serial_config.port_name.clear();
+        header
+    }
+
+    fn file_with_simulator_header() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        write_file_header(&mut bytes, &encode_header(&simulator_header()).unwrap()).unwrap();
+        bytes
+    }
+
     fn file_with_header_version(version: u16) -> Vec<u8> {
         let mut header = sample_header();
         if version < CAPTURE_VERSION_V3 {
@@ -3280,9 +3398,9 @@ mod tests {
         let marker = queued_marker(&budget, CaptureMarkerColor::Blue, 12, "启动");
         let second = queued_record(&budget, CaptureDirection::Tx, 12, vec![3, 4, 5]);
         let mut bytes = file_with_header();
-        write_record(&mut bytes, &first).unwrap();
+        write_record(&mut bytes, CaptureSource::Serial, &first).unwrap();
         write_marker(&mut bytes, &marker).unwrap();
-        write_record(&mut bytes, &second).unwrap();
+        write_record(&mut bytes, CaptureSource::Serial, &second).unwrap();
         write_footer(&mut bytes, 5, 2, 1).unwrap();
 
         assert_eq!(u16::from_le_bytes([bytes[8], bytes[9]]), CAPTURE_VERSION);
@@ -3387,9 +3505,78 @@ mod tests {
             received_at_monotonic_us: 0,
         });
         assert_eq!(
-            write_record(&mut Vec::new(), &tx).unwrap_err().kind(),
+            write_record(&mut Vec::new(), CaptureSource::Serial, &tx)
+                .unwrap_err()
+                .kind(),
             ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn v3_enforces_capture_source_record_contract() {
+        let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
+        let serial_rx_without_stream = queued_record(&budget, CaptureDirection::Rx, 0, vec![0xaa]);
+        let error = write_record(
+            &mut Vec::new(),
+            CaptureSource::Serial,
+            &serial_rx_without_stream,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("必须携带流位置"));
+
+        assert!(validate_capture_append(
+            CaptureSource::Serial,
+            CaptureSource::Simulator,
+            CaptureDirection::Tx,
+            None,
+        )
+        .unwrap_err()
+        .contains("拒绝 simulator 数据"));
+
+        let mut serial_bytes = file_with_header();
+        write_record(
+            &mut serial_bytes,
+            CaptureSource::Simulator,
+            &serial_rx_without_stream,
+        )
+        .unwrap();
+        let mut reader = CaptureReader::new(Cursor::new(serial_bytes)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("必须携带流位置")
+        ));
+
+        let simulator_rx_with_stream = queued_rx_record(
+            &budget,
+            0,
+            vec![0xbb],
+            CaptureRxStreamMetadata {
+                connection_generation: 1,
+                sequence: 0,
+                stream_offset: 0,
+                received_at_monotonic_us: 0,
+            },
+        );
+        let error = write_record(
+            &mut Vec::new(),
+            CaptureSource::Simulator,
+            &simulator_rx_with_stream,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("模拟器来源"));
+
+        let mut simulator_bytes = file_with_simulator_header();
+        write_record(
+            &mut simulator_bytes,
+            CaptureSource::Serial,
+            &simulator_rx_with_stream,
+        )
+        .unwrap();
+        let mut reader = CaptureReader::new(Cursor::new(simulator_bytes)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("模拟器来源")
+        ));
     }
 
     #[test]
@@ -3400,8 +3587,8 @@ mod tests {
                 let first = queued_rx_record(&budget, 0, vec![1, 2], first);
                 let second = queued_rx_record(&budget, 1, vec![3], second);
                 let mut bytes = file_with_header();
-                write_record(&mut bytes, &first).unwrap();
-                write_record(&mut bytes, &second).unwrap();
+                write_record(&mut bytes, CaptureSource::Serial, &first).unwrap();
+                write_record(&mut bytes, CaptureSource::Serial, &second).unwrap();
 
                 let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
                 assert!(matches!(reader.next(), Some(Ok(CaptureItem::Record(_)))));
@@ -3484,8 +3671,8 @@ mod tests {
             },
         );
         let mut bytes = file_with_header();
-        write_record(&mut bytes, &first).unwrap();
-        write_record(&mut bytes, &reconnected).unwrap();
+        write_record(&mut bytes, CaptureSource::Serial, &first).unwrap();
+        write_record(&mut bytes, CaptureSource::Serial, &reconnected).unwrap();
         write_footer(&mut bytes, 3, 2, 0).unwrap();
 
         let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
@@ -3576,9 +3763,9 @@ mod tests {
 
         let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
         let record = queued_record(&budget, CaptureDirection::Rx, 1, vec![0xaa, 0xbb]);
-        let mut record_corruption = file_with_header();
+        let mut record_corruption = file_with_simulator_header();
         let record_offset = record_corruption.len();
-        write_record(&mut record_corruption, &record).unwrap();
+        write_record(&mut record_corruption, CaptureSource::Simulator, &record).unwrap();
         record_corruption[record_offset + V3_RECORD_HEADER_SIZE] ^= 0x01;
         let mut reader = CaptureReader::new(Cursor::new(record_corruption)).unwrap();
         assert!(matches!(
@@ -3614,8 +3801,13 @@ mod tests {
             Err(CaptureReadError::Truncated("文件头校验值"))
         ));
 
-        let mut truncated_record_checksum = file_with_header();
-        write_record(&mut truncated_record_checksum, &record).unwrap();
+        let mut truncated_record_checksum = file_with_simulator_header();
+        write_record(
+            &mut truncated_record_checksum,
+            CaptureSource::Simulator,
+            &record,
+        )
+        .unwrap();
         truncated_record_checksum.pop();
         let mut reader = CaptureReader::new(Cursor::new(truncated_record_checksum)).unwrap();
         assert!(matches!(
@@ -3721,8 +3913,8 @@ mod tests {
         let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
         let record = queued_record(&budget, CaptureDirection::Rx, 10, vec![1]);
         let marker = queued_marker(&budget, CaptureMarkerColor::Yellow, 9, "回退");
-        let mut bytes = file_with_header();
-        write_record(&mut bytes, &record).unwrap();
+        let mut bytes = file_with_simulator_header();
+        write_record(&mut bytes, CaptureSource::Simulator, &record).unwrap();
         write_marker(&mut bytes, &marker).unwrap();
 
         let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
@@ -3734,9 +3926,9 @@ mod tests {
 
         let marker = queued_marker(&budget, CaptureMarkerColor::Yellow, 10, "先标记");
         let record = queued_record(&budget, CaptureDirection::Rx, 9, vec![1]);
-        let mut bytes = file_with_header();
+        let mut bytes = file_with_simulator_header();
         write_marker(&mut bytes, &marker).unwrap();
-        write_record(&mut bytes, &record).unwrap();
+        write_record(&mut bytes, CaptureSource::Simulator, &record).unwrap();
 
         let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
         assert!(matches!(reader.next(), Some(Ok(CaptureItem::Marker(_)))));
@@ -3752,10 +3944,10 @@ mod tests {
         let first = queued_record(&budget, CaptureDirection::Rx, 5, vec![1, 2]);
         let marker = queued_marker(&budget, CaptureMarkerColor::Red, 6, "检查点");
         let second = queued_record(&budget, CaptureDirection::Tx, 8, vec![3, 4, 5]);
-        let mut bytes = file_with_header();
-        write_record(&mut bytes, &first).unwrap();
+        let mut bytes = file_with_simulator_header();
+        write_record(&mut bytes, CaptureSource::Simulator, &first).unwrap();
         write_marker(&mut bytes, &marker).unwrap();
-        write_record(&mut bytes, &second).unwrap();
+        write_record(&mut bytes, CaptureSource::Simulator, &second).unwrap();
         write_footer(&mut bytes, 5, 2, 1).unwrap();
 
         let mut scanned = CaptureReader::new(Cursor::new(bytes.clone())).unwrap();
@@ -4003,7 +4195,7 @@ mod tests {
 
     #[test]
     fn reports_truncated_record_and_missing_footer() {
-        let mut truncated_record = file_with_header();
+        let mut truncated_record = file_with_simulator_header();
         truncated_record.push(RECORD_TAG);
         truncated_record.push(CaptureDirection::Rx.code());
         truncated_record.extend_from_slice(&0_u16.to_le_bytes());
