@@ -49,7 +49,7 @@ export interface BuiltinProtocolDefinition {
   readonly description: string;
   readonly replaySeekMode: ReplaySeekMode;
   createParser(): ProtocolParser;
-  encodeSimulatorSample(values: readonly number[], sampleIndex: number): Uint8Array;
+  encodeSimulatorSample?(values: readonly number[], sampleIndex: number): Uint8Array;
 }
 
 export class FireWaterParser implements ProtocolParser {
@@ -199,38 +199,6 @@ export function encodeJustFloatFrame(values: readonly number[]): Uint8Array {
   return bytes;
 }
 
-export function encodeRawSimulatorRecord(
-  values: readonly number[],
-  sampleIndex: number,
-): Uint8Array {
-  assertEncodableValues(values);
-  if (values.some((value) => !Number.isFinite(Math.fround(value)))) {
-    throw new RangeError("Raw 模拟值必须能表示为有限 float32");
-  }
-  if (!Number.isSafeInteger(sampleIndex) || sampleIndex < 0) {
-    throw new RangeError("Raw 模拟样本序号必须是非负安全整数");
-  }
-
-  const headerLength = 8;
-  const bytes = new Uint8Array(
-    headerLength + values.length * Float32Array.BYTES_PER_ELEMENT,
-  );
-  const view = new DataView(bytes.buffer);
-  bytes[0] = 0x56;
-  bytes[1] = 0x55;
-  bytes[2] = 0x01;
-  bytes[3] = values.length;
-  view.setUint32(4, sampleIndex % 0x1_0000_0000, true);
-  values.forEach((value, index) => {
-    view.setFloat32(
-      headerLength + index * Float32Array.BYTES_PER_ELEMENT,
-      value,
-      true,
-    );
-  });
-  return bytes;
-}
-
 const protocolRegistry = {
   firewater: Object.freeze({
     id: "firewater",
@@ -262,8 +230,6 @@ const protocolRegistry = {
         reset: () => undefined,
       };
     },
-    encodeSimulatorSample: (values: readonly number[], sampleIndex: number) =>
-      encodeRawSimulatorRecord(values, sampleIndex),
   }),
 } as const satisfies Readonly<Record<ProtocolKind, BuiltinProtocolDefinition>>;
 

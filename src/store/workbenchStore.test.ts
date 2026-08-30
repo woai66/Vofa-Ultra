@@ -2226,7 +2226,7 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().channels).toHaveLength(1);
   });
 
-  it("二进制协议使用会话级终端默认值且不污染工作区偏好", async () => {
+  it("Raw 保留终端偏好且 JustFloat 使用会话级二进制默认值", async () => {
     useWorkbenchStore.setState({
       source: "simulator",
       protocol: "firewater",
@@ -2236,17 +2236,13 @@ describe("workbenchStore", () => {
     });
 
     useWorkbenchStore.getState().setProtocol("raw");
-    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
-    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("line");
     expect(useWorkbenchStore.getState()).toMatchObject({
       displayMode: "text",
       terminalRxRecordMode: "line",
+      terminalPresentationOverride: null,
     });
-
-    useWorkbenchStore.getState().setDisplayMode("text");
-    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
-    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
-    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("line");
 
     useWorkbenchStore.getState().setProtocol("firewater");
     expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
@@ -5241,6 +5237,26 @@ describe("workbenchStore", () => {
       connectionStatus: "disconnected",
       runtimeTransitionStatus: "idle",
       statusMessage: runtime_error,
+    });
+  });
+
+  it("Raw Data 拒绝启动数值波形模拟器", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      protocol: "raw",
+      connectionStatus: "disconnected",
+      connectionMessage: "模拟数据源已就绪",
+      statusMessage: "模拟数据源已就绪",
+    });
+
+    await useWorkbenchStore.getState().connect();
+
+    expect(connectSerialMock).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "disconnected",
+      runtimeTransitionStatus: "idle",
+      connectionMessage: "Raw Data 不提供模拟，请选择串口或回放",
+      statusMessage: "Raw Data 不提供模拟，请选择串口或回放",
     });
   });
 

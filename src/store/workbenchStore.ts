@@ -277,7 +277,6 @@ const MAX_TERMINAL_BYTES_PER_ENTRY =
 
 type TerminalPresentationContext =
   | "live:justfloat"
-  | "live:simulator-raw"
   | `replay:${number}:justfloat`;
 
 interface TerminalPresentationOverride {
@@ -1513,8 +1512,18 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (get().isCancellingSerialConnection) {
           return;
         }
-        const runtimeError = get().serialRuntimeError;
-        if (get().source === "serial" && runtimeError) {
+        const currentState = get();
+        if (currentState.source === "simulator" && currentState.protocol === "raw") {
+          const message = "Raw Data 不提供模拟，请选择串口或回放";
+          set({
+            connectionStatus: "disconnected",
+            connectionMessage: message,
+            statusMessage: message,
+          });
+          return;
+        }
+        const runtimeError = currentState.serialRuntimeError;
+        if (currentState.source === "serial" && runtimeError) {
           set({ connectionMessage: runtimeError, statusMessage: runtimeError });
           return;
         }
@@ -4082,9 +4091,7 @@ function terminalPresentationContext(
   if (state.protocol === "justfloat") {
     return "live:justfloat";
   }
-  return state.source === "simulator" && state.protocol === "raw"
-    ? "live:simulator-raw"
-    : null;
+  return null;
 }
 
 export function selectActiveProtocolHealth(state: WorkbenchStore): ProtocolHealthSnapshot {

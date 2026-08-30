@@ -576,24 +576,28 @@ function ConnectionPanel() {
   const serialConnectUnavailable =
     source === "serial" &&
     (selectedPortPresentation === null || !baudRateDraftValid || Boolean(serialRuntimeError));
+  const simulatorConnectUnavailable = source === "simulator" && protocol === "raw";
+  const connectUnavailable = serialConnectUnavailable || simulatorConnectUnavailable;
   const primaryActionDisabled =
     isCancellingSerialConnection ||
     (!canCancelConnection &&
-      (isBusy || (!isConnected && serialConnectUnavailable)));
-  const connectionMessage = resolveConnectionMessage({
-    source,
-    connectionStatus,
-    portName: config.portName,
-    portAvailable: selectedPortPresentation !== null,
-    connectionStatusMessage,
-    serialRuntimeError,
-    isRefreshingPorts,
-    serialPortDiscoveryStatus,
-    serialPortDiscoveryMessage,
-    isCancelling: isCancellingSerialConnection,
-    recoveryActive,
-    recoveryMessage: serialRecovery.message,
-  });
+      (isBusy || (!isConnected && connectUnavailable)));
+  const connectionMessage = simulatorConnectUnavailable && !isConnected
+    ? "Raw Data 不提供模拟，请选择串口或回放"
+    : resolveConnectionMessage({
+        source,
+        connectionStatus,
+        portName: config.portName,
+        portAvailable: selectedPortPresentation !== null,
+        connectionStatusMessage,
+        serialRuntimeError,
+        isRefreshingPorts,
+        serialPortDiscoveryStatus,
+        serialPortDiscoveryMessage,
+        isCancelling: isCancellingSerialConnection,
+        recoveryActive,
+        recoveryMessage: serialRecovery.message,
+      });
   const connectionMessageStatus: ConnectionStatus = serialRuntimeError
     ? "error"
     : isCancellingSerialConnection || recoveryActive
@@ -608,8 +612,10 @@ function ConnectionPanel() {
               ? "disconnected"
               : connectionStatus;
   let connectButtonTitle: string | undefined;
-  if (!isConnected && !canCancelConnection && serialConnectUnavailable) {
-    if (serialRuntimeError) {
+  if (!isConnected && !canCancelConnection && connectUnavailable) {
+    if (simulatorConnectUnavailable) {
+      connectButtonTitle = "Raw Data 不提供模拟，请选择串口或回放";
+    } else if (serialRuntimeError) {
       connectButtonTitle = serialRuntimeError;
     } else if (!baudRateDraftValid) {
       connectButtonTitle = "请先输入有效波特率";
@@ -667,7 +673,7 @@ function ConnectionPanel() {
         </div>
       </section>
 
-      {source === "simulator" && (
+      {source === "simulator" && protocol !== "raw" && (
         <section
           className="sidebar-section connection-fields simulator-fields"
           aria-label="模拟器配置"
@@ -1067,8 +1073,8 @@ function ConnectionPanel() {
           <span className="status-dot" />
           <span>{connectionMessage}</span>
         </div>
-        {source === "serial" && connectButtonTitle && (
-          <span id="serial-connect-action-hint" className="sr-only">
+        {connectButtonTitle && (
+          <span id="connection-action-hint" className="sr-only">
             {connectButtonTitle}
           </span>
         )}
@@ -1077,11 +1083,11 @@ function ConnectionPanel() {
           type="button"
           data-action={showCancelAction ? "cancel" : "primary"}
           aria-describedby={
-            source === "serial"
-              ? connectButtonTitle
-                ? "serial-connect-action-hint"
-                : "serial-connection-status"
-              : undefined
+            connectButtonTitle
+              ? "connection-action-hint"
+              : source === "serial"
+                ? "serial-connection-status"
+                : undefined
           }
           disabled={primaryActionDisabled}
           title={connectButtonTitle}

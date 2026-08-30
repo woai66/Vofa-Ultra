@@ -326,7 +326,11 @@ export function useWorkbenchRuntime(): void {
   }, [handleReplayBatch, handleReplayMarkers, handleReplayState]);
 
   useEffect(() => {
-    if (source !== "simulator" || connectionStatus !== "connected") {
+    if (
+      source !== "simulator" ||
+      connectionStatus !== "connected" ||
+      protocol === "raw"
+    ) {
       return undefined;
     }
     return startSimulator(protocol, simulatorConfig, ingestBytes);

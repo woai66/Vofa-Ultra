@@ -811,7 +811,7 @@ test("状态栏在主工作区持续显示数值 CSV 记录与失败", async ({ 
   });
 });
 
-test("模拟信号实验室支持十六通道配置、运行锁定与可复现重启", async ({ page }, testInfo) => {
+test("模拟器只生成结构化协议并明确 Raw Data 边界", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -831,11 +831,11 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   );
   await receive_records.getByRole("button", { name: "按文本行记录" }).click();
   await page.getByRole("radio", { name: /Raw Data/ }).click();
-  await expect(receive_display.getByRole("button", { name: "HEX" })).toHaveAttribute(
+  await expect(receive_display.getByRole("button", { name: "TEXT" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
-  await expect(receive_records.getByRole("button", { name: "按读取块记录" })).toHaveAttribute(
+  await expect(receive_records.getByRole("button", { name: "按文本行记录" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
@@ -881,6 +881,7 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   await expect(protocolBoundary.locator(".direction-label")).toHaveText("SYS");
   await expect(protocolBoundary.locator("small")).toHaveText("边界");
 
+  await page.getByRole("radio", { name: /FireWater/ }).click();
   const signal = page.getByLabel("信号类型");
   const channelCount = page.getByRole("spinbutton", { name: "模拟器通道数" });
   const sampleRate = page.getByLabel("模拟器采样率");
@@ -897,19 +898,16 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   await expect(channelCount).toBeDisabled();
   await expect(sampleRate).toBeDisabled();
   await expect(page.getByRole("button", { name: "停止模拟" })).toBeEnabled();
-  await expect(page.getByText("Raw Data 不生成波形")).toBeVisible();
 
   const rxLines = page.locator('.terminal-line[data-direction="rx"]');
   await expect.poll(() => rxLines.count()).toBeGreaterThanOrEqual(3);
   const firstRun = (await rxLines.locator("code").allTextContents()).slice(0, 3);
   expect(firstRun).toHaveLength(3);
-  expect(firstRun[0]).toMatch(/^56 55 01 10 00 00 00 00 /);
-  expect(firstRun[1]).toMatch(/^56 55 01 10 01 00 00 00 /);
-  expect(firstRun[2]).toMatch(/^56 55 01 10 02 00 00 00 /);
-  expect(firstRun.every((line) => line.split(/\s+/).length === 72)).toBe(true);
-  expect(firstRun.every((line) => !line.includes("sample="))).toBe(true);
+  expect(
+    firstRun.every((line) => line.trim().split(",").length === 16),
+  ).toBe(true);
   await page.screenshot({
-    path: testInfo.outputPath("simulator-signals-desktop.png"),
+    path: testInfo.outputPath("firewater-simulator-desktop.png"),
     fullPage: true,
   });
 
@@ -923,33 +921,44 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   const secondRun = (await rxLines.locator("code").allTextContents()).slice(0, 3);
   expect(secondRun).toEqual(firstRun);
   await page.getByRole("button", { name: "停止模拟" }).click();
+  await page.getByRole("button", { name: "清空终端", exact: true }).click();
+  await expect(rxLines).toHaveCount(0);
 
-  await page.setViewportSize({ width: 320, height: 700 });
+  await page.getByRole("radio", { name: /Raw Data/ }).click();
+  await page.setViewportSize({ width: 1_024, height: 680 });
   await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
-  const simulatorPanel = page.getByRole("region", { name: "模拟器配置" });
-  await expect(simulatorPanel).toBeVisible();
-  await expect
-    .poll(() => simulatorPanel.evaluate((element) => element.getBoundingClientRect().left))
-    .toBeGreaterThanOrEqual(0);
-  const mobileLayout = await simulatorPanel.evaluate((element) => {
+  await expect(page.getByRole("region", { name: "模拟器配置" })).toHaveCount(0);
+  await expect(signal).toHaveCount(0);
+  await expect(channelCount).toHaveCount(0);
+  await expect(sampleRate).toHaveCount(0);
+  const startSimulator = page.getByRole("button", { name: "启动模拟" });
+  await expect(startSimulator).toBeDisabled();
+  await expect(startSimulator).toHaveAttribute(
+    "title",
+    "Raw Data 不提供模拟，请选择串口或回放",
+  );
+  await expect(page.locator("#serial-connection-status")).toContainText(
+    "Raw Data 不提供模拟，请选择串口或回放",
+  );
+  const waveform = page.locator(".waveform-panel");
+  await expect(waveform.getByText("Raw Data 不生成波形")).toBeVisible();
+  await expect(waveform.getByText("原始字节保留在数据终端中")).toBeVisible();
+
+  await page.waitForTimeout(350);
+  await expect(rxLines).toHaveCount(0);
+  const windowsLayout = await page.locator(".connection-panel").evaluate((element) => {
     const bounds = element.getBoundingClientRect();
     return {
       left: bounds.left,
-      width: bounds.width,
       right: bounds.right,
       scrollWidth: document.documentElement.scrollWidth,
-      controlHeights: [...element.querySelectorAll<HTMLElement>("input, select")].map(
-        (control) => control.getBoundingClientRect().height,
-      ),
     };
   });
-  expect(mobileLayout.left).toBeGreaterThanOrEqual(0);
-  expect(mobileLayout.width).toBeGreaterThanOrEqual(280);
-  expect(mobileLayout.right).toBeLessThanOrEqual(320);
-  expect(mobileLayout.scrollWidth).toBeLessThanOrEqual(320);
-  expect(mobileLayout.controlHeights.every((height) => height >= 44)).toBe(true);
+  expect(windowsLayout.left).toBeGreaterThanOrEqual(0);
+  expect(windowsLayout.right).toBeLessThanOrEqual(1_024);
+  expect(windowsLayout.scrollWidth).toBeLessThanOrEqual(1_024);
   await page.screenshot({
-    path: testInfo.outputPath("simulator-signals-mobile.png"),
+    path: testInfo.outputPath("raw-simulator-boundary-windows.png"),
     fullPage: true,
   });
   expect(pageErrors).toEqual([]);
@@ -1591,7 +1600,7 @@ test("串口发现三态在 Windows 最小窗口中保持一致反馈", async ({
   );
   await expect(connect_button).toHaveAttribute(
     "aria-describedby",
-    "serial-connect-action-hint",
+    "connection-action-hint",
   );
   await expect(connect_button).toHaveAccessibleDescription(
     "扫描串口失败：串口驱动不可用",

@@ -16,6 +16,7 @@ describe("Sidebar 串口恢复界面", () => {
     useWorkbenchStore.setState({
       isNativeRuntime: true,
       source: "serial",
+      protocol: "firewater",
       connectionStatus: "error",
       serialRuntimeError: "",
       isRefreshingPorts: false,
@@ -179,7 +180,7 @@ describe("Sidebar 串口恢复界面", () => {
     );
     expect(screen.getByRole("button", { name: "连接设备" })).toHaveAttribute(
       "aria-describedby",
-      "serial-connect-action-hint",
+      "connection-action-hint",
     );
     expect(screen.getByRole("button", { name: "连接设备" })).toHaveAccessibleDescription(
       "扫描串口失败：串口驱动不可用",
@@ -269,6 +270,39 @@ describe("Sidebar 串口恢复界面", () => {
     const fields = [...container.querySelectorAll("input, select")];
     expect(fields.length).toBeGreaterThan(0);
     expect(fields.every((field) => Boolean(field.id && field.getAttribute("name")))).toBe(true);
+  });
+
+  it("Raw Data 不显示波形模拟配置且阻止启动", () => {
+    useWorkbenchStore.setState((state) => ({
+      source: "simulator",
+      protocol: "raw",
+      connectionStatus: "disconnected",
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByLabelText("信号类型")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("模拟器通道数")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("模拟器采样率")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Raw Data 不提供模拟，请选择串口或回放",
+    );
+    const start_button = screen.getByRole("button", { name: "启动模拟" });
+    expect(start_button).toBeDisabled();
+    expect(start_button).toHaveAttribute(
+      "title",
+      "Raw Data 不提供模拟，请选择串口或回放",
+    );
+    expect(start_button).toHaveAccessibleDescription(
+      "Raw Data 不提供模拟，请选择串口或回放",
+    );
   });
 
   it("Modbus 轮询期间禁用串口控制线", () => {

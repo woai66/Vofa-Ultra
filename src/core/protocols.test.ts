@@ -6,7 +6,6 @@ import {
   createProtocolParser,
   encodeFireWaterFrame,
   encodeJustFloatFrame,
-  encodeRawSimulatorRecord,
   FireWaterParser,
   getProtocolDefinition,
   incrementProtocolHealthCount,
@@ -314,6 +313,9 @@ describe("内置协议贡献契约", () => {
     expect(getProtocolDefinition("raw").replaySeekMode).toBe("record-boundary");
     expect(getProtocolDefinition("firewater").replaySeekMode).toBe("protocol-boundary");
     expect(getProtocolDefinition("justfloat").replaySeekMode).toBe("protocol-boundary");
+    expect(getProtocolDefinition("raw").encodeSimulatorSample).toBeUndefined();
+    expect(getProtocolDefinition("firewater").encodeSimulatorSample).toBeTypeOf("function");
+    expect(getProtocolDefinition("justfloat").encodeSimulatorSample).toBeTypeOf("function");
 
     for (const definition of BUILTIN_PROTOCOLS) {
       expect(definition).toBe(getProtocolDefinition(definition.id));
@@ -489,27 +491,6 @@ describe("内置协议贡献契约", () => {
     expect(parser.getHealthSnapshot()).toBe(health);
   });
 
-  it("Raw 模拟器编码确定性二进制记录且不产生波形帧", () => {
-    const bytes = encodeRawSimulatorRecord([1.5, -2.25, 3], 12);
-
-    expect([...bytes]).toEqual([
-      0x56, 0x55, 0x01, 0x03, 0x0c, 0x00, 0x00, 0x00,
-      0x00, 0x00, 0xc0, 0x3f,
-      0x00, 0x00, 0x10, 0xc0,
-      0x00, 0x00, 0x40, 0x40,
-    ]);
-    expect(createProtocolParser("raw").push(bytes, 8_055)).toEqual([]);
-  });
-
-  it("Raw 模拟器校验通道值并按 u32 回绕样本序号", () => {
-    expect(() => encodeRawSimulatorRecord([], 0)).toThrow(/1 到 16/);
-    expect(() => encodeRawSimulatorRecord([Number.MAX_VALUE], 0)).toThrow(/float32/);
-    expect(() => encodeRawSimulatorRecord([1], -1)).toThrow(/非负安全整数/);
-
-    const bytes = encodeRawSimulatorRecord([1], 0x1_0000_0001);
-    expect(new DataView(bytes.buffer).getUint32(4, true)).toBe(1);
-  });
-
   it("健康计数达到 32 位无符号上限后保持饱和", () => {
     expect(incrementProtocolHealthCount(MAX_PROTOCOL_HEALTH_COUNT - 1)).toBe(
       MAX_PROTOCOL_HEALTH_COUNT,
@@ -519,20 +500,21 @@ describe("内置协议贡献契约", () => {
     );
   });
 
-  it("所有模拟器编码器都能由对应解析器消费", () => {
+  it("所有已声明的模拟器编码器都能由对应解析器消费", () => {
+    const supportedProtocols: ProtocolKind[] = [];
     for (const definition of BUILTIN_PROTOCOLS) {
-      const bytes = definition.encodeSimulatorSample([1.5, -2.25, 3], 12);
-      const frames = definition.createParser().push(bytes, 8_000);
-      if (definition.id === "raw") {
-        expect(frames).toEqual([]);
-        expect([...bytes.slice(0, 8)]).toEqual([
-          0x56, 0x55, 0x01, 0x03, 0x0c, 0x00, 0x00, 0x00,
-        ]);
-      } else {
-        expect(frames).toHaveLength(1);
-        expectFrameContract(frames[0]);
+      const encodeSimulatorSample = definition.encodeSimulatorSample;
+      if (!encodeSimulatorSample) {
+        continue;
       }
+
+      supportedProtocols.push(definition.id);
+      const bytes = encodeSimulatorSample([1.5, -2.25, 3], 12);
+      const frames = definition.createParser().push(bytes, 8_000);
+      expect(frames).toHaveLength(1);
+      expectFrameContract(frames[0]);
     }
+    expect(supportedProtocols).toEqual(["firewater", "justfloat"]);
   });
 
   it("固定规模随机字节不抛错，reset 后仍能恢复", () => {
@@ -543,16 +525,15 @@ describe("内置协议贡献契约", () => {
       frames.forEach(expectFrameContract);
 
       parser.reset();
-      const recovered = parser.push(
-        definition.encodeSimulatorSample([1, 2, 3], 1),
-        8_200,
-      );
-      if (definition.id === "raw") {
-        expect(recovered).toEqual([]);
-      } else {
-        expect(recovered).toHaveLength(1);
-        expectFrameContract(recovered[0]);
+      const encodeSimulatorSample = definition.encodeSimulatorSample;
+      if (!encodeSimulatorSample) {
+        expect(definition.id).toBe("raw");
+        continue;
       }
+
+      const recovered = parser.push(encodeSimulatorSample([1, 2, 3], 1), 8_200);
+      expect(recovered).toHaveLength(1);
+      expectFrameContract(recovered[0]);
     }
   });
 });
