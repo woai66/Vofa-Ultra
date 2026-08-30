@@ -723,7 +723,7 @@ function createDiagnosticsReport(
   };
   return {
     format: "vofa-ultra.serial-diagnostics",
-    schemaVersion: 2,
+    schemaVersion: 3,
     generatedAt,
     appVersion: context.appVersion,
     buildId: context.buildId,

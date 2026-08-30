@@ -5776,6 +5776,18 @@ async function installTauriSerialMock(
       revision: 0,
       backendRxBytes: 0,
       backendRxEvents: 0,
+      uiPipeline: {
+        queueBytes: 0,
+        queueEvents: 0,
+        queueCapacityBytes: 4 * 1024 * 1024,
+        queueCapacityEvents: 256,
+        queuePeakBytes: 0,
+        queuePeakEvents: 0,
+        droppedBytes: 0,
+        droppedEvents: 0,
+        publisherFailures: 0,
+        publisherTimeouts: 0,
+      },
     };
     let fileSendState = {
       jobId: 0,
@@ -5891,6 +5903,18 @@ async function installTauriSerialMock(
           revision: serialState.revision + 1,
           backendRxBytes: 0,
           backendRxEvents: 0,
+          uiPipeline: {
+            queueBytes: 0,
+            queueEvents: 0,
+            queueCapacityBytes: 4 * 1024 * 1024,
+            queueCapacityEvents: 256,
+            queuePeakBytes: 0,
+            queuePeakEvents: 0,
+            droppedBytes: 0,
+            droppedEvents: 0,
+            publisherFailures: 0,
+            publisherTimeouts: 0,
+          },
         };
         emitSerialState();
         await new Promise((resolve) => window.setTimeout(resolve, 25));
@@ -6194,6 +6218,11 @@ async function installTauriSerialMock(
           ...serialState,
           backendRxBytes: streamOffset + byteCount,
           backendRxEvents: sequence + 1,
+          uiPipeline: {
+            ...serialState.uiPipeline,
+            queuePeakBytes: Math.max(serialState.uiPipeline.queuePeakBytes, byteCount),
+            queuePeakEvents: Math.max(serialState.uiPipeline.queuePeakEvents, 1),
+          },
         };
         emit("serial://data", {
           data: "MSwyCg==",

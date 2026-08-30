@@ -19,6 +19,9 @@ use crate::modbus_rtu::{
 };
 
 const READ_BUFFER_SIZE: usize = 16 * 1024;
+const RX_DISPLAY_QUEUE_CAPACITY_BYTES: usize = 4 * 1024 * 1024;
+const RX_DISPLAY_QUEUE_CAPACITY_EVENTS: usize = 256;
+const RX_PUBLISHER_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const SERIAL_TIMEOUT_MS: u64 = 20;
 const SERIAL_PORT_SCAN_DEADLINE: Duration = Duration::from_secs(5);
 const SERIAL_PORT_OPEN_DEADLINE: Duration = Duration::from_secs(5);
@@ -116,8 +119,7 @@ struct SharedSerialState {
     file_send_revision: u64,
     file_send_snapshot: SerialFileSendSnapshot,
     active_file_send: Option<ActiveFileSendControl>,
-    backend_rx_bytes: u64,
-    backend_rx_events: u64,
+    rx_snapshot: SerialRxSnapshot,
 }
 
 impl Default for SharedSerialState {
@@ -141,8 +143,7 @@ impl Default for SharedSerialState {
             file_send_revision: 0,
             file_send_snapshot: SerialFileSendSnapshot::default(),
             active_file_send: None,
-            backend_rx_bytes: 0,
-            backend_rx_events: 0,
+            rx_snapshot: SerialRxSnapshot::default(),
         }
     }
 }
@@ -195,10 +196,7 @@ impl SharedSerialState {
             .as_ref()
             .filter(|worker| worker.generation == self.generation)
             .map(|worker| worker.rx_counters.snapshot())
-            .unwrap_or(SerialRxSnapshot {
-                backend_rx_bytes: self.backend_rx_bytes,
-                backend_rx_events: self.backend_rx_events,
-            });
+            .unwrap_or(self.rx_snapshot);
         SerialStatePayload {
             status: self.status.as_str().to_owned(),
             port_name: self.port_name.clone(),
@@ -208,6 +206,7 @@ impl SharedSerialState {
             revision: self.revision,
             backend_rx_bytes: rx_snapshot.backend_rx_bytes,
             backend_rx_events: rx_snapshot.backend_rx_events,
+            ui_pipeline: rx_snapshot.into(),
         }
     }
 
@@ -782,23 +781,74 @@ struct SerialWorker {
     join_handle: Option<JoinHandle<()>>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SerialRxSnapshot {
     backend_rx_bytes: u64,
     backend_rx_events: u64,
+    ui_queue_bytes: u64,
+    ui_queue_events: u64,
+    ui_queue_capacity_bytes: u64,
+    ui_queue_capacity_events: u64,
+    ui_queue_peak_bytes: u64,
+    ui_queue_peak_events: u64,
+    ui_dropped_bytes: u64,
+    ui_dropped_events: u64,
+    ui_publisher_failures: u64,
+    ui_publisher_timeouts: u64,
+}
+
+impl Default for SerialRxSnapshot {
+    fn default() -> Self {
+        Self {
+            backend_rx_bytes: 0,
+            backend_rx_events: 0,
+            ui_queue_bytes: 0,
+            ui_queue_events: 0,
+            ui_queue_capacity_bytes: u64::try_from(RX_DISPLAY_QUEUE_CAPACITY_BYTES)
+                .unwrap_or(u64::MAX),
+            ui_queue_capacity_events: u64::try_from(RX_DISPLAY_QUEUE_CAPACITY_EVENTS)
+                .unwrap_or(u64::MAX),
+            ui_queue_peak_bytes: 0,
+            ui_queue_peak_events: 0,
+            ui_dropped_bytes: 0,
+            ui_dropped_events: 0,
+            ui_publisher_failures: 0,
+            ui_publisher_timeouts: 0,
+        }
+    }
+}
+
+impl From<SerialRxSnapshot> for SerialRxUiPipelinePayload {
+    fn from(snapshot: SerialRxSnapshot) -> Self {
+        Self {
+            queue_bytes: snapshot.ui_queue_bytes,
+            queue_events: snapshot.ui_queue_events,
+            queue_capacity_bytes: snapshot.ui_queue_capacity_bytes,
+            queue_capacity_events: snapshot.ui_queue_capacity_events,
+            queue_peak_bytes: snapshot.ui_queue_peak_bytes,
+            queue_peak_events: snapshot.ui_queue_peak_events,
+            dropped_bytes: snapshot.ui_dropped_bytes,
+            dropped_events: snapshot.ui_dropped_events,
+            publisher_failures: snapshot.ui_publisher_failures,
+            publisher_timeouts: snapshot.ui_publisher_timeouts,
+        }
+    }
 }
 
 #[derive(Default)]
 struct SerialRxCounters {
     snapshot: Mutex<SerialRxSnapshot>,
+    ui_publisher_closed: AtomicBool,
 }
 
 impl SerialRxCounters {
-    fn publish(&self, snapshot: SerialRxSnapshot) {
-        *self
+    fn publish_backend(&self, snapshot: SerialRxSnapshot) {
+        let mut current = self
             .snapshot
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = snapshot;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        current.backend_rx_bytes = snapshot.backend_rx_bytes;
+        current.backend_rx_events = snapshot.backend_rx_events;
     }
 
     fn snapshot(&self) -> SerialRxSnapshot {
@@ -806,6 +856,99 @@ impl SerialRxCounters {
             .snapshot
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn try_reserve_ui_queue(&self, byte_count: usize) -> bool {
+        let byte_count = u64::try_from(byte_count).unwrap_or(u64::MAX);
+        let mut current = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.ui_publisher_closed.load(Ordering::Acquire) {
+            current.ui_dropped_bytes = current.ui_dropped_bytes.saturating_add(byte_count);
+            current.ui_dropped_events = current.ui_dropped_events.saturating_add(1);
+            return false;
+        }
+        let next_bytes = current.ui_queue_bytes.checked_add(byte_count);
+        let next_events = current.ui_queue_events.checked_add(1);
+        if next_bytes.is_none_or(|value| value > current.ui_queue_capacity_bytes)
+            || next_events.is_none_or(|value| value > current.ui_queue_capacity_events)
+        {
+            current.ui_dropped_bytes = current.ui_dropped_bytes.saturating_add(byte_count);
+            current.ui_dropped_events = current.ui_dropped_events.saturating_add(1);
+            return false;
+        }
+
+        current.ui_queue_bytes = next_bytes.expect("已检查显示队列字节数");
+        current.ui_queue_events = next_events.expect("已检查显示队列块数");
+        current.ui_queue_peak_bytes = current.ui_queue_peak_bytes.max(current.ui_queue_bytes);
+        current.ui_queue_peak_events = current.ui_queue_peak_events.max(current.ui_queue_events);
+        true
+    }
+
+    fn dequeue_ui(&self, byte_count: usize) {
+        let byte_count = u64::try_from(byte_count).unwrap_or(u64::MAX);
+        let mut current = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        current.ui_queue_bytes = current.ui_queue_bytes.saturating_sub(byte_count);
+        current.ui_queue_events = current.ui_queue_events.saturating_sub(1);
+    }
+
+    fn rollback_ui_as_dropped(&self, byte_count: usize) {
+        self.dequeue_ui(byte_count);
+        self.record_ui_drop(byte_count);
+    }
+
+    fn record_ui_drop(&self, byte_count: usize) {
+        let byte_count = u64::try_from(byte_count).unwrap_or(u64::MAX);
+        let mut current = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        current.ui_dropped_bytes = current.ui_dropped_bytes.saturating_add(byte_count);
+        current.ui_dropped_events = current.ui_dropped_events.saturating_add(1);
+    }
+
+    fn record_ui_publisher_failure(&self, byte_count: usize) {
+        let first_failure = !self.ui_publisher_closed.swap(true, Ordering::AcqRel);
+        let mut current = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        current.ui_dropped_bytes = current
+            .ui_dropped_bytes
+            .saturating_add(u64::try_from(byte_count).unwrap_or(u64::MAX));
+        if byte_count > 0 {
+            current.ui_dropped_events = current.ui_dropped_events.saturating_add(1);
+        }
+        if first_failure {
+            current.ui_publisher_failures = current.ui_publisher_failures.saturating_add(1);
+        }
+    }
+
+    fn record_ui_publisher_timeout(&self) {
+        let mut current = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        current.ui_publisher_timeouts = current.ui_publisher_timeouts.saturating_add(1);
+    }
+
+    fn abandon_ui_queue(&self) {
+        let mut current = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        current.ui_dropped_bytes = current
+            .ui_dropped_bytes
+            .saturating_add(current.ui_queue_bytes);
+        current.ui_dropped_events = current
+            .ui_dropped_events
+            .saturating_add(current.ui_queue_events);
+        current.ui_queue_bytes = 0;
+        current.ui_queue_events = 0;
     }
 }
 
@@ -874,6 +1017,183 @@ impl SerialRxProgress {
         SerialRxSnapshot {
             backend_rx_bytes: self.backend_rx_bytes,
             backend_rx_events: self.backend_rx_events,
+            ..SerialRxSnapshot::default()
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SerialRxDisplayBlock {
+    data: Vec<u8>,
+    received_at: u64,
+    generation: u64,
+    metadata: SerialRxMetadata,
+}
+
+impl SerialRxDisplayBlock {
+    fn into_payload(self) -> SerialDataPayload {
+        SerialDataPayload {
+            data: BASE64_STANDARD.encode(self.data),
+            received_at: self.received_at,
+            received_at_monotonic_us: self.metadata.received_at_monotonic_us,
+            generation: self.generation,
+            sequence: self.metadata.sequence,
+            stream_offset: self.metadata.stream_offset,
+            byte_count: self.metadata.byte_count,
+            backend_rx_bytes: self.metadata.backend_rx_bytes,
+            backend_rx_events: self.metadata.backend_rx_events,
+        }
+    }
+}
+
+struct SerialRxDisplayQueue {
+    generation: u64,
+    tx: mpsc::SyncSender<SerialRxDisplayBlock>,
+    counters: Arc<SerialRxCounters>,
+}
+
+impl SerialRxDisplayQueue {
+    fn try_enqueue(&self, data: &[u8], received_at: u64, metadata: SerialRxMetadata) -> bool {
+        if !self.counters.try_reserve_ui_queue(data.len()) {
+            return false;
+        }
+        let block = SerialRxDisplayBlock {
+            data: data.to_vec(),
+            received_at,
+            generation: self.generation,
+            metadata,
+        };
+        match self.tx.try_send(block) {
+            Ok(()) => true,
+            Err(mpsc::TrySendError::Full(block)) => {
+                self.counters.rollback_ui_as_dropped(block.data.len());
+                false
+            }
+            Err(mpsc::TrySendError::Disconnected(block)) => {
+                self.counters.rollback_ui_as_dropped(block.data.len());
+                self.counters.record_ui_publisher_failure(0);
+                self.counters.abandon_ui_queue();
+                false
+            }
+        }
+    }
+}
+
+struct SerialRxPublisher {
+    queue: Option<SerialRxDisplayQueue>,
+    cancel: Arc<AtomicBool>,
+    done_rx: mpsc::Receiver<()>,
+    join_handle: Option<JoinHandle<()>>,
+    counters: Arc<SerialRxCounters>,
+}
+
+impl SerialRxPublisher {
+    fn spawn(
+        app: AppHandle,
+        generation: u64,
+        counters: Arc<SerialRxCounters>,
+    ) -> Result<Self, SerialFailure> {
+        let (tx, rx) = mpsc::sync_channel(RX_DISPLAY_QUEUE_CAPACITY_EVENTS);
+        let (done_tx, done_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let publisher_cancel = Arc::clone(&cancel);
+        let publisher_counters = Arc::clone(&counters);
+        let thread_counters = Arc::clone(&counters);
+        let join_handle = thread::Builder::new()
+            .name(format!("vofa-serial-rx-publisher-{generation}"))
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_serial_rx_publisher(
+                        rx,
+                        &publisher_counters,
+                        &publisher_cancel,
+                        |payload| app.emit("serial://data", payload).is_ok(),
+                    );
+                }));
+                if result.is_err() {
+                    publisher_counters.record_ui_publisher_failure(0);
+                    publisher_counters.abandon_ui_queue();
+                }
+                let _ = done_tx.send(());
+            })
+            .map_err(|error| {
+                SerialFailure::new(
+                    SerialErrorCode::WorkerStartFailed,
+                    format!("创建串口接收发布线程失败: {error}"),
+                )
+            })?;
+        Ok(Self {
+            queue: Some(SerialRxDisplayQueue {
+                generation,
+                tx,
+                counters: Arc::clone(&counters),
+            }),
+            cancel,
+            done_rx,
+            join_handle: Some(join_handle),
+            counters: thread_counters,
+        })
+    }
+
+    fn try_publish(&self, data: &[u8], received_at: u64, metadata: SerialRxMetadata) -> bool {
+        self.queue
+            .as_ref()
+            .is_some_and(|queue| queue.try_enqueue(data, received_at, metadata))
+    }
+
+    fn finish(&mut self) {
+        self.finish_with_timeout(RX_PUBLISHER_DRAIN_TIMEOUT);
+    }
+
+    fn finish_with_timeout(&mut self, timeout: Duration) {
+        self.queue.take();
+        match self.done_rx.recv_timeout(timeout) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if self
+                    .join_handle
+                    .take()
+                    .is_some_and(|join_handle| join_handle.join().is_err())
+                {
+                    self.counters.record_ui_publisher_failure(0);
+                    self.counters.abandon_ui_queue();
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.cancel.store(true, Ordering::Release);
+                self.counters.record_ui_publisher_timeout();
+            }
+        }
+    }
+}
+
+impl Drop for SerialRxPublisher {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+        self.queue.take();
+    }
+}
+
+fn run_serial_rx_publisher<F>(
+    rx: mpsc::Receiver<SerialRxDisplayBlock>,
+    counters: &SerialRxCounters,
+    cancel: &AtomicBool,
+    mut publish: F,
+) where
+    F: FnMut(SerialDataPayload) -> bool,
+{
+    while let Ok(block) = rx.recv() {
+        let byte_count = block.data.len();
+        counters.dequeue_ui(byte_count);
+        if cancel.load(Ordering::Acquire) {
+            counters.record_ui_drop(byte_count);
+            continue;
+        }
+        let payload = block.into_payload();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| publish(payload)));
+        if !matches!(result, Ok(true)) {
+            counters.record_ui_publisher_failure(byte_count);
+            counters.abandon_ui_queue();
+            return;
         }
     }
 }
@@ -1150,6 +1470,22 @@ pub struct SerialStatePayload {
     revision: u64,
     backend_rx_bytes: u64,
     backend_rx_events: u64,
+    ui_pipeline: SerialRxUiPipelinePayload,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SerialRxUiPipelinePayload {
+    queue_bytes: u64,
+    queue_events: u64,
+    queue_capacity_bytes: u64,
+    queue_capacity_events: u64,
+    queue_peak_bytes: u64,
+    queue_peak_events: u64,
+    dropped_bytes: u64,
+    dropped_events: u64,
+    publisher_failures: u64,
+    publisher_timeouts: u64,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -2470,8 +2806,7 @@ fn advance_generation(shared: &mut SharedSerialState) -> Result<u64, String> {
         .generation
         .checked_add(1)
         .ok_or_else(|| "串口连接代次已耗尽，请重启应用".to_owned())?;
-    shared.backend_rx_bytes = 0;
-    shared.backend_rx_events = 0;
+    shared.rx_snapshot = SerialRxSnapshot::default();
     Ok(shared.generation)
 }
 
@@ -2895,6 +3230,22 @@ fn run_serial_worker(
     if start_rx.recv().is_err() {
         return;
     }
+
+    let mut rx_publisher =
+        match SerialRxPublisher::spawn(app.clone(), generation, Arc::clone(&rx_counters)) {
+            Ok(publisher) => publisher,
+            Err(failure) => {
+                finish_worker(
+                    &app,
+                    &shared_state,
+                    generation,
+                    port_name,
+                    Some(failure),
+                    rx_counters.snapshot(),
+                );
+                return;
+            }
+        };
 
     let mut read_buffer = [0_u8; READ_BUFFER_SIZE];
     let mut pending_write: Option<PendingWrite> = None;
@@ -3541,7 +3892,7 @@ fn run_serial_worker(
                             break;
                         }
                     };
-                rx_counters.publish(rx_progress.snapshot());
+                rx_counters.publish_backend(rx_progress.snapshot());
                 if let Some(session_id) = capture_session_id {
                     let _ = recorder.append_for_session(
                         &app,
@@ -3550,19 +3901,10 @@ fn run_serial_worker(
                         &read_buffer[..byte_count],
                     );
                 }
-                let _ = app.emit(
-                    "serial://data",
-                    SerialDataPayload {
-                        data: BASE64_STANDARD.encode(&read_buffer[..byte_count]),
-                        received_at: unix_millis(),
-                        received_at_monotonic_us: rx_metadata.received_at_monotonic_us,
-                        generation,
-                        sequence: rx_metadata.sequence,
-                        stream_offset: rx_metadata.stream_offset,
-                        byte_count: rx_metadata.byte_count,
-                        backend_rx_bytes: rx_metadata.backend_rx_bytes,
-                        backend_rx_events: rx_metadata.backend_rx_events,
-                    },
+                let _ = rx_publisher.try_publish(
+                    &read_buffer[..byte_count],
+                    unix_millis(),
+                    rx_metadata,
                 );
                 let response_match = match modbus_runtime.as_mut() {
                     Some(ModbusRuntime::AwaitingResponse { collector, .. }) => {
@@ -3637,6 +3979,8 @@ fn run_serial_worker(
         }
     }
 
+    rx_publisher.finish();
+
     let stopped_failure = SerialFailure::new(
         SerialErrorCode::Unknown,
         "串口连接已结束，发送未完成".to_owned(),
@@ -3686,7 +4030,7 @@ fn run_serial_worker(
                 generation,
                 port_name,
                 terminal_error,
-                rx_progress.snapshot(),
+                rx_counters.snapshot(),
             );
         });
     } else {
@@ -3696,7 +4040,7 @@ fn run_serial_worker(
             generation,
             port_name,
             terminal_error,
-            rx_progress.snapshot(),
+            rx_counters.snapshot(),
         );
     }
 }
@@ -3898,8 +4242,7 @@ fn finish_worker(
             return;
         }
 
-        shared.backend_rx_bytes = rx_snapshot.backend_rx_bytes;
-        shared.backend_rx_events = rx_snapshot.backend_rx_events;
+        shared.rx_snapshot = rx_snapshot;
 
         if let Some(worker) = shared.worker.as_mut() {
             if worker.generation == generation {
@@ -4515,6 +4858,7 @@ mod tests {
             SerialRxSnapshot {
                 backend_rx_bytes: 8,
                 backend_rx_events: 2,
+                ..SerialRxSnapshot::default()
             }
         );
     }
@@ -4540,6 +4884,245 @@ mod tests {
         assert_eq!(json["backendRxBytes"], 11);
         assert_eq!(json["backendRxEvents"], 3);
         assert!(json.get("stream_offset").is_none());
+    }
+
+    #[test]
+    fn serial_state_payload_nests_ui_pipeline_diagnostics() {
+        let mut rx_snapshot = SerialRxSnapshot::default();
+        rx_snapshot.backend_rx_bytes = 11;
+        rx_snapshot.backend_rx_events = 3;
+        rx_snapshot.ui_queue_peak_bytes = 12;
+        rx_snapshot.ui_queue_peak_events = 2;
+        rx_snapshot.ui_dropped_bytes = 3;
+        rx_snapshot.ui_dropped_events = 1;
+        let payload = SerialStatePayload {
+            status: "disconnected".to_owned(),
+            port_name: "COM7".to_owned(),
+            message: None,
+            error_code: None,
+            generation: 7,
+            revision: 3,
+            backend_rx_bytes: rx_snapshot.backend_rx_bytes,
+            backend_rx_events: rx_snapshot.backend_rx_events,
+            ui_pipeline: rx_snapshot.into(),
+        };
+        let json = serde_json::to_value(payload).unwrap();
+
+        assert_eq!(json["backendRxBytes"], 11);
+        assert_eq!(json["uiPipeline"]["queueCapacityBytes"], 4 * 1024 * 1024);
+        assert_eq!(json["uiPipeline"]["queuePeakBytes"], 12);
+        assert_eq!(json["uiPipeline"]["droppedEvents"], 1);
+        assert!(json.get("uiQueueBytes").is_none());
+    }
+
+    fn test_rx_metadata(sequence: u64, stream_offset: u64, byte_count: usize) -> SerialRxMetadata {
+        let byte_count = u64::try_from(byte_count).unwrap();
+        SerialRxMetadata {
+            sequence,
+            stream_offset,
+            byte_count,
+            received_at_monotonic_us: sequence + 10,
+            backend_rx_bytes: stream_offset + byte_count,
+            backend_rx_events: sequence + 1,
+        }
+    }
+
+    fn test_rx_display_queue(
+        generation: u64,
+    ) -> (
+        SerialRxDisplayQueue,
+        mpsc::Receiver<SerialRxDisplayBlock>,
+        Arc<SerialRxCounters>,
+    ) {
+        let counters = Arc::new(SerialRxCounters::default());
+        let (tx, rx) = mpsc::sync_channel(RX_DISPLAY_QUEUE_CAPACITY_EVENTS);
+        (
+            SerialRxDisplayQueue {
+                generation,
+                tx,
+                counters: Arc::clone(&counters),
+            },
+            rx,
+            counters,
+        )
+    }
+
+    #[test]
+    fn rx_display_queue_enforces_byte_and_event_limits_without_blocking() {
+        let (oversized_queue, _oversized_rx, oversized_counters) = test_rx_display_queue(7);
+        let oversized = vec![0_u8; RX_DISPLAY_QUEUE_CAPACITY_BYTES + 1];
+        assert!(!oversized_queue.try_enqueue(
+            &oversized,
+            1_000,
+            test_rx_metadata(0, 0, oversized.len()),
+        ));
+        assert_eq!(
+            oversized_counters.snapshot(),
+            SerialRxSnapshot {
+                ui_dropped_bytes: u64::try_from(oversized.len()).unwrap(),
+                ui_dropped_events: 1,
+                ..SerialRxSnapshot::default()
+            }
+        );
+
+        let (queue, _rx, counters) = test_rx_display_queue(8);
+        for sequence in 0..RX_DISPLAY_QUEUE_CAPACITY_EVENTS {
+            assert!(queue.try_enqueue(
+                &[sequence as u8],
+                2_000,
+                test_rx_metadata(sequence as u64, sequence as u64, 1),
+            ));
+        }
+        assert!(!queue.try_enqueue(
+            &[0xff],
+            2_001,
+            test_rx_metadata(
+                RX_DISPLAY_QUEUE_CAPACITY_EVENTS as u64,
+                RX_DISPLAY_QUEUE_CAPACITY_EVENTS as u64,
+                1,
+            ),
+        ));
+        assert_eq!(counters.snapshot().ui_queue_events, 256);
+        assert_eq!(counters.snapshot().ui_queue_peak_events, 256);
+        assert_eq!(counters.snapshot().ui_dropped_events, 1);
+    }
+
+    #[test]
+    fn disconnected_rx_publisher_closes_admission_and_counts_each_drop() {
+        let (queue, rx, counters) = test_rx_display_queue(9);
+        drop(rx);
+
+        assert!(!queue.try_enqueue(&[1, 2], 100, test_rx_metadata(0, 0, 2)));
+        assert!(!queue.try_enqueue(&[3, 4, 5], 200, test_rx_metadata(1, 2, 3)));
+
+        assert_eq!(counters.snapshot().ui_queue_bytes, 0);
+        assert_eq!(counters.snapshot().ui_queue_events, 0);
+        assert_eq!(counters.snapshot().ui_dropped_bytes, 5);
+        assert_eq!(counters.snapshot().ui_dropped_events, 2);
+        assert_eq!(counters.snapshot().ui_publisher_failures, 1);
+    }
+
+    #[test]
+    fn rx_publisher_drains_in_order_and_keeps_generation() {
+        let (queue, rx, counters) = test_rx_display_queue(9);
+        assert!(queue.try_enqueue(&[1, 2], 100, test_rx_metadata(0, 0, 2)));
+        assert!(queue.try_enqueue(&[3], 200, test_rx_metadata(1, 2, 1)));
+        drop(queue);
+
+        let cancel = AtomicBool::new(false);
+        let mut published = Vec::new();
+        run_serial_rx_publisher(rx, &counters, &cancel, |payload| {
+            published.push(payload);
+            true
+        });
+
+        assert_eq!(published.len(), 2);
+        assert_eq!(published[0].generation, 9);
+        assert_eq!(published[0].sequence, 0);
+        assert_eq!(published[1].sequence, 1);
+        assert_eq!(published[1].stream_offset, 2);
+        assert_eq!(published[1].data, "Aw==");
+        assert_eq!(counters.snapshot().ui_queue_events, 0);
+        assert_eq!(counters.snapshot().ui_dropped_events, 0);
+    }
+
+    #[test]
+    fn blocked_rx_sink_only_saturates_display_queue() {
+        let (queue, rx, counters) = test_rx_display_queue(10);
+        let publisher_counters = Arc::clone(&counters);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let publisher_cancel = Arc::clone(&cancel);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let join_handle = thread::spawn(move || {
+            let mut first = true;
+            run_serial_rx_publisher(rx, &publisher_counters, &publisher_cancel, |_| {
+                if first {
+                    first = false;
+                    let _ = entered_tx.send(());
+                    let _ = release_rx.recv();
+                }
+                true
+            });
+        });
+
+        assert!(queue.try_enqueue(&[0], 100, test_rx_metadata(0, 0, 1)));
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        for sequence in 1..=RX_DISPLAY_QUEUE_CAPACITY_EVENTS {
+            assert!(queue.try_enqueue(
+                &[sequence as u8],
+                100 + sequence as u64,
+                test_rx_metadata(sequence as u64, sequence as u64, 1),
+            ));
+        }
+        assert!(!queue.try_enqueue(&[0xff], 999, test_rx_metadata(257, 257, 1),));
+        assert_eq!(counters.snapshot().ui_queue_events, 256);
+        assert_eq!(counters.snapshot().ui_dropped_events, 1);
+
+        cancel.store(true, Ordering::Release);
+        drop(queue);
+        release_tx.send(()).unwrap();
+        join_handle.join().unwrap();
+        assert_eq!(counters.snapshot().ui_queue_events, 0);
+        assert_eq!(counters.snapshot().ui_dropped_events, 257);
+    }
+
+    #[test]
+    fn rx_publisher_failure_accounts_for_current_and_queued_blocks() {
+        let (queue, rx, counters) = test_rx_display_queue(11);
+        assert!(queue.try_enqueue(&[1, 2], 100, test_rx_metadata(0, 0, 2)));
+        assert!(queue.try_enqueue(&[3, 4, 5], 200, test_rx_metadata(1, 2, 3)));
+        drop(queue);
+
+        let cancel = AtomicBool::new(false);
+        run_serial_rx_publisher(rx, &counters, &cancel, |_| false);
+
+        assert_eq!(counters.snapshot().ui_queue_bytes, 0);
+        assert_eq!(counters.snapshot().ui_queue_events, 0);
+        assert_eq!(counters.snapshot().ui_dropped_bytes, 5);
+        assert_eq!(counters.snapshot().ui_dropped_events, 2);
+        assert_eq!(counters.snapshot().ui_publisher_failures, 1);
+    }
+
+    #[test]
+    fn rx_publisher_finish_timeout_cancels_remaining_display_blocks() {
+        let (queue, rx, counters) = test_rx_display_queue(12);
+        let (done_tx, done_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let publisher_cancel = Arc::clone(&cancel);
+        let publisher_counters = Arc::clone(&counters);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let join_handle = thread::spawn(move || {
+            let mut first = true;
+            run_serial_rx_publisher(rx, &publisher_counters, &publisher_cancel, |_| {
+                if first {
+                    first = false;
+                    let _ = entered_tx.send(());
+                    let _ = release_rx.recv();
+                }
+                true
+            });
+            let _ = done_tx.send(());
+        });
+        let mut publisher = SerialRxPublisher {
+            queue: Some(queue),
+            cancel,
+            done_rx,
+            join_handle: Some(join_handle),
+            counters: Arc::clone(&counters),
+        };
+
+        assert!(publisher.try_publish(&[1], 100, test_rx_metadata(0, 0, 1)));
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(publisher.try_publish(&[2], 200, test_rx_metadata(1, 1, 1)));
+        publisher.finish_with_timeout(Duration::from_millis(10));
+        assert_eq!(counters.snapshot().ui_publisher_timeouts, 1);
+
+        release_tx.send(()).unwrap();
+        publisher.finish_with_timeout(Duration::from_secs(1));
+        assert_eq!(counters.snapshot().ui_queue_events, 0);
+        assert_eq!(counters.snapshot().ui_dropped_events, 1);
     }
 
     #[test]

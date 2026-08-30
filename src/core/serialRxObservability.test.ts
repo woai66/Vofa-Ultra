@@ -6,6 +6,19 @@ import {
 } from "./serialRxObservability";
 import type { SerialDataPayload, SerialStatePayload } from "../types/serial";
 
+const UI_PIPELINE_METRICS = {
+  queueBytes: 0,
+  queueEvents: 0,
+  queueCapacityBytes: 4 * 1024 * 1024,
+  queueCapacityEvents: 256,
+  queuePeakBytes: 16 * 1024,
+  queuePeakEvents: 16,
+  droppedBytes: 0,
+  droppedEvents: 0,
+  publisherFailures: 0,
+  publisherTimeouts: 0,
+} as const;
+
 function serialState(
   status: SerialStatePayload["status"],
   overrides: Partial<SerialStatePayload> = {},
@@ -17,6 +30,7 @@ function serialState(
     revision: 1,
     backendRxBytes: 0,
     backendRxEvents: 0,
+    uiPipeline: UI_PIPELINE_METRICS,
     ...overrides,
   };
 }
@@ -89,6 +103,44 @@ describe("serialRxObservability", () => {
       ipcGapBytes: 4,
       nextSequence: 3,
       nextStreamOffset: 9,
+    });
+  });
+
+  it("显示队列丢弃与 publisher 超时会进入完整性诊断", () => {
+    let snapshot = observeSerialRxState(
+      createIdleSerialRxObservability(),
+      serialState("connected"),
+    );
+    snapshot = observeSerialRxData(snapshot, serialData(0, 0, 3), 3).snapshot;
+    snapshot = observeSerialRxState(
+      snapshot,
+      serialState("disconnected", {
+        revision: 2,
+        backendRxBytes: 7,
+        backendRxEvents: 2,
+        uiPipeline: {
+          ...UI_PIPELINE_METRICS,
+          droppedBytes: 4,
+          droppedEvents: 1,
+          publisherTimeouts: 1,
+        },
+      }),
+    );
+
+    expect(snapshot).toMatchObject({
+      status: "degraded",
+      finalized: true,
+      ipcGapBytes: 4,
+      ipcGapEvents: 1,
+      uiPipeline: {
+        queueCapacityBytes: 4 * 1024 * 1024,
+        queueCapacityEvents: 256,
+        queuePeakBytes: 16 * 1024,
+        queuePeakEvents: 16,
+        droppedBytes: 4,
+        droppedEvents: 1,
+        publisherTimeouts: 1,
+      },
     });
   });
 
