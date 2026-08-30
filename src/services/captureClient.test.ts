@@ -51,6 +51,7 @@ describe("captureClient", () => {
         dtr: true,
         rts: true,
       },
+      buildId: "development",
       destinationDirectory: "D:\\sessions",
     };
 

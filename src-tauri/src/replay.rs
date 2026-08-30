@@ -2610,7 +2610,7 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     use super::*;
-    use crate::capture::{CAPTURE_MAGIC, CAPTURE_VERSION};
+    use crate::capture::{CAPTURE_MAGIC, CAPTURE_VERSION, CAPTURE_VERSION_V2};
     use crate::serial::SerialConfig;
 
     static NEXT_TEMP_CAPTURE: AtomicU64 = AtomicU64::new(1);
@@ -2646,6 +2646,8 @@ mod tests {
             },
             started_at_unix_ms: 1_700_000_000_000,
             time_unit: "microseconds".to_owned(),
+            application: None,
+            device: None,
         }
     }
 
@@ -2709,7 +2711,7 @@ mod tests {
         let header_bytes = serde_json::to_vec(&test_header(protocol)).unwrap();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&CAPTURE_MAGIC);
-        bytes.extend_from_slice(&CAPTURE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&CAPTURE_VERSION_V2.to_le_bytes());
         bytes.extend_from_slice(&0_u16.to_le_bytes());
         bytes.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&header_bytes);
@@ -2871,6 +2873,7 @@ mod tests {
             direction: CaptureDirection::Rx,
             timestamp_us,
             payload: vec![0; payload_size],
+            rx_stream: None,
         }
     }
 
@@ -2916,7 +2919,7 @@ mod tests {
         );
         let (header, summary, index, markers) = scan_test_capture_full(&capture.path);
 
-        assert_eq!(summary.format_version, CAPTURE_VERSION);
+        assert_eq!(summary.format_version, CAPTURE_VERSION_V2);
         assert!(summary.complete);
         assert_eq!(summary.duration_us, 20);
         assert_eq!((summary.record_count, summary.marker_count), (2, 2));

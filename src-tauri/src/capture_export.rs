@@ -1460,7 +1460,7 @@ impl ExportSink {
         match self {
             Self::Csv(writer) => write_csv_record(writer, header, record_index, record),
             Self::Jsonl(writer) => {
-                let payload = json!({
+                let mut payload = json!({
                     "type": "record",
                     "recordIndex": record_index,
                     "timestampUs": record.timestamp_us,
@@ -1469,6 +1469,12 @@ impl ExportSink {
                     "payloadLength": record.payload.len(),
                     "payloadBase64": BASE64_STANDARD.encode(&record.payload),
                 });
+                if let Some(rx_stream) = record.rx_stream {
+                    payload
+                        .as_object_mut()
+                        .expect("JSONL record 固定为对象")
+                        .insert("rxStream".to_owned(), json!(rx_stream));
+                }
                 write_json_line(writer, &payload)
             }
             Self::Binary(writer) => writer.write_all(&record.payload),
@@ -1745,7 +1751,10 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::capture::{CaptureMarkerColor, CAPTURE_MAGIC, CAPTURE_VERSION};
+    use crate::capture::{
+        CaptureMarkerColor, CaptureRxStreamMetadata, CAPTURE_MAGIC, CAPTURE_VERSION,
+        CAPTURE_VERSION_V2,
+    };
     use crate::serial::SerialConfig;
 
     struct TestDirectory {
@@ -1793,6 +1802,8 @@ mod tests {
             },
             started_at_unix_ms: 1_700_000_000_000,
             time_unit: "microseconds".to_owned(),
+            application: None,
+            device: None,
         }
     }
 
@@ -1836,7 +1847,7 @@ mod tests {
         let header_bytes = serde_json::to_vec(&sample_header()).unwrap();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&CAPTURE_MAGIC);
-        bytes.extend_from_slice(&CAPTURE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&CAPTURE_VERSION_V2.to_le_bytes());
         bytes.extend_from_slice(&0_u16.to_le_bytes());
         bytes.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&header_bytes);
@@ -1988,6 +1999,60 @@ mod tests {
         assert_eq!(lines[3]["processedRecords"], 3);
         assert_eq!(lines[3]["exportedRecords"], 2);
         assert_eq!(lines[3]["sourceComplete"], true);
+        assert!(lines[1].get("rxStream").is_none());
+        assert!(lines[2].get("rxStream").is_none());
+    }
+
+    #[test]
+    fn v3_jsonl_preserves_optional_rx_stream_metadata() {
+        let directory = TestDirectory::new("v3-jsonl-rx-stream");
+        let path = directory.join("capture.jsonl");
+        let file = File::create(&path).unwrap();
+        let writer = CountingWriter::new(BufWriter::new(file));
+        let header = sample_header();
+        let mut sink =
+            ExportSink::new(ExportFormat::Jsonl, writer, &header, CAPTURE_VERSION).unwrap();
+        sink.write_record(
+            &header,
+            1,
+            &CaptureRecord {
+                direction: CaptureDirection::Rx,
+                timestamp_us: 10,
+                payload: vec![1, 2],
+                rx_stream: Some(CaptureRxStreamMetadata {
+                    connection_generation: 7,
+                    sequence: 11,
+                    stream_offset: 4096,
+                    received_at_monotonic_us: 123_456,
+                }),
+            },
+        )
+        .unwrap();
+        sink.write_record(
+            &header,
+            2,
+            &CaptureRecord {
+                direction: CaptureDirection::Tx,
+                timestamp_us: 12,
+                payload: vec![3],
+                rx_stream: None,
+            },
+        )
+        .unwrap();
+        sink.flush_and_sync().unwrap();
+        drop(sink);
+
+        let lines = fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1]["rxStream"]["connectionGeneration"], 7);
+        assert_eq!(lines[1]["rxStream"]["sequence"], 11);
+        assert_eq!(lines[1]["rxStream"]["streamOffset"], 4096);
+        assert_eq!(lines[1]["rxStream"]["receivedAtMonotonicUs"], 123_456);
+        assert!(lines[2].get("rxStream").is_none());
     }
 
     #[test]
@@ -2026,7 +2091,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["metadata", "record", "marker", "record", "summary"]
         );
-        assert_eq!(lines[0]["version"], CAPTURE_VERSION);
+        assert_eq!(lines[0]["version"], CAPTURE_VERSION_V2);
         assert_eq!(lines[1]["recordIndex"], 1);
         assert_eq!(lines[2]["markerIndex"], 1);
         assert_eq!(lines[2]["timestampUs"], 15);

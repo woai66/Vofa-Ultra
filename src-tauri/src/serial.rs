@@ -12,7 +12,7 @@ use serde::Serialize;
 use serialport::{DataBits, FlowControl, Parity, SerialPortType, StopBits};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::capture::{CaptureDirection, CaptureRecorderHandle, CaptureState};
+use crate::capture::{CaptureRecorderHandle, CaptureRxStreamMetadata, CaptureState};
 use crate::modbus_rtu::{
     silent_interval, ModbusRequestSpec, ModbusResponseCollector, ResponseErrorCode, ResponseMatch,
     BUS_ACQUIRE_TIMEOUT, MAX_TRANSACTION_TIMEOUT_MS, MIN_TRANSACTION_TIMEOUT_MS,
@@ -3685,7 +3685,7 @@ fn run_serial_worker(
             let remaining = pending.data.len() - pending.offset;
             let chunk_length = remaining.min(WRITE_CHUNK_SIZE).min(write_budget);
             let chunk_end = pending.offset + chunk_length;
-            let capture_session_id = recorder.active_session_id();
+            let capture_session_id = recorder.active_serial_session_id();
 
             match port.write(&pending.data[pending.offset..chunk_end]) {
                 Ok(0) => {
@@ -3702,10 +3702,9 @@ fn run_serial_worker(
                     let written_range = pending.record_progress(byte_count, progressed_at);
                     write_budget -= byte_count;
                     if let Some(session_id) = capture_session_id {
-                        let _ = recorder.append_for_session(
+                        let _ = recorder.append_serial_tx_for_session(
                             &app,
                             session_id,
-                            CaptureDirection::Tx,
                             &pending.data[written_range],
                         );
                     }
@@ -3880,7 +3879,7 @@ fn run_serial_worker(
             break;
         }
 
-        let capture_session_id = recorder.active_session_id();
+        let capture_session_id = recorder.active_serial_session_id();
         match port.read(&mut read_buffer) {
             Ok(byte_count) if byte_count > 0 => {
                 last_bus_activity = Instant::now();
@@ -3894,11 +3893,16 @@ fn run_serial_worker(
                     };
                 rx_counters.publish_backend(rx_progress.snapshot());
                 if let Some(session_id) = capture_session_id {
-                    let _ = recorder.append_for_session(
+                    let _ = recorder.append_serial_rx_for_session(
                         &app,
                         session_id,
-                        CaptureDirection::Rx,
                         &read_buffer[..byte_count],
+                        CaptureRxStreamMetadata {
+                            connection_generation: generation,
+                            sequence: rx_metadata.sequence,
+                            stream_offset: rx_metadata.stream_offset,
+                            received_at_monotonic_us: rx_metadata.received_at_monotonic_us,
+                        },
                     );
                 }
                 let _ = rx_publisher.try_publish(
@@ -4888,13 +4892,15 @@ mod tests {
 
     #[test]
     fn serial_state_payload_nests_ui_pipeline_diagnostics() {
-        let mut rx_snapshot = SerialRxSnapshot::default();
-        rx_snapshot.backend_rx_bytes = 11;
-        rx_snapshot.backend_rx_events = 3;
-        rx_snapshot.ui_queue_peak_bytes = 12;
-        rx_snapshot.ui_queue_peak_events = 2;
-        rx_snapshot.ui_dropped_bytes = 3;
-        rx_snapshot.ui_dropped_events = 1;
+        let rx_snapshot = SerialRxSnapshot {
+            backend_rx_bytes: 11,
+            backend_rx_events: 3,
+            ui_queue_peak_bytes: 12,
+            ui_queue_peak_events: 2,
+            ui_dropped_bytes: 3,
+            ui_dropped_events: 1,
+            ..SerialRxSnapshot::default()
+        };
         let payload = SerialStatePayload {
             status: "disconnected".to_owned(),
             port_name: "COM7".to_owned(),

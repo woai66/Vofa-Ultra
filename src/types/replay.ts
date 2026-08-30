@@ -23,12 +23,28 @@ export type ReplayUiStatus =
   | "pausing"
   | "closing";
 
+export interface ReplayCaptureApplicationMetadata {
+  version: string;
+  buildId: string;
+}
+
+export interface ReplayCaptureDeviceMetadata {
+  kind: "usb" | "bluetooth" | "pci" | "unknown";
+  manufacturer?: string;
+  product?: string;
+  vendorId?: number;
+  productId?: number;
+  serialNumberSha256?: string;
+}
+
 export interface ReplayCaptureHeader {
   source: DataSource;
   protocol: ProtocolKind;
   serialConfig: SerialConfig;
   startedAtUnixMs: number;
   timeUnit: "microseconds";
+  application?: ReplayCaptureApplicationMetadata;
+  device?: ReplayCaptureDeviceMetadata;
 }
 
 export interface ReplayStatePayload {
