@@ -2993,7 +2993,7 @@ textarea:focus {
   flex: 1 1 auto;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3003,7 +3003,7 @@ textarea:focus {
   flex: 0 0 auto;
   align-items: center;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
   gap: 7px;
 }
@@ -3031,7 +3031,7 @@ textarea:focus {
   border-radius: 4px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   gap: 5px;
 }
@@ -3248,7 +3248,7 @@ textarea:focus {
 
 .panel-subtitle {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 
@@ -3346,7 +3346,7 @@ textarea:focus {
   margin-left: 7px;
   color: var(--accent);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   gap: 5px;
 }
@@ -3593,7 +3593,7 @@ textarea:focus {
   background: transparent;
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 
@@ -3648,7 +3648,7 @@ textarea:focus {
   border: 0;
   background: transparent;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 
@@ -3690,7 +3690,7 @@ textarea:focus {
   border-radius: 4px;
   background: var(--surface-1);
   color: var(--text);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .waveform-range-button {
@@ -3751,7 +3751,7 @@ textarea:focus {
 .waveform-range-target small {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -3765,7 +3765,7 @@ textarea:focus {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
   gap: 6px;
 }
 
@@ -3792,7 +3792,7 @@ textarea:focus {
   min-width: 0;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3849,7 +3849,7 @@ textarea:focus {
 .channel-readout small {
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3870,7 +3870,7 @@ textarea:focus {
   max-width: 40px;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4802,7 +4802,7 @@ textarea:focus {
 }
 
 .panel-empty-state span {
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .compact-segments {
@@ -4816,7 +4816,7 @@ textarea:focus {
   height: 32px;
   padding: 0 8px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .terminal-filter-bar {
@@ -4861,7 +4861,7 @@ textarea:focus {
   height: 32px;
   padding: 0 5px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .terminal-rx-line-ending select:disabled {
@@ -5006,7 +5006,7 @@ textarea:focus {
 .terminal-line time,
 .terminal-line small {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 
@@ -5024,7 +5024,7 @@ textarea:focus {
 
 .direction-label {
   color: var(--cyan);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -5169,7 +5169,7 @@ textarea:focus {
 
 .send-field-caption {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 
@@ -5218,7 +5218,7 @@ textarea:focus {
   border-radius: 10px;
   background: var(--border-strong);
   color: var(--text);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -5246,7 +5246,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5284,7 +5284,7 @@ textarea:focus {
 .command-interval-field > span,
 .command-interval-field small {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 
@@ -5313,7 +5313,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   gap: 6px;
 }
 
@@ -6783,7 +6783,7 @@ textarea:focus {
   background: #171a1f;
   color: #abb3bd;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 :root[data-theme="light"] .status-bar {
@@ -6959,7 +6959,7 @@ textarea:focus {
   }
 }
 
-@container workspace (max-width: 820px) {
+@container workspace (max-width: 900px) {
   .workspace-header-meta {
     display: none;
   }

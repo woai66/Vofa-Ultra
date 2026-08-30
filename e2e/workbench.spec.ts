@@ -1977,6 +1977,7 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   await expect(page.getByText("模拟数据正在运行")).toBeVisible();
   await expect(page.locator(".terminal-line").first()).toBeVisible({ timeout: 5_000 });
   await expect(page.locator(".waveform-chart canvas").first()).toBeVisible({ timeout: 5_000 });
+  expect(await findVisibleTextBelow(page.locator(".channel-strip"), 13)).toEqual([]);
   await page.waitForTimeout(800);
 
   await expect
@@ -2090,6 +2091,16 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   await page.getByRole("button", { name: "清空波形" }).click();
   await expect(page.getByText("HISTORY")).toBeVisible();
   await expect(page.getByRole("button", { name: "继续波形显示" })).toBeVisible();
+  for (const selector of [
+    ".workspace-header",
+    ".waveform-panel .panel-toolbar",
+    ".terminal-filter-bar",
+    ".terminal-viewport",
+    ".send-main-row",
+    ".status-bar",
+  ]) {
+    expect(await findVisibleTextBelow(page.locator(selector), 13), selector).toEqual([]);
+  }
   expect(pageErrors).toEqual([]);
 
   await page.screenshot({
