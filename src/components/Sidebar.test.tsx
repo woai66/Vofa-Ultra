@@ -22,6 +22,7 @@ describe("Sidebar 串口恢复界面", () => {
       isRefreshingPorts: false,
       serialPortDiscoveryStatus: "idle",
       serialPortDiscoveryMessage: "",
+      connectionActionError: "",
       connectionMessage: "设备已移除",
       statusMessage: "设备已移除",
       ports: [
@@ -237,6 +238,39 @@ describe("Sidebar 串口恢复界面", () => {
     );
 
     expect(screen.getByLabelText("串口设备")).toHaveDisplayValue("COM3 · 当前连接");
+    expect(screen.getByRole("status")).toHaveTextContent("COM3 已连接");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "connected");
+  });
+
+  it("断开失败时保留真实连接态并用红色摘要提示可重试", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      connectionActionError: "断开失败，当前仍保持连接：串口服务无响应",
+      connectionMessage: "断开失败，当前仍保持连接：串口服务无响应",
+      ports: [],
+      serialConfig: { ...state.serialConfig, portName: "COM3" },
+      serialRecovery: { ...state.serialRecovery, phase: "armed" },
+    }));
+    const props = {
+      activePanel: "connection" as const,
+      themePreference: "dark" as const,
+      onClose: vi.fn(),
+      onThemePreferenceChange: vi.fn(),
+    };
+    const { rerender } = render(<Sidebar {...props} />);
+
+    const connection_status = screen.getByRole("status");
+    expect(connection_status).toHaveTextContent(
+      "断开失败，当前仍保持连接：串口服务无响应",
+    );
+    expect(connection_status).toHaveAttribute("data-status", "error");
+    expect(screen.getByRole("button", { name: "断开连接" })).toBeEnabled();
+
+    useWorkbenchStore.setState({
+      connectionActionError: "",
+      connectionMessage: "COM3 已连接",
+    });
+    rerender(<Sidebar {...props} />);
     expect(screen.getByRole("status")).toHaveTextContent("COM3 已连接");
     expect(screen.getByRole("status")).toHaveAttribute("data-status", "connected");
   });

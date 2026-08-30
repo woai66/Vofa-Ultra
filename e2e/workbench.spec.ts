@@ -1819,6 +1819,25 @@ test("串口初始状态读取失败后仍可刷新并连接", async ({ page }) 
   await expect(page.getByText(/串口核心事件监听初始化失败/)).toHaveCount(0);
 });
 
+test("断开命令失败但串口仍连接时显示红色错误并允许重试", async ({ page }) => {
+  await installTauriSerialMock(page, undefined, "disconnect_serial");
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+
+  await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
+  await page.getByRole("button", { name: "连接设备" }).click();
+  const connection_status = page.locator("#serial-connection-status");
+  const disconnect_button = page.getByRole("button", { name: "断开连接" });
+  await expect(connection_status).toHaveText("COM3 已连接");
+
+  await disconnect_button.click();
+  await expect(connection_status).toHaveText(
+    "断开失败，当前仍保持连接：disconnect_serial 调用失败",
+  );
+  await expect(connection_status).toHaveAttribute("data-status", "error");
+  await expect(disconnect_button).toBeEnabled();
+});
+
 test("终端上滚挂起跟随并可回到最新", async ({ page }) => {
   await page.goto("/");
   const entries = Array.from(

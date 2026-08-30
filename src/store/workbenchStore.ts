@@ -409,6 +409,7 @@ export interface WorkbenchStore {
   serialGeneration: number;
   serialStateRevision: number;
   serialRuntimeError: string;
+  connectionActionError: string;
   connectionMessage: string;
   statusMessage: string;
   ports: SerialPortInfo[];
@@ -694,6 +695,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       serialGeneration: 0,
       serialStateRevision: 0,
       serialRuntimeError: "",
+      connectionActionError: "",
       connectionMessage: "等待连接",
       statusMessage: "等待连接",
       ports: [],
@@ -1137,6 +1139,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             ? createUnavailableSerialModemStatus(latest.serialGeneration)
             : latest.serialModemStatus,
           serialRuntimeError: nativeRuntime ? latest.serialRuntimeError : "",
+          connectionActionError: availabilityChanged ? "" : latest.connectionActionError,
           connectionMessage: nativeRuntime
             ? latest.connectionMessage
             : "浏览器预览模式，仅使用模拟数据",
@@ -1175,6 +1178,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
         if (source === "serial" && !get().isNativeRuntime) {
           set({
+            connectionActionError: "",
             connectionMessage: "浏览器预览无法使用本机串口",
             statusMessage: "浏览器预览无法使用本机串口",
           });
@@ -1219,6 +1223,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             protocolHealth: protocolParser.getHealthSnapshot(),
             terminalEntries,
             connectionStatus: "disconnected",
+            connectionActionError: "",
             serialModemStatus: createUnavailableSerialModemStatus(latest.serialGeneration),
             connectionMessage:
               source === "serial" ? "选择设备后连接" : "模拟数据源已就绪",
@@ -1512,6 +1517,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (get().isCancellingSerialConnection) {
           return;
         }
+        set({ connectionActionError: "" });
         const currentState = get();
         if (currentState.source === "simulator" && currentState.protocol === "raw") {
           const message = "Raw Data 不提供模拟，请选择串口或回放";
@@ -1543,9 +1549,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           }
           const hadReplaySession = hasReplaySession(get());
           if (!(await closeCurrentReplay(get, set))) {
+            const message = "关闭回放失败，未连接数据源";
             set({
-              connectionMessage: "关闭回放失败，未连接数据源",
-              statusMessage: "关闭回放失败，未连接数据源",
+              connectionActionError: message,
+              connectionMessage: message,
+              statusMessage: message,
             });
             return;
           }
@@ -1556,9 +1564,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             resetLiveView(get().protocol, set);
           }
           if (!(await stopCurrentRecordings(get, set))) {
+            const message = "结束录制失败，未连接数据源";
             set({
-              connectionMessage: "结束录制失败，未连接数据源",
-              statusMessage: "结束录制失败，未连接数据源",
+              connectionActionError: message,
+              connectionMessage: message,
+              statusMessage: message,
             });
             return;
           }
@@ -1674,13 +1684,16 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!beginRuntimeTransition(get, set, "disconnecting")) {
           return false;
         }
+        set({ connectionActionError: "" });
         stopCurrentCommandWorkflows("connection-change");
         try {
           await getSerialRecoveryCoordinator().cancel("manual-disconnect", true);
           if (!(await stopCurrentRecordings(get, set))) {
+            const message = "结束录制失败，当前仍保持连接";
             set({
-              connectionMessage: "结束录制失败，未断开数据源",
-              statusMessage: "结束录制失败，未断开数据源",
+              connectionActionError: message,
+              connectionMessage: message,
+              statusMessage: message,
             });
             return false;
           }
@@ -1696,6 +1709,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       setSerialRecoveryEnabled: async (enabled) => {
         const operation = ++serialRecoverySettingOperation;
+        set({ connectionActionError: "" });
         const state = get();
         if (enabled && (!state.isNativeRuntime || state.source !== "serial")) {
           set({
@@ -1716,9 +1730,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           });
         } catch (error) {
           if (operation === serialRecoverySettingOperation) {
+            const message = `取消串口连接失败：${getErrorMessage(error)}`;
             set({
-              connectionMessage: `取消串口连接失败：${getErrorMessage(error)}`,
-              statusMessage: `取消串口连接失败：${getErrorMessage(error)}`,
+              connectionActionError: message,
+              connectionMessage: message,
+              statusMessage: message,
             });
           }
         }
@@ -1737,6 +1753,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         serialConnectOperation += 1;
         set({
           isCancellingSerialConnection: true,
+          connectionActionError: "",
           runtimeTransitionStatus:
             state.runtimeTransitionStatus === "connecting"
               ? "idle"
@@ -1752,9 +1769,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             set({ connectionMessage: "自动重连已取消", statusMessage: "自动重连已取消" });
           }
         } catch (error) {
+          const message = `取消串口连接失败：${getErrorMessage(error)}`;
           set({
-            connectionMessage: `取消串口连接失败：${getErrorMessage(error)}`,
-            statusMessage: `取消串口连接失败：${getErrorMessage(error)}`,
+            connectionActionError: message,
+            connectionMessage: message,
+            statusMessage: message,
           });
         } finally {
           set({ isCancellingSerialConnection: false });
@@ -2206,6 +2225,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (payload.status === "error") {
           set({
             connectionStatus: "error",
+            connectionActionError: "",
             serialGeneration: payload.generation,
             serialStateRevision: payload.revision,
             connectionMessage: payload.message ?? "串口发生未知错误",
@@ -2226,6 +2246,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
         set({
           connectionStatus: payload.status,
+          connectionActionError: "",
           serialGeneration: payload.generation,
           serialStateRevision: payload.revision,
           serialConfig:
@@ -5244,6 +5265,7 @@ function applyCancelledSerialState(payload: SerialStatePayload): void {
   ) {
     useWorkbenchStore.setState({
       connectionStatus: payload.status,
+      connectionActionError: "",
       serialGeneration: payload.generation,
       serialStateRevision: payload.revision,
       connectionMessage: payload.message ?? serialStatusMessage(payload.status, payload.portName),
@@ -5264,6 +5286,7 @@ async function disconnectCurrentSource(
   get: WorkbenchGet,
   set: WorkbenchSet,
 ): Promise<boolean> {
+  set({ connectionActionError: "" });
   stopCurrentModbusPolling("connection-change", false);
   await cancelActiveSerialFileSend(get);
   await cancelActiveModbusTransaction(get);
@@ -5273,6 +5296,7 @@ async function disconnectCurrentSource(
     resetLiveTerminalPresentationState();
     set({
       connectionStatus: "disconnected",
+      connectionActionError: "",
       connectionMessage: "模拟数据已停止",
       statusMessage: "模拟数据已停止",
       serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
@@ -5285,6 +5309,15 @@ async function disconnectCurrentSource(
   try {
     const payload = await disconnectSerial();
     get().handleSerialState(payload);
+    if (payload.status === "connected") {
+      const detail = payload.message?.trim() || "串口服务仍报告已连接";
+      const message = `断开失败，当前仍保持连接：${detail}`;
+      set({
+        connectionActionError: message,
+        connectionMessage: message,
+        statusMessage: message,
+      });
+    }
     return payload.status === "disconnected";
   } catch (error) {
     const message = getErrorMessage(error);
@@ -5301,9 +5334,11 @@ async function disconnectCurrentSource(
         return true;
       }
       if (payload.status === "connected") {
+        const failureMessage = `断开失败，当前仍保持连接：${message}`;
         set({
-          connectionMessage: `断开失败：${message}`,
-          statusMessage: `断开失败：${message}`,
+          connectionActionError: failureMessage,
+          connectionMessage: failureMessage,
+          statusMessage: failureMessage,
         });
         return false;
       }
@@ -5412,6 +5447,7 @@ async function applyWorkspaceSnapshot(
     stats: emptyStats(),
     protocolHealth: protocolParser.getHealthSnapshot(),
     connectionStatus: "disconnected",
+    connectionActionError: "",
     serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
     connectionMessage: usesBrowserFallback
       ? `“${latestTarget.name}”需要串口，浏览器预览已改用模拟器`

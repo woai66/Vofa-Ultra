@@ -467,6 +467,7 @@ function ConnectionPanel() {
   const source = useWorkbenchStore((state) => state.source);
   const protocol = useWorkbenchStore((state) => state.protocol);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
+  const connectionActionError = useWorkbenchStore((state) => state.connectionActionError);
   const connectionStatusMessage = useWorkbenchStore((state) => state.connectionMessage);
   const ports = useWorkbenchStore((state) => state.ports);
   const isRefreshingPorts = useWorkbenchStore((state) => state.isRefreshingPorts);
@@ -582,23 +583,28 @@ function ConnectionPanel() {
     isCancellingSerialConnection ||
     (!canCancelConnection &&
       (isBusy || (!isConnected && connectUnavailable)));
-  const connectionMessage = simulatorConnectUnavailable && !isConnected
-    ? "Raw Data 不提供模拟，请选择串口或回放"
-    : resolveConnectionMessage({
-        source,
-        connectionStatus,
-        portName: config.portName,
-        portAvailable: selectedPortPresentation !== null,
-        connectionStatusMessage,
-        serialRuntimeError,
-        isRefreshingPorts,
-        serialPortDiscoveryStatus,
-        serialPortDiscoveryMessage,
-        isCancelling: isCancellingSerialConnection,
-        recoveryActive,
-        recoveryMessage: serialRecovery.message,
-      });
-  const connectionMessageStatus: ConnectionStatus = serialRuntimeError
+  const connectionMessage = serialRuntimeError
+    ? serialRuntimeError
+    : connectionActionError
+      ? connectionActionError
+      : simulatorConnectUnavailable && !isConnected
+        ? "Raw Data 不提供模拟，请选择串口或回放"
+        : resolveConnectionMessage({
+            source,
+            connectionStatus,
+            portName: config.portName,
+            portAvailable: selectedPortPresentation !== null,
+            connectionStatusMessage,
+            serialRuntimeError,
+            isRefreshingPorts,
+            serialPortDiscoveryStatus,
+            serialPortDiscoveryMessage,
+            isCancelling: isCancellingSerialConnection,
+            recoveryActive,
+            recoveryMessage: serialRecovery.message,
+          });
+  const connectionMessageStatus: ConnectionStatus =
+    serialRuntimeError || connectionActionError
     ? "error"
     : isCancellingSerialConnection || recoveryActive
       ? "connecting"

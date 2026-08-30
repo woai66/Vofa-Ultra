@@ -411,6 +411,8 @@ describe("workbenchStore", () => {
       serialGeneration: 0,
       serialStateRevision: 0,
       serialRuntimeError: "",
+      connectionActionError: "",
+      connectionMessage: "等待连接",
       statusMessage: "等待连接",
       ports: [],
       isRefreshingPorts: false,
@@ -841,7 +843,8 @@ describe("workbenchStore", () => {
     await expect(useWorkbenchStore.getState().disconnect()).resolves.toBe(false);
     expect(useWorkbenchStore.getState()).toMatchObject({
       connectionStatus: "connected",
-      connectionMessage: "断开失败：串口服务无响应",
+      connectionActionError: "断开失败，当前仍保持连接：串口服务无响应",
+      connectionMessage: "断开失败，当前仍保持连接：串口服务无响应",
       runtimeTransitionStatus: "idle",
     });
     const diagnostics = useWorkbenchStore.getState().getSerialDiagnostics();
@@ -855,6 +858,46 @@ describe("workbenchStore", () => {
       }),
     );
     expect(JSON.stringify(diagnostics)).not.toContain("串口服务无响应");
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connected",
+      portName: "COM3",
+      generation: 3,
+      revision: 9,
+    });
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connected",
+      connectionActionError: "",
+      connectionMessage: "COM3 已连接",
+    });
+  });
+
+  it("串口断开正常返回仍连接时报告失败并允许再次断开", async () => {
+    disconnectSerialMock.mockResolvedValueOnce({
+      status: "connected",
+      portName: "COM3",
+      generation: 3,
+      revision: 8,
+      message: "设备正忙",
+    });
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      connectionActionError: "上一次操作失败",
+      serialGeneration: 3,
+      serialStateRevision: 7,
+    });
+
+    const disconnecting = useWorkbenchStore.getState().disconnect();
+    expect(useWorkbenchStore.getState().connectionActionError).toBe("");
+    await expect(disconnecting).resolves.toBe(false);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connected",
+      connectionActionError: "断开失败，当前仍保持连接：设备正忙",
+      connectionMessage: "断开失败，当前仍保持连接：设备正忙",
+      runtimeTransitionStatus: "idle",
+    });
   });
 
   it("仅在成功发送后记录会话历史并合并连续重复项", async () => {
@@ -2942,6 +2985,27 @@ describe("workbenchStore", () => {
     await connecting;
     expect(useWorkbenchStore.getState()).toMatchObject({
       connectionStatus: "disconnected",
+      runtimeTransitionStatus: "idle",
+      isCancellingSerialConnection: false,
+    });
+  });
+
+  it("取消手动连接失败时保留真实连接阶段并报告操作错误", async () => {
+    cancelSerialConnectMock.mockRejectedValueOnce(new Error("取消请求超时"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connecting",
+      connectionActionError: "上一次操作失败",
+      runtimeTransitionStatus: "connecting",
+    });
+
+    await useWorkbenchStore.getState().cancelSerialConnection();
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connecting",
+      connectionActionError: "取消串口连接失败：取消请求超时",
+      connectionMessage: "取消串口连接失败：取消请求超时",
       runtimeTransitionStatus: "idle",
       isCancellingSerialConnection: false,
     });
@@ -6753,7 +6817,8 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState()).toMatchObject({
       connectionStatus: "connected",
       captureStatus: "stopping",
-      statusMessage: "结束录制失败，未断开数据源",
+      connectionActionError: "结束录制失败，当前仍保持连接",
+      statusMessage: "结束录制失败，当前仍保持连接",
     });
   });
 
@@ -8122,6 +8187,7 @@ describe("workbenchStore", () => {
     const storageWrite = vi.spyOn(Storage.prototype, "setItem");
     storageWrite.mockClear();
 
+    useWorkbenchStore.setState({ connectionActionError: "断开失败，当前仍保持连接" });
     useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("1,2\n"), 1_000);
 
     expect(storageWrite).not.toHaveBeenCalled();
