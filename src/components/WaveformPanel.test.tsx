@@ -144,6 +144,23 @@ const TEST_CHANNELS: ChannelSeries[] = [
   },
 ];
 
+function appendTestChannelPoint(x: number): ChannelSeries[] {
+  return TEST_CHANNELS.map((channel) => ({
+    ...channel,
+    points: [...channel.points, { x, y: channel.lastValue + 1 }],
+  }));
+}
+
+function flushPendingAnimationFrames(
+  pendingFrames: Map<number, FrameRequestCallback>,
+): void {
+  const callbacks = [...pendingFrames.values()];
+  pendingFrames.clear();
+  for (const callback of callbacks) {
+    callback(0);
+  }
+}
+
 function createSpectrumChannel(
   id = "channel-0",
   name = "电压",
@@ -200,6 +217,7 @@ describe("WaveformPanel 波形测量", () => {
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
   });
 
   it("空数据时禁用测量入口", () => {
@@ -292,8 +310,10 @@ describe("WaveformPanel 波形测量", () => {
     const user = userEvent.setup();
     const { unmount } = render(<WaveformPanel theme="dark" />);
     const chart = latestUPlotMock();
+    await waitFor(() => expect(chart.setData).toHaveBeenCalled());
 
     await user.click(screen.getByRole("button", { name: "暂停波形显示" }));
+    await waitFor(() => expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), true));
     const setDataCallsWhileFrozen = chart.setData.mock.calls.length;
     act(() => {
       useWorkbenchStore.setState({
@@ -317,14 +337,56 @@ describe("WaveformPanel 波形测量", () => {
     ]);
 
     await user.click(screen.getByRole("button", { name: "继续波形显示" }));
-    expect(remountedChart.setData.mock.calls.at(-1)?.[0]?.[0]).toEqual([
-      1,
-      2,
-      3,
-      4,
-      5,
-      6,
-    ]);
+    await waitFor(() => {
+      expect(remountedChart.setData.mock.calls.at(-1)?.[0]?.[0]).toEqual([
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+      ]);
+    });
+  });
+
+  it("同一屏幕帧内只绘制最后一次完整数据", () => {
+    let requestId = 0;
+    const pendingFrames = new Map<number, FrameRequestCallback>();
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        requestId += 1;
+        pendingFrames.set(requestId, callback);
+        return requestId;
+      }),
+    );
+    vi.stubGlobal(
+      "cancelAnimationFrame",
+      vi.fn((id: number) => {
+        pendingFrames.delete(id);
+      }),
+    );
+    render(<WaveformPanel theme="dark" />);
+    const chart = latestUPlotMock();
+
+    flushPendingAnimationFrames(pendingFrames);
+    chart.setData.mockClear();
+    act(() => {
+      useWorkbenchStore.setState({
+        channels: appendTestChannelPoint(6),
+      });
+    });
+    act(() => {
+      useWorkbenchStore.setState({
+        channels: appendTestChannelPoint(7),
+      });
+    });
+
+    expect(chart.setData).not.toHaveBeenCalled();
+    expect(pendingFrames.size).toBe(1);
+    flushPendingAnimationFrames(pendingFrames);
+    expect(chart.setData).toHaveBeenCalledTimes(1);
+    expect(chart.setData.mock.calls[0]?.[0]?.[0]).toEqual([2, 3, 4, 5, 7]);
   });
 
   it("在读数、触发和测量中应用别名、单位与颜色且保留原始序列标签", async () => {
@@ -936,7 +998,9 @@ describe("WaveformPanel 波形测量", () => {
     }
     expect(followButton).toHaveAttribute("data-visible", "false");
     expect(followButton).toBeDisabled();
-    expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), true);
+    await waitFor(() => {
+      expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), true);
+    });
 
     act(() => chart.simulateScale("x"));
     expect(screen.queryByRole("button", { name: "回到实时波形" })).not.toBeInTheDocument();
@@ -962,15 +1026,19 @@ describe("WaveformPanel 波形测量", () => {
         })),
       });
     });
-    expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), false);
-    expect(chart.setData.mock.calls.at(-1)?.[0]?.[0]).toEqual([1, 2, 3, 4, 5, 20]);
+    await waitFor(() => {
+      expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), false);
+      expect(chart.setData.mock.calls.at(-1)?.[0]?.[0]).toEqual([1, 2, 3, 4, 5, 20]);
+    });
 
     await user.click(screen.getByRole("button", { name: "回到实时波形" }));
     expect(screen.queryByRole("button", { name: "回到实时波形" })).not.toBeInTheDocument();
     expect(followButton).toHaveAttribute("data-visible", "false");
     expect(followButton).toBeDisabled();
-    expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), true);
-    expect(chart.setData.mock.calls.at(-1)?.[0]?.[0]).toEqual([20]);
+    await waitFor(() => {
+      expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), true);
+      expect(chart.setData.mock.calls.at(-1)?.[0]?.[0]).toEqual([20]);
+    });
   });
 
   it("暂停和波形修订会结束视口跟随挂起", async () => {

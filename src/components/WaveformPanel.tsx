@@ -1153,18 +1153,10 @@ function WaveformChart({
             )}`,
           )
           .join("|");
-  const data = useMemo(
-    () =>
-      createAlignedData(
-        channels,
-        followSuspended ? Number.POSITIVE_INFINITY : windowSeconds,
-      ),
-    [channels, followSuspended, windowSeconds],
-  );
   const channelMetadataRef = useRef(channels);
-  const initialDataRef = useRef(data);
+  const windowSecondsRef = useRef(windowSeconds);
   channelMetadataRef.current = channels;
-  initialDataRef.current = data;
+  windowSecondsRef.current = windowSeconds;
   measurementRef.current = {
     enabled: measurementEnabled,
     result: measurement,
@@ -1313,7 +1305,16 @@ function WaveformChart({
       },
     };
 
-    const chart = new uPlot(options, initialDataRef.current, container);
+    const chart = new uPlot(
+      options,
+      createAlignedData(
+        channelMetadataRef.current,
+        followSuspendedRef.current
+          ? Infinity
+          : windowSecondsRef.current,
+      ),
+      container,
+    );
     chartRef.current = chart;
     overlayRef.current = createWaveformOverlay(chart.over);
     const suspendedXRange = suspendedXRangeRef.current;
@@ -1397,8 +1398,17 @@ function WaveformChart({
   ]);
 
   useLayoutEffect(() => {
-    chartRef.current?.setData(data, !followSuspended);
-  }, [data, followSuspended]);
+    const requestId = requestAnimationFrame(() =>
+      chartRef.current?.setData(
+        createAlignedData(
+          channels,
+          followSuspended ? Infinity : windowSeconds,
+        ),
+        !followSuspended,
+      ),
+    );
+    return () => cancelAnimationFrame(requestId);
+  }, [channels, followSuspended, windowSeconds]);
 
   useLayoutEffect(() => {
     const chart = chartRef.current;
