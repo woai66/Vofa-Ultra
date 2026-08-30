@@ -743,6 +743,45 @@ describe("Sidebar 串口恢复界面", () => {
     );
   });
 
+  it("协议单选组使用单一 Tab 停靠点并支持垂直键盘导航", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState((state) => ({
+      source: "simulator",
+      connectionStatus: "disconnected",
+      protocol: "firewater",
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const firewater = screen.getByRole("radio", { name: /FireWater/ });
+    const justfloat = screen.getByRole("radio", { name: /JustFloat/ });
+    const raw = screen.getByRole("radio", { name: /Raw Data/ });
+    expect(firewater).toHaveAttribute("tabindex", "0");
+    expect(justfloat).toHaveAttribute("tabindex", "-1");
+    expect(raw).toHaveAttribute("tabindex", "-1");
+
+    firewater.focus();
+    await user.keyboard("{ArrowDown}");
+    expect(justfloat).toHaveFocus();
+    expect(justfloat).toHaveAttribute("aria-checked", "true");
+    expect(useWorkbenchStore.getState().protocol).toBe("justfloat");
+
+    await user.keyboard("{End}");
+    expect(raw).toHaveFocus();
+    expect(raw).toHaveAttribute("aria-checked", "true");
+
+    await user.keyboard("{ArrowDown}");
+    expect(firewater).toHaveFocus();
+    expect(firewater).toHaveAttribute("aria-checked", "true");
+  });
+
   it("用无步进文本框提交自定义波特率并可从下拉切回预设", () => {
     useWorkbenchStore.setState((state) => ({
       connectionStatus: "disconnected",
