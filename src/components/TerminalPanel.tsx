@@ -104,12 +104,13 @@ import type {
   TerminalEntry,
   TerminalTextEncoding,
 } from "../types/workbench";
-import { QuickCommandPopover } from "./QuickCommandPopover";
-
 const TerminalExportMenu = lazy(() => import("./TerminalExportMenu"));
 const CommandHistoryPopover = lazy(() => import("./CommandHistoryPopover"));
 const ModbusRtuBuilder = lazy(() =>
   import("./ModbusRtuBuilder").then((module) => ({ default: module.ModbusRtuBuilder })),
+);
+const QuickCommandPopover = lazy(() =>
+  import("./QuickCommandPopover").then((module) => ({ default: module.QuickCommandPopover })),
 );
 
 type RepeatMode = "count" | "continuous";
@@ -1899,15 +1900,17 @@ export function TerminalPanel() {
         )}
 
         {quickCommandsOpen && (
-          <QuickCommandPopover
-            draft={{ template: message, mode: sendMode, lineEnding }}
-            canSaveDraft={hasPayload && !templatePreview.error && !templatePreview.loading}
-            onApply={applyQuickCommand}
-            onClose={() => {
-              setQuickCommandsOpen(false);
-              quickCommandTriggerRef.current?.focus();
-            }}
-          />
+          <Suspense fallback={null}>
+            <QuickCommandPopover
+              draft={{ template: message, mode: sendMode, lineEnding }}
+              canSaveDraft={hasPayload && !templatePreview.error && !templatePreview.loading}
+              onApply={applyQuickCommand}
+              onClose={() => {
+                setQuickCommandsOpen(false);
+                quickCommandTriggerRef.current?.focus();
+              }}
+            />
+          </Suspense>
         )}
 
         {workflowVisible && (

@@ -1611,7 +1611,7 @@ describe("TerminalPanel", () => {
     fireEvent.change(input, { target: { value: "SET ${seq}" } });
     await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "cr");
     await user.click(screen.getByRole("button", { name: "打开快捷命令" }));
-    const dialog = screen.getByRole("dialog", { name: "快捷命令" });
+    const dialog = await screen.findByRole("dialog", { name: "快捷命令" });
     const nameInput = within(dialog).getByRole("textbox", { name: "快捷命令名称" });
     expect(nameInput).toHaveFocus();
     await user.type(nameInput, "启动采样");
@@ -1640,7 +1640,7 @@ describe("TerminalPanel", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "none");
     await user.selectOptions(screen.getByRole("combobox", { name: "校验" }), "sum8");
     await user.click(screen.getByRole("button", { name: "打开快捷命令" }));
-    await user.click(screen.getByRole("button", { name: "载入快捷命令 启动采样" }));
+    await user.click(await screen.findByRole("button", { name: "载入快捷命令 启动采样" }));
 
     expect(input).toHaveValue("SET ${seq}");
     expect(
@@ -1668,7 +1668,7 @@ describe("TerminalPanel", () => {
     const trigger = screen.getByRole("button", { name: "打开快捷命令" });
 
     await user.click(trigger);
-    const dialog = screen.getByRole("dialog", { name: "快捷命令" });
+    const dialog = await screen.findByRole("dialog", { name: "快捷命令" });
     expect(within(dialog).getByRole("button", { name: "关闭快捷命令" })).toHaveFocus();
     await user.keyboard("{Escape}");
 
@@ -1688,7 +1688,7 @@ describe("TerminalPanel", () => {
     const trigger = screen.getByRole("button", { name: "打开快捷命令" });
 
     await user.click(trigger);
-    await user.click(screen.getByRole("button", { name: "重命名快捷命令 第二条" }));
+    await user.click(await screen.findByRole("button", { name: "重命名快捷命令 第二条" }));
     const renameInput = screen.getByRole("textbox", { name: "重命名快捷命令 第二条" });
     await user.clear(renameInput);
     await user.type(renameInput, "状态查询");
@@ -1722,7 +1722,7 @@ describe("TerminalPanel", () => {
     const trigger = screen.getByRole("button", { name: "打开快捷命令" });
 
     await user.click(trigger);
-    expect(screen.getByRole("dialog", { name: "快捷命令" })).toBeVisible();
+    expect(await screen.findByRole("dialog", { name: "快捷命令" })).toBeVisible();
     useWorkbenchStore.setState({ workspaceTransitionStatus: "switching" });
 
     await waitFor(() => {
