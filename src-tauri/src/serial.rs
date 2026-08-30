@@ -4892,13 +4892,15 @@ mod tests {
 
     #[test]
     fn serial_state_payload_nests_ui_pipeline_diagnostics() {
-        let mut rx_snapshot = SerialRxSnapshot::default();
-        rx_snapshot.backend_rx_bytes = 11;
-        rx_snapshot.backend_rx_events = 3;
-        rx_snapshot.ui_queue_peak_bytes = 12;
-        rx_snapshot.ui_queue_peak_events = 2;
-        rx_snapshot.ui_dropped_bytes = 3;
-        rx_snapshot.ui_dropped_events = 1;
+        let rx_snapshot = SerialRxSnapshot {
+            backend_rx_bytes: 11,
+            backend_rx_events: 3,
+            ui_queue_peak_bytes: 12,
+            ui_queue_peak_events: 2,
+            ui_dropped_bytes: 3,
+            ui_dropped_events: 1,
+            ..SerialRxSnapshot::default()
+        };
         let payload = SerialStatePayload {
             status: "disconnected".to_owned(),
             port_name: "COM7".to_owned(),
