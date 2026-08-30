@@ -4,6 +4,7 @@ import {
   filterTerminalEntries,
   findTerminalLiteralMatches,
   MAX_TERMINAL_HIGHLIGHTS_PER_ENTRY,
+  terminalEntryPayload,
 } from "./terminalSearch";
 
 const ENTRIES: TerminalEntry[] = [
@@ -90,6 +91,17 @@ describe("终端字面量搜索", () => {
         query: "connected",
       }),
     ).toEqual([]);
+  });
+
+  it("系统消息在 HEX 模式仍显示并搜索说明文本", () => {
+    expect(terminalEntryPayload(ENTRIES[2]!, "hex")).toBe("Connected");
+    expect(
+      filterTerminalEntries(ENTRIES, {
+        direction: "all",
+        displayMode: "hex",
+        query: "connected",
+      }).map((entry) => entry.id),
+    ).toEqual([3]);
   });
 
   it("返回有界的非重叠命中原文本范围", () => {

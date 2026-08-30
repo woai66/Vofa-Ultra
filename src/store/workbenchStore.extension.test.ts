@@ -134,11 +134,15 @@ describe("workbenchStore 协议扩展", () => {
       terminalEntries: [],
       terminalPaused: false,
       chartPaused: false,
+      chartFrozenChannels: null,
+      chartFrozenProcessedChannels: null,
+      chartFrozenExtensionChannels: null,
       stats: { rxBytes: 0, txBytes: 0, rxFrames: 0 },
       workspaceTransitionStatus: "idle",
       runtimeTransitionStatus: "idle",
     });
     useWorkbenchStore.getState().setProtocol("firewater");
+    useWorkbenchStore.getState().clearTerminal();
     useWorkbenchStore.setState({ connectionStatus: "connected" });
   });
 
@@ -219,7 +223,7 @@ describe("workbenchStore 协议扩展", () => {
     });
   });
 
-  it("相同接收时间的跨批输出保持非递减时间轴", async () => {
+  it("相同接收时间的跨批输出保留真实时间与完整帧序", async () => {
     vi.mocked(pushExtensionBatch)
       .mockResolvedValueOnce({
         sessionId: 7,
@@ -248,11 +252,10 @@ describe("workbenchStore 协议扩展", () => {
       expect(useWorkbenchStore.getState().extensionChannels[0]?.points).toHaveLength(3);
     });
 
-    expect(useWorkbenchStore.getState().extensionChannels[0]?.points).toEqual([
-      { x: 1, y: 1 },
-      { x: 1, y: 2 },
-      { x: 1, y: 3 },
-    ]);
+    const points = useWorkbenchStore.getState().extensionChannels[0]?.points ?? [];
+    expect(points.map((point) => point.y)).toEqual([1, 2, 3]);
+    expect(points.map((point) => point.x)).toEqual([1, 1, 1]);
+    expect(new Set(points.map((point) => point.frameSequence)).size).toBe(3);
   });
 
   it("扩展状态和显隐不会写入工作区持久化数据", async () => {

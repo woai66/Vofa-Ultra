@@ -2,7 +2,6 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
-import { APP_DISPLAY_VERSION } from "./core/appMetadata";
 import { createEmptyProtocolHealth } from "./core/protocols";
 import { useWorkbenchStore } from "./store/workbenchStore";
 import App from "./App";
@@ -149,7 +148,26 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "数据终端" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "启动模拟" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "处理" })).toBeEnabled();
-    expect(screen.getByText(APP_DISPLAY_VERSION, { selector: ".version-label" })).toBeVisible();
+  });
+
+  it("在桌面工作区收起并恢复侧栏", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const shell = document.querySelector(".app-shell");
+    const toggle = screen.getByRole("button", { name: "显示或隐藏侧栏" });
+    expect(shell).toHaveAttribute("data-sidebar-open", "true");
+
+    await user.click(toggle);
+    expect(shell).toHaveAttribute("data-sidebar-open", "false");
+
+    await user.click(toggle);
+    expect(shell).toHaveAttribute("data-sidebar-open", "true");
+
+    await user.click(screen.getByRole("button", { name: /^连接$/ }));
+    expect(shell).toHaveAttribute("data-sidebar-open", "false");
+    await user.click(screen.getByRole("button", { name: /^通道$/ }));
+    expect(shell).toHaveAttribute("data-sidebar-open", "true");
   });
 
   it("从活动导航打开处理图编辑器", async () => {
@@ -320,7 +338,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "记录" }));
 
-    expect(screen.getByRole("heading", { name: "会话记录" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "会话记录" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开始录制" })).toBeDisabled();
     expect(screen.getByText("仅桌面应用支持文件录制")).toBeInTheDocument();
 

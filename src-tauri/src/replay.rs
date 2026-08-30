@@ -1452,7 +1452,17 @@ fn replay_seek_mode(protocol: &str) -> Option<ReplaySeekMode> {
 struct ProtocolBoundaryScanner {
     mode: ReplaySeekMode,
     matched_tail_bytes: usize,
+    justfloat_bytes_since_boundary: usize,
+    justfloat_pending_boundary_at: Option<usize>,
     at_boundary: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JustFloatObservation {
+    None,
+    PendingCandidate,
+    CurrentBoundary,
+    PendingBoundary,
 }
 
 impl ProtocolBoundaryScanner {
@@ -1460,6 +1470,8 @@ impl ProtocolBoundaryScanner {
         Self {
             mode,
             matched_tail_bytes: 0,
+            justfloat_bytes_since_boundary: 0,
+            justfloat_pending_boundary_at: None,
             at_boundary: starts_at_stream_origin,
         }
     }
@@ -1469,35 +1481,76 @@ impl ProtocolBoundaryScanner {
     }
 
     fn find_boundary(&mut self, payload: &[u8], accept_boundary: bool) -> Option<usize> {
+        let mut pending_boundary_offset =
+            self.justfloat_pending_boundary_at
+                .and_then(|pending_boundary_at| {
+                    (pending_boundary_at == self.justfloat_bytes_since_boundary).then_some(0)
+                });
         for (index, byte) in payload.iter().copied().enumerate() {
             self.at_boundary = false;
-            let boundary_found = match self.mode {
-                ReplaySeekMode::FireWater => byte == b'\n',
-                ReplaySeekMode::JustFloat => self.observe_justfloat_byte(byte),
-                ReplaySeekMode::Record => false,
+            let boundary_offset = match self.mode {
+                ReplaySeekMode::FireWater => (byte == b'\n').then_some(index + 1),
+                ReplaySeekMode::JustFloat => match self.observe_justfloat_byte(byte) {
+                    JustFloatObservation::None => None,
+                    JustFloatObservation::PendingCandidate => {
+                        pending_boundary_offset = Some(index + 1);
+                        None
+                    }
+                    JustFloatObservation::CurrentBoundary => {
+                        pending_boundary_offset = None;
+                        Some(index + 1)
+                    }
+                    JustFloatObservation::PendingBoundary => {
+                        let offset = pending_boundary_offset.unwrap_or(index + 1);
+                        pending_boundary_offset = None;
+                        Some(offset)
+                    }
+                },
+                ReplaySeekMode::Record => None,
             };
-            if boundary_found {
+            if let Some(boundary_offset) = boundary_offset {
                 self.at_boundary = true;
                 if accept_boundary {
-                    return Some(index + 1);
+                    return Some(boundary_offset);
                 }
             }
         }
         None
     }
 
-    fn observe_justfloat_byte(&mut self, byte: u8) -> bool {
+    fn observe_justfloat_byte(&mut self, byte: u8) -> JustFloatObservation {
+        self.justfloat_bytes_since_boundary = self.justfloat_bytes_since_boundary.saturating_add(1);
         while self.matched_tail_bytes > 0 && byte != JUSTFLOAT_TAIL[self.matched_tail_bytes] {
             self.matched_tail_bytes = JUSTFLOAT_TAIL_FAILURE[self.matched_tail_bytes - 1];
         }
         if byte == JUSTFLOAT_TAIL[self.matched_tail_bytes] {
             self.matched_tail_bytes += 1;
         }
-        if self.matched_tail_bytes == JUSTFLOAT_TAIL.len() {
-            self.matched_tail_bytes = 0;
-            return true;
+        if self.matched_tail_bytes != JUSTFLOAT_TAIL.len() {
+            return JustFloatObservation::None;
         }
-        false
+        self.matched_tail_bytes = 0;
+        let current_boundary_at = self.justfloat_bytes_since_boundary;
+        let payload_bytes = current_boundary_at.saturating_sub(JUSTFLOAT_TAIL.len());
+        if payload_bytes.is_multiple_of(std::mem::size_of::<f32>()) {
+            self.justfloat_bytes_since_boundary = 0;
+            self.justfloat_pending_boundary_at = None;
+            return JustFloatObservation::CurrentBoundary;
+        }
+        if self
+            .justfloat_pending_boundary_at
+            .is_some_and(|pending_boundary_at| {
+                payload_bytes
+                    .saturating_sub(pending_boundary_at)
+                    .is_multiple_of(std::mem::size_of::<f32>())
+            })
+        {
+            self.justfloat_bytes_since_boundary = 0;
+            self.justfloat_pending_boundary_at = None;
+            return JustFloatObservation::PendingBoundary;
+        }
+        self.justfloat_pending_boundary_at = Some(current_boundary_at);
+        JustFloatObservation::PendingCandidate
     }
 }
 
@@ -3238,6 +3291,33 @@ mod tests {
             assert_eq!(records[0].payload, next_frame, "split={split}");
             assert_eq!(records[1].payload, later_frame, "split={split}");
         }
+    }
+
+    #[test]
+    fn justfloat_boundary_scanner_ignores_unaligned_tail_inside_payload() {
+        let frame = [
+            0x01, 0x00, 0x00, 0x80, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x7f,
+        ];
+        let mut scanner = ProtocolBoundaryScanner::new(ReplaySeekMode::JustFloat, true);
+
+        assert_eq!(scanner.find_boundary(&frame[..5], true), None);
+        assert!(!scanner.at_boundary());
+        assert_eq!(scanner.find_boundary(&frame[5..], true), Some(7));
+        assert!(scanner.at_boundary());
+    }
+
+    #[test]
+    fn justfloat_boundary_scanner_does_not_replay_a_partial_cross_record_frame() {
+        let first_record = [0x41, 0x00, 0x00, 0x80, 0x7f, 0x00, 0x00];
+        let second_record = [0x80, 0x3f, 0x00, 0x00, 0x80, 0x7f];
+        let mut scanner = ProtocolBoundaryScanner::new(ReplaySeekMode::JustFloat, true);
+
+        assert_eq!(scanner.find_boundary(&first_record, false), None);
+        assert_eq!(
+            scanner.find_boundary(&second_record, true),
+            Some(second_record.len())
+        );
+        assert!(scanner.at_boundary());
     }
 
     #[test]

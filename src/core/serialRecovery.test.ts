@@ -185,6 +185,50 @@ describe("SerialReconnectCoordinator", () => {
     vi.useRealTimers();
   });
 
+  it("未启用自动重连时仍记录首次连接失败和连接丢失", () => {
+    const harness = createHarness();
+    harness.coordinator.prepareManualConnection(
+      { ...DEFAULT_SERIAL_CONFIG, portName: USB_PORT.name },
+      USB_PORT,
+    );
+    harness.coordinator.observeState(
+      {
+        status: "error",
+        portName: USB_PORT.name,
+        generation: 1,
+        revision: 1,
+        errorCode: "open-failed",
+      },
+      "connecting",
+    );
+    harness.coordinator.observeState(CONNECTED_STATE, "connecting");
+    const connection_lost: SerialStatePayload = {
+      status: "error",
+      portName: USB_PORT.name,
+      generation: CONNECTED_STATE.generation,
+      revision: CONNECTED_STATE.revision + 1,
+      errorCode: "read-failed",
+    };
+    harness.coordinator.observeState(connection_lost, "connected");
+    harness.coordinator.observeState(connection_lost, "connected");
+
+    const report = harness.coordinator.exportDiagnostics({
+      appVersion: "0.1.0",
+      buildId: "abcdef123456",
+      connectionStatus: "error",
+      generation: connection_lost.generation,
+      revision: connection_lost.revision,
+      serialConfig: { ...DEFAULT_SERIAL_CONFIG, portName: USB_PORT.name },
+    });
+    expect(report.events.filter((event) => event.kind === "manual_connect_failed")).toEqual([
+      expect.objectContaining({ revision: 1, errorCode: "open-failed" }),
+    ]);
+    expect(report.events.filter((event) => event.kind === "connection_lost")).toEqual([
+      expect.objectContaining({ revision: 11, errorCode: "read-failed" }),
+    ]);
+    expect(harness.prepareCaptureBoundary).not.toHaveBeenCalled();
+  });
+
   it("按固定退避执行十次后停止", async () => {
     const harness = createHarness();
     await armAndLoseConnection(harness);
@@ -201,6 +245,7 @@ describe("SerialReconnectCoordinator", () => {
     });
     const report = harness.coordinator.exportDiagnostics({
       appVersion: "0.1.0",
+      buildId: "abcdef123456",
       connectionStatus: "error",
       generation: 4,
       revision: 11,
@@ -311,6 +356,18 @@ describe("SerialReconnectCoordinator", () => {
     expect(blockedHandled).toBe(false);
     expect(blocked.prepareCaptureBoundary).not.toHaveBeenCalled();
     expect(blocked.coordinator.getSnapshot().phase).toBe("blocked");
+    expect(
+      blocked.coordinator
+        .exportDiagnostics({
+          appVersion: "0.1.0",
+          buildId: "abcdef123456",
+          connectionStatus: "error",
+          generation: CONNECTED_STATE.generation,
+          revision: CONNECTED_STATE.revision + 1,
+          serialConfig: { ...DEFAULT_SERIAL_CONFIG, portName: USB_PORT.name },
+        })
+        .events.filter((event) => event.kind === "connection_lost"),
+    ).toHaveLength(1);
   });
 
   it("等待期间取消会清理定时器", async () => {
@@ -461,6 +518,7 @@ describe("SerialDiagnosticLog", () => {
 
     const report = log.export({
       appVersion: "0.1.0",
+      buildId: "abcdef123456",
       connectionStatus: "disconnected",
       generation: 0,
       revision: 0,
@@ -482,6 +540,7 @@ describe("SerialDiagnosticLog", () => {
 
     const report = log.export({
       appVersion: "0.1.0",
+      buildId: "abcdef123456",
       connectionStatus: "error",
       generation: 4,
       revision: 11,
@@ -528,6 +587,7 @@ describe("SerialDiagnosticLog", () => {
 
     const report = harness.coordinator.exportDiagnostics({
       appVersion: "0.1.0",
+      buildId: "abcdef123456",
       connectionStatus: "error",
       generation: 4,
       revision: 11,

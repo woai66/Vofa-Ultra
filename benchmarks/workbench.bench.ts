@@ -2,7 +2,10 @@
 
 import { bench, describe, vi } from "vitest";
 import { encodeJustFloatFrame } from "../src/core/protocols";
-import { useWorkbenchStore } from "../src/store/workbenchStore";
+import {
+  MAX_POINTS_PER_CHANNEL,
+  useWorkbenchStore,
+} from "../src/store/workbenchStore";
 import type { ReplayCaptureHeader, ReplayStatePayload } from "../src/types/replay";
 
 vi.mock("../src/services/replayClient", async (importOriginal) => {
@@ -14,7 +17,6 @@ vi.mock("../src/services/replayClient", async (importOriginal) => {
 });
 
 const CHANNEL_COUNT = 4;
-const MAX_POINTS_PER_CHANNEL = 2_000;
 const LIVE_FRAME_COUNT = 820;
 const LIVE_GENERATION = 17;
 const REPLAY_RECORD_COUNT = 64;

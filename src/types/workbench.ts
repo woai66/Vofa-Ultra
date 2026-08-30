@@ -36,6 +36,7 @@ export interface ProtocolHealthSnapshot {
 export interface DataPoint {
   x: number;
   y: number;
+  frameSequence?: number;
 }
 
 export interface ChannelSeries {
@@ -52,8 +53,10 @@ export interface TerminalEntry {
   direction: "rx" | "tx" | "system";
   timestamp: number;
   text: string;
+  decodedText?: string;
   hex: string;
   byteCount: number;
+  sessionBoundary?: boolean;
   rxBoundary?: "overflow" | "unterminated";
 }
 

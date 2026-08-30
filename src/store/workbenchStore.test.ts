@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import compatibilityPolicy from "../../compatibility-policy.json";
-import { APP_VERSION } from "../core/appMetadata";
+import { APP_BUILD_ID, APP_VERSION } from "../core/appMetadata";
 import {
   createDefaultAutoResponderRule,
   createInitialAutoResponderSnapshot,
@@ -13,6 +13,10 @@ import {
   simulateModbusRtuResponse,
 } from "../core/modbusRtu";
 import { createEmptyProtocolHealth } from "../core/protocols";
+import {
+  calculateWaveformMeasurement,
+  getVisibleMeasurementPoints,
+} from "../core/waveformMeasurement";
 import { createArmedWaveformTriggerState } from "../core/waveformTrigger";
 import { createDefaultWorkspaceConfig, createWorkspaceProfile } from "../core/workspaces";
 import {
@@ -54,6 +58,7 @@ import {
   cancelSerialConnect,
   connectSerial,
   disconnectSerial,
+  getSerialState,
   listSerialPorts,
   sendSerial,
   setSerialControlLine,
@@ -79,7 +84,10 @@ import type {
 import type { QuickCommand } from "../types/workbench";
 import {
   disposeWorkbenchRuntime,
+  MAX_POINTS_PER_CHANNEL,
   prepareWorkbenchForAppClose,
+  selectEffectiveTerminalDisplayMode,
+  selectEffectiveTerminalRxRecordMode,
   selectIsWorkspaceDirty,
   useWorkbenchStore,
   WORKBENCH_MIGRATABLE_STORAGE_VERSIONS,
@@ -96,6 +104,7 @@ vi.mock("../services/serialClient", async (importOriginal) => {
     cancelSerialModbusTransaction: vi.fn(),
     connectSerial: vi.fn(),
     disconnectSerial: vi.fn(),
+    getSerialState: vi.fn(),
     listSerialPorts: vi.fn(),
     sendSerial: vi.fn(),
     setSerialControlLine: vi.fn(),
@@ -150,6 +159,7 @@ const cancelSerialConnectMock = vi.mocked(cancelSerialConnect);
 const cancelSerialModbusTransactionMock = vi.mocked(cancelSerialModbusTransaction);
 const connectSerialMock = vi.mocked(connectSerial);
 const disconnectSerialMock = vi.mocked(disconnectSerial);
+const getSerialStateMock = vi.mocked(getSerialState);
 const listSerialPortsMock = vi.mocked(listSerialPorts);
 const sendSerialMock = vi.mocked(sendSerial);
 const setSerialControlLineMock = vi.mocked(setSerialControlLine);
@@ -353,6 +363,12 @@ describe("workbenchStore", () => {
       generation: 0,
       revision: 0,
     });
+    getSerialStateMock.mockReset().mockResolvedValue({
+      status: "disconnected",
+      portName: "",
+      generation: 0,
+      revision: 0,
+    });
     listSerialPortsMock.mockReset();
     sendSerialMock.mockReset().mockResolvedValue(undefined);
     setSerialControlLineMock.mockReset().mockResolvedValue(undefined);
@@ -394,9 +410,14 @@ describe("workbenchStore", () => {
       connectionStatus: "disconnected",
       serialGeneration: 0,
       serialStateRevision: 0,
+      serialRuntimeError: "",
+      connectionActionError: "",
+      connectionMessage: "等待连接",
       statusMessage: "等待连接",
       ports: [],
       isRefreshingPorts: false,
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
       serialControlLineOperation: "idle",
       serialModemStatus: {
         generation: 0,
@@ -418,8 +439,12 @@ describe("workbenchStore", () => {
       isCancellingSerialConnection: false,
       channels: [],
       processedChannels: [],
+      chartFrozenChannels: null,
+      chartFrozenProcessedChannels: null,
+      chartFrozenExtensionChannels: null,
       attitudeSample: null,
       terminalEntries: [],
+      terminalPresentationOverride: null,
       commandHistory: [],
       commandTask: createInitialCommandTaskSnapshot(),
       autoResponderRules: [],
@@ -504,6 +529,9 @@ describe("workbenchStore", () => {
       replayNextSequence: 1,
       replayMessage: "",
     });
+    useWorkbenchStore.setState({
+      protocol: config.protocol === "firewater" ? "raw" : "firewater",
+    });
     useWorkbenchStore.getState().setProtocol(config.protocol);
     useWorkbenchStore.getState().setProcessingGraph(config.processingGraph);
     useWorkbenchStore.getState().clearTerminal();
@@ -516,7 +544,10 @@ describe("workbenchStore", () => {
   });
 
   it("诊断报告使用构建注入的应用版本", () => {
-    expect(useWorkbenchStore.getState().getSerialDiagnostics().appVersion).toBe(APP_VERSION);
+    expect(useWorkbenchStore.getState().getSerialDiagnostics()).toMatchObject({
+      appVersion: APP_VERSION,
+      buildId: APP_BUILD_ID,
+    });
   });
 
   it("读取块模式保持每次 ingest 一条终端记录", () => {
@@ -529,6 +560,14 @@ describe("workbenchStore", () => {
       { direction: "rx", timestamp: 100, text: "first", byteCount: 5 },
       { direction: "rx", timestamp: 200, text: "second", byteCount: 6 },
     ]);
+  });
+
+  it("读取块超出单条展示上限时在解码原文中保留省略标记", () => {
+    useWorkbenchStore.getState().ingestBytes(new Uint8Array(2_051).fill(0x41), 100);
+
+    const [entry] = useWorkbenchStore.getState().terminalEntries;
+    expect(entry?.text.endsWith(" …")).toBe(true);
+    expect(entry?.decodedText?.endsWith(" …")).toBe(true);
   });
 
   it("文本行模式跨任意读取块恢复 UTF-8、空行和原始 CRLF", () => {
@@ -547,6 +586,7 @@ describe("workbenchStore", () => {
         direction: "rx",
         timestamp: 100,
         text: "温度=23.5\\r\\n",
+        decodedText: "温度=23.5\r\n",
         hex: "E6 B8 A9 E5 BA A6 3D 32 33 2E 35 0D 0A",
         byteCount: 13,
       },
@@ -557,6 +597,21 @@ describe("workbenchStore", () => {
         text: "next\\r\\n",
         hex: "6E 65 78 74 0D 0A",
         byteCount: 6,
+      },
+    ]);
+  });
+
+  it("把 C1 和 Unicode 行分隔符显示为单行可见转义", () => {
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    useWorkbenchStore.getState().ingestBytes(
+      new TextEncoder().encode("A\u0085B\u2028C\u2029D\n"),
+      100,
+    );
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      {
+        text: "A\\u0085B\\u2028C\\u2029D\\n",
+        decodedText: "A\u0085B\u2028C\u2029D\n",
       },
     ]);
   });
@@ -732,6 +787,117 @@ describe("workbenchStore", () => {
       { text: "session-one", rxBoundary: "unterminated" },
       { text: "session-two\\n", timestamp: 200 },
     ]);
+  });
+
+  it("串口断开响应丢失时读取后端快照并恢复真实断开状态", async () => {
+    disconnectSerialMock.mockRejectedValueOnce(new Error("IPC 响应丢失"));
+    getSerialStateMock.mockResolvedValueOnce({
+      status: "disconnected",
+      portName: "COM3",
+      generation: 3,
+      revision: 8,
+    });
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 3,
+      serialStateRevision: 7,
+    });
+
+    await expect(useWorkbenchStore.getState().disconnect()).resolves.toBe(true);
+    expect(getSerialStateMock).toHaveBeenCalledOnce();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "disconnected",
+      serialGeneration: 3,
+      serialStateRevision: 8,
+      runtimeTransitionStatus: "idle",
+    });
+    expect(useWorkbenchStore.getState().getSerialDiagnostics().events).toContainEqual(
+      expect.objectContaining({
+        kind: "disconnect_command_failed",
+        generation: 3,
+        revision: 8,
+        errorCode: "command-failed",
+        outcome: "disconnected",
+      }),
+    );
+  });
+
+  it("串口断开失败且后端仍连接时不伪造错误连接态", async () => {
+    disconnectSerialMock.mockRejectedValueOnce(new Error("串口服务无响应"));
+    getSerialStateMock.mockResolvedValueOnce({
+      status: "connected",
+      portName: "COM3",
+      generation: 3,
+      revision: 8,
+    });
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      serialGeneration: 3,
+      serialStateRevision: 7,
+    });
+
+    await expect(useWorkbenchStore.getState().disconnect()).resolves.toBe(false);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connected",
+      connectionActionError: "断开失败，当前仍保持连接：串口服务无响应",
+      connectionMessage: "断开失败，当前仍保持连接：串口服务无响应",
+      runtimeTransitionStatus: "idle",
+    });
+    const diagnostics = useWorkbenchStore.getState().getSerialDiagnostics();
+    expect(diagnostics.events).toContainEqual(
+      expect.objectContaining({
+        kind: "disconnect_command_failed",
+        generation: 3,
+        revision: 8,
+        errorCode: "command-failed",
+        outcome: "connected",
+      }),
+    );
+    expect(JSON.stringify(diagnostics)).not.toContain("串口服务无响应");
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connected",
+      portName: "COM3",
+      generation: 3,
+      revision: 9,
+    });
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connected",
+      connectionActionError: "",
+      connectionMessage: "COM3 已连接",
+    });
+  });
+
+  it("串口断开正常返回仍连接时报告失败并允许再次断开", async () => {
+    disconnectSerialMock.mockResolvedValueOnce({
+      status: "connected",
+      portName: "COM3",
+      generation: 3,
+      revision: 8,
+      message: "设备正忙",
+    });
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      connectionActionError: "上一次操作失败",
+      serialGeneration: 3,
+      serialStateRevision: 7,
+    });
+
+    const disconnecting = useWorkbenchStore.getState().disconnect();
+    expect(useWorkbenchStore.getState().connectionActionError).toBe("");
+    await expect(disconnecting).resolves.toBe(false);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connected",
+      connectionActionError: "断开失败，当前仍保持连接：设备正忙",
+      connectionMessage: "断开失败，当前仍保持连接：设备正忙",
+      runtimeTransitionStatus: "idle",
+    });
   });
 
   it("仅在成功发送后记录会话历史并合并连续重复项", async () => {
@@ -1515,6 +1681,16 @@ describe("workbenchStore", () => {
       commandHistory: [],
       isSendingCommand: false,
     });
+    const diagnostics = useWorkbenchStore.getState().getSerialDiagnostics();
+    expect(diagnostics.events).toContainEqual(
+      expect.objectContaining({
+        kind: "serial_send_failed",
+        generation: 1,
+        errorCode: "command-failed",
+        outcome: "manual",
+      }),
+    );
+    expect(JSON.stringify(diagnostics)).not.toContain("TX 队列已满");
 
     await expect(
       useWorkbenchStore.getState().send("PING", "text", "none"),
@@ -2034,6 +2210,16 @@ describe("workbenchStore", () => {
   it("切换数据源时清空上一数据源的通道", async () => {
     useWorkbenchStore.setState({
       isNativeRuntime: true,
+      terminalEntries: [
+        {
+          id: 900,
+          direction: "rx",
+          timestamp: 100,
+          text: "sample=1 ch1=2\n",
+          hex: "73 61 6D 70 6C 65",
+          byteCount: 18,
+        },
+      ],
       channels: [
         {
           id: "channel-0",
@@ -2050,6 +2236,192 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState().source).toBe("serial");
     expect(useWorkbenchStore.getState().channels).toEqual([]);
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      { id: 900, direction: "rx", text: "sample=1 ch1=2\n" },
+      {
+        direction: "system",
+        text: "数据源：模拟器 → 串口",
+        byteCount: 0,
+        sessionBoundary: true,
+      },
+    ]);
+
+    useWorkbenchStore.getState().setProtocol("raw");
+    expect(useWorkbenchStore.getState().terminalEntries.at(-1)).toMatchObject({
+      direction: "system",
+      text: "协议：FireWater → Raw Data",
+      byteCount: 0,
+      sessionBoundary: true,
+    });
+
+    useWorkbenchStore.setState({
+      channels: [
+        {
+          id: "channel-1",
+          name: "CH 1",
+          color: "#46d89c",
+          visible: true,
+          points: [{ x: 2, y: 3 }],
+          lastValue: 3,
+        },
+      ],
+    });
+    const boundaryCount = useWorkbenchStore.getState().terminalEntries.length;
+    useWorkbenchStore.getState().setProtocol("raw");
+    expect(useWorkbenchStore.getState().terminalEntries).toHaveLength(boundaryCount);
+    expect(useWorkbenchStore.getState().channels).toHaveLength(1);
+  });
+
+  it("Raw 保留终端偏好且 JustFloat 使用会话级二进制默认值", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      protocol: "firewater",
+      displayMode: "text",
+      terminalRxRecordMode: "line",
+      terminalPresentationOverride: null,
+    });
+
+    useWorkbenchStore.getState().setProtocol("raw");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("line");
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      displayMode: "text",
+      terminalRxRecordMode: "line",
+      terminalPresentationOverride: null,
+    });
+
+    useWorkbenchStore.getState().setProtocol("firewater");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("line");
+    expect(useWorkbenchStore.getState().terminalPresentationOverride).toBeNull();
+
+    useWorkbenchStore.getState().setProtocol("justfloat");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
+
+    useWorkbenchStore.setState({ terminalEntries: [] });
+    useWorkbenchStore.getState().ingestBytes(
+      new Uint8Array([0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x7f]),
+      1_000,
+    );
+    expect(useWorkbenchStore.getState().terminalEntries).toHaveLength(1);
+    expect(useWorkbenchStore.getState().terminalEntries[0]?.hex).toBe(
+      "00 00 80 3F 00 00 80 7F",
+    );
+
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      protocol: "firewater",
+      displayMode: "text",
+      terminalRxRecordMode: "line",
+      terminalPresentationOverride: null,
+    });
+    useWorkbenchStore.getState().setProtocol("justfloat");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
+
+    await useWorkbenchStore.getState().setSource("simulator");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
+
+    await useWorkbenchStore.getState().setSource("serial");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
+  });
+
+  it("二进制会话覆盖不制造工作区未保存状态", () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.protocol = "justfloat";
+    config.displayMode = "text";
+    config.terminalRxRecordMode = "line";
+    const workspace = createWorkspaceProfile("JustFloat 台架", config, "justfloat-bench", 200);
+    useWorkbenchStore.setState({
+      ...config,
+      workspaces: [workspace],
+      activeWorkspaceId: workspace.id,
+      terminalPresentationOverride: null,
+    });
+
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+
+    useWorkbenchStore.getState().setDisplayMode("text");
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+    expect(useWorkbenchStore.getState().createActiveWorkspaceExport("JustFloat 台架").config)
+      .toMatchObject({
+        displayMode: "text",
+        terminalRxRecordMode: "line",
+      });
+  });
+
+  it("二进制会话反向覆盖仍保留工作区 HEX 与块偏好", () => {
+    const config = createDefaultWorkspaceConfig("simulator");
+    config.protocol = "justfloat";
+    config.displayMode = "hex";
+    config.terminalRxRecordMode = "chunk";
+    const workspace = createWorkspaceProfile("二进制台架", config, "binary-bench", 200);
+    useWorkbenchStore.setState({
+      ...config,
+      workspaces: [workspace],
+      activeWorkspaceId: workspace.id,
+      terminalPresentationOverride: null,
+    });
+
+    useWorkbenchStore.getState().setDisplayMode("text");
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("line");
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      displayMode: "hex",
+      terminalRxRecordMode: "chunk",
+    });
+    expect(selectIsWorkspaceDirty(useWorkbenchStore.getState())).toBe(false);
+    expect(useWorkbenchStore.getState().createActiveWorkspaceExport("二进制台架").config)
+      .toMatchObject({
+        displayMode: "hex",
+        terminalRxRecordMode: "chunk",
+      });
+  });
+
+  it("JustFloat 回放使用独立的二进制终端会话", () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      protocol: "firewater",
+      displayMode: "text",
+      terminalRxRecordMode: "line",
+      terminalPresentationOverride: null,
+      replayStatus: "ready",
+      replaySessionId: 41,
+      replayHeader: { ...TEST_REPLAY_HEADER, protocol: "justfloat" },
+    });
+
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("hex");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("chunk");
+    useWorkbenchStore.getState().setDisplayMode("text");
+    useWorkbenchStore.getState().setTerminalRxRecordMode("line");
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("line");
+
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("idle", {
+        sessionId: 0,
+        revision: 2,
+        path: "",
+        header: undefined,
+        formatVersion: 0,
+        complete: false,
+        durationUs: 0,
+        dataBytes: 0,
+        recordCount: 0,
+      }),
+    );
+    expect(selectEffectiveTerminalDisplayMode(useWorkbenchStore.getState())).toBe("text");
+    expect(selectEffectiveTerminalRxRecordMode(useWorkbenchStore.getState())).toBe("line");
+    expect(useWorkbenchStore.getState().terminalPresentationOverride).toBeNull();
   });
 
   it("视图暂停时仍诊断坏帧，清统计不会丢弃等待中的半帧", () => {
@@ -2079,7 +2451,6 @@ describe("workbenchStore", () => {
     });
     useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode(",34\n"), 1_100);
     expect(useWorkbenchStore.getState()).toMatchObject({
-      channels: [],
       terminalEntries: [],
       stats: { rxFrames: 1 },
       protocolHealth: {
@@ -2087,6 +2458,10 @@ describe("workbenchStore", () => {
         droppedFrames: 0,
       },
     });
+    expect(useWorkbenchStore.getState().channels.map((channel) => channel.lastValue)).toEqual([
+      12,
+      34,
+    ]);
 
     useWorkbenchStore.getState().setProtocol("justfloat");
     expect(useWorkbenchStore.getState().protocolHealth).toMatchObject({
@@ -2255,6 +2630,49 @@ describe("workbenchStore", () => {
       statusMessage: "设备已移除",
     });
   });
+
+  it.each(["disconnected", "error"] as const)(
+    "串口变为 %s 后忽略同一连接代次的迟到数据",
+    (terminalStatus) => {
+      useWorkbenchStore.setState({
+        source: "serial",
+        protocol: "firewater",
+        connectionStatus: "connected",
+        serialGeneration: 7,
+        serialStateRevision: 2,
+      });
+      useWorkbenchStore.getState().handleSerialData({
+        data: btoa("1,2\n"),
+        receivedAt: 1_000,
+        generation: 7,
+      });
+      expect(useWorkbenchStore.getState()).toMatchObject({
+        stats: { rxBytes: 4, rxFrames: 1 },
+      });
+
+      useWorkbenchStore.getState().handleSerialState({
+        status: terminalStatus,
+        portName: "COM7",
+        message: terminalStatus === "error" ? "设备已移除" : undefined,
+        generation: 7,
+        revision: 3,
+      });
+      const stateAtBoundary = useWorkbenchStore.getState();
+
+      stateAtBoundary.handleSerialData({
+        data: btoa("3,4\n"),
+        receivedAt: 1_100,
+        generation: 7,
+      });
+
+      expect(useWorkbenchStore.getState()).toMatchObject({
+        connectionStatus: terminalStatus,
+        stats: stateAtBoundary.stats,
+        channels: stateAtBoundary.channels,
+        terminalEntries: stateAtBoundary.terminalEntries,
+      });
+    },
+  );
 
   it("输入握手线只接受当前连接递增修订，并在换代时重新开始", () => {
     useWorkbenchStore.setState({
@@ -2570,6 +2988,164 @@ describe("workbenchStore", () => {
       runtimeTransitionStatus: "idle",
       isCancellingSerialConnection: false,
     });
+  });
+
+  it("取消手动连接失败时保留真实连接阶段并报告操作错误", async () => {
+    cancelSerialConnectMock.mockRejectedValueOnce(new Error("取消请求超时"));
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connecting",
+      connectionActionError: "上一次操作失败",
+      runtimeTransitionStatus: "connecting",
+    });
+
+    await useWorkbenchStore.getState().cancelSerialConnection();
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connecting",
+      connectionActionError: "取消串口连接失败：取消请求超时",
+      connectionMessage: "取消串口连接失败：取消请求超时",
+      runtimeTransitionStatus: "idle",
+      isCancellingSerialConnection: false,
+    });
+  });
+
+  it("错误事件先于连接 Promise 失败时只记录一次手动连接故障", async () => {
+    const pending_connection = deferred<SerialStatePayload>();
+    const port: SerialPortInfo = {
+      name: "COM3",
+      kind: "usb",
+      serialNumber: "DEVICE-001",
+      vendorId: 0x1234,
+      productId: 0x5678,
+    };
+    connectSerialMock.mockReturnValue(pending_connection.promise);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      ports: [port],
+      serialConfig: { ...state.serialConfig, portName: port.name },
+    }));
+
+    const connecting = useWorkbenchStore.getState().connect();
+    await vi.waitFor(() => {
+      expect(useWorkbenchStore.getState().connectionStatus).toBe("connecting");
+    });
+    useWorkbenchStore.getState().handleSerialState({
+      status: "error",
+      portName: port.name,
+      message: "串口被占用",
+      errorCode: "open-failed",
+      generation: 1,
+      revision: 1,
+    });
+    pending_connection.reject(new Error("打开串口失败"));
+    await connecting;
+
+    expect(getSerialStateMock).not.toHaveBeenCalled();
+    expect(
+      useWorkbenchStore
+        .getState()
+        .getSerialDiagnostics()
+        .events.filter((event) => event.kind === "manual_connect_failed"),
+    ).toEqual([
+      expect.objectContaining({
+        generation: 1,
+        revision: 1,
+        errorCode: "open-failed",
+      }),
+    ]);
+  });
+
+  it("连接 Promise 先失败时读取真实状态并忽略迟到的重复事件", async () => {
+    const port: SerialPortInfo = {
+      name: "COM3",
+      kind: "usb",
+      serialNumber: "DEVICE-001",
+      vendorId: 0x1234,
+      productId: 0x5678,
+    };
+    const failure: SerialStatePayload = {
+      status: "error",
+      portName: port.name,
+      message: "串口被占用",
+      errorCode: "open-failed",
+      generation: 1,
+      revision: 1,
+    };
+    connectSerialMock.mockRejectedValue(new Error("打开串口失败"));
+    getSerialStateMock.mockResolvedValue(failure);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      ports: [port],
+      serialConfig: { ...state.serialConfig, portName: port.name },
+    }));
+
+    await useWorkbenchStore.getState().connect();
+    useWorkbenchStore.getState().handleSerialState(failure);
+
+    expect(getSerialStateMock).toHaveBeenCalledOnce();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "error",
+      statusMessage: "串口被占用",
+      serialGeneration: 1,
+      serialStateRevision: 1,
+    });
+    expect(
+      useWorkbenchStore
+        .getState()
+        .getSerialDiagnostics()
+        .events.filter((event) => event.kind === "manual_connect_failed"),
+    ).toEqual([
+      expect.objectContaining({
+        generation: 1,
+        revision: 1,
+        errorCode: "open-failed",
+      }),
+    ]);
+  });
+
+  it("连接状态快照也失败时记录一次未知故障并接受迟到状态", async () => {
+    const port: SerialPortInfo = {
+      name: "COM3",
+      kind: "usb",
+      serialNumber: "DEVICE-001",
+      vendorId: 0x1234,
+      productId: 0x5678,
+    };
+    connectSerialMock.mockRejectedValue(new Error("IPC 请求失败"));
+    getSerialStateMock.mockRejectedValue(new Error("状态读取失败"));
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      ports: [port],
+      serialConfig: { ...state.serialConfig, portName: port.name },
+    }));
+
+    await useWorkbenchStore.getState().connect();
+    useWorkbenchStore.getState().handleSerialState({
+      status: "error",
+      portName: port.name,
+      message: "串口被占用",
+      errorCode: "open-failed",
+      generation: 1,
+      revision: 1,
+    });
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "error",
+      statusMessage: "串口被占用",
+      serialGeneration: 1,
+      serialStateRevision: 1,
+    });
+    expect(
+      useWorkbenchStore
+        .getState()
+        .getSerialDiagnostics()
+        .events.filter((event) => event.kind === "manual_connect_failed"),
+    ).toEqual([expect.objectContaining({ errorCode: "unknown" })]);
   });
 
   it("后端尚未发布连接状态时用相同 revision 的取消快照纠正乐观状态", async () => {
@@ -3244,6 +3820,118 @@ describe("workbenchStore", () => {
     ]);
   });
 
+  it("保留 200 Hz 模拟数据的完整 60 秒最大时间窗", () => {
+    const encoder = new TextEncoder();
+    const oneSecondOfSamples = encoder.encode(
+      Array.from({ length: 200 }, (_, index) => `${index}\n`).join(""),
+    );
+
+    for (let second = 1; second <= 60; second += 1) {
+      useWorkbenchStore.getState().ingestBytes(oneSecondOfSamples, second * 1_000);
+    }
+
+    const fullWindow = useWorkbenchStore.getState().channels[0]?.points ?? [];
+    expect(fullWindow).toHaveLength(MAX_POINTS_PER_CHANNEL);
+    expect(fullWindow[0]?.y).toBe(0);
+    expect(fullWindow.at(-1)?.y).toBe(199);
+
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("200\n"), 61_000);
+    const boundedWindow = useWorkbenchStore.getState().channels[0]?.points ?? [];
+    expect(boundedWindow).toHaveLength(MAX_POINTS_PER_CHANNEL);
+    expect(boundedWindow[0]?.y).toBe(1);
+    expect(boundedWindow.at(-1)?.y).toBe(200);
+  });
+
+  it("同一读取块的多帧保留共同接收时间并保持派生通道对齐", () => {
+    useWorkbenchStore.getState().setProcessingGraph({
+      enabled: true,
+      nodes: [
+        { id: "source", kind: "input", channelIndex: 0 },
+        {
+          id: "result",
+          kind: "output",
+          input: "source",
+          name: "Result",
+          color: "#55bde8",
+        },
+      ],
+    });
+
+    useWorkbenchStore
+      .getState()
+      .ingestBytes(new TextEncoder().encode("1,10\n2\n3,30\n"), 1_000);
+    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("4\n"), 1_000);
+
+    const state = useWorkbenchStore.getState();
+    const frameTimestamps = state.channels[0]?.points.map((point) => point.x) ?? [];
+    const frameSequences =
+      state.channels[0]?.points.map((point) => point.frameSequence) ?? [];
+    expect(frameTimestamps).toEqual([1, 1, 1, 1]);
+    expect(frameSequences.every((sequence) => Number.isSafeInteger(sequence))).toBe(true);
+    expect(new Set(frameSequences).size).toBe(4);
+    expect(state.channels[0]?.points.map((point) => point.y)).toEqual([1, 2, 3, 4]);
+    expect(state.channels[1]?.points.map((point) => point.x)).toEqual([1, 1]);
+    expect(state.channels[1]?.points.map((point) => point.frameSequence)).toEqual([
+      frameSequences[0],
+      frameSequences[2],
+    ]);
+    expect(state.processedChannels[0]?.points.map((point) => point.x)).toEqual(
+      frameTimestamps,
+    );
+    expect(
+      state.processedChannels[0]?.points.map((point) => point.frameSequence),
+    ).toEqual(frameSequences);
+    const sourcePoints = state.channels[0]?.points ?? [];
+    const measurementPoints = getVisibleMeasurementPoints(sourcePoints, 5);
+    expect(measurementPoints.map((point) => point.value)).toEqual([1, 2, 3, 4]);
+    const firstPoint = measurementPoints[0];
+    const lastPoint = measurementPoints.at(-1);
+    if (!firstPoint || !lastPoint) {
+      throw new Error("测量点未保留同一读取块的全部帧");
+    }
+    expect(
+      calculateWaveformMeasurement(sourcePoints, 5, {
+        aIndex: firstPoint.index,
+        bIndex: lastPoint.index,
+      }),
+    ).toMatchObject({
+      pointA: { value: 1 },
+      pointB: { value: 4 },
+      deltaTimeSeconds: 0,
+      frequencyHz: null,
+      deltaY: 3,
+    });
+    expect(state.terminalEntries).toMatchObject([
+      { timestamp: 1_000 },
+      { timestamp: 1_000 },
+    ]);
+  });
+
+  it("暂停波形显示时继续把样本写入有界缓存", () => {
+    const encoder = new TextEncoder();
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("1\n"), 1_000);
+    useWorkbenchStore.getState().setChartPaused(true);
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("2\n"), 2_000);
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      chartPaused: true,
+      stats: { rxFrames: 2 },
+    });
+    expect(
+      useWorkbenchStore.getState().channels[0]?.points.map((point) => point.y),
+    ).toEqual([1, 2]);
+    expect(
+      useWorkbenchStore.getState().chartFrozenChannels?.[0]?.points.map((point) => point.y),
+    ).toEqual([1]);
+
+    useWorkbenchStore.getState().setChartPaused(false);
+    expect(useWorkbenchStore.getState().chartFrozenChannels).toBeNull();
+    useWorkbenchStore.getState().ingestBytes(encoder.encode("3\n"), 3_000);
+    expect(
+      useWorkbenchStore.getState().channels[0]?.points.map((point) => point.y),
+    ).toEqual([1, 2, 3]);
+  });
+
   it("单次触发完整写入冻结批次且冻结后后台数据链路继续", () => {
     useWorkbenchStore.setState({
       connectionStatus: "connected",
@@ -3273,7 +3961,7 @@ describe("workbenchStore", () => {
 
     useWorkbenchStore.getState().ingestBytes(encoder.encode("20\n21\n"), 4_500);
     const frozenState = useWorkbenchStore.getState();
-    const frozenPoints = frozenState.channels[0]?.points;
+    const frozenPoints = frozenState.chartFrozenChannels?.[0]?.points;
     expect(frozenState).toMatchObject({
       chartPaused: true,
       waveformTrigger: { phase: "frozen", triggerTimestampSeconds: 2 },
@@ -3283,7 +3971,16 @@ describe("workbenchStore", () => {
     const terminalEntryCount = frozenState.terminalEntries.length;
     useWorkbenchStore.getState().ingestBytes(encoder.encode("30\n"), 5_000);
     const afterFrozen = useWorkbenchStore.getState();
-    expect(afterFrozen.channels[0]?.points).toBe(frozenPoints);
+    expect(afterFrozen.channels[0]?.points).not.toBe(frozenPoints);
+    expect(afterFrozen.chartFrozenChannels?.[0]?.points).toBe(frozenPoints);
+    expect(afterFrozen.channels[0]?.points.map((point) => point.y)).toEqual([
+      1,
+      2,
+      10,
+      20,
+      21,
+      30,
+    ]);
     expect(afterFrozen.terminalEntries.length).toBeGreaterThan(terminalEntryCount);
     expect(afterFrozen.stats.rxFrames).toBe(6);
     expect(enqueueSimulatorCaptureMock).toHaveBeenCalledTimes(4);
@@ -3536,7 +4233,7 @@ describe("workbenchStore", () => {
     });
   });
 
-  it("波形暂停时继续推进滤波状态但不追加派生显示点", () => {
+  it("波形暂停时继续推进滤波状态并缓存派生点", () => {
     useWorkbenchStore.getState().setProcessingGraph({
       enabled: true,
       nodes: [
@@ -3561,7 +4258,7 @@ describe("workbenchStore", () => {
 
     expect(
       useWorkbenchStore.getState().processedChannels[0]?.points.map((point) => point.y),
-    ).toEqual([0, 7.5]);
+    ).toEqual([0, 5, 7.5]);
     expect(useWorkbenchStore.getState().processingStatus.processedFrames).toBe(3);
   });
 
@@ -3593,7 +4290,11 @@ describe("workbenchStore", () => {
 
     useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("10,20,30\n"), 2_000);
 
-    expect(useWorkbenchStore.getState().channels).toEqual([]);
+    expect(useWorkbenchStore.getState().channels.map((channel) => channel.lastValue)).toEqual([
+      10,
+      20,
+      30,
+    ]);
     expect(useWorkbenchStore.getState().attitudeSample?.sourceValues).toEqual({
       inputMode: "euler",
       roll: 10,
@@ -4559,7 +5260,7 @@ describe("workbenchStore", () => {
     });
   });
 
-  it("手动刷新失败只在原串口空闲上下文中显示错误", async () => {
+  it("手动刷新失败显示错误但不伪造连接故障且后续可恢复", async () => {
     listSerialPortsMock.mockRejectedValue(new Error("串口驱动不可用"));
     useWorkbenchStore.setState({
       isNativeRuntime: true,
@@ -4571,9 +5272,72 @@ describe("workbenchStore", () => {
     await useWorkbenchStore.getState().refreshPorts();
 
     expect(useWorkbenchStore.getState()).toMatchObject({
-      connectionStatus: "error",
-      statusMessage: "串口驱动不可用",
+      connectionStatus: "disconnected",
+      serialPortDiscoveryStatus: "error",
+      serialPortDiscoveryMessage: "扫描串口失败：串口驱动不可用",
+      statusMessage: "扫描串口失败：串口驱动不可用",
       isRefreshingPorts: false,
+    });
+    const diagnostics = useWorkbenchStore.getState().getSerialDiagnostics();
+    expect(diagnostics.events).toContainEqual(
+      expect.objectContaining({
+        kind: "port_discovery_failed",
+        errorCode: "enumeration-failed",
+        outcome: "manual",
+      }),
+    );
+    expect(JSON.stringify(diagnostics)).not.toContain("串口驱动不可用");
+
+    listSerialPortsMock.mockResolvedValue([{ name: "COM7", kind: "usb" }]);
+    await useWorkbenchStore.getState().refreshPorts();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "disconnected",
+      serialPortDiscoveryStatus: "ready",
+      serialPortDiscoveryMessage: "发现 1 个串口设备",
+      statusMessage: "发现 1 个串口设备",
+      ports: [{ name: "COM7" }],
+    });
+  });
+
+  it("串口核心监听故障时拒绝连接并保留可见原因", async () => {
+    const runtime_error = "串口核心事件监听初始化失败：事件插件不可用";
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      serialRuntimeError: runtime_error,
+      statusMessage: runtime_error,
+      ports: [{ name: "COM7", kind: "usb" }],
+      serialConfig: { ...state.serialConfig, portName: "COM7" },
+    }));
+
+    await useWorkbenchStore.getState().connect();
+
+    expect(connectSerialMock).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "disconnected",
+      runtimeTransitionStatus: "idle",
+      statusMessage: runtime_error,
+    });
+  });
+
+  it("Raw Data 拒绝启动数值波形模拟器", async () => {
+    useWorkbenchStore.setState({
+      source: "simulator",
+      protocol: "raw",
+      connectionStatus: "disconnected",
+      connectionMessage: "模拟数据源已就绪",
+      statusMessage: "模拟数据源已就绪",
+    });
+
+    await useWorkbenchStore.getState().connect();
+
+    expect(connectSerialMock).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "disconnected",
+      runtimeTransitionStatus: "idle",
+      connectionMessage: "Raw Data 不提供模拟，请选择串口或回放",
+      statusMessage: "Raw Data 不提供模拟，请选择串口或回放",
     });
   });
 
@@ -4720,6 +5484,112 @@ describe("workbenchStore", () => {
     });
   });
 
+  it("首次后台枚举失败时保留连接面板诊断但不覆盖全局消息", async () => {
+    listSerialPortsMock.mockRejectedValue(new Error("驱动暂时不可用"));
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      connectionMessage: "等待连接",
+      statusMessage: "等待连接",
+      ports: [],
+      serialConfig: { ...state.serialConfig, portName: "" },
+    }));
+
+    await useWorkbenchStore.getState().refreshPorts("background");
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "disconnected",
+      connectionMessage: "等待连接",
+      serialPortDiscoveryStatus: "error",
+      serialPortDiscoveryMessage: "扫描串口失败：驱动暂时不可用",
+      statusMessage: "等待连接",
+      ports: [],
+      isRefreshingPorts: false,
+    });
+  });
+
+  it("有效连接事件会结束后台扫描并丢弃迟到结果", async () => {
+    const port_request = deferred<SerialPortInfo[]>();
+    listSerialPortsMock.mockReturnValue(port_request.promise);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      serialGeneration: 1,
+      serialStateRevision: 3,
+      ports: [{ name: "COM7", kind: "usb" }],
+      serialConfig: { ...state.serialConfig, portName: "COM7" },
+    }));
+
+    const refresh = useWorkbenchStore.getState().refreshPorts("background");
+    expect(useWorkbenchStore.getState().isRefreshingPorts).toBe(true);
+
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connected",
+      portName: "COM9",
+      generation: 2,
+      revision: 4,
+    });
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connected",
+      connectionMessage: "COM9 已连接",
+      serialConfig: { portName: "COM9" },
+      isRefreshingPorts: false,
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
+    });
+
+    port_request.resolve([{ name: "COM8", kind: "usb" }]);
+    await refresh;
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: "connected",
+      ports: [{ name: "COM7" }],
+      serialConfig: { portName: "COM9" },
+      isRefreshingPorts: false,
+    });
+  });
+
+  it.each([
+    { status: "disconnected" as const, message: "串口仍未连接" },
+    { status: "error" as const, message: "串口服务尚未就绪" },
+  ])("后台扫描不因启动时的 $status 快照丢失结果", async ({ status, message }) => {
+    const port_request = deferred<SerialPortInfo[]>();
+    listSerialPortsMock.mockReturnValue(port_request.promise);
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "disconnected",
+      serialGeneration: 1,
+      serialStateRevision: 3,
+      ports: [],
+      serialConfig: { ...state.serialConfig, portName: "" },
+    }));
+
+    const refresh = useWorkbenchStore.getState().refreshPorts("background");
+    useWorkbenchStore.getState().handleSerialState({
+      status,
+      portName: "",
+      message,
+      generation: 1,
+      revision: 4,
+    });
+    expect(useWorkbenchStore.getState().isRefreshingPorts).toBe(true);
+
+    port_request.resolve([{ name: "COM8", kind: "usb" }]);
+    await refresh;
+
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      connectionStatus: status,
+      ports: [{ name: "COM8" }],
+      serialConfig: { portName: "COM8" },
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
+      isRefreshingPorts: false,
+    });
+  });
+
   it("后台枚举完成前生命周期变化后即使回到空闲也丢弃迟到结果", async () => {
     let resolvePorts: ((ports: SerialPortInfo[]) => void) | undefined;
     listSerialPortsMock.mockImplementation(
@@ -4738,15 +5608,18 @@ describe("workbenchStore", () => {
     }));
 
     const refresh = useWorkbenchStore.getState().refreshPorts("background");
-    useWorkbenchStore.setState({
-      connectionStatus: "connecting",
-      serialStateRevision: 6,
-      statusMessage: "正在连接 COM7",
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connecting",
+      portName: "COM7",
+      generation: 2,
+      revision: 6,
     });
-    useWorkbenchStore.setState({
-      connectionStatus: "disconnected",
-      serialStateRevision: 7,
-      statusMessage: "连接已取消",
+    useWorkbenchStore.getState().handleSerialState({
+      status: "disconnected",
+      portName: "COM7",
+      message: "连接已取消",
+      generation: 2,
+      revision: 7,
     });
     resolvePorts?.([{ name: "COM8", kind: "usb" }]);
     await refresh;
@@ -5300,12 +6173,70 @@ describe("workbenchStore", () => {
       ],
       expect.any(Function),
     );
-    expect(useWorkbenchStore.getState()).toMatchObject({
-      channels: [],
-      processedChannels: [],
-      terminalEntries: [],
-      stats: { rxFrames: 1 },
+    const state = useWorkbenchStore.getState();
+    expect(state.terminalEntries).toEqual([]);
+    expect(state.stats.rxFrames).toBe(1);
+    expect(state.channels.map((channel) => channel.lastValue)).toEqual([1, 2]);
+    expect(state.processedChannels.map((channel) => channel.lastValue)).toEqual([3]);
+  });
+
+  it("数值日志通道名不受串口读块边界影响", () => {
+    const recordChannelNames = (chunks: readonly string[]): string[] => {
+      useWorkbenchStore.setState({
+        numericLogStatus: "idle",
+        connectionStatus: "connected",
+      });
+      useWorkbenchStore.getState().setProtocol("raw");
+      useWorkbenchStore.getState().setProtocol("firewater");
+      enqueueNumericLogSamplesMock.mockClear();
+      useWorkbenchStore.setState({
+        numericLogStatus: "recording",
+        numericLogSessionId: 17,
+        terminalPaused: true,
+        chartPaused: false,
+        connectionStatus: "connected",
+      });
+
+      chunks.forEach((chunk, index) => {
+        useWorkbenchStore.getState().ingestBytes(
+          new TextEncoder().encode(chunk),
+          1_000 + index,
+        );
+      });
+
+      return enqueueNumericLogSamplesMock.mock.calls.flatMap((call) =>
+        call[1].map((sample) => sample.channelName),
+      );
+    };
+
+    const singleReadNames = recordChannelNames(["temp:1\n2\n"]);
+    const splitReadNames = recordChannelNames(["temp:1\n", "2\n"]);
+
+    expect(singleReadNames).toEqual(["temp", "temp"]);
+    expect(splitReadNames).toEqual(singleReadNames);
+  });
+
+  it("单个 16 KiB FireWater 读块完整进入数值记录队列", () => {
+    const bytes = new TextEncoder().encode("0\n".repeat(8_192));
+    expect(bytes).toHaveLength(16 * 1024);
+    useWorkbenchStore.setState({
+      protocol: "firewater",
+      numericLogStatus: "recording",
+      numericLogSessionId: 17,
+      terminalPaused: true,
+      chartPaused: true,
+      connectionStatus: "connected",
     });
+
+    useWorkbenchStore.getState().ingestBytes(bytes, 1_000);
+
+    expect(enqueueNumericLogSamplesMock).toHaveBeenCalledOnce();
+    expect(enqueueNumericLogSamplesMock.mock.calls[0]?.[1]).toHaveLength(8_192);
+    const state = useWorkbenchStore.getState();
+    expect(state.channels[0]).toMatchObject({ lastValue: 0 });
+    expect(state.channels[0]?.points.length).toBeGreaterThan(0);
+    expect(state.terminalEntries).toEqual([]);
+    expect(state.stats).toMatchObject({ rxBytes: 16 * 1024, rxFrames: 8_192 });
   });
 
   it("断开数据源前并行完成两类记录", async () => {
@@ -5351,8 +6282,35 @@ describe("workbenchStore", () => {
   });
 
   it("应用关闭前幂等完成两类记录", async () => {
+    const disconnected = deferred<SerialStatePayload>();
     const captureStopped = deferred<CaptureStatePayload>();
     const numericLogStopped = deferred<NumericLogStatePayload>();
+    const disconnectedPayload: SerialStatePayload = {
+      status: "disconnected",
+      portName: "",
+      generation: 0,
+      revision: 0,
+    };
+    const captureStoppedPayload: CaptureStatePayload = {
+      status: "idle",
+      sessionId: 9,
+      revision: 6,
+      formatVersion: 2,
+      path: "C:\\captures\\complete.vucap",
+      endedAtUnixMs: 2_000,
+      dataBytes: 128,
+      recordCount: 4,
+      markerCount: 1,
+    };
+    const numericLogStoppedPayload = numericLogState("idle", {
+      sessionId: 17,
+      revision: 6,
+      path: "C:\\captures\\numeric.csv",
+      endedAtUnixMs: 2_000,
+      outputBytes: 256,
+      sampleCount: 6,
+    });
+    disconnectSerialMock.mockReturnValue(disconnected.promise);
     stopCaptureMock.mockReturnValue(captureStopped.promise);
     stopNumericLogMock.mockReturnValue(numericLogStopped.promise);
     useWorkbenchStore.setState({
@@ -5375,18 +6333,253 @@ describe("workbenchStore", () => {
     const firstClose = prepareWorkbenchForAppClose();
     const secondClose = prepareWorkbenchForAppClose();
 
-    expect(stopCaptureMock).toHaveBeenCalledOnce();
-    expect(stopNumericLogMock).toHaveBeenCalledOnce();
-    expect(useWorkbenchStore.getState()).toMatchObject({
-      captureStatus: "stopping",
-      numericLogStatus: "stopping",
-      runtimeTransitionStatus: "closing-app",
-      statusMessage: "正在完成记录并关闭应用",
-      waveformTrigger: { phase: "idle" },
+    try {
+      await flushPromises();
+      expect(disconnectSerialMock).toHaveBeenCalledOnce();
+      expect(stopCaptureMock).not.toHaveBeenCalled();
+      expect(stopNumericLogMock).not.toHaveBeenCalled();
+
+      disconnected.resolve(disconnectedPayload);
+      await flushPromises();
+
+      expect(stopCaptureMock).toHaveBeenCalledOnce();
+      expect(stopNumericLogMock).toHaveBeenCalledOnce();
+      expect(useWorkbenchStore.getState()).toMatchObject({
+        captureStatus: "stopping",
+        numericLogStatus: "stopping",
+        runtimeTransitionStatus: "closing-app",
+        statusMessage: "正在完成记录并关闭应用",
+        waveformTrigger: { phase: "idle" },
+      });
+
+      useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("10\n"), 2_000);
+      expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("idle");
+
+      captureStopped.resolve(captureStoppedPayload);
+      numericLogStopped.resolve(numericLogStoppedPayload);
+      await expect(Promise.all([firstClose, secondClose])).resolves.toEqual([
+        undefined,
+        undefined,
+      ]);
+      expect(useWorkbenchStore.getState()).toMatchObject({
+        captureStatus: "idle",
+        numericLogStatus: "idle",
+        numericLogPath: "C:\\captures\\numeric.csv",
+        numericLogSampleCount: 6,
+      });
+    } finally {
+      disconnected.resolve(disconnectedPayload);
+      captureStopped.resolve(captureStoppedPayload);
+      numericLogStopped.resolve(numericLogStoppedPayload);
+      await Promise.allSettled([firstClose, secondClose]);
+    }
+  });
+
+  it("应用关闭等待原生串口断开完成", async () => {
+    const disconnected = deferred<SerialStatePayload>();
+    disconnectSerialMock.mockReturnValue(disconnected.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
     });
 
-    useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("10\n"), 2_000);
-    expect(useWorkbenchStore.getState().waveformTrigger.phase).toBe("idle");
+    const closing = prepareWorkbenchForAppClose();
+    let settled = false;
+    void closing.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flushPromises();
+
+    expect(disconnectSerialMock).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+
+    disconnected.resolve({
+      status: "disconnected",
+      portName: "COM3",
+      generation: 8,
+      revision: 4,
+    });
+    await expect(closing).resolves.toBeUndefined();
+    expect(settled).toBe(true);
+  });
+
+  it("重复关闭请求只执行一次原生串口断开", async () => {
+    const disconnected = deferred<SerialStatePayload>();
+    disconnectSerialMock.mockReturnValue(disconnected.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+    });
+
+    const firstClose = prepareWorkbenchForAppClose();
+    const secondClose = prepareWorkbenchForAppClose();
+    await flushPromises();
+
+    expect(disconnectSerialMock).toHaveBeenCalledOnce();
+
+    disconnected.resolve({
+      status: "disconnected",
+      portName: "COM3",
+      generation: 8,
+      revision: 4,
+    });
+    await expect(Promise.all([firstClose, secondClose])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(disconnectSerialMock).toHaveBeenCalledOnce();
+  });
+
+  it("手动连接中关闭应用会先取消连接再断开串口", async () => {
+    const pendingConnection = deferred<SerialStatePayload>();
+    const order: string[] = [];
+    const port: SerialPortInfo = {
+      name: "COM3",
+      kind: "usb",
+      serialNumber: "DEVICE-001",
+      vendorId: 0x1234,
+      productId: 0x5678,
+    };
+    connectSerialMock.mockReturnValue(pendingConnection.promise);
+    cancelSerialConnectMock.mockImplementation(async () => {
+      order.push("cancel-connect");
+      return {
+        status: "disconnected",
+        portName: "COM3",
+        generation: 2,
+        revision: 2,
+      };
+    });
+    disconnectSerialMock.mockImplementation(async () => {
+      order.push("disconnect");
+      return {
+        status: "disconnected",
+        portName: "COM3",
+        generation: 2,
+        revision: 2,
+      };
+    });
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      ports: [port],
+      serialConfig: { ...useWorkbenchStore.getState().serialConfig, portName: "COM3" },
+    });
+
+    const connecting = useWorkbenchStore.getState().connect();
+    await vi.waitFor(() => {
+      expect(connectSerialMock).toHaveBeenCalledOnce();
+      expect(useWorkbenchStore.getState().connectionStatus).toBe("connecting");
+    });
+
+    await expect(prepareWorkbenchForAppClose()).resolves.toBeUndefined();
+    expect(order).toEqual(["cancel-connect", "disconnect"]);
+
+    pendingConnection.resolve({
+      status: "connected",
+      portName: "COM3",
+      generation: 3,
+      revision: 3,
+    });
+    await connecting;
+    expect(useWorkbenchStore.getState().connectionStatus).not.toBe("connected");
+  });
+
+  it("关闭应用取消自动重连并忽略迟到的连接结果", async () => {
+    vi.useFakeTimers();
+    const pendingConnection = deferred<SerialStatePayload>();
+    const port: SerialPortInfo = {
+      name: "COM3",
+      kind: "usb",
+      serialNumber: "DEVICE-001",
+      vendorId: 0x1234,
+      productId: 0x5678,
+    };
+    listSerialPortsMock.mockResolvedValue([port]);
+    connectSerialMock.mockReturnValue(pendingConnection.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      ports: [port],
+      serialConfig: { ...useWorkbenchStore.getState().serialConfig, portName: "COM3" },
+    });
+    await useWorkbenchStore.getState().setSerialRecoveryEnabled(true);
+    useWorkbenchStore.getState().handleSerialState({
+      status: "connected",
+      portName: "COM3",
+      generation: 7,
+      revision: 1,
+    });
+    useWorkbenchStore.getState().handleSerialState({
+      status: "error",
+      portName: "COM3",
+      message: "设备已移除",
+      errorCode: "read-failed",
+      generation: 7,
+      revision: 2,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(connectSerialMock).toHaveBeenCalledOnce();
+    expect(useWorkbenchStore.getState().serialRecovery.phase).toBe("connecting");
+
+    await expect(prepareWorkbenchForAppClose()).resolves.toBeUndefined();
+    expect(cancelSerialConnectMock).toHaveBeenCalledOnce();
+    expect(disconnectSerialMock).toHaveBeenCalledOnce();
+
+    pendingConnection.resolve({
+      status: "connected",
+      portName: "COM3",
+      generation: 8,
+      revision: 3,
+    });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(connectSerialMock).toHaveBeenCalledOnce();
+    expect(useWorkbenchStore.getState().connectionStatus).not.toBe("connected");
+    expect(useWorkbenchStore.getState().serialRecovery.phase).toBe("idle");
+  });
+
+  it("串口断开失败仍等待两类记录完成并报告关闭失败", async () => {
+    const captureStopped = deferred<CaptureStatePayload>();
+    const numericLogStopped = deferred<NumericLogStatePayload>();
+    disconnectSerialMock.mockRejectedValue(new Error("driver busy"));
+    stopCaptureMock.mockReturnValue(captureStopped.promise);
+    stopNumericLogMock.mockReturnValue(numericLogStopped.promise);
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      captureStatus: "recording",
+      captureSessionId: 9,
+      numericLogStatus: "recording",
+      numericLogSessionId: 17,
+    });
+
+    const closing = prepareWorkbenchForAppClose();
+    let settled = false;
+    void closing.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flushPromises();
+
+    expect(disconnectSerialMock).toHaveBeenCalledOnce();
+    expect(stopCaptureMock).toHaveBeenCalledOnce();
+    expect(stopNumericLogMock).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
 
     captureStopped.resolve({
       status: "idle",
@@ -5409,15 +6602,13 @@ describe("workbenchStore", () => {
         sampleCount: 6,
       }),
     );
-    await expect(Promise.all([firstClose, secondClose])).resolves.toEqual([
-      undefined,
-      undefined,
-    ]);
+
+    await expect(closing).rejects.toThrow(/断开串口失败：driver busy/);
+    expect(settled).toBe(true);
     expect(useWorkbenchStore.getState()).toMatchObject({
       captureStatus: "idle",
       numericLogStatus: "idle",
-      numericLogPath: "C:\\captures\\numeric.csv",
-      numericLogSampleCount: 6,
+      statusMessage: "应用关闭收尾失败：断开串口失败：driver busy",
     });
   });
 
@@ -5626,7 +6817,8 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState()).toMatchObject({
       connectionStatus: "connected",
       captureStatus: "stopping",
-      statusMessage: "结束录制失败，未断开数据源",
+      connectionActionError: "结束录制失败，当前仍保持连接",
+      statusMessage: "结束录制失败，当前仍保持连接",
     });
   });
 
@@ -5853,6 +7045,35 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().runtimeTransitionStatus).toBe("idle");
   });
 
+  it("回放单个记录内的多帧保留共同接收时间与完整帧序", () => {
+    useWorkbenchStore.getState().handleReplayState(
+      replayState("playing", {
+        generation: 1,
+        timelineRevision: 1,
+        revision: 2,
+      }),
+    );
+
+    const data = Array.from(new TextEncoder().encode("1\n2\n3\n"));
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_000,
+      dataBytes: data.length,
+      records: [{ direction: "rx", timestampUs: 1_000, data }],
+    });
+
+    const state = useWorkbenchStore.getState();
+    const points = state.channels[0]?.points ?? [];
+    expect(points.map((point) => point.y)).toEqual([1, 2, 3]);
+    expect(points.map((point) => point.x)).toEqual([1.001, 1.001, 1.001]);
+    expect(new Set(points.map((point) => point.frameSequence)).size).toBe(3);
+    expect(state.stats.rxFrames).toBe(3);
+    expect(state.replayNextSequence).toBe(2);
+  });
+
   it("回放批次只更新一次状态并保持跨批解析和 TX 解码", async () => {
     playReplayMock.mockResolvedValue(
       replayState("playing", { generation: 1, revision: 2 }),
@@ -5988,6 +7209,56 @@ describe("workbenchStore", () => {
         byteCount: 6,
       },
     ]);
+  });
+
+  it("JustFloat 回放批次使用二进制会话的按块终端默认值", () => {
+    const justFloatHeader: ReplayCaptureHeader = {
+      ...TEST_REPLAY_HEADER,
+      protocol: "justfloat",
+    };
+    useWorkbenchStore.setState({
+      protocol: "firewater",
+      displayMode: "text",
+      terminalRxRecordMode: "line",
+      terminalPresentationOverride: null,
+      replayStatus: "playing",
+      replaySessionId: 7,
+      replayGeneration: 1,
+      replayRevision: 1,
+      replayHeader: justFloatHeader,
+      replayNextSequence: 1,
+      terminalEntries: [],
+    });
+
+    useWorkbenchStore.getState().handleReplayBatch({
+      sessionId: 7,
+      generation: 1,
+      sequence: 1,
+      startUs: 1_000,
+      endUs: 1_000,
+      dataBytes: 8,
+      records: [
+        {
+          direction: "rx",
+          timestampUs: 1_000,
+          data: [0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x7f],
+        },
+      ],
+    });
+
+    expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
+      {
+        direction: "rx",
+        hex: "00 00 80 3F 00 00 80 7F",
+        byteCount: 8,
+      },
+    ]);
+    expect(useWorkbenchStore.getState().channels.map((channel) => channel.lastValue)).toEqual([1]);
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      displayMode: "text",
+      terminalRxRecordMode: "line",
+      replayNextSequence: 2,
+    });
   });
 
   it("回放 RX 使用工作区选择的 GB18030 编码且不改变原始字节", () => {
@@ -6916,6 +8187,7 @@ describe("workbenchStore", () => {
     const storageWrite = vi.spyOn(Storage.prototype, "setItem");
     storageWrite.mockClear();
 
+    useWorkbenchStore.setState({ connectionActionError: "断开失败，当前仍保持连接" });
     useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("1,2\n"), 1_000);
 
     expect(storageWrite).not.toHaveBeenCalled();

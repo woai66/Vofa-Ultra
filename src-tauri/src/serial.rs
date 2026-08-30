@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -20,11 +20,16 @@ use crate::modbus_rtu::{
 
 const READ_BUFFER_SIZE: usize = 16 * 1024;
 const SERIAL_TIMEOUT_MS: u64 = 20;
+const SERIAL_PORT_SCAN_DEADLINE: Duration = Duration::from_secs(5);
+const SERIAL_PORT_OPEN_DEADLINE: Duration = Duration::from_secs(5);
+const MAX_OUTSTANDING_SERIAL_PORT_SCANS: usize = 2;
+const MAX_OUTSTANDING_SERIAL_PORT_OPENS: usize = 2;
 const MODEM_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const WRITE_QUEUE_CAPACITY: usize = 256;
 const MAX_WRITE_SIZE: usize = 64 * 1024;
 const WRITE_CHUNK_SIZE: usize = 4 * 1024;
 const WRITE_BUDGET_PER_TICK: usize = 32 * 1024;
+const WRITE_NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 // 零容量握手确保 reader 只预取下一块，通道本身不会再缓存第三个 64 KiB 块。
 const FILE_READ_CHANNEL_CAPACITY: usize = 0;
@@ -39,6 +44,11 @@ const FILE_SEND_CANCELLED_MESSAGE: &str = "文件发送已取消；驱动已缓�
 const FILE_SEND_CONNECTION_ENDED_MESSAGE: &str =
     "串口连接已结束，文件发送已取消；驱动已缓冲的字节仍可能发出";
 
+static SERIAL_PORT_SCAN_LIMITER: DriverCallLimiter =
+    DriverCallLimiter::new(MAX_OUTSTANDING_SERIAL_PORT_SCANS);
+static SERIAL_PORT_OPEN_LIMITER: DriverCallLimiter =
+    DriverCallLimiter::new(MAX_OUTSTANDING_SERIAL_PORT_OPENS);
+
 pub struct SerialState {
     transition: Arc<Mutex<()>>,
     shared: Arc<Mutex<SharedSerialState>>,
@@ -49,6 +59,40 @@ impl Default for SerialState {
         Self {
             transition: Arc::new(Mutex::new(())),
             shared: Arc::new(Mutex::new(SharedSerialState::default())),
+        }
+    }
+}
+
+impl SerialState {
+    pub(crate) fn shutdown(&self) -> Result<(), String> {
+        let worker = {
+            let mut shared = match self.shared.lock() {
+                Ok(shared) => shared,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            shared.connection_request = shared.connection_request.saturating_add(1);
+            shared.pending_connection_request = None;
+            shared.active_control_line = None;
+            if let Some(active) = shared.active_modbus.as_ref() {
+                active.cancel.store(true, Ordering::Release);
+            }
+            if let Some(active) = shared.active_file_send.as_ref() {
+                let phase = active.phase.load(Ordering::Acquire);
+                if matches!(phase, FILE_SEND_QUEUED | FILE_SEND_TRANSMITTING) {
+                    let _ = active.phase.compare_exchange(
+                        phase,
+                        FILE_SEND_CANCEL_REQUESTED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                }
+            }
+            shared.worker.take()
+        };
+
+        match worker {
+            Some(worker) => worker.stop().map_err(|failure| failure.message),
+            None => Ok(()),
         }
     }
 }
@@ -763,6 +807,7 @@ enum WorkerCommand {
     Write {
         data: Vec<u8>,
         text_encoding: Option<String>,
+        reply: mpsc::SyncSender<Result<(), SerialFailure>>,
     },
     SetControlLine(ControlLineCommand),
     StartModbus(ModbusCommand),
@@ -832,15 +877,52 @@ struct FileSendRuntime {
 }
 
 enum PendingWriteOrigin {
-    Normal { text_encoding: Option<String> },
+    Normal {
+        text_encoding: Option<String>,
+        reply: mpsc::SyncSender<Result<(), SerialFailure>>,
+    },
     Modbus(ModbusCommand),
-    FileSend { job_id: u64 },
+    FileSend {
+        job_id: u64,
+    },
 }
 
 struct PendingWrite {
     data: Vec<u8>,
     offset: usize,
+    last_progress_at: Instant,
     origin: PendingWriteOrigin,
+}
+
+impl PendingWrite {
+    fn new(data: Vec<u8>, origin: PendingWriteOrigin) -> Self {
+        Self {
+            data,
+            offset: 0,
+            last_progress_at: Instant::now(),
+            origin,
+        }
+    }
+
+    fn record_progress(
+        &mut self,
+        byte_count: usize,
+        progressed_at: Instant,
+    ) -> std::ops::Range<usize> {
+        let written_start = self.offset;
+        self.offset += byte_count;
+        self.last_progress_at = progressed_at;
+        written_start..self.offset
+    }
+
+    fn has_timed_out(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.last_progress_at) >= WRITE_NO_PROGRESS_TIMEOUT
+    }
+}
+
+struct NormalWriteFailureReply {
+    reply: mpsc::SyncSender<Result<(), SerialFailure>>,
+    failure: SerialFailure,
 }
 
 enum ModbusRuntime {
@@ -983,7 +1065,20 @@ pub struct SerialFileSendPayload {
 }
 
 #[tauri::command]
-pub fn list_serial_ports() -> Result<Vec<SerialPortInfoDto>, String> {
+pub async fn list_serial_ports() -> Result<Vec<SerialPortInfoDto>, String> {
+    run_serial_blocking_task("扫描串口", || {
+        run_driver_call_with_deadline(
+            "vofa-serial-enumeration",
+            &SERIAL_PORT_SCAN_LIMITER,
+            SERIAL_PORT_SCAN_DEADLINE,
+            list_serial_ports_blocking,
+        )
+        .map_err(|error| driver_call_error_message("扫描串口", SERIAL_PORT_SCAN_DEADLINE, error))
+    })
+    .await
+}
+
+fn list_serial_ports_blocking() -> Result<Vec<SerialPortInfoDto>, String> {
     let ports = serialport::available_ports().map_err(|error| error.to_string())?;
 
     Ok(ports
@@ -1224,7 +1319,7 @@ fn connect_serial_blocking(
     request: u64,
 ) -> Result<SerialStatePayload, String> {
     let port_name = config.port_name.clone();
-    let _transition = transition.lock().map_err(|_| {
+    let transition_guard = transition.lock().map_err(|_| {
         fail_connection_task(
             &app,
             &shared_state,
@@ -1299,55 +1394,70 @@ fn connect_serial_blocking(
     );
 
     ensure_connection_attempt_current(&shared_state, request, generation)?;
-    let mut port = serialport::new(&config.port_name, config.baud_rate)
-        .data_bits(data_bits)
-        .parity(parity)
-        .stop_bits(stop_bits)
-        .flow_control(flow_control)
-        .timeout(Duration::from_millis(SERIAL_TIMEOUT_MS))
-        .open()
-        .map_err(|error| {
-            fail_connection(
-                &app,
-                &shared_state,
-                request,
-                generation,
-                &port_name,
-                SerialErrorCode::OpenFailed,
-                format!("无法打开串口 {}: {error}", config.port_name),
-            )
-        })?;
-    ensure_connection_attempt_current(&shared_state, request, generation)?;
+    drop(transition_guard);
 
+    let driver_port_name = config.port_name.clone();
+    let port = run_driver_call_with_deadline(
+        "vofa-serial-open",
+        &SERIAL_PORT_OPEN_LIMITER,
+        SERIAL_PORT_OPEN_DEADLINE,
+        move || {
+            let mut port = serialport::new(&config.port_name, config.baud_rate)
+                .data_bits(data_bits)
+                .parity(parity)
+                .stop_bits(stop_bits)
+                .flow_control(flow_control)
+                .timeout(Duration::from_millis(SERIAL_TIMEOUT_MS))
+                .open()
+                .map_err(|error| {
+                    SerialFailure::new(
+                        SerialErrorCode::OpenFailed,
+                        format!("无法打开串口 {}: {error}", config.port_name),
+                    )
+                })?;
+            port.write_data_terminal_ready(config.dtr)
+                .map_err(|error| {
+                    SerialFailure::new(
+                        SerialErrorCode::DtrFailed,
+                        format!("设置 DTR 失败: {error}"),
+                    )
+                })?;
+            if !hardware_flow_control {
+                port.write_request_to_send(config.rts).map_err(|error| {
+                    SerialFailure::new(
+                        SerialErrorCode::RtsFailed,
+                        format!("设置 RTS 失败: {error}"),
+                    )
+                })?;
+            }
+            Ok(port)
+        },
+    )
+    .map_err(|error| {
+        let failure = serial_open_driver_failure(&driver_port_name, error);
+        fail_connection(
+            &app,
+            &shared_state,
+            request,
+            generation,
+            &port_name,
+            failure.code,
+            failure.message,
+        )
+    })?;
+
+    let _transition = transition.lock().map_err(|_| {
+        fail_connection(
+            &app,
+            &shared_state,
+            request,
+            generation,
+            &port_name,
+            SerialErrorCode::Unknown,
+            "串口生命周期锁已损坏".to_owned(),
+        )
+    })?;
     ensure_connection_attempt_current(&shared_state, request, generation)?;
-    port.write_data_terminal_ready(config.dtr)
-        .map_err(|error| {
-            fail_connection(
-                &app,
-                &shared_state,
-                request,
-                generation,
-                &port_name,
-                SerialErrorCode::DtrFailed,
-                format!("设置 DTR 失败: {error}"),
-            )
-        })?;
-    ensure_connection_attempt_current(&shared_state, request, generation)?;
-    if !hardware_flow_control {
-        ensure_connection_attempt_current(&shared_state, request, generation)?;
-        port.write_request_to_send(config.rts).map_err(|error| {
-            fail_connection(
-                &app,
-                &shared_state,
-                request,
-                generation,
-                &port_name,
-                SerialErrorCode::RtsFailed,
-                format!("设置 RTS 失败: {error}"),
-            )
-        })?;
-        ensure_connection_attempt_current(&shared_state, request, generation)?;
-    }
 
     ensure_connection_attempt_current(&shared_state, request, generation)?;
     let (command_tx, command_rx) = mpsc::sync_channel(WRITE_QUEUE_CAPACITY);
@@ -1488,19 +1598,35 @@ pub fn cancel_serial_connect(
 }
 
 #[tauri::command]
-pub fn disconnect_serial(
+pub async fn disconnect_serial(
     app: AppHandle,
     state: State<'_, SerialState>,
 ) -> Result<SerialStatePayload, String> {
-    let _transition = state
-        .transition
+    let request = register_disconnect_attempt(&state.shared)?;
+    let transition = Arc::clone(&state.transition);
+    let shared_state = Arc::clone(&state.shared);
+    run_serial_blocking_task("断开串口", move || {
+        disconnect_serial_blocking(app, transition, shared_state, request)
+    })
+    .await
+}
+
+fn disconnect_serial_blocking(
+    app: AppHandle,
+    transition: Arc<Mutex<()>>,
+    shared_state: Arc<Mutex<SharedSerialState>>,
+    request: u64,
+) -> Result<SerialStatePayload, String> {
+    let _transition = transition
         .lock()
         .map_err(|_| "串口生命周期锁已损坏".to_owned())?;
-    stop_current_worker(&app, &state.shared)?;
+    if let Some(payload) = snapshot_if_lifecycle_request_stale(&shared_state, request)? {
+        return Ok(payload);
+    }
+    stop_current_worker(&app, &shared_state)?;
 
     let payload = {
-        let mut shared = state
-            .shared
+        let mut shared = shared_state
             .lock()
             .map_err(|_| "串口状态锁已损坏".to_owned())?;
         if shared.status != SerialStatus::Disconnected
@@ -1517,8 +1643,165 @@ pub fn disconnect_serial(
     Ok(payload)
 }
 
+async fn run_serial_blocking_task<T, F>(operation: &'static str, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|_| format!("{operation}任务异常退出"))?
+}
+
+struct DriverCallLimiter {
+    in_flight: AtomicUsize,
+    limit: usize,
+}
+
+impl DriverCallLimiter {
+    const fn new(limit: usize) -> Self {
+        Self {
+            in_flight: AtomicUsize::new(0),
+            limit,
+        }
+    }
+
+    fn try_acquire(&'static self) -> Option<DriverCallPermit> {
+        let mut current = self.in_flight.load(Ordering::Acquire);
+        loop {
+            if current >= self.limit {
+                return None;
+            }
+            match self.in_flight.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(DriverCallPermit { limiter: self }),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::Acquire)
+    }
+}
+
+struct DriverCallPermit {
+    limiter: &'static DriverCallLimiter,
+}
+
+impl Drop for DriverCallPermit {
+    fn drop(&mut self) {
+        self.limiter.in_flight.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DriverCallError<E> {
+    Operation(E),
+    ResourceLimitReached { limit: usize },
+    DeadlineExceeded,
+    Panicked(String),
+    ThreadStartFailed(String),
+    ResultChannelClosed,
+}
+
+enum DriverCallOutcome<T, E> {
+    Finished(Result<T, E>),
+    Panicked(String),
+}
+
+fn run_driver_call_with_deadline<T, E, F>(
+    thread_name: &str,
+    limiter: &'static DriverCallLimiter,
+    deadline: Duration,
+    task: F,
+) -> Result<T, DriverCallError<E>>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    F: FnOnce() -> Result<T, E> + Send + 'static,
+{
+    let permit = limiter
+        .try_acquire()
+        .ok_or(DriverCallError::ResourceLimitReached {
+            limit: limiter.limit,
+        })?;
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name(thread_name.to_owned())
+        .spawn(move || {
+            let _permit = permit;
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task))
+                .map(DriverCallOutcome::Finished)
+                .unwrap_or_else(|panic| DriverCallOutcome::Panicked(panic_message(panic)));
+            let _ = result_tx.send(outcome);
+        })
+        .map_err(|error| DriverCallError::ThreadStartFailed(error.to_string()))?;
+
+    match result_rx.recv_timeout(deadline) {
+        Ok(DriverCallOutcome::Finished(Ok(result))) => Ok(result),
+        Ok(DriverCallOutcome::Finished(Err(error))) => Err(DriverCallError::Operation(error)),
+        Ok(DriverCallOutcome::Panicked(message)) => Err(DriverCallError::Panicked(message)),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(DriverCallError::DeadlineExceeded),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(DriverCallError::ResultChannelClosed),
+    }
+}
+
+fn driver_call_error_message<E: std::fmt::Display>(
+    operation: &str,
+    deadline: Duration,
+    error: DriverCallError<E>,
+) -> String {
+    match error {
+        DriverCallError::Operation(message) => message.to_string(),
+        DriverCallError::ResourceLimitReached { limit } => format!(
+            "{operation}暂不可用：已有 {limit} 个驱动调用仍未返回；为避免后台线程累积，已拒绝新请求。请禁用异常设备或重启应用后重试"
+        ),
+        DriverCallError::DeadlineExceeded => format!(
+            "{operation}超过 {} 秒仍未完成，可能是蓝牙或虚拟串口驱动无响应；请禁用异常设备后重试",
+            deadline.as_secs()
+        ),
+        DriverCallError::Panicked(message) => format!("{operation}驱动调用异常退出: {message}"),
+        DriverCallError::ThreadStartFailed(message) => {
+            format!("无法启动{operation}驱动任务: {message}")
+        }
+        DriverCallError::ResultChannelClosed => format!("{operation}驱动任务未返回结果"),
+    }
+}
+
+fn serial_open_driver_failure(
+    port_name: &str,
+    error: DriverCallError<SerialFailure>,
+) -> SerialFailure {
+    let message = match error {
+        DriverCallError::Operation(failure) => return failure,
+        DriverCallError::ResourceLimitReached { limit } => format!(
+            "打开串口 {port_name} 暂不可用：已有 {limit} 个打开调用仍未返回；为避免后台线程累积，已拒绝新请求。请禁用异常设备或重启应用后重试"
+        ),
+        DriverCallError::DeadlineExceeded => format!(
+            "打开串口 {port_name} 超过 {} 秒仍未完成，可能是蓝牙或虚拟串口驱动无响应；请禁用异常设备后重试",
+            SERIAL_PORT_OPEN_DEADLINE.as_secs()
+        ),
+        DriverCallError::Panicked(message) => {
+            format!("打开串口 {port_name} 时驱动调用异常退出: {message}")
+        }
+        DriverCallError::ThreadStartFailed(message) => {
+            format!("无法启动串口 {port_name} 的驱动任务: {message}")
+        }
+        DriverCallError::ResultChannelClosed => {
+            format!("打开串口 {port_name} 的驱动任务未返回结果")
+        }
+    };
+    SerialFailure::new(SerialErrorCode::OpenFailed, message)
+}
+
 #[tauri::command]
-pub fn send_serial(
+pub async fn send_serial(
     state: State<'_, SerialState>,
     data: Vec<u8>,
     text_encoding: Option<String>,
@@ -1539,31 +1822,40 @@ pub fn send_serial(
         return Err("发送文本编码无效".to_owned());
     }
 
-    let shared = state
-        .shared
-        .lock()
-        .map_err(|_| "串口状态锁已损坏".to_owned())?;
-    shared.ensure_send_admission()?;
+    let reply_rx = {
+        let shared = state
+            .shared
+            .lock()
+            .map_err(|_| "串口状态锁已损坏".to_owned())?;
+        shared.ensure_send_admission()?;
 
-    let worker = shared
-        .worker
-        .as_ref()
-        .filter(|worker| worker.generation == shared.generation)
-        .ok_or_else(|| "串口工作线程未运行".to_owned())?;
-    let command_tx = worker
-        .command_tx
-        .as_ref()
-        .ok_or_else(|| "串口工作线程已停止".to_owned())?;
+        let worker = shared
+            .worker
+            .as_ref()
+            .filter(|worker| worker.generation == shared.generation)
+            .ok_or_else(|| "串口工作线程未运行".to_owned())?;
+        let command_tx = worker
+            .command_tx
+            .as_ref()
+            .ok_or_else(|| "串口工作线程已停止".to_owned())?;
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
 
-    command_tx
-        .try_send(WorkerCommand::Write {
-            data,
-            text_encoding,
-        })
-        .map_err(|error| match error {
-            mpsc::TrySendError::Full(_) => "串口发送队列已满，请降低发送速率".to_owned(),
-            mpsc::TrySendError::Disconnected(_) => "串口工作线程已停止".to_owned(),
-        })
+        command_tx
+            .try_send(WorkerCommand::Write {
+                data,
+                text_encoding,
+                reply: reply_tx,
+            })
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => "串口发送队列已满，请降低发送速率".to_owned(),
+                mpsc::TrySendError::Disconnected(_) => "串口工作线程已停止".to_owned(),
+            })?;
+        reply_rx
+    };
+
+    tauri::async_runtime::spawn_blocking(move || wait_for_normal_write_reply(reply_rx))
+        .await
+        .map_err(|error| format!("串口发送任务异常退出: {error}"))?
 }
 
 #[tauri::command]
@@ -1831,13 +2123,38 @@ fn register_connection_attempt(
     let mut shared = shared_state
         .lock()
         .map_err(|_| "串口状态锁已损坏".to_owned())?;
+    let request = advance_lifecycle_request(&mut shared)?;
+    shared.pending_connection_request = Some(request);
+    Ok(request)
+}
+
+fn register_disconnect_attempt(
+    shared_state: &Arc<Mutex<SharedSerialState>>,
+) -> Result<u64, String> {
+    let mut shared = shared_state
+        .lock()
+        .map_err(|_| "串口状态锁已损坏".to_owned())?;
+    let request = advance_lifecycle_request(&mut shared)?;
+    shared.pending_connection_request = None;
+    Ok(request)
+}
+
+fn advance_lifecycle_request(shared: &mut SharedSerialState) -> Result<u64, String> {
     shared.connection_request = shared
         .connection_request
         .checked_add(1)
-        .ok_or_else(|| "串口连接请求序号已耗尽，请重启应用".to_owned())?;
-    let request = shared.connection_request;
-    shared.pending_connection_request = Some(request);
-    Ok(request)
+        .ok_or_else(|| "串口生命周期请求序号已耗尽，请重启应用".to_owned())?;
+    Ok(shared.connection_request)
+}
+
+fn snapshot_if_lifecycle_request_stale(
+    shared_state: &Arc<Mutex<SharedSerialState>>,
+    request: u64,
+) -> Result<Option<SerialStatePayload>, String> {
+    let shared = shared_state
+        .lock()
+        .map_err(|_| "串口状态锁已损坏".to_owned())?;
+    Ok((shared.connection_request != request).then(|| shared.snapshot()))
 }
 
 fn begin_connection_state(
@@ -2215,6 +2532,71 @@ fn emit_serial_tx(app: &AppHandle, generation: u64, data: &[u8], text_encoding: 
     );
 }
 
+fn wait_for_normal_write_reply(
+    reply_rx: mpsc::Receiver<Result<(), SerialFailure>>,
+) -> Result<(), String> {
+    reply_rx
+        .recv()
+        .map_err(|_| "串口连接已结束，发送未完成".to_owned())?
+        .map_err(|failure| failure.message)
+}
+
+fn settle_normal_write_reply(
+    reply: mpsc::SyncSender<Result<(), SerialFailure>>,
+    emit_tx: impl FnOnce(),
+) {
+    emit_tx();
+    let _ = reply.send(Ok(()));
+}
+
+fn prepare_normal_write_failure(
+    pending_write: &mut Option<PendingWrite>,
+    failure: &SerialFailure,
+    emit_tx: impl FnOnce(&[u8], Option<&str>),
+) -> Option<NormalWriteFailureReply> {
+    if !pending_write
+        .as_ref()
+        .is_some_and(|pending| matches!(pending.origin, PendingWriteOrigin::Normal { .. }))
+    {
+        return None;
+    }
+
+    let pending = pending_write.take().expect("待发送普通帧应当存在");
+    let PendingWriteOrigin::Normal {
+        text_encoding,
+        reply,
+    } = pending.origin
+    else {
+        unreachable!("已确认待发送帧来自普通发送");
+    };
+    debug_assert!(pending.offset <= pending.data.len());
+    let written_bytes = pending.offset.min(pending.data.len());
+    if written_bytes > 0 {
+        emit_tx(&pending.data[..written_bytes], text_encoding.as_deref());
+    }
+    let failure = if written_bytes == 0 {
+        SerialFailure::new(failure.code, failure.message.clone())
+    } else {
+        SerialFailure::new(
+            failure.code,
+            format!(
+                "{}；已写入 {written_bytes}/{} 字节，设备可能已收到部分数据，请勿直接重试整帧",
+                failure.message,
+                pending.data.len()
+            ),
+        )
+    };
+    Some(NormalWriteFailureReply { reply, failure })
+}
+
+fn reply_normal_write_failure_after_terminal(
+    failure_reply: NormalWriteFailureReply,
+    publish_terminal: impl FnOnce(),
+) {
+    publish_terminal();
+    let _ = failure_reply.reply.send(Err(failure_reply.failure));
+}
+
 fn settle_file_send_bytes(
     app: &AppHandle,
     shared_state: &Arc<Mutex<SharedSerialState>>,
@@ -2438,11 +2820,10 @@ fn run_serial_worker(
                             "总线持续有数据，未能取得 Modbus RTU 帧间静默窗口",
                         );
                     } else if last_bus_activity.elapsed() >= modbus_silent_interval {
-                        pending_write = Some(PendingWrite {
-                            data: command.spec.request().to_vec(),
-                            offset: 0,
-                            origin: PendingWriteOrigin::Modbus(command),
-                        });
+                        pending_write = Some(PendingWrite::new(
+                            command.spec.request().to_vec(),
+                            PendingWriteOrigin::Modbus(command),
+                        ));
                     } else {
                         modbus_runtime = Some(ModbusRuntime::WaitingSilence {
                             command,
@@ -2534,11 +2915,10 @@ fn run_serial_worker(
                                 .as_ref()
                                 .expect("文件发送运行时应当存在")
                                 .job_id;
-                            pending_write = Some(PendingWrite {
+                            pending_write = Some(PendingWrite::new(
                                 data,
-                                offset: 0,
-                                origin: PendingWriteOrigin::FileSend { job_id },
-                            });
+                                PendingWriteOrigin::FileSend { job_id },
+                            ));
                         }
                         Ok(FileReadMessage::Eof) => {
                             let runtime = file_runtime.as_ref().expect("文件发送运行时应当存在");
@@ -2635,12 +3015,15 @@ fn run_serial_worker(
                         Ok(WorkerCommand::Write {
                             data,
                             text_encoding,
+                            reply,
                         }) => {
-                            pending_write = Some(PendingWrite {
+                            pending_write = Some(PendingWrite::new(
                                 data,
-                                offset: 0,
-                                origin: PendingWriteOrigin::Normal { text_encoding },
-                            });
+                                PendingWriteOrigin::Normal {
+                                    text_encoding,
+                                    reply,
+                                },
+                            ));
                         }
                         Ok(WorkerCommand::SetControlLine(command)) => {
                             if let Err(failure) = flush_pending_output_before_control_line(
@@ -2831,31 +3214,35 @@ fn run_serial_worker(
                     break 'worker;
                 }
                 Ok(byte_count) => {
-                    last_bus_activity = Instant::now();
+                    let progressed_at = Instant::now();
+                    last_bus_activity = progressed_at;
                     output_needs_drain = true;
-                    let written_start = pending.offset;
-                    let written_end = written_start + byte_count;
-                    pending.offset = written_end;
+                    let written_range = pending.record_progress(byte_count, progressed_at);
                     write_budget -= byte_count;
                     if let Some(session_id) = capture_session_id {
                         let _ = recorder.append_for_session(
                             &app,
                             session_id,
                             CaptureDirection::Tx,
-                            &pending.data[written_start..written_end],
+                            &pending.data[written_range],
                         );
                     }
 
                     if pending.offset == pending.data.len() {
                         let completed = pending_write.take().expect("待发送数据应当存在");
                         match completed.origin {
-                            PendingWriteOrigin::Normal { text_encoding } => {
-                                emit_serial_tx(
-                                    &app,
-                                    generation,
-                                    &completed.data,
-                                    text_encoding.as_deref(),
-                                );
+                            PendingWriteOrigin::Normal {
+                                text_encoding,
+                                reply,
+                            } => {
+                                settle_normal_write_reply(reply, || {
+                                    emit_serial_tx(
+                                        &app,
+                                        generation,
+                                        &completed.data,
+                                        text_encoding.as_deref(),
+                                    );
+                                });
                             }
                             PendingWriteOrigin::FileSend { job_id } => {
                                 let Some(runtime) = file_runtime.as_mut().filter(|runtime| {
@@ -2979,10 +3366,22 @@ fn run_serial_worker(
                         }
                     }
                 }
-                Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error)
-                    if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::Interrupted | ErrorKind::TimedOut | ErrorKind::WouldBlock
+                    ) =>
                 {
+                    if pending.has_timed_out(Instant::now()) {
+                        terminal_error = Some(SerialFailure::new(
+                            SerialErrorCode::WriteFailed,
+                            format!(
+                                "串口发送失败: 连续 {} 秒未取得写入进展",
+                                WRITE_NO_PROGRESS_TIMEOUT.as_secs()
+                            ),
+                        ));
+                        break 'worker;
+                    }
                     break;
                 }
                 Err(error) => {
@@ -3092,28 +3491,54 @@ fn run_serial_worker(
         }
     }
 
-    if let Some(failure) = terminal_error.as_ref() {
-        finish_active_file_send_after_serial_failure(
-            &app,
-            &shared_state,
-            &mut pending_write,
-            &mut file_runtime,
-            failure,
-        );
-    } else if let Some(runtime) = file_runtime.as_ref() {
-        let phase = runtime.phase.load(Ordering::Acquire);
-        if matches!(phase, FILE_SEND_QUEUED | FILE_SEND_TRANSMITTING) {
-            let _ = runtime.phase.compare_exchange(
-                phase,
-                FILE_SEND_CANCEL_REQUESTED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
+    let stopped_failure = SerialFailure::new(
+        SerialErrorCode::Unknown,
+        "串口连接已结束，发送未完成".to_owned(),
+    );
+    let normal_failure_reply = prepare_normal_write_failure(
+        &mut pending_write,
+        terminal_error.as_ref().unwrap_or(&stopped_failure),
+        |data, text_encoding| emit_serial_tx(&app, generation, data, text_encoding),
+    );
+
+    match terminal_error.as_ref() {
+        Some(failure) => {
+            finish_active_file_send_after_serial_failure(
+                &app,
+                &shared_state,
+                &mut pending_write,
+                &mut file_runtime,
+                failure,
             );
         }
-        settle_cancelled_file_send(&app, &shared_state, &mut pending_write, &mut file_runtime);
+        None => {
+            if let Some(runtime) = file_runtime.as_ref() {
+                let phase = runtime.phase.load(Ordering::Acquire);
+                if matches!(phase, FILE_SEND_QUEUED | FILE_SEND_TRANSMITTING) {
+                    let _ = runtime.phase.compare_exchange(
+                        phase,
+                        FILE_SEND_CANCEL_REQUESTED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                }
+                settle_cancelled_file_send(
+                    &app,
+                    &shared_state,
+                    &mut pending_write,
+                    &mut file_runtime,
+                );
+            }
+        }
     }
 
-    finish_worker(&app, &shared_state, generation, port_name, terminal_error);
+    if let Some(failure_reply) = normal_failure_reply {
+        reply_normal_write_failure_after_terminal(failure_reply, || {
+            finish_worker(&app, &shared_state, generation, port_name, terminal_error);
+        });
+    } else {
+        finish_worker(&app, &shared_state, generation, port_name, terminal_error);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3459,6 +3884,281 @@ mod tests {
             parse_flow_control("hardware"),
             Ok(FlowControl::Hardware)
         ));
+    }
+
+    #[test]
+    fn blocking_serial_tasks_run_off_the_caller_and_preserve_operation_errors() {
+        let caller_thread = thread::current().id();
+        let worker_thread =
+            tauri::async_runtime::block_on(run_serial_blocking_task("测试串口", || {
+                Ok(thread::current().id())
+            }))
+            .unwrap();
+        assert_ne!(worker_thread, caller_thread);
+
+        let error =
+            tauri::async_runtime::block_on(run_serial_blocking_task("测试串口", || {
+                Err::<(), _>("驱动枚举失败".to_owned())
+            }))
+            .unwrap_err();
+        assert_eq!(error, "驱动枚举失败");
+    }
+
+    #[test]
+    fn driver_call_deadline_returns_and_drops_a_late_result() {
+        static LIMITER: DriverCallLimiter = DriverCallLimiter::new(1);
+
+        struct LateResult(Arc<AtomicBool>);
+
+        impl Drop for LateResult {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let (release_tx, release_rx) = mpsc::channel();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = Arc::clone(&dropped);
+        let started = Instant::now();
+        let result = run_driver_call_with_deadline(
+            "test-late-driver-result",
+            &LIMITER,
+            Duration::from_millis(20),
+            move || {
+                release_rx.recv().unwrap();
+                Ok::<_, String>(LateResult(task_dropped))
+            },
+        );
+
+        assert!(matches!(result, Err(DriverCallError::DeadlineExceeded)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!dropped.load(Ordering::Acquire));
+
+        release_tx.send(()).unwrap();
+        let drop_deadline = Instant::now() + Duration::from_secs(1);
+        while !dropped.load(Ordering::Acquire) && Instant::now() < drop_deadline {
+            thread::yield_now();
+        }
+        assert!(dropped.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn timed_out_driver_call_does_not_block_a_subsequent_retry() {
+        static LIMITER: DriverCallLimiter = DriverCallLimiter::new(2);
+
+        let (release_tx, release_rx) = mpsc::channel();
+        let first = run_driver_call_with_deadline(
+            "test-blocked-driver-call",
+            &LIMITER,
+            Duration::from_millis(20),
+            move || {
+                release_rx.recv().unwrap();
+                Ok::<_, String>(1_u8)
+            },
+        );
+        assert!(matches!(first, Err(DriverCallError::DeadlineExceeded)));
+
+        let retry = run_driver_call_with_deadline(
+            "test-driver-retry",
+            &LIMITER,
+            Duration::from_secs(1),
+            || Ok::<_, String>(2_u8),
+        );
+        assert_eq!(retry, Ok(2));
+        release_tx.send(()).unwrap();
+    }
+
+    #[test]
+    fn driver_call_limit_bounds_stuck_threads_and_recovers_after_release() {
+        static LIMITER: DriverCallLimiter = DriverCallLimiter::new(2);
+
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let run_blocked_call = || {
+            let task_gate = Arc::clone(&gate);
+            run_driver_call_with_deadline(
+                "test-resource-limited-driver",
+                &LIMITER,
+                Duration::from_millis(20),
+                move || {
+                    let (released, wake) = &*task_gate;
+                    let released = released.lock().unwrap();
+                    let _released = wake.wait_while(released, |released| !*released).unwrap();
+                    Ok::<_, String>(())
+                },
+            )
+        };
+
+        let first = run_blocked_call();
+        let second = run_blocked_call();
+        let in_flight_at_limit = LIMITER.in_flight();
+        let third_ran = Arc::new(AtomicBool::new(false));
+        let task_third_ran = Arc::clone(&third_ran);
+        let rejected_at = Instant::now();
+        let third = run_driver_call_with_deadline(
+            "test-rejected-driver",
+            &LIMITER,
+            Duration::from_secs(1),
+            move || {
+                task_third_ran.store(true, Ordering::Release);
+                Ok::<_, String>(())
+            },
+        );
+        let rejection_elapsed = rejected_at.elapsed();
+
+        {
+            let (released, wake) = &*gate;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+        }
+        let release_deadline = Instant::now() + Duration::from_secs(1);
+        while LIMITER.in_flight() != 0 && Instant::now() < release_deadline {
+            thread::yield_now();
+        }
+
+        assert!(matches!(first, Err(DriverCallError::DeadlineExceeded)));
+        assert!(matches!(second, Err(DriverCallError::DeadlineExceeded)));
+        assert_eq!(in_flight_at_limit, 2);
+        assert_eq!(
+            third,
+            Err(DriverCallError::ResourceLimitReached { limit: 2 })
+        );
+        assert!(rejection_elapsed < Duration::from_millis(100));
+        assert!(!third_ran.load(Ordering::Acquire));
+        assert_eq!(LIMITER.in_flight(), 0);
+
+        let retry = run_driver_call_with_deadline(
+            "test-recovered-driver",
+            &LIMITER,
+            Duration::from_secs(1),
+            || Ok::<_, String>(7_u8),
+        );
+        assert_eq!(retry, Ok(7));
+    }
+
+    #[test]
+    fn driver_call_errors_remain_diagnostic() {
+        static LIMITER: DriverCallLimiter = DriverCallLimiter::new(1);
+
+        let operation = run_driver_call_with_deadline(
+            "test-driver-error",
+            &LIMITER,
+            Duration::from_secs(1),
+            || Err::<(), _>("驱动拒绝访问".to_owned()),
+        );
+        assert_eq!(
+            operation,
+            Err(DriverCallError::Operation("驱动拒绝访问".to_owned()))
+        );
+
+        let timeout = driver_call_error_message(
+            "扫描串口",
+            Duration::from_secs(5),
+            DriverCallError::<String>::DeadlineExceeded,
+        );
+        assert!(timeout.contains("超过 5 秒"));
+        assert!(timeout.contains("蓝牙或虚拟串口驱动无响应"));
+
+        let saturated = driver_call_error_message(
+            "扫描串口",
+            Duration::from_secs(5),
+            DriverCallError::<String>::ResourceLimitReached { limit: 2 },
+        );
+        assert!(saturated.contains("已有 2 个驱动调用仍未返回"));
+        assert!(saturated.contains("为避免后台线程累积"));
+    }
+
+    #[test]
+    fn lifecycle_sequence_cancels_older_connect_and_supersedes_queued_disconnect() {
+        let shared_state = Arc::new(Mutex::new(SharedSerialState::default()));
+        let first_connect = register_connection_attempt(&shared_state).unwrap();
+        let disconnect = register_disconnect_attempt(&shared_state).unwrap();
+        {
+            let shared = shared_state.lock().unwrap();
+            assert_eq!(shared.connection_request, disconnect);
+            assert!(shared.pending_connection_request.is_none());
+            assert!(disconnect > first_connect);
+        }
+        assert!(
+            snapshot_if_lifecycle_request_stale(&shared_state, disconnect)
+                .unwrap()
+                .is_none()
+        );
+
+        let latest_connect = register_connection_attempt(&shared_state).unwrap();
+        let stale_snapshot = snapshot_if_lifecycle_request_stale(&shared_state, disconnect)
+            .unwrap()
+            .unwrap();
+        let shared = shared_state.lock().unwrap();
+        assert_eq!(shared.pending_connection_request, Some(latest_connect));
+        assert_eq!(stale_snapshot.status, shared.status.as_str());
+        assert_eq!(stale_snapshot.generation, shared.generation);
+        assert_eq!(stale_snapshot.revision, shared.revision);
+    }
+
+    #[test]
+    fn shutdown_invalidates_connect_and_joins_worker() {
+        let state = SerialState::default();
+        let worker_cancel = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::new(AtomicBool::new(false));
+        let task_cancel = Arc::clone(&worker_cancel);
+        let task_finished = Arc::clone(&worker_finished);
+        let join_handle = thread::spawn(move || {
+            while !task_cancel.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            task_finished.store(true, Ordering::Release);
+        });
+        let modbus_cancel = Arc::new(AtomicBool::new(false));
+        let file_send_phase = Arc::new(AtomicU8::new(FILE_SEND_TRANSMITTING));
+
+        {
+            let mut shared = state.shared.lock().unwrap();
+            shared.connection_request = 41;
+            shared.pending_connection_request = Some(41);
+            shared.generation = 7;
+            shared.status = SerialStatus::Connecting;
+            shared.active_control_line = Some(ActiveControlLine {
+                operation_id: 1,
+                generation: 7,
+            });
+            shared.active_modbus = Some(ActiveModbusControl {
+                transaction_id: 1,
+                generation: 7,
+                request: vec![1],
+                queued_at: 0,
+                cancel: Arc::clone(&modbus_cancel),
+                request_phase: Arc::new(AtomicU8::new(MODBUS_REQUEST_QUEUED)),
+            });
+            shared.active_file_send = Some(ActiveFileSendControl {
+                job_id: 1,
+                generation: 7,
+                phase: Arc::clone(&file_send_phase),
+            });
+            shared.worker = Some(SerialWorker {
+                generation: 7,
+                hardware_flow_control: false,
+                command_tx: None,
+                cancel: Arc::clone(&worker_cancel),
+                join_handle: Some(join_handle),
+            });
+        }
+
+        state.shutdown().unwrap();
+        assert!(worker_cancel.load(Ordering::Acquire));
+        assert!(worker_finished.load(Ordering::Acquire));
+        assert!(modbus_cancel.load(Ordering::Acquire));
+        assert_eq!(
+            file_send_phase.load(Ordering::Acquire),
+            FILE_SEND_CANCEL_REQUESTED
+        );
+        {
+            let shared = state.shared.lock().unwrap();
+            assert_eq!(shared.connection_request, 42);
+            assert!(shared.pending_connection_request.is_none());
+            assert!(shared.active_control_line.is_none());
+            assert!(shared.worker.is_none());
+        }
+        state.shutdown().unwrap();
     }
 
     #[test]
@@ -4227,20 +4927,167 @@ mod tests {
         let mut pending = Some(PendingWrite {
             data: vec![1, 2, 3, 4, 5],
             offset: 3,
+            last_progress_at: Instant::now(),
             origin: PendingWriteOrigin::FileSend { job_id: 21 },
         });
         assert_eq!(take_file_send_prefix(&mut pending, 21), Some(vec![1, 2, 3]));
         assert!(take_file_send_prefix(&mut pending, 21).is_none());
 
+        let (reply_tx, _reply_rx) = mpsc::sync_channel(1);
         let mut normal = Some(PendingWrite {
             data: vec![7, 8],
             offset: 1,
+            last_progress_at: Instant::now(),
             origin: PendingWriteOrigin::Normal {
                 text_encoding: None,
+                reply: reply_tx,
             },
         });
         assert!(take_file_send_prefix(&mut normal, 21).is_none());
         assert!(normal.is_some());
+    }
+
+    #[test]
+    fn normal_write_acknowledges_only_after_tx_is_emitted() {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+
+        settle_normal_write_reply(reply_tx, || {
+            assert!(matches!(
+                reply_rx.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+        });
+
+        assert!(wait_for_normal_write_reply(reply_rx).is_ok());
+    }
+
+    #[test]
+    fn pending_write_timeout_reanchors_only_after_progress() {
+        let started_at = Instant::now();
+        let (reply_tx, _reply_rx) = mpsc::sync_channel(1);
+        let mut pending = PendingWrite {
+            data: vec![1, 2, 3],
+            offset: 0,
+            last_progress_at: started_at,
+            origin: PendingWriteOrigin::Normal {
+                text_encoding: None,
+                reply: reply_tx,
+            },
+        };
+
+        assert!(!pending
+            .has_timed_out(started_at + WRITE_NO_PROGRESS_TIMEOUT - Duration::from_millis(1)));
+        assert!(pending.has_timed_out(started_at + WRITE_NO_PROGRESS_TIMEOUT));
+
+        let progressed_at = started_at + WRITE_NO_PROGRESS_TIMEOUT;
+        assert_eq!(pending.record_progress(1, progressed_at), 0..1);
+        assert!(!pending
+            .has_timed_out(progressed_at + WRITE_NO_PROGRESS_TIMEOUT - Duration::from_millis(1)));
+        assert!(pending.has_timed_out(progressed_at + WRITE_NO_PROGRESS_TIMEOUT));
+    }
+
+    #[test]
+    fn partial_normal_write_emits_prefix_once_and_replies_after_terminal() {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let mut pending = Some(PendingWrite {
+            data: vec![1, 2, 3, 4],
+            offset: 2,
+            last_progress_at: Instant::now(),
+            origin: PendingWriteOrigin::Normal {
+                text_encoding: Some("utf-8".to_owned()),
+                reply: reply_tx,
+            },
+        });
+        let failure = SerialFailure::new(
+            SerialErrorCode::WriteFailed,
+            "串口发送失败: 设备已断开".to_owned(),
+        );
+        let mut emitted_data = Vec::new();
+        let mut emitted_encoding = None;
+        let mut emit_count = 0;
+
+        let failure_reply =
+            prepare_normal_write_failure(&mut pending, &failure, |data, text_encoding| {
+                emit_count += 1;
+                emitted_data.extend_from_slice(data);
+                emitted_encoding = text_encoding.map(str::to_owned);
+            })
+            .expect("部分写入应当准备失败回执");
+
+        assert!(pending.is_none());
+        assert_eq!(emitted_data, vec![1, 2]);
+        assert_eq!(emitted_encoding.as_deref(), Some("utf-8"));
+        assert_eq!(emit_count, 1);
+        assert!(
+            prepare_normal_write_failure(&mut pending, &failure, |_, _| {
+                emit_count += 1;
+            })
+            .is_none()
+        );
+        assert_eq!(emit_count, 1);
+        assert!(matches!(
+            reply_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        let mut terminal_published = false;
+        reply_normal_write_failure_after_terminal(failure_reply, || {
+            assert!(matches!(
+                reply_rx.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+            terminal_published = true;
+        });
+
+        assert!(terminal_published);
+        assert_eq!(
+            wait_for_normal_write_reply(reply_rx),
+            Err(concat!(
+                "串口发送失败: 设备已断开；已写入 2/4 字节，",
+                "设备可能已收到部分数据，请勿直接重试整帧"
+            )
+            .to_owned())
+        );
+    }
+
+    #[test]
+    fn zero_byte_normal_write_failure_preserves_the_original_reason() {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let mut pending = Some(PendingWrite {
+            data: vec![1, 2, 3],
+            offset: 0,
+            last_progress_at: Instant::now(),
+            origin: PendingWriteOrigin::Normal {
+                text_encoding: None,
+                reply: reply_tx,
+            },
+        });
+        let failure = SerialFailure::new(
+            SerialErrorCode::WriteFailed,
+            "串口发送失败: 写入操作未取得进展".to_owned(),
+        );
+
+        let failure_reply = prepare_normal_write_failure(&mut pending, &failure, |_, _| {
+            panic!("零字节失败不应发布 TX 事件");
+        })
+        .expect("零字节失败仍应准备回执");
+        reply_normal_write_failure_after_terminal(failure_reply, || {});
+
+        assert_eq!(
+            wait_for_normal_write_reply(reply_rx),
+            Err("串口发送失败: 写入操作未取得进展".to_owned())
+        );
+    }
+
+    #[test]
+    fn disconnected_normal_write_reply_channel_is_a_failure() {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        drop(reply_tx);
+
+        assert_eq!(
+            wait_for_normal_write_reply(reply_rx),
+            Err("串口连接已结束，发送未完成".to_owned())
+        );
     }
 
     #[test]

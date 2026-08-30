@@ -12,7 +12,7 @@
 - `id`：持久化和捕获文件使用的 wire ID。
 - `displayName` 与 `description`：协议选择器和状态展示文案。
 - `createParser()`：每次返回状态完全独立的增量解析器。
-- `encodeSimulatorSample()`：让浏览器预览能贯通该协议的数据链路。
+- `encodeSimulatorSample?()`：可选；结构化协议可用它接入内置波形模拟。
 - `replaySeekMode`：声明回放定位是否具备可靠同步边界。
 
 新增协议时必须追加新的 ID，不能重命名、删除或复用已有 ID。工作区 v1/v2 和 VUCAP v1 都会持久化该字符串；
@@ -29,6 +29,10 @@ VUCAP 输入的信任边界。`replaySeekMode` 的 `record-boundary` 只适用�
 当前 Raw Data 使用 `record-boundary`。FireWater / JustFloat 使用 `protocol-boundary`：前者以 RX `LF` 后为同步点，
 后者以 RX 完整 `00 00 80 7F` 后为同步点，TX 交错不改变 RX 同步状态。结构化定位丢弃目标处可能残缺的第一个
 单元并返回实际吸附时间，不允许仅在 UI 中声明能力而让 Rust 把任意 record 起点当成安全边界。
+
+Raw Data 只承载真实串口或回放中的原始字节，不执行结构化解析，也不生成数值波形。它不提供
+`encodeSimulatorSample`，内置波形模拟只支持 FireWater 和 JustFloat。若未来增加 Raw 模拟，输入模型必须是用户
+明确提供的 HEX 载荷和发送间隔，并按原始字节发送；不能为 Raw 隐式定义样本序号、浮点载荷或其他私有帧格式。
 
 ## 解析器契约
 
@@ -107,11 +111,15 @@ class ExampleParser implements ProtocolParser {
 }
 ```
 
-注册项必须同时提供模拟器编码器，确保下列测试可以成立：
+需要接入内置波形模拟的结构化协议才提供模拟器编码器，并确保下列测试可以成立：
 
 ```ts
 const definition = getProtocolDefinition("example");
-const bytes = definition.encodeSimulatorSample([1, 2, 3], 0);
+const encodeSimulatorSample = definition.encodeSimulatorSample;
+if (!encodeSimulatorSample) {
+  throw new Error("example 不支持波形模拟");
+}
+const bytes = encodeSimulatorSample([1, 2, 3], 0);
 const frames = definition.createParser().push(bytes, 1_000);
 expect(frames[0]?.values).toEqual([1, 2, 3]);
 ```
@@ -127,7 +135,7 @@ expect(frames[0]?.values).toEqual([1, 2, 3]);
 3. 半帧后 `reset()` 不产生幽灵帧，重复 reset 幂等，两个工厂实例互不影响。
 4. 空、损坏、超长和固定规模随机字节不抛异常，随后能在同步点恢复。
 5. 输出通道数、有限数值和标签对齐满足上述边界。
-6. 模拟器编码结果能被对应解析器消费；Raw 明确产生零个波形帧。
+6. 声明模拟能力的结构化协议，其编码结果能被对应解析器消费；Raw 不声明该能力且始终产生零个波形帧。
 7. 若开放 seek，帧尾所有切点、record 内多帧、TX 交错、重复时间戳和无后续同步点均不产生截断帧。
 8. 合法、损坏和超长单元的健康计数与分包方式无关；原因、最近时间和重同步次数精确一致。
 9. `clearHealth()` 保留半帧，`reset()` 同时清半帧与统计，计数达到上限后保持饱和。
@@ -139,7 +147,7 @@ expect(frames[0]?.values).toEqual([1, 2, 3]);
 一个新增协议 PR 至少应修改并说明：
 
 - `PROTOCOL_IDS` 与静态协议注册表。
-- parser、模拟器编码器和协议合规夹具。
+- parser、可选模拟器编码器和协议合规夹具。
 - Rust 捕获协议白名单及其测试。
 - VUCAP 格式文档中的合法 ID，以及 README 中面向用户的输入说明。
 - seek 是否安全；若开放，Rust 同步扫描器与端到端吸附反馈必须一并实现，否则保持 `unsupported`。

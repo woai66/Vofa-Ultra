@@ -73,6 +73,7 @@ interface DiagnosticInput {
 
 interface DiagnosticsContext {
   appVersion: string;
+  buildId: string;
   connectionStatus: ConnectionStatus;
   generation: number;
   revision: number;
@@ -93,6 +94,7 @@ export class SerialReconnectCoordinator {
   private recovering = false;
   private target: SerialReconnectTarget | null = null;
   private config: SerialConfig | null = null;
+  private manualConnectionPending = false;
   private armedGeneration: number | undefined;
   private lastConnectedRevision = -1;
   private lastFailureRevision = 0;
@@ -163,6 +165,7 @@ export class SerialReconnectCoordinator {
     this.attempt = 0;
     this.nextAttemptAt = undefined;
     this.armedGeneration = undefined;
+    this.manualConnectionPending = true;
     this.config = { ...config };
     this.target = createSerialReconnectTarget(port);
     this.phase = this.enabled ? "idle" : "off";
@@ -189,6 +192,57 @@ export class SerialReconnectCoordinator {
     });
   }
 
+  recordPortDiscoveryFailure(mode: "manual" | "background"): void {
+    this.record({
+      kind: "port_discovery_failed",
+      errorCode: "enumeration-failed",
+      outcome: mode,
+    });
+  }
+
+  recordSerialSendFailure(input: {
+    origin: "manual" | "scheduler" | "auto-responder";
+    generation: number;
+    revision: number;
+  }): void {
+    this.record({
+      kind: "serial_send_failed",
+      generation: input.generation,
+      revision: input.revision,
+      errorCode: "command-failed",
+      outcome: input.origin,
+    });
+  }
+
+  recordDisconnectCommandFailure(input: {
+    generation: number;
+    revision: number;
+    outcome: ConnectionStatus | "state-unavailable";
+  }): void {
+    this.record({
+      kind: "disconnect_command_failed",
+      generation: input.generation,
+      revision: input.revision,
+      errorCode: "command-failed",
+      outcome: input.outcome,
+    });
+  }
+
+  recordManualConnectionFailure(input: {
+    generation?: number;
+    revision?: number;
+    errorCode?: string;
+  }): void {
+    if (!this.manualConnectionPending || this.recovering) {
+      return;
+    }
+    this.manualConnectionPending = false;
+    if (input.revision !== undefined) {
+      this.lastFailureRevision = Math.max(this.lastFailureRevision, input.revision);
+    }
+    this.record({ kind: "manual_connect_failed", ...input });
+  }
+
   observeState(payload: SerialStatePayload, previousStatus: ConnectionStatus): boolean {
     if (payload.status === "disconnected") {
       this.bumpEpoch();
@@ -196,6 +250,7 @@ export class SerialReconnectCoordinator {
       this.attempt = 0;
       this.nextAttemptAt = undefined;
       this.armedGeneration = undefined;
+      this.manualConnectionPending = false;
       this.lastAttemptErrorCode = undefined;
       this.phase = this.enabled ? "idle" : "off";
       this.message = this.enabled ? "自动重连将在手动连接成功后待命" : "自动重连未启用";
@@ -218,12 +273,33 @@ export class SerialReconnectCoordinator {
 
     if (
       payload.status === "error" &&
+      this.manualConnectionPending &&
+      !this.recovering &&
+      previousStatus !== "connected"
+    ) {
+      this.recordManualConnectionFailure({
+        generation: payload.generation,
+        revision: payload.revision,
+        errorCode: payload.errorCode,
+      });
+      return false;
+    }
+
+    if (
+      payload.status === "error" &&
       previousStatus === "connected" &&
-      payload.generation === this.armedGeneration &&
       payload.revision > this.lastFailureRevision
     ) {
       this.lastFailureRevision = payload.revision;
-      return this.startRecovery(payload);
+      this.record({
+        kind: "connection_lost",
+        generation: payload.generation,
+        revision: payload.revision,
+        errorCode: payload.errorCode,
+      });
+      if (payload.generation === this.armedGeneration) {
+        return this.startRecovery();
+      }
     }
     return false;
   }
@@ -239,6 +315,7 @@ export class SerialReconnectCoordinator {
     this.attempt = 0;
     this.nextAttemptAt = undefined;
     this.armedGeneration = undefined;
+    this.manualConnectionPending = false;
     this.lastAttemptErrorCode = undefined;
     this.phase = this.enabled ? "idle" : "off";
     this.message = this.enabled ? "自动重连已取消" : "自动重连未启用";
@@ -273,6 +350,7 @@ export class SerialReconnectCoordinator {
     this.recovering = false;
     this.attempt = 0;
     this.nextAttemptAt = undefined;
+    this.manualConnectionPending = false;
     this.lastAttemptErrorCode = undefined;
     if (wasRecovering) {
       this.dependencies.resetStreamAfterReconnect();
@@ -313,7 +391,7 @@ export class SerialReconnectCoordinator {
     this.record({ kind: "recovery_identity_unavailable", generation, outcome: "blocked" });
   }
 
-  private startRecovery(payload: SerialStatePayload): boolean {
+  private startRecovery(): boolean {
     if (!this.enabled) {
       return false;
     }
@@ -326,12 +404,6 @@ export class SerialReconnectCoordinator {
     this.recovering = true;
     this.attempt = 0;
     this.nextAttemptAt = undefined;
-    this.record({
-      kind: "connection_lost",
-      generation: payload.generation,
-      revision: payload.revision,
-      errorCode: payload.errorCode,
-    });
     void this.prepareAndSchedule(epoch);
     return true;
   }
@@ -651,6 +723,7 @@ function createDiagnosticsReport(
     schemaVersion: 1,
     generatedAt,
     appVersion: context.appVersion,
+    buildId: context.buildId,
     connection: {
       status: context.connectionStatus,
       recoveryPhase: context.recoveryPhase,

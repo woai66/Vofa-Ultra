@@ -46,7 +46,9 @@ const STRUCTURED_PROTOCOL_FIXTURES = {
   justfloat: {
     id: "justfloat",
     values: [1.25, -2, 3],
-    malformedInput: new Uint8Array([0x12, 0x34, 0x00, 0x00, 0x80, 0x7f]),
+    malformedInput: new Uint8Array([
+      0x01, 0x00, 0xc0, 0x7f, 0x00, 0x00, 0x80, 0x7f,
+    ]),
     oversizedInput: new Uint8Array(80).fill(1),
     recoveryBoundary: new Uint8Array([0x00, 0x00, 0x80, 0x7f]),
     encode: encodeJustFloatFrame,
@@ -251,6 +253,23 @@ describe("JustFloatParser", () => {
     expect(parser.push(bytes.slice(-1), 6_200)).toEqual([{ values, timestamp: 6_200 }]);
   });
 
+  it("忽略合法浮点载荷中未对齐的伪帧尾", () => {
+    const parser = new JustFloatParser();
+    const payload = new Uint8Array([0x01, 0x00, 0x00, 0x80, 0x7f, 0x00, 0x00, 0x00]);
+    const frame = concatBytes(payload, new Uint8Array([0x00, 0x00, 0x80, 0x7f]));
+    const view = new DataView(payload.buffer);
+    const expected = [view.getFloat32(0, true), view.getFloat32(4, true)];
+
+    expect(parser.push(frame.slice(0, 5), 6_250)).toEqual([]);
+    expect(parser.push(frame.slice(5), 6_260)).toEqual([
+      { values: expected, timestamp: 6_260 },
+    ]);
+    expect(parser.getHealthSnapshot()).toMatchObject({
+      acceptedFrames: 1,
+      droppedFrames: 0,
+    });
+  });
+
   it("丢弃超长未闭合帧并在下一个帧尾后恢复", () => {
     const parser = new JustFloatParser();
 
@@ -294,6 +313,9 @@ describe("内置协议贡献契约", () => {
     expect(getProtocolDefinition("raw").replaySeekMode).toBe("record-boundary");
     expect(getProtocolDefinition("firewater").replaySeekMode).toBe("protocol-boundary");
     expect(getProtocolDefinition("justfloat").replaySeekMode).toBe("protocol-boundary");
+    expect(getProtocolDefinition("raw").encodeSimulatorSample).toBeUndefined();
+    expect(getProtocolDefinition("firewater").encodeSimulatorSample).toBeTypeOf("function");
+    expect(getProtocolDefinition("justfloat").encodeSimulatorSample).toBeTypeOf("function");
 
     for (const definition of BUILTIN_PROTOCOLS) {
       expect(definition).toBe(getProtocolDefinition(definition.id));
@@ -333,6 +355,14 @@ describe("内置协议贡献契约", () => {
 
     expect(bytewise).toEqual([{ values: [...values], timestamp: 7_200 }]);
     expect(randomized).toEqual([{ values: [...values], timestamp: 7_300 }]);
+  });
+
+  it.each(STRUCTURED_CASES)("$id 的同批多帧保留读取块时间戳", ({ id, values, encode }) => {
+    const parser = createProtocolParser(id);
+    const frames = parser.push(concatBytes(encode(values), encode(values)), 7_350);
+
+    expect(frames).toHaveLength(2);
+    expect(frames.map((frame) => frame.timestamp)).toEqual([7_350, 7_350]);
   });
 
   it.each(STRUCTURED_CASES)("$id 的 reset 幂等且实例残片相互隔离", ({ id, values, encode }) => {
@@ -470,20 +500,21 @@ describe("内置协议贡献契约", () => {
     );
   });
 
-  it("所有模拟器编码器都能由对应解析器消费", () => {
+  it("所有已声明的模拟器编码器都能由对应解析器消费", () => {
+    const supportedProtocols: ProtocolKind[] = [];
     for (const definition of BUILTIN_PROTOCOLS) {
-      const bytes = definition.encodeSimulatorSample([1.5, -2.25, 3], 12);
-      const frames = definition.createParser().push(bytes, 8_000);
-      if (definition.id === "raw") {
-        expect(frames).toEqual([]);
-        expect(new TextDecoder().decode(bytes)).toBe(
-          "sample=00012 ch1=1.50 ch2=-2.25 ch3=3.00\n",
-        );
-      } else {
-        expect(frames).toHaveLength(1);
-        expectFrameContract(frames[0]);
+      const encodeSimulatorSample = definition.encodeSimulatorSample;
+      if (!encodeSimulatorSample) {
+        continue;
       }
+
+      supportedProtocols.push(definition.id);
+      const bytes = encodeSimulatorSample([1.5, -2.25, 3], 12);
+      const frames = definition.createParser().push(bytes, 8_000);
+      expect(frames).toHaveLength(1);
+      expectFrameContract(frames[0]);
     }
+    expect(supportedProtocols).toEqual(["firewater", "justfloat"]);
   });
 
   it("固定规模随机字节不抛错，reset 后仍能恢复", () => {
@@ -494,16 +525,15 @@ describe("内置协议贡献契约", () => {
       frames.forEach(expectFrameContract);
 
       parser.reset();
-      const recovered = parser.push(
-        definition.encodeSimulatorSample([1, 2, 3], 1),
-        8_200,
-      );
-      if (definition.id === "raw") {
-        expect(recovered).toEqual([]);
-      } else {
-        expect(recovered).toHaveLength(1);
-        expectFrameContract(recovered[0]);
+      const encodeSimulatorSample = definition.encodeSimulatorSample;
+      if (!encodeSimulatorSample) {
+        expect(definition.id).toBe("raw");
+        continue;
       }
+
+      const recovered = parser.push(encodeSimulatorSample([1, 2, 3], 1), 8_200);
+      expect(recovered).toHaveLength(1);
+      expectFrameContract(recovered[0]);
     }
   });
 });

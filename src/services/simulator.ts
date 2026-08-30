@@ -8,12 +8,18 @@ export function startSimulator(
   config: SimulatorConfig,
   onData: (bytes: Uint8Array, timestamp: number) => void,
 ): () => void {
+  const definition = getProtocolDefinition(protocol);
+  const encodeSimulatorSample = definition.encodeSimulatorSample;
+  if (!encodeSimulatorSample) {
+    throw new Error(`${definition.displayName} 不支持模拟数据`);
+  }
+
   const frozenConfig = parseSimulatorConfig(config);
   let sampleIndex = 0;
 
   const timer = window.setInterval(() => {
     const values = generateSimulatorValues(frozenConfig, sampleIndex);
-    const bytes = getProtocolDefinition(protocol).encodeSimulatorSample(values, sampleIndex);
+    const bytes = encodeSimulatorSample(values, sampleIndex);
     onData(bytes, Date.now());
     sampleIndex += 1;
   }, 1_000 / frozenConfig.sampleRate);

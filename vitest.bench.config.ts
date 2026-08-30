@@ -11,6 +11,7 @@ if (typeof packageManifest.version !== "string" || packageManifest.version.lengt
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(packageManifest.version),
+    __APP_BUILD_ID__: JSON.stringify("benchmark"),
   },
   test: {
     environment: "node",

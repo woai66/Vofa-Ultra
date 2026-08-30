@@ -33,10 +33,11 @@ use serial::{
     list_serial_ports, send_serial, set_serial_control_line, start_modbus_transaction,
     start_serial_file_send, SerialState,
 };
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(CaptureState::default())
         .manage(CaptureExportState::default())
         .manage(ExtensionState::default())
@@ -90,6 +91,13 @@ pub fn run() {
             close_replay,
             ack_replay_batch,
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("启动 Vofa-Ultra 失败");
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            if let Err(error) = app_handle.state::<SerialState>().shutdown() {
+                eprintln!("退出时关闭串口失败: {error}");
+            }
+        }
+    });
 }

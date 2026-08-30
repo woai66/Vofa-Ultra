@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { APP_DISPLAY_VERSION } from "../core/appMetadata";
+import { APP_BUILD_ID, APP_DISPLAY_VERSION } from "../core/appMetadata";
 import { createInitialModbusPollSnapshot } from "../core/modbusPoller";
 import { createEmptyProtocolHealth } from "../core/protocols";
 import { useWorkbenchStore } from "../store/workbenchStore";
@@ -15,7 +16,14 @@ describe("Sidebar 串口恢复界面", () => {
     useWorkbenchStore.setState({
       isNativeRuntime: true,
       source: "serial",
+      protocol: "firewater",
       connectionStatus: "error",
+      serialRuntimeError: "",
+      isRefreshingPorts: false,
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
+      connectionActionError: "",
+      connectionMessage: "设备已移除",
       statusMessage: "设备已移除",
       ports: [
         {
@@ -90,6 +98,183 @@ describe("Sidebar 串口恢复界面", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it("未连接时显示连接摘要而不复用其他模块的瞬时消息", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      connectionMessage: "COM3 已就绪",
+      statusMessage: "回放已关闭",
+      serialRuntimeError: "",
+      refreshPorts: vi.fn().mockResolvedValue(undefined),
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const connection_status = screen.getByRole("status");
+    expect(connection_status).toHaveTextContent("COM3 已就绪");
+    expect(connection_status).not.toHaveTextContent("回放已关闭");
+  });
+
+  it("区分串口扫描中、未发现设备和扫描失败", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      isRefreshingPorts: true,
+      connectionMessage: "等待连接",
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
+      ports: [],
+      serialConfig: { ...state.serialConfig, portName: "" },
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    const props = {
+      activePanel: "connection" as const,
+      themePreference: "dark" as const,
+      onClose: vi.fn(),
+      onThemePreferenceChange: vi.fn(),
+    };
+    const { rerender } = render(<Sidebar {...props} />);
+
+    expect(screen.getByLabelText("串口设备")).toHaveDisplayValue("正在扫描设备");
+    expect(screen.getByLabelText("串口设备")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "刷新串口列表" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("正在扫描串口设备");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "connecting");
+    expect(screen.getByRole("button", { name: "连接设备" })).toHaveAttribute(
+      "title",
+      "正在扫描串口设备",
+    );
+
+    useWorkbenchStore.setState({
+      isRefreshingPorts: false,
+      serialPortDiscoveryStatus: "empty",
+      serialPortDiscoveryMessage: "未发现串口设备",
+    });
+    rerender(<Sidebar {...props} />);
+    expect(screen.getByLabelText("串口设备")).toHaveDisplayValue("未发现设备");
+    expect(screen.getByRole("status")).toHaveTextContent("未发现串口设备");
+    expect(screen.getByRole("button", { name: "连接设备" })).toHaveAttribute(
+      "title",
+      "未发现串口设备，请连接设备后刷新",
+    );
+
+    useWorkbenchStore.setState({
+      serialPortDiscoveryStatus: "error",
+      serialPortDiscoveryMessage: "扫描串口失败：串口驱动不可用",
+    });
+    rerender(<Sidebar {...props} />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "扫描串口失败：串口驱动不可用",
+    );
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "error");
+    expect(screen.getByRole("button", { name: "连接设备" })).toHaveAttribute(
+      "title",
+      "扫描串口失败：串口驱动不可用",
+    );
+    expect(screen.getByRole("button", { name: "连接设备" })).toHaveAttribute(
+      "aria-describedby",
+      "connection-action-hint",
+    );
+    expect(screen.getByRole("button", { name: "连接设备" })).toHaveAccessibleDescription(
+      "扫描串口失败：串口驱动不可用",
+    );
+  });
+
+  it("连接错误后主动扫描时优先显示本次扫描进度和结果", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "error",
+      connectionMessage: "COM3 打开失败：拒绝访问",
+      isRefreshingPorts: true,
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
+      ports: [],
+      serialConfig: { ...state.serialConfig, portName: "" },
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    const props = {
+      activePanel: "connection" as const,
+      themePreference: "dark" as const,
+      onClose: vi.fn(),
+      onThemePreferenceChange: vi.fn(),
+    };
+    const { rerender } = render(<Sidebar {...props} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("正在扫描串口设备");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "connecting");
+
+    useWorkbenchStore.setState({
+      isRefreshingPorts: false,
+      serialPortDiscoveryStatus: "ready",
+      serialPortDiscoveryMessage: "发现 1 个串口设备",
+    });
+    rerender(<Sidebar {...props} />);
+    expect(screen.getByRole("status")).toHaveTextContent("发现 1 个串口设备");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "disconnected");
+  });
+
+  it("已连接端口暂时不在枚举列表时标记为当前连接", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      connectionMessage: "COM3 已连接",
+      ports: [],
+      serialConfig: { ...state.serialConfig, portName: "COM3" },
+      serialRecovery: { ...state.serialRecovery, phase: "armed" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("串口设备")).toHaveDisplayValue("COM3 · 当前连接");
+    expect(screen.getByRole("status")).toHaveTextContent("COM3 已连接");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "connected");
+  });
+
+  it("断开失败时保留真实连接态并用红色摘要提示可重试", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      connectionActionError: "断开失败，当前仍保持连接：串口服务无响应",
+      connectionMessage: "断开失败，当前仍保持连接：串口服务无响应",
+      ports: [],
+      serialConfig: { ...state.serialConfig, portName: "COM3" },
+      serialRecovery: { ...state.serialRecovery, phase: "armed" },
+    }));
+    const props = {
+      activePanel: "connection" as const,
+      themePreference: "dark" as const,
+      onClose: vi.fn(),
+      onThemePreferenceChange: vi.fn(),
+    };
+    const { rerender } = render(<Sidebar {...props} />);
+
+    const connection_status = screen.getByRole("status");
+    expect(connection_status).toHaveTextContent(
+      "断开失败，当前仍保持连接：串口服务无响应",
+    );
+    expect(connection_status).toHaveAttribute("data-status", "error");
+    expect(screen.getByRole("button", { name: "断开连接" })).toBeEnabled();
+
+    useWorkbenchStore.setState({
+      connectionActionError: "",
+      connectionMessage: "COM3 已连接",
+    });
+    rerender(<Sidebar {...props} />);
+    expect(screen.getByRole("status")).toHaveTextContent("COM3 已连接");
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "connected");
+  });
+
   it("为串口配置字段提供稳定表单标识", () => {
     const { container } = render(
       <Sidebar
@@ -119,6 +304,39 @@ describe("Sidebar 串口恢复界面", () => {
     const fields = [...container.querySelectorAll("input, select")];
     expect(fields.length).toBeGreaterThan(0);
     expect(fields.every((field) => Boolean(field.id && field.getAttribute("name")))).toBe(true);
+  });
+
+  it("Raw Data 不显示波形模拟配置且阻止启动", () => {
+    useWorkbenchStore.setState((state) => ({
+      source: "simulator",
+      protocol: "raw",
+      connectionStatus: "disconnected",
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByLabelText("信号类型")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("模拟器通道数")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("模拟器采样率")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Raw Data 不提供模拟，请选择串口或回放",
+    );
+    const start_button = screen.getByRole("button", { name: "启动模拟" });
+    expect(start_button).toBeDisabled();
+    expect(start_button).toHaveAttribute(
+      "title",
+      "Raw Data 不提供模拟，请选择串口或回放",
+    );
+    expect(start_button).toHaveAccessibleDescription(
+      "Raw Data 不提供模拟，请选择串口或回放",
+    );
   });
 
   it("Modbus 轮询期间禁用串口控制线", () => {
@@ -238,12 +456,13 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    const summary = screen.getByRole("group", { name: "已选端口信息" });
+    const summary = screen.getByRole("group", { name: /已选端口信息/ });
     expect(summary).toHaveTextContent("Telemetry");
     expect(summary).toHaveTextContent("Acme Devices");
     expect(summary).toHaveTextContent("USB");
     expect(summary).toHaveTextContent("1234:5678");
-    expect(summary).toHaveTextContent("唯一身份");
+    expect(summary).not.toHaveTextContent("唯一身份");
+    expect(summary).toHaveAccessibleName(/支持唯一设备识别/);
     expect(summary).not.toHaveTextContent("DEVICE-001");
   });
 
@@ -331,6 +550,7 @@ describe("Sidebar 串口恢复界面", () => {
     expect(screen.getByLabelText("信号类型")).toBeDisabled();
     expect(screen.getByLabelText("模拟器通道数")).toBeDisabled();
     expect(screen.getByLabelText("模拟器采样率")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "停止模拟" })).toBeEnabled();
   });
 
   it("端口选项按名称自然排序并包含设备摘要", () => {
@@ -386,6 +606,7 @@ describe("Sidebar 串口恢复界面", () => {
       "title",
       "COM3 当前不可用，请刷新或选择其他串口",
     );
+    expect(screen.getByRole("status")).toHaveTextContent("COM3 当前不可用");
 
     fireEvent.change(screen.getByLabelText("串口设备"), { target: { value: "COM4" } });
     expect(connectButton).toBeEnabled();
@@ -407,17 +628,119 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    const baud_rate = screen.getByRole("textbox", { name: "波特率" });
-    const baud_rate_presets = screen.getByRole("combobox", {
-      name: "选择常用波特率",
-    });
+    const baud_rate = screen.getByRole("combobox", { name: "波特率" });
     expect(baud_rate).toHaveValue("115200");
+    fireEvent.click(screen.getByRole("button", { name: "展开常用波特率" }));
+    const baud_rate_presets = screen.getByRole("listbox", { name: "常用波特率" });
     expect(within(baud_rate_presets).getByRole("option", { name: "9600" })).toBeInTheDocument();
-    expect(within(baud_rate_presets).getAllByRole("option")).toHaveLength(14);
+    expect(within(baud_rate_presets).getAllByRole("option")).toHaveLength(13);
 
-    fireEvent.change(baud_rate_presets, { target: { value: "9600" } });
+    fireEvent.click(within(baud_rate_presets).getByRole("option", { name: "9600" }));
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(9_600);
     expect(baud_rate).toHaveValue("9600");
+  });
+
+  it("用方向键浏览常用波特率并用回车选择或 Escape 关闭", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      serialConfig: { ...state.serialConfig, baudRate: 115_200 },
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const baud_rate = screen.getByRole("combobox", { name: "波特率" });
+    fireEvent.keyDown(baud_rate, { key: "ArrowDown" });
+    expect(baud_rate).toHaveAttribute(
+      "aria-activedescendant",
+      "baud-rate-option-230400",
+    );
+    fireEvent.keyDown(baud_rate, { key: "ArrowDown" });
+    expect(baud_rate).toHaveAttribute(
+      "aria-activedescendant",
+      "baud-rate-option-460800",
+    );
+    fireEvent.keyDown(baud_rate, { key: "ArrowUp" });
+    expect(baud_rate).toHaveAttribute(
+      "aria-activedescendant",
+      "baud-rate-option-230400",
+    );
+    fireEvent.keyDown(baud_rate, { key: "Enter" });
+    expect(baud_rate).toHaveValue("230400");
+    expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(230_400);
+    expect(screen.queryByRole("listbox", { name: "常用波特率" })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(baud_rate, { key: "ArrowUp" });
+    expect(screen.getByRole("listbox", { name: "常用波特率" })).toBeInTheDocument();
+    fireEvent.keyDown(baud_rate, { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: "常用波特率" })).not.toBeInTheDocument();
+    expect(baud_rate).toHaveValue("230400");
+  });
+
+  it("波特率弹层保持单一 Tab 停靠点并提交后进入协议选择", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      protocol: "firewater",
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const baud_rate = screen.getByRole("combobox", { name: "波特率" });
+    baud_rate.focus();
+    await user.keyboard("{ArrowDown}");
+    const listbox = screen.getByRole("listbox", { name: "常用波特率" });
+    const options = within(listbox).getAllByRole("option");
+    expect(options.every((option) => option.tabIndex === -1)).toBe(true);
+    expect(screen.getByRole("button", { name: "收起常用波特率" })).toHaveAttribute(
+      "tabindex",
+      "-1",
+    );
+
+    await user.tab();
+    expect(screen.queryByRole("listbox", { name: "常用波特率" })).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /FireWater/ })).toHaveFocus();
+  });
+
+  it("协议选择先于默认折叠的高级串口参数", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      protocol: "firewater",
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const firewater = screen.getByRole("radio", { name: /FireWater/ });
+    const advanced_summary = screen.getByText("高级串口设置").closest("summary");
+    const advanced_details = advanced_summary?.closest("details");
+    expect(advanced_details).not.toHaveAttribute("open");
+    expect(
+      firewater.compareDocumentPosition(advanced_summary as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+
+    expect(screen.getByRole("radio", { name: /Raw Data/ })).toHaveTextContent(
+      "原始字节 · 无波形",
+    );
   });
 
   it("用无步进文本框提交自定义波特率并可从下拉切回预设", () => {
@@ -435,7 +758,7 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    const baud_rate = screen.getByRole("textbox", { name: "波特率" }) as HTMLInputElement;
+    const baud_rate = screen.getByRole("combobox", { name: "波特率" }) as HTMLInputElement;
     expect(baud_rate).toHaveAttribute("type", "text");
     expect(baud_rate).toHaveAttribute("inputmode", "numeric");
 
@@ -454,14 +777,13 @@ describe("Sidebar 串口恢复界面", () => {
     expect(baud_rate).toHaveValue("12000000");
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(12_000_000);
 
-    fireEvent.change(screen.getByRole("combobox", { name: "选择常用波特率" }), {
-      target: { value: "115200" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "展开常用波特率" }));
+    fireEvent.click(screen.getByRole("option", { name: "115200" }));
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(115_200);
     expect(baud_rate).toHaveValue("115200");
   });
 
-  it("失焦时拒绝非法自定义波特率并恢复当前配置", () => {
+  it("非法波特率失焦后保持错误并阻止连接", () => {
     useWorkbenchStore.setState((state) => ({
       connectionStatus: "disconnected",
       serialConfig: { ...state.serialConfig, baudRate: 250_000 },
@@ -476,14 +798,71 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    const baud_rate = screen.getByRole("textbox", { name: "波特率" });
+    const baud_rate = screen.getByRole("combobox", { name: "波特率" });
+    const connect_button = screen.getByRole("button", { name: "连接设备" });
     fireEvent.change(baud_rate, { target: { value: "0" } });
     expect(baud_rate).toHaveAttribute("aria-invalid", "true");
+    expect(connect_button).toBeDisabled();
+    expect(connect_button).toHaveAccessibleDescription("请先输入有效波特率");
     fireEvent.blur(baud_rate);
 
-    expect(baud_rate).toHaveValue("250000");
-    expect(baud_rate).toHaveAttribute("aria-invalid", "false");
+    expect(baud_rate).toHaveValue("0");
+    expect(baud_rate).toHaveAttribute("aria-invalid", "true");
+    expect(connect_button).toBeDisabled();
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(250_000);
+
+    fireEvent.keyDown(baud_rate, { key: "Escape" });
+    expect(baud_rate).toHaveValue("250000");
+    expect(connect_button).toBeEnabled();
+  });
+
+  it("有效自定义波特率在焦点离开组合框时提交", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      serialConfig: { ...state.serialConfig, baudRate: 115_200 },
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const baud_rate = screen.getByRole("combobox", { name: "波特率" });
+    fireEvent.change(baud_rate, { target: { value: "250000" } });
+    fireEvent.blur(baud_rate, { relatedTarget: document.body });
+
+    expect(baud_rate).toHaveValue("250000");
+    expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(250_000);
+  });
+
+  it("串口核心监听故障时显示原因并阻止刷新和连接", () => {
+    const runtime_error = "串口核心事件监听初始化失败：事件插件不可用";
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "disconnected",
+      serialRuntimeError: runtime_error,
+      statusMessage: runtime_error,
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "刷新串口列表" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "连接设备" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "连接设备" })).toHaveAttribute(
+      "title",
+      runtime_error,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(runtime_error);
   });
 
   it("连接期间同时锁定波特率输入和常用值下拉", () => {
@@ -501,8 +880,8 @@ describe("Sidebar 串口恢复界面", () => {
       />,
     );
 
-    expect(screen.getByRole("textbox", { name: "波特率" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "选择常用波特率" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "波特率" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "展开常用波特率" })).toBeDisabled();
   });
 
   it("打开桌面串口连接面板时请求后台刷新", () => {
@@ -538,6 +917,7 @@ describe("Sidebar 串口恢复界面", () => {
     const setSerialControlLine = vi.fn().mockResolvedValue(true);
     useWorkbenchStore.setState((state) => ({
       connectionStatus: "connected",
+      connectionMessage: "DTR 已设为有效",
       statusMessage: "DTR 已设为有效",
       serialRecovery: { ...state.serialRecovery, phase: "armed" },
       serialConfig: { ...state.serialConfig, dtr: true, rts: true, flowControl: "none" },
@@ -926,7 +1306,7 @@ describe("Sidebar 主题偏好", () => {
     expect(light_button).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("显示当前版本、Windows 支持范围和许可证", () => {
+  it("显示当前版本、构建、Windows 支持范围和许可证", () => {
     render(
       <Sidebar
         activePanel="settings"
@@ -938,6 +1318,7 @@ describe("Sidebar 主题偏好", () => {
 
     const about = screen.getByRole("region", { name: "Vofa-Ultra" });
     expect(about).toHaveTextContent(APP_DISPLAY_VERSION);
+    expect(about).toHaveTextContent(APP_BUILD_ID);
     expect(about).toHaveTextContent("Windows 10/11 x64");
     expect(about).toHaveTextContent("MIT");
   });

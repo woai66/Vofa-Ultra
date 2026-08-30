@@ -44,11 +44,12 @@ import {
   selectActiveProtocol,
   useWorkbenchStore,
 } from "../store/workbenchStore";
-import type { ChannelSeries } from "../types/workbench";
+import type { ChannelSeries, DataPoint } from "../types/workbench";
 import type { ChartWindowSeconds } from "../types/workspace";
 
 const MeasurementStrip = lazy(() => import("./WaveformMeasurementStrip"));
 const WaveformSpectrum = lazy(() => import("./WaveformSpectrum"));
+const MIN_WAVEFORM_CHART_HEIGHT = 64;
 
 interface WaveformPanelProps {
   theme: ThemeMode;
@@ -66,9 +67,21 @@ type IndependentWaveformFixedRanges = Record<string, WaveformFixedRange>;
 type WaveformViewMode = "time" | "spectrum";
 
 export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelProps) {
-  const rawChannels = useWorkbenchStore((state) => state.channels);
-  const processedChannels = useWorkbenchStore((state) => state.processedChannels);
-  const extensionChannels = useWorkbenchStore((state) => state.extensionChannels);
+  const chartPaused = useWorkbenchStore((state) => state.chartPaused);
+  const rawChannels = useWorkbenchStore((state) =>
+    state.chartPaused ? (state.chartFrozenChannels ?? state.channels) : state.channels,
+  );
+  const processedChannels = useWorkbenchStore((state) =>
+    state.chartPaused
+      ? (state.chartFrozenProcessedChannels ?? state.processedChannels)
+      : state.processedChannels,
+  );
+  const extensionChannels = useWorkbenchStore((state) =>
+    state.chartPaused
+      ? (state.chartFrozenExtensionChannels ?? state.extensionChannels)
+      : state.extensionChannels,
+  );
+  const chartDataRevision = useWorkbenchStore((state) => state.chartDataRevision);
   const channelPresentations = useWorkbenchStore((state) => state.channelPresentations);
   const activeProtocol = useWorkbenchStore(selectActiveProtocol);
   const presentedRawChannels = useMemo(
@@ -100,6 +113,9 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     ],
     [presentedExtensionChannels, presentedProcessedChannels, presentedRawChannels],
   );
+  const emptyStateTitle = activeProtocol === "raw" ? "Raw Data 不生成波形" : "等待数据帧";
+  const emptyStateDetail =
+    activeProtocol === "raw" ? "原始字节保留在数据终端中" : "连接设备或启动模拟数据源";
   const triggerChannels = useMemo(
     () => [...presentedRawChannels, ...presentedProcessedChannels],
     [presentedProcessedChannels, presentedRawChannels],
@@ -108,9 +124,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     .map((channel) => `${channel.id}:${channel.color}:${channel.visible}`)
     .join("|");
   const channelIdSignature = channels.map((channel) => channel.id).join("\u001f");
-  const chartPaused = useWorkbenchStore((state) => state.chartPaused);
   const chartWindowSeconds = useWorkbenchStore((state) => state.chartWindowSeconds);
-  const chartDataRevision = useWorkbenchStore((state) => state.chartDataRevision);
   const waveformTrigger = useWorkbenchStore((state) => state.waveformTrigger);
   const setChartPaused = useWorkbenchStore((state) => state.setChartPaused);
   const setChartWindowSeconds = useWorkbenchStore((state) => state.setChartWindowSeconds);
@@ -166,6 +180,14 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     triggerThreshold.trim().length > 0 &&
     Number.isFinite(parsedTriggerThreshold) &&
     (!chartPaused || waveformTrigger.phase === "frozen");
+  const liveState =
+    replayStatus !== "idle" || chartPaused
+      ? "history"
+      : connectionStatus === "connected"
+        ? "live"
+        : connectionStatus === "connecting"
+          ? "connecting"
+          : "idle";
   const visibleScaleChannels = useMemo(
     () => channels.filter((channel) => channel.visible),
     [channels],
@@ -503,8 +525,29 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     });
   };
 
-  const setCursorToPoint = useCallback(
-    (cursor: WaveformMeasurementCursor, timestampSeconds: number) => {
+  const setCursorToIndex = useCallback(
+    (cursor: WaveformMeasurementCursor, requestedIndex: number) => {
+      setMeasurementAnchors((current) => {
+        if (!current) {
+          return current;
+        }
+        if (cursor === "A") {
+          return {
+            aIndex: Math.min(requestedIndex, current.bIndex),
+            bIndex: current.bIndex,
+          };
+        }
+        return {
+          aIndex: current.aIndex,
+          bIndex: Math.max(requestedIndex, current.aIndex),
+        };
+      });
+    },
+    [],
+  );
+
+  const handleChartMeasurement = useCallback(
+    (timestampSeconds: number) => {
       const point = snapToNearestMeasurementPoint(
         visibleMeasurementPoints,
         timestampSeconds,
@@ -512,37 +555,10 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       if (!point) {
         return;
       }
-      setMeasurementAnchors((current) => {
-        if (!current) {
-          return current;
-        }
-        if (cursor === "A") {
-          return {
-            aTimestampSeconds: Math.min(
-              point.timestampSeconds,
-              current.bTimestampSeconds,
-            ),
-            bTimestampSeconds: current.bTimestampSeconds,
-          };
-        }
-        return {
-          aTimestampSeconds: current.aTimestampSeconds,
-          bTimestampSeconds: Math.max(
-            point.timestampSeconds,
-            current.aTimestampSeconds,
-          ),
-        };
-      });
-    },
-    [visibleMeasurementPoints],
-  );
-
-  const handleChartMeasurement = useCallback(
-    (timestampSeconds: number) => {
-      setCursorToPoint(activeCursor, timestampSeconds);
+      setCursorToIndex(activeCursor, point.index);
       setActiveCursor((cursor) => (cursor === "A" ? "B" : "A"));
     },
-    [activeCursor, setCursorToPoint],
+    [activeCursor, setCursorToIndex, visibleMeasurementPoints],
   );
 
   const handleCursorIndexChange = (
@@ -551,7 +567,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   ) => {
     const point = visibleMeasurementPoints[index];
     if (point) {
-      setCursorToPoint(cursor, point.timestampSeconds);
+      setCursorToIndex(cursor, point.index);
     }
   };
 
@@ -606,9 +622,9 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
             <h2 id="waveform-title">{viewMode === "time" ? "实时波形" : "频谱分析"}</h2>
             <span className="panel-subtitle">{channels.length} 个通道</span>
           </div>
-          <span className="live-state" data-paused={chartPaused}>
+          <span className="live-state" data-state={liveState}>
             <span />
-            {chartPaused ? "HISTORY" : "LIVE"}
+            {liveState.toUpperCase()}
           </span>
         </div>
         <div className="panel-actions">
@@ -913,6 +929,8 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
           <WaveformSpectrum
             channels={channels}
             theme={theme}
+            emptyStateTitle={emptyStateTitle}
+            emptyStateDetail={emptyStateDetail}
             chartDataRevision={chartDataRevision}
             channelId={spectrumChannelId}
             windowSize={spectrumWindowSize}
@@ -1028,8 +1046,8 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
           {channels.length === 0 ? (
             <div className="panel-empty-state">
               <Waves size={30} strokeWidth={1.4} />
-              <strong>等待数据帧</strong>
-              <span>连接设备或启动模拟数据源</span>
+              <strong>{emptyStateTitle}</strong>
+              <span>{emptyStateDetail}</span>
             </div>
           ) : (
             <WaveformChart
@@ -1135,18 +1153,10 @@ function WaveformChart({
             )}`,
           )
           .join("|");
-  const data = useMemo(
-    () =>
-      createAlignedData(
-        channels,
-        followSuspended ? Number.POSITIVE_INFINITY : windowSeconds,
-      ),
-    [channels, followSuspended, windowSeconds],
-  );
   const channelMetadataRef = useRef(channels);
-  const initialDataRef = useRef(data);
+  const windowSecondsRef = useRef(windowSeconds);
   channelMetadataRef.current = channels;
-  initialDataRef.current = data;
+  windowSecondsRef.current = windowSeconds;
   measurementRef.current = {
     enabled: measurementEnabled,
     result: measurement,
@@ -1214,7 +1224,7 @@ function WaveformChart({
           : null;
     const options: Options = {
       width: Math.max(container.clientWidth, 200),
-      height: Math.max(container.clientHeight, 180),
+      height: Math.max(container.clientHeight, MIN_WAVEFORM_CHART_HEIGHT),
       padding: [12, 14, 2, 0],
       cursor: {
         drag: {
@@ -1249,8 +1259,8 @@ function WaveformChart({
           stroke: computed.getPropertyValue("--text-muted").trim(),
           grid: { stroke: computed.getPropertyValue("--chart-grid").trim(), width: 1 },
           ticks: { stroke: computed.getPropertyValue("--chart-grid-strong").trim(), width: 1 },
-          font: "11px ui-monospace, SFMono-Regular, Consolas, monospace",
-          size: 32,
+          font: "12px ui-monospace, SFMono-Regular, Consolas, monospace",
+          size: 42,
         },
         ...(focusedScaleKey
           ? [
@@ -1268,8 +1278,8 @@ function WaveformChart({
                   stroke: computed.getPropertyValue("--chart-grid-strong").trim(),
                   width: 1,
                 },
-                font: "11px ui-monospace, SFMono-Regular, Consolas, monospace",
-                size: 50,
+                font: "12px ui-monospace, SFMono-Regular, Consolas, monospace",
+                size: 56,
               },
             ]
           : []),
@@ -1295,7 +1305,16 @@ function WaveformChart({
       },
     };
 
-    const chart = new uPlot(options, initialDataRef.current, container);
+    const chart = new uPlot(
+      options,
+      createAlignedData(
+        channelMetadataRef.current,
+        followSuspendedRef.current
+          ? Infinity
+          : windowSecondsRef.current,
+      ),
+      container,
+    );
     chartRef.current = chart;
     overlayRef.current = createWaveformOverlay(chart.over);
     const suspendedXRange = suspendedXRangeRef.current;
@@ -1339,7 +1358,7 @@ function WaveformChart({
 
     const observer = new ResizeObserver(() => {
       const width = Math.max(container.clientWidth, 200);
-      const height = Math.max(container.clientHeight, 180);
+      const height = Math.max(container.clientHeight, MIN_WAVEFORM_CHART_HEIGHT);
       if (chart.width !== width || chart.height !== height) {
         chart.setSize({ width, height });
       }
@@ -1379,8 +1398,17 @@ function WaveformChart({
   ]);
 
   useLayoutEffect(() => {
-    chartRef.current?.setData(data, !followSuspended);
-  }, [data, followSuspended]);
+    const requestId = requestAnimationFrame(() =>
+      chartRef.current?.setData(
+        createAlignedData(
+          channels,
+          followSuspended ? Infinity : windowSeconds,
+        ),
+        !followSuspended,
+      ),
+    );
+    return () => cancelAnimationFrame(requestId);
+  }, [channels, followSuspended, windowSeconds]);
 
   useLayoutEffect(() => {
     const chart = chartRef.current;
@@ -1579,15 +1607,45 @@ function pruneIndependentWaveformFixedRanges(
 }
 
 function createAlignedData(channels: ChannelSeries[], windowSeconds: number): AlignedData {
-  const referencePoints = channels[0]?.points ?? [];
-  const latestTime = referencePoints.at(-1)?.x ?? 0;
-  const visiblePoints = referencePoints.filter((point) => point.x >= latestTime - windowSeconds);
-  const timestamps = visiblePoints.map((point) => point.x);
+  const slotsByKey = new Map<
+    string,
+    { readonly key: string; readonly timestamp: number; readonly order: number }
+  >();
+  let order = 0;
+  for (const channel of channels) {
+    for (const point of channel.points) {
+      if (!Number.isFinite(point.x)) {
+        continue;
+      }
+      const key = waveformPointKey(point);
+      if (!slotsByKey.has(key)) {
+        slotsByKey.set(key, { key, timestamp: point.x, order });
+        order += 1;
+      }
+    }
+  }
+  const slots = [...slotsByKey.values()].sort((left, right) => {
+    const timestampDifference = left.timestamp - right.timestamp;
+    return timestampDifference === 0 ? left.order - right.order : timestampDifference;
+  });
+  const latestTime = slots.at(-1)?.timestamp ?? 0;
+  const visibleSlots = slots.filter(
+    (slot) => slot.timestamp >= latestTime - windowSeconds,
+  );
+  const timestamps = visibleSlots.map((slot) => slot.timestamp);
   const values = channels.map((channel) => {
-    const valueByTime = new Map(channel.points.map((point) => [point.x, point.y]));
-    return timestamps.map((timestamp) => valueByTime.get(timestamp) ?? null);
+    const valueBySlot = new Map(
+      channel.points.map((point) => [waveformPointKey(point), point.y]),
+    );
+    return visibleSlots.map((slot) => valueBySlot.get(slot.key) ?? null);
   });
   return [timestamps, ...values] as AlignedData;
+}
+
+function waveformPointKey(point: DataPoint): string {
+  return point.frameSequence === undefined
+    ? `timestamp:${point.x}`
+    : `frame:${point.frameSequence}`;
 }
 
 function formatValue(value: number): string {

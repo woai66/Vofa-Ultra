@@ -49,7 +49,7 @@ export interface BuiltinProtocolDefinition {
   readonly description: string;
   readonly replaySeekMode: ReplaySeekMode;
   createParser(): ProtocolParser;
-  encodeSimulatorSample(values: readonly number[], sampleIndex: number): Uint8Array;
+  encodeSimulatorSample?(values: readonly number[], sampleIndex: number): Uint8Array;
 }
 
 export class FireWaterParser implements ProtocolParser {
@@ -125,7 +125,7 @@ export class JustFloatParser implements ProtocolParser {
     const frames: ParsedFrame[] = [];
     let frameStart = 0;
 
-    let tailIndex = findSequence(buffer, JUSTFLOAT_TAIL, frameStart);
+    let tailIndex = findJustFloatTail(buffer, frameStart, this.discardingFrame);
     while (tailIndex >= 0) {
       const frameLength = tailIndex - frameStart;
       if (this.discardingFrame) {
@@ -149,7 +149,7 @@ export class JustFloatParser implements ProtocolParser {
 
       this.discardingFrame = false;
       frameStart = tailIndex + JUSTFLOAT_TAIL.length;
-      tailIndex = findSequence(buffer, JUSTFLOAT_TAIL, frameStart);
+      tailIndex = findJustFloatTail(buffer, frameStart, this.discardingFrame);
     }
 
     const remainder = buffer.slice(frameStart);
@@ -199,8 +199,6 @@ export function encodeJustFloatFrame(values: readonly number[]): Uint8Array {
   return bytes;
 }
 
-const RAW_ENCODER = new TextEncoder();
-
 const protocolRegistry = {
   firewater: Object.freeze({
     id: "firewater",
@@ -221,7 +219,7 @@ const protocolRegistry = {
   raw: Object.freeze({
     id: "raw",
     displayName: "Raw Data",
-    description: "原始字节",
+    description: "原始字节 · 无波形",
     replaySeekMode: "record-boundary",
     createParser: (): ProtocolParser => {
       const health = createEmptyProtocolHealth();
@@ -232,14 +230,6 @@ const protocolRegistry = {
         reset: () => undefined,
       };
     },
-    encodeSimulatorSample: (values: readonly number[], sampleIndex: number) =>
-      RAW_ENCODER.encode(
-        `sample=${sampleIndex.toString().padStart(5, "0")} ` +
-          values
-            .map((value, index) => `ch${index + 1}=${formatSimulatorValue(value)}`)
-            .join(" ") +
-          "\n",
-      ),
   }),
 } as const satisfies Readonly<Record<ProtocolKind, BuiltinProtocolDefinition>>;
 
@@ -460,10 +450,6 @@ function isValidProtocolLabel(label: string): boolean {
   );
 }
 
-function formatSimulatorValue(value: number | undefined): string {
-  return Number.isFinite(value) ? Number(value).toFixed(2) : "n/a";
-}
-
 function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
   const result = new Uint8Array(left.length + right.length);
   result.set(left);
@@ -471,19 +457,58 @@ function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
   return result;
 }
 
-function findSequence(buffer: Uint8Array, sequence: Uint8Array, fromIndex = 0): number {
-  const lastStart = buffer.length - sequence.length;
-  for (let start = fromIndex; start <= lastStart; start += 1) {
-    let matches = true;
-    for (let index = 0; index < sequence.length; index += 1) {
-      if (buffer[start + index] !== sequence[index]) {
-        matches = false;
-        break;
-      }
+function findJustFloatTail(
+  buffer: Uint8Array,
+  frameStart: number,
+  allowUnaligned: boolean,
+): number {
+  let firstUnalignedCandidate = -1;
+  let firstCandidateByAlignment: number[] | null = null;
+  let repeatedAlignmentMask = 0;
+  const lastStart = buffer.length - JUSTFLOAT_TAIL.length;
+  for (let start = frameStart; start <= lastStart; start += 1) {
+    if (
+      buffer[start] !== JUSTFLOAT_TAIL[0] ||
+      buffer[start + 1] !== JUSTFLOAT_TAIL[1] ||
+      buffer[start + 2] !== JUSTFLOAT_TAIL[2] ||
+      buffer[start + 3] !== JUSTFLOAT_TAIL[3]
+    ) {
+      continue;
     }
-    if (matches) {
+    if ((start - frameStart) % Float32Array.BYTES_PER_ELEMENT === 0) {
       return start;
     }
+
+    if (firstUnalignedCandidate < 0) {
+      firstUnalignedCandidate = start;
+    }
+    if (!allowUnaligned) {
+      firstCandidateByAlignment ??= [-1, -1, -1, -1];
+      const alignment = start % Float32Array.BYTES_PER_ELEMENT;
+      if ((firstCandidateByAlignment[alignment] ?? -1) < 0) {
+        firstCandidateByAlignment[alignment] = start;
+      } else {
+        repeatedAlignmentMask |= 1 << alignment;
+      }
+    }
   }
-  return -1;
+
+  if (allowUnaligned) {
+    return firstUnalignedCandidate;
+  }
+  if (!firstCandidateByAlignment || repeatedAlignmentMask === 0) {
+    return -1;
+  }
+
+  let recoveryCandidate = -1;
+  for (let alignment = 0; alignment < Float32Array.BYTES_PER_ELEMENT; alignment += 1) {
+    if ((repeatedAlignmentMask & (1 << alignment)) === 0) {
+      continue;
+    }
+    const candidate = firstCandidateByAlignment[alignment] ?? -1;
+    if (candidate >= 0 && (recoveryCandidate < 0 || candidate < recoveryCandidate)) {
+      recoveryCandidate = candidate;
+    }
+  }
+  return recoveryCandidate;
 }

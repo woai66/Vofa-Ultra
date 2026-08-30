@@ -34,6 +34,10 @@ const PACKAGE_MANIFEST = JSON.parse(
   readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8"),
 );
 const VERSION = PACKAGE_MANIFEST.version;
+const BETA_MANUAL_TEST = readFileSync(
+  path.join(PROJECT_ROOT, "docs", "beta1-manual-test.md"),
+  "utf8",
+);
 const READY_CHANGELOG = [
   "# Changes",
   "",
@@ -52,6 +56,34 @@ const RUN_ATTEMPT = "1";
 const SOURCE_COMMIT = "a".repeat(40);
 const CARGO_COMMIT = "b".repeat(40);
 const RUSTC_COMMIT = "c".repeat(40);
+
+test("keeps the Windows Beta manual test candidate metadata consistent", () => {
+  const source_commit = BETA_MANUAL_TEST.match(
+    /\| 对应 commit \| `([0-9a-f]{7})` \|/,
+  )?.[1];
+  const build_id = BETA_MANUAL_TEST.match(
+    /\| 应用内构建 ID \| `([0-9a-f]{12})` \|/,
+  )?.[1];
+  const declared_size = BETA_MANUAL_TEST.match(
+    /\| 文件大小 \| `([0-9,]+)` 字节 \|/,
+  )?.[1];
+  const integrity_size = BETA_MANUAL_TEST.match(
+    /哈希完全一致，文件大小为 `([0-9,]+)` 字节/,
+  )?.[1];
+  const feedback_commit = BETA_MANUAL_TEST.match(
+    /应用版本 \/ commit：[^\n]+ \/ ([0-9a-f]{7})/,
+  )?.[1];
+
+  assert.ok(source_commit);
+  assert.ok(build_id?.startsWith(source_commit));
+  assert.ok(declared_size);
+  assert.equal(integrity_size, declared_size);
+  assert.equal(feedback_commit, source_commit);
+  assert.match(
+    BETA_MANUAL_TEST,
+    /\| SHA-256 \| `[0-9A-F]{64}` \|/,
+  );
+});
 
 function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");

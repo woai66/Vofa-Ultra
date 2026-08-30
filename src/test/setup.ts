@@ -9,6 +9,10 @@ class ResizeObserverStub implements ResizeObserver {
 
 globalThis.ResizeObserver = ResizeObserverStub;
 
+globalThis.requestAnimationFrame ??= (callback) =>
+  window.setTimeout(() => callback(performance.now()), 16);
+globalThis.cancelAnimationFrame ??= (requestId) => window.clearTimeout(requestId);
+
 Object.defineProperty(window, "matchMedia", {
   writable: true,
   value: vi.fn().mockImplementation((query: string) => ({

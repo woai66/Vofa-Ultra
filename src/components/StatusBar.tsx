@@ -4,6 +4,7 @@ import {
   CirclePlay,
   Database,
   Disc3,
+  FileSpreadsheet,
   Radio,
   RefreshCw,
   Rows3,
@@ -43,6 +44,10 @@ export function StatusBar() {
   const extensionChannels = useWorkbenchStore((state) => state.extensionChannels);
   const captureStatus = useWorkbenchStore((state) => state.captureStatus);
   const captureDataBytes = useWorkbenchStore((state) => state.captureDataBytes);
+  const captureMessage = useWorkbenchStore((state) => state.captureMessage);
+  const numericLogStatus = useWorkbenchStore((state) => state.numericLogStatus);
+  const numericLogOutputBytes = useWorkbenchStore((state) => state.numericLogOutputBytes);
+  const numericLogMessage = useWorkbenchStore((state) => state.numericLogMessage);
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
   const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
   const replaySpeed = useWorkbenchStore((state) => state.replaySpeed);
@@ -72,7 +77,7 @@ export function StatusBar() {
               : serialConfig.portName || "No port"}
         </span>
       </div>
-      <div className="status-item">
+      <div className="status-item protocol-status">
         <CircleGauge size={13} />
         <span>{getProtocolDefinition(activeProtocol).displayName}</span>
       </div>
@@ -91,6 +96,38 @@ export function StatusBar() {
         <div className="status-item capture-status-item">
           <Disc3 size={13} />
           <span>REC {formatBytes(captureDataBytes)}</span>
+        </div>
+      )}
+      {captureStatus === "error" && (
+        <div
+          className="status-item recording-error-status"
+          role="status"
+          aria-label={`原始录制失败：${captureMessage || "请打开记录面板查看详情"}`}
+          title={captureMessage || "原始录制失败"}
+        >
+          <TriangleAlert size={13} />
+          <span>REC 失败</span>
+        </div>
+      )}
+      {numericLogStatus === "recording" && (
+        <div
+          className="status-item numeric-log-status-item"
+          aria-label={`数值 CSV 记录中：${formatBytes(numericLogOutputBytes)}`}
+          title="数值 CSV 正在写入"
+        >
+          <FileSpreadsheet size={13} />
+          <span>CSV {formatBytes(numericLogOutputBytes)}</span>
+        </div>
+      )}
+      {numericLogStatus === "error" && (
+        <div
+          className="status-item recording-error-status"
+          role="status"
+          aria-label={`数值 CSV 记录失败：${numericLogMessage || "请打开记录面板查看详情"}`}
+          title={numericLogMessage || "数值 CSV 记录失败"}
+        >
+          <TriangleAlert size={13} />
+          <span>CSV 失败</span>
         </div>
       )}
       {recoveryActive && (

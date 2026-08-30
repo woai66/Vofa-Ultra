@@ -3,6 +3,45 @@
 路线图以可靠性门槛而不是日期驱动。当前只以 Windows 10/11 x64 的 `v0.1.0-beta.1` 为发布目标；macOS、
 Linux 和其他高级方向暂停，不作为首个 Beta 的门槛。
 
+## 产品成熟度基线
+
+- 以 VOFA+ 和 vofa-NEXT 的完整工作流作为参考，重点学习信息层级、操作反馈和异常恢复，不复制其品牌与视觉资产。
+- 每条核心流程都覆盖空闲、连接中、运行、暂停、断线、重连和失败状态；界面状态必须与真实链路一致，不让无关消息
+  串扰连接、波形或终端反馈。
+- 控件遵循串口用户的操作语义：常用离散值便于选择，自定义值允许直接输入；不使用无意义的数字步进或滚轮改值，
+  图标操作具备可发现名称、键盘焦点和禁用原因。
+- 默认工作台只突出连接、收发和波形三条高频路径，不把编码、校验、过滤、自动化和分析选项同时铺满界面；高级
+  能力按任务逐层展开，并在收起后保留清楚的当前状态摘要与入口。
+- 在应用支持的最小窗口、常用宽屏尺寸及 Windows 常用显示缩放下检查首屏和弹层；不允许重叠、裁切、跳动，
+  也不依赖大量模糊难读的小字号承载关键操作。
+- 自动测试只证明实现没有已知回归，不等于产品体验完成。每个候选包仍需按真实任务顺序完成人工走查，并记录
+  安装、连接、收发、波形、异常恢复和卸载结果。
+- 可见布局、品牌和主色方向先由用户确认；可靠性、状态真实性和可访问性缺陷可以直接修复。
+
+## 参考项目经验门禁
+
+参考项目的 issue 和 PR 只用于发现失败模式，不直接转化为 Vofa-Ultra 的功能清单：
+
+- [vofa-NEXT #20](https://github.com/Horldsence/vofa-NEXT/issues/20) 说明“源码已修”不代表发布包闭环。
+  每个候选 EXE 都必须显示短构建号，并重新验证断开、刷新、重连和协议切换后的前后端状态。
+- [vofa-NEXT #3](https://github.com/Horldsence/vofa-NEXT/issues/3) 与
+  [#4](https://github.com/Horldsence/vofa-NEXT/issues/4) 分别暴露固定波特率和设备辨识不足。Windows 验收必须同时覆盖
+  常用值选择、自定义输入、禁止滚轮误改，以及设备友好名、VID/PID 和序列号。
+- [vofa-NEXT #1](https://github.com/Horldsence/vofa-NEXT/issues/1)、
+  [#2](https://github.com/Horldsence/vofa-NEXT/issues/2) 与
+  [#10](https://github.com/Horldsence/vofa-NEXT/issues/10) 暴露底栏异常、面板无法恢复和尺寸问题。最小窗口、断点前后、
+  侧栏开关、弹层展开和布局恢复必须进入碰撞回归。
+- [vofa-NEXT #11](https://github.com/Horldsence/vofa-NEXT/issues/11) 说明缩放和拖动不应隐式暂停采集。波形必须明确区分
+  暂停跟随、暂停显示和后台接收，并持续显示 `LIVE` / `HISTORY` 等真实状态。
+- [vofa-NEXT PR #13](https://github.com/Horldsence/vofa-NEXT/pull/13) 同时暴露 RawData 选择事件冲突和只测开发态的不足。
+  Vofa-Ultra 保留跨行原生选择回归，并在安装后的 NSIS EXE 上完成启动冒烟。
+- [vofa-NEXT PR #14](https://github.com/Horldsence/vofa-NEXT/pull/14) 证明绿色测试可能固化错误语义。协议、CRC、过滤和
+  时间轴必须包含独立已知向量、负例和跨批边界，不以当前实现生成期望值。
+- [vofa-NEXT PR #15](https://github.com/Horldsence/vofa-NEXT/pull/15) 说明 PR 构建不应依赖发布签名密钥。首个 Beta 继续采用
+  无签名 Windows 候选包和最小化检查，不引入跨平台、自动更新和复杂发布 workflow。
+- [vofa-NEXT #19](https://github.com/Horldsence/vofa-NEXT/issues/19) 说明 Demo 级控件会被用户当成正式承诺。未完成命名、
+  范围、键鼠、反馈和恢复闭环的能力不得进入默认工作台。
+
 ## 首个 Beta 范围
 
 ### 保留并重点验收
@@ -35,7 +74,8 @@ Linux 和其他高级方向暂停，不作为首个 Beta 的门槛。
 
 - [x] Tauri 2 + Rust 串口枚举、前台静默刷新、脱敏设备摘要、连接、断开、参数配置、在线 DTR / RTS 控制，
   以及 CTS / DSR / RI / DCD 三态监视
-- [x] 有界 TX 队列、分块公平写入、状态 revision 与可诊断错误
+- [x] 枚举与打开驱动调用的 5 秒 deadline、2+2 未返回调用上限、有界 TX 队列、分块公平写入、状态 revision 与
+  可诊断错误
 - [x] 文本 / HEX 收发、TX 行尾与文本编码、按读取块/文本行记录的 RX 终端、可选接收行尾与文本编码、有界残行、统计，
   以及全部缓存/当前筛选视图日志导出
 - [x] FireWater、JustFloat、Raw Data
@@ -51,8 +91,8 @@ Linux 和其他高级方向暂停，不作为首个 Beta 的门槛。
 - [x] 在 Windows 完成首次 Rust 构建与测试并提交 `Cargo.lock`
 - [x] 提供 Windows x64 单一 NSIS `.exe` 无签名候选安装包与 SHA-256 的本地命令
 - [ ] 在 Windows 10/11 x64 完成候选包安装、启动和卸载冒烟测试
-- [ ] 在 Windows 上完成至少两种 USB 串口芯片的连接、收发、拔插和重连验证
-- [ ] 验证软件流控、硬件流控以及 DTR / RTS / CTS / DSR / RI / DCD 行为
+- [ ] 在 Windows 上使用至少一套真实开发板或 USB 串口设备完成连接、双向收发、拔插和重连核心验收
+- [ ] 将未实测的芯片、高波特率、流控和控制线明确标为未验证，不把底层库支持推断为兼容声明
 
 ## v0.2 - 采集、记录与回放
 

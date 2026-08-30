@@ -124,13 +124,22 @@ export async function subscribeToSerialEvents(
     return () => undefined;
   }
 
-  const results = await Promise.allSettled([
+  const coreResults = await Promise.allSettled([
     listen<SerialDataPayload>("serial://data", ({ payload }) => handlers.onData(payload)),
     listen<SerialStatePayload>("serial://state", ({ payload }) => handlers.onState(payload)),
+    listen<SerialTxPayload>("serial://tx", ({ payload }) => handlers.onTx(payload)),
+  ]);
+  const coreUnlisten = fulfilledListeners(coreResults);
+  const failedCoreListener = coreResults.find((result) => result.status === "rejected");
+  if (failedCoreListener?.status === "rejected") {
+    coreUnlisten.forEach((dispose) => dispose());
+    throw failedCoreListener.reason;
+  }
+
+  const optionalResults = await Promise.allSettled([
     listen<SerialModemStatusPayload>("serial://modem-status", ({ payload }) =>
       handlers.onModemStatus(payload),
     ),
-    listen<SerialTxPayload>("serial://tx", ({ payload }) => handlers.onTx(payload)),
     listen<SerialFileSendPayload>("serial://file-send", ({ payload }) =>
       handlers.onFileSend(payload),
     ),
@@ -138,18 +147,22 @@ export async function subscribeToSerialEvents(
       handlers.onModbusTransaction(payload),
     ),
   ]);
-  const unlisten = results.flatMap((result) =>
-    result.status === "fulfilled" ? [result.value] : [],
-  );
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed?.status === "rejected") {
-    unlisten.forEach((dispose) => dispose());
-    throw failed.reason;
+  const optionalUnlisten = fulfilledListeners(optionalResults);
+  const optionalFailures = optionalResults.filter((result) => result.status === "rejected");
+  if (optionalFailures.length > 0) {
+    console.warn(`有 ${optionalFailures.length} 路可选串口事件监听不可用`);
   }
+  const unlisten = [...coreUnlisten, ...optionalUnlisten];
 
   return () => {
     unlisten.forEach((dispose) => dispose());
   };
+}
+
+function fulfilledListeners(results: PromiseSettledResult<UnlistenFn>[]): UnlistenFn[] {
+  return results.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
 }
 
 function requireTauriRuntime(): void {

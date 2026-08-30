@@ -17,8 +17,8 @@ import {
   PanelBottom,
   PanelTop,
   Rows2,
+  Table2,
 } from "lucide-react";
-import { APP_DISPLAY_VERSION } from "./core/appMetadata";
 import { getHorizontalTabTarget } from "./core/tabNavigation";
 import { ActivityRail, type SidebarPanel } from "./components/ActivityRail";
 import { Sidebar } from "./components/Sidebar";
@@ -37,7 +37,7 @@ export type ThemePreference = "system" | ThemeMode;
 
 const WORKSPACE_VIEW_TABS = [
   ["waveform", "波形", ChartNoAxesCombined],
-  ["monitor", "监视", Rows2],
+  ["monitor", "监视", Table2],
   ["attitude", "姿态", Orbit],
 ] as const;
 type WorkspaceView = (typeof WORKSPACE_VIEW_TABS)[number][0];
@@ -247,8 +247,8 @@ export default function App() {
   };
 
   const workspaceContentStyle = {
-    "--workspace-primary-share": `${workspaceSplit}fr`,
-    "--workspace-terminal-share": `${1 - workspaceSplit}fr`,
+    "--workspace-primary-share": `${workspaceSplit * 100}fr`,
+    "--workspace-terminal-share": `${(1 - workspaceSplit) * 100}fr`,
   } as CSSProperties;
   const primaryFocusLabel = `专注${
     workspaceView === "waveform" ? "波形" : workspaceView === "monitor" ? "监视" : "姿态"
@@ -344,10 +344,6 @@ export default function App() {
             >
               <PanelBottom size={15} />
             </button>
-          </div>
-          <div className="workspace-header-meta">
-            <span className="build-label">Vofa-Ultra</span>
-            <span className="version-label">{APP_DISPLAY_VERSION}</span>
           </div>
         </header>
 

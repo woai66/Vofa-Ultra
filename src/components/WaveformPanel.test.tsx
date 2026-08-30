@@ -11,6 +11,7 @@ import { WaveformPanel } from "./WaveformPanel";
 
 interface UPlotMockInstance {
   readonly options: UPlotMockOptions;
+  readonly initialData: unknown;
   readonly setData: ReturnType<typeof vi.fn>;
   readonly setScale: ReturnType<typeof vi.fn>;
   readonly scales: Record<string, { min?: number; max?: number }>;
@@ -27,7 +28,7 @@ interface UPlotMockOptions {
     string,
     { auto?: boolean; time?: boolean; range?: [number, number] }
   >;
-  axes?: Array<{ scale?: string; stroke?: string }>;
+  axes?: Array<{ scale?: string; size?: number; stroke?: string }>;
   series?: Array<{ label?: string; scale?: string; show?: boolean; stroke?: string }>;
   hooks?: {
     setScale?: Array<(chart: unknown, scaleKey: string) => void>;
@@ -53,6 +54,7 @@ vi.mock("uplot", () => ({
     );
     readonly valToPosScaleKeys: string[] = [];
     readonly options: UPlotMockOptions;
+    readonly initialData: unknown;
     width: number;
     height: number;
     private readonly hooks: {
@@ -62,12 +64,13 @@ vi.mock("uplot", () => ({
 
     constructor(
       options: UPlotMockOptions,
-      _data: unknown,
+      data: unknown,
       target: HTMLElement,
     ) {
       this.width = options.width;
       this.height = options.height;
       this.options = options;
+      this.initialData = data;
       this.hooks = options.hooks ?? {};
       this.over.className = "u-over";
       target.append(this.over);
@@ -141,6 +144,23 @@ const TEST_CHANNELS: ChannelSeries[] = [
   },
 ];
 
+function appendTestChannelPoint(x: number): ChannelSeries[] {
+  return TEST_CHANNELS.map((channel) => ({
+    ...channel,
+    points: [...channel.points, { x, y: channel.lastValue + 1 }],
+  }));
+}
+
+function flushPendingAnimationFrames(
+  pendingFrames: Map<number, FrameRequestCallback>,
+): void {
+  const callbacks = [...pendingFrames.values()];
+  pendingFrames.clear();
+  for (const callback of callbacks) {
+    callback(0);
+  }
+}
+
 function createSpectrumChannel(
   id = "channel-0",
   name = "电压",
@@ -178,6 +198,9 @@ describe("WaveformPanel 波形测量", () => {
       processedChannels: [],
       extensionChannels: [],
       chartPaused: false,
+      chartFrozenChannels: null,
+      chartFrozenProcessedChannels: null,
+      chartFrozenExtensionChannels: null,
       chartWindowSeconds: 5,
       chartDataRevision: 0,
       waveformTrigger: createIdleWaveformTriggerState(),
@@ -194,6 +217,7 @@ describe("WaveformPanel 波形测量", () => {
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
   });
 
   it("空数据时禁用测量入口", () => {
@@ -201,6 +225,168 @@ describe("WaveformPanel 波形测量", () => {
     render(<WaveformPanel theme="dark" />);
 
     expect(screen.getByRole("button", { name: "开启波形测量" })).toBeDisabled();
+  });
+
+  it("Raw Data 空态明确原始字节不会生成波形", () => {
+    useWorkbenchStore.setState({ channels: [], protocol: "raw" });
+    render(<WaveformPanel theme="dark" />);
+
+    expect(screen.getByText("Raw Data 不生成波形")).toBeVisible();
+    expect(screen.getByText("原始字节保留在数据终端中")).toBeVisible();
+  });
+
+  it("相同接收时刻的图表、游标和区间统计使用同一组帧", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState({
+      channels: [
+        {
+          ...(TEST_CHANNELS[0] as ChannelSeries),
+          points: [
+            { x: 1, y: 1, frameSequence: 101 },
+            { x: 1, y: 2, frameSequence: 102 },
+            { x: 1, y: 3, frameSequence: 103 },
+          ],
+        },
+        {
+          ...(TEST_CHANNELS[1] as ChannelSeries),
+          points: [
+            { x: 1, y: 10, frameSequence: 101 },
+            { x: 1, y: 30, frameSequence: 103 },
+          ],
+        },
+      ],
+    });
+
+    render(<WaveformPanel theme="dark" />);
+
+    expect(latestUPlotMock().initialData).toEqual([
+      [1, 1, 1],
+      [1, 2, 3],
+      [10, null, 30],
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "开启波形测量" }));
+    const results = await screen.findByLabelText("波形测量结果");
+    const statistics = screen.getByLabelText("A/B 区间统计");
+    fireEvent.change(screen.getByRole("slider", { name: "游标 A 采样点" }), {
+      target: { value: "0" },
+    });
+
+    expect(within(results).getByText("yA").parentElement).toHaveTextContent("1.000");
+    expect(within(results).getByText("yB").parentElement).toHaveTextContent("3.000");
+    expect(within(results).getByText("Δt").parentElement).toHaveTextContent("0.000 ns");
+    expect(within(results).getByText("1/Δt").parentElement).toHaveTextContent("--");
+    expect(within(statistics).getByText("样本数").parentElement).toHaveTextContent("3");
+    expect(within(statistics).getByText("均值").parentElement).toHaveTextContent("2.000");
+    expect(within(statistics).getByText("RMS").parentElement).toHaveTextContent("2.160");
+  });
+
+  it("按连接、暂停和回放状态显示真实的波形运行状态", () => {
+    useWorkbenchStore.setState({ connectionStatus: "disconnected" });
+    const { container } = render(<WaveformPanel theme="dark" />);
+    const live_state = container.querySelector(".waveform-panel .live-state");
+
+    expect(live_state).toHaveAttribute("data-state", "idle");
+    expect(live_state).toHaveTextContent("IDLE");
+
+    act(() => useWorkbenchStore.setState({ connectionStatus: "connecting" }));
+    expect(live_state).toHaveAttribute("data-state", "connecting");
+    expect(live_state).toHaveTextContent("CONNECTING");
+
+    act(() => useWorkbenchStore.setState({ connectionStatus: "connected" }));
+    expect(live_state).toHaveAttribute("data-state", "live");
+    expect(live_state).toHaveTextContent("LIVE");
+
+    act(() => useWorkbenchStore.setState({ chartPaused: true }));
+    expect(live_state).toHaveAttribute("data-state", "history");
+    expect(live_state).toHaveTextContent("HISTORY");
+
+    act(() => useWorkbenchStore.setState({ chartPaused: false, replayStatus: "paused" }));
+    expect(live_state).toHaveAttribute("data-state", "history");
+    expect(live_state).toHaveTextContent("HISTORY");
+  });
+
+  it("暂停只冻结图表快照，恢复后显示后台累积样本", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<WaveformPanel theme="dark" />);
+    const chart = latestUPlotMock();
+    await waitFor(() => expect(chart.setData).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: "暂停波形显示" }));
+    await waitFor(() => expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), true));
+    const setDataCallsWhileFrozen = chart.setData.mock.calls.length;
+    act(() => {
+      useWorkbenchStore.setState({
+        channels: TEST_CHANNELS.map((channel) => ({
+          ...channel,
+          points: [...channel.points, { x: 6, y: channel.lastValue + 1 }],
+        })),
+      });
+    });
+
+    expect(useWorkbenchStore.getState().channels[0]?.points.at(-1)?.x).toBe(6);
+    expect(chart.setData).toHaveBeenCalledTimes(setDataCallsWhileFrozen);
+
+    unmount();
+    render(<WaveformPanel theme="dark" />);
+    const remountedChart = latestUPlotMock();
+    expect(remountedChart.initialData).toEqual([
+      [1, 2, 3, 4, 5],
+      [10, 20, 30, 40, 50],
+      [1, 2, 3, 4, 5],
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "继续波形显示" }));
+    await waitFor(() => {
+      expect(remountedChart.setData.mock.calls.at(-1)?.[0]?.[0]).toEqual([
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+      ]);
+    });
+  });
+
+  it("同一屏幕帧内只绘制最后一次完整数据", () => {
+    let requestId = 0;
+    const pendingFrames = new Map<number, FrameRequestCallback>();
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        requestId += 1;
+        pendingFrames.set(requestId, callback);
+        return requestId;
+      }),
+    );
+    vi.stubGlobal(
+      "cancelAnimationFrame",
+      vi.fn((id: number) => {
+        pendingFrames.delete(id);
+      }),
+    );
+    render(<WaveformPanel theme="dark" />);
+    const chart = latestUPlotMock();
+
+    flushPendingAnimationFrames(pendingFrames);
+    chart.setData.mockClear();
+    act(() => {
+      useWorkbenchStore.setState({
+        channels: appendTestChannelPoint(6),
+      });
+    });
+    act(() => {
+      useWorkbenchStore.setState({
+        channels: appendTestChannelPoint(7),
+      });
+    });
+
+    expect(chart.setData).not.toHaveBeenCalled();
+    expect(pendingFrames.size).toBe(1);
+    flushPendingAnimationFrames(pendingFrames);
+    expect(chart.setData).toHaveBeenCalledTimes(1);
+    expect(chart.setData.mock.calls[0]?.[0]?.[0]).toEqual([2, 3, 4, 5, 7]);
   });
 
   it("在读数、触发和测量中应用别名、单位与颜色且保留原始序列标签", async () => {
@@ -290,6 +476,7 @@ describe("WaveformPanel 波形测量", () => {
       "y",
     ]);
     expect(sharedChart.options.axes?.map((axis) => axis.scale)).toEqual(["x", "y"]);
+    expect(sharedChart.options.axes?.[0]?.size).toBe(42);
     expect(screen.getByRole("button", { name: "共享" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -811,7 +998,9 @@ describe("WaveformPanel 波形测量", () => {
     }
     expect(followButton).toHaveAttribute("data-visible", "false");
     expect(followButton).toBeDisabled();
-    expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), true);
+    await waitFor(() => {
+      expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), true);
+    });
 
     act(() => chart.simulateScale("x"));
     expect(screen.queryByRole("button", { name: "回到实时波形" })).not.toBeInTheDocument();
@@ -837,15 +1026,19 @@ describe("WaveformPanel 波形测量", () => {
         })),
       });
     });
-    expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), false);
-    expect(chart.setData.mock.calls.at(-1)?.[0]?.[0]).toEqual([1, 2, 3, 4, 5, 20]);
+    await waitFor(() => {
+      expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), false);
+      expect(chart.setData.mock.calls.at(-1)?.[0]?.[0]).toEqual([1, 2, 3, 4, 5, 20]);
+    });
 
     await user.click(screen.getByRole("button", { name: "回到实时波形" }));
     expect(screen.queryByRole("button", { name: "回到实时波形" })).not.toBeInTheDocument();
     expect(followButton).toHaveAttribute("data-visible", "false");
     expect(followButton).toBeDisabled();
-    expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), true);
-    expect(chart.setData.mock.calls.at(-1)?.[0]?.[0]).toEqual([20]);
+    await waitFor(() => {
+      expect(chart.setData).toHaveBeenLastCalledWith(expect.any(Array), true);
+      expect(chart.setData.mock.calls.at(-1)?.[0]?.[0]).toEqual([20]);
+    });
   });
 
   it("暂停和波形修订会结束视口跟随挂起", async () => {

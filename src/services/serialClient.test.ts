@@ -185,14 +185,14 @@ describe("serialClient", () => {
     expect([...callbacks.keys()]).toEqual([
       "serial://data",
       "serial://state",
-      "serial://modem-status",
       "serial://tx",
+      "serial://modem-status",
       "serial://file-send",
       "serial://modbus-transaction",
     ]);
   });
 
-  it("任一路事件注册失败时释放其他已注册监听", async () => {
+  it("核心事件注册失败时释放其他核心监听且不启动可选监听", async () => {
     const registrationError = new Error("状态监听注册失败");
     const disposers: ReturnType<typeof vi.fn>[] = [];
     listenMock.mockImplementation((event: string) => {
@@ -213,7 +213,37 @@ describe("serialClient", () => {
     };
 
     await expect(subscribeToSerialEvents(handlers)).rejects.toBe(registrationError);
-    expect(disposers).toHaveLength(5);
+    expect(disposers).toHaveLength(2);
     expect(disposers.every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
+  });
+
+  it("可选事件注册失败时保留核心监听并完整释放其余监听", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const disposers: ReturnType<typeof vi.fn>[] = [];
+    listenMock.mockImplementation((event: string) => {
+      if (event === "serial://modem-status") {
+        return Promise.reject(new Error("调制解调器状态监听不可用"));
+      }
+      const dispose = vi.fn();
+      disposers.push(dispose);
+      return Promise.resolve(dispose);
+    });
+    const handlers = {
+      onData: vi.fn(),
+      onState: vi.fn(),
+      onModemStatus: vi.fn(),
+      onTx: vi.fn(),
+      onFileSend: vi.fn(),
+      onModbusTransaction: vi.fn(),
+    };
+
+    const dispose = await subscribeToSerialEvents(handlers);
+
+    expect(disposers).toHaveLength(5);
+    expect(disposers.every((unlisten) => unlisten.mock.calls.length === 0)).toBe(true);
+    expect(warning).toHaveBeenCalledWith("有 1 路可选串口事件监听不可用");
+    dispose();
+    expect(disposers.every((unlisten) => unlisten.mock.calls.length === 1)).toBe(true);
+    warning.mockRestore();
   });
 });

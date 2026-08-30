@@ -36,14 +36,10 @@ export default function WaveformMeasurementStrip({
     () =>
       calculateWaveformIntervalStatistics(
         visiblePoints,
-        measurement.pointA.timestampSeconds,
-        measurement.pointB.timestampSeconds,
+        measurement.pointA.index,
+        measurement.pointB.index,
       ),
-    [
-      measurement.pointA.timestampSeconds,
-      measurement.pointB.timestampSeconds,
-      visiblePoints,
-    ],
+    [measurement.pointA.index, measurement.pointB.index, visiblePoints],
   );
 
   return (

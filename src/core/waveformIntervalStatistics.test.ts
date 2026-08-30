@@ -9,7 +9,7 @@ function sample(timestampSeconds: number, value: number): WaveformIntervalSample
 }
 
 describe("波形 A/B 区间统计", () => {
-  it("按闭区间统计有限样本且不依赖 A/B 顺序", () => {
+  it("按索引闭区间统计有限样本且不依赖 A/B 顺序", () => {
     const points = [
       sample(0, -10),
       sample(1, 1),
@@ -34,7 +34,7 @@ describe("波形 A/B 区间统计", () => {
   });
 
   it("单样本区间返回自身、绝对 RMS 和零峰峰值", () => {
-    expect(calculateWaveformIntervalStatistics([sample(7, -4)], 7, 7)).toEqual({
+    expect(calculateWaveformIntervalStatistics([sample(7, -4)], 0, 0)).toEqual({
       sampleCount: 1,
       minimum: -4,
       maximum: -4,
@@ -50,6 +50,23 @@ describe("波形 A/B 区间统计", () => {
     expect(calculateWaveformIntervalStatistics(points, 3, 4)).toBeNull();
     expect(calculateWaveformIntervalStatistics(points, Number.NaN, 2)).toBeNull();
     expect(calculateWaveformIntervalStatistics([], 0, 1)).toBeNull();
+  });
+
+  it("同一时间戳内只统计 A/B 实际覆盖的样本", () => {
+    const statistics = calculateWaveformIntervalStatistics(
+      [sample(1, 1), sample(1, 2), sample(1, 3), sample(1, 4)],
+      1,
+      2,
+    );
+
+    expect(statistics).toMatchObject({
+      sampleCount: 2,
+      minimum: 2,
+      maximum: 3,
+      mean: 2.5,
+      peakToPeak: 1,
+    });
+    expect(statistics?.rms).toBeCloseTo(Math.sqrt(13 / 2), 12);
   });
 
   it("缩放求和避免有限极值在均值和 RMS 中溢出", () => {

@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createInitialAutoResponderSnapshot } from "../core/autoResponder";
 import { createInitialCommandTaskSnapshot } from "../core/commandWorkflow";
 import { createInitialModbusPollSnapshot } from "../core/modbusPoller";
 import {
@@ -12,6 +13,18 @@ import { TERMINAL_TIME_MODE_STORAGE_KEY } from "../core/terminalTime";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import type { TerminalEntry } from "../types/workbench";
 import { TerminalPanel } from "./TerminalPanel";
+
+const { selectSerialFilePathMock } = vi.hoisted(() => ({
+  selectSerialFilePathMock: vi.fn(),
+}));
+
+vi.mock("../services/serialClient", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/serialClient")>();
+  return {
+    ...actual,
+    selectSerialFilePath: selectSerialFilePathMock,
+  };
+});
 
 const SEARCH_ENTRIES: TerminalEntry[] = [
   {
@@ -41,6 +54,24 @@ const SEARCH_ENTRIES: TerminalEntry[] = [
 ];
 
 const DEFAULT_SEND = useWorkbenchStore.getState().send;
+const DEFAULT_START_FILE_SEND = useWorkbenchStore.getState().startFileSend;
+const DEFAULT_START_PERIODIC_SEND = useWorkbenchStore.getState().startPeriodicSend;
+const DEFAULT_START_MODBUS_POLLING = useWorkbenchStore.getState().startModbusPolling;
+const DEFAULT_START_MODBUS_TRANSACTION = useWorkbenchStore.getState().startModbusTransaction;
+const RUNTIME_BUSY_STATUSES = [
+  "switching-source",
+  "connecting",
+  "disconnecting",
+  "starting-capture",
+  "stopping-capture",
+  "starting-numeric-log",
+  "stopping-numeric-log",
+  "selecting-replay",
+  "opening-replay",
+  "controlling-replay",
+  "switching-workspace",
+  "closing-app",
+] as const;
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -54,6 +85,8 @@ function createDeferred<T>() {
 
 describe("TerminalPanel", () => {
   beforeEach(() => {
+    selectSerialFilePathMock.mockReset();
+    selectSerialFilePathMock.mockResolvedValue(null);
     localStorage.removeItem(TERMINAL_TIME_MODE_STORAGE_KEY);
     useWorkbenchStore.getState().stopModbusPolling();
     useWorkbenchStore.getState().stopPeriodicSend();
@@ -86,6 +119,7 @@ describe("TerminalPanel", () => {
       },
       serialControlLineOperation: "idle",
       commandTask: createInitialCommandTaskSnapshot(),
+      autoResponder: createInitialAutoResponderSnapshot(),
       isSendingCommand: false,
       displayMode: "text",
       sendMode: "text",
@@ -98,6 +132,10 @@ describe("TerminalPanel", () => {
       terminalPaused: false,
       terminalAutoScroll: true,
       send: DEFAULT_SEND,
+      startFileSend: DEFAULT_START_FILE_SEND,
+      startPeriodicSend: DEFAULT_START_PERIODIC_SEND,
+      startModbusPolling: DEFAULT_START_MODBUS_POLLING,
+      startModbusTransaction: DEFAULT_START_MODBUS_TRANSACTION,
     });
   });
 
@@ -265,6 +303,43 @@ describe("TerminalPanel", () => {
     expect(useWorkbenchStore.getState().terminalEntries).toMatchObject([
       { text: "partial", hex: "70 61 72 74 69 61 6C", byteCount: 7 },
     ]);
+    viewportHeight.mockRestore();
+  });
+
+  it("只把显式会话边界标记为边界，不误标普通系统消息", async () => {
+    const viewportHeight = vi
+      .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+      .mockReturnValue(240);
+    useWorkbenchStore.setState({
+      terminalEntries: [
+        {
+          id: 151,
+          direction: "system",
+          timestamp: 100,
+          text: "Connected",
+          hex: "",
+          byteCount: 0,
+        },
+        {
+          id: 152,
+          direction: "system",
+          timestamp: 101,
+          text: "协议：FireWater → Raw Data",
+          hex: "",
+          byteCount: 0,
+          sessionBoundary: true,
+        },
+      ],
+    });
+    render(<TerminalPanel />);
+
+    const statusLine = (await screen.findByText("Connected")).closest(".terminal-line");
+    const boundaryLine = screen.getByText("协议：FireWater → Raw Data").closest(".terminal-line");
+    expect(statusLine).not.toHaveAttribute("data-session-boundary");
+    expect(within(statusLine as HTMLElement).getByText("0 B")).toBeVisible();
+    expect(boundaryLine).toHaveAttribute("data-session-boundary", "true");
+    expect(within(boundaryLine as HTMLElement).getByText("边界")).toBeVisible();
+    expect(within(boundaryLine as HTMLElement).getByTitle("会话边界")).toBeVisible();
     viewportHeight.mockRestore();
   });
 
@@ -445,6 +520,56 @@ describe("TerminalPanel", () => {
     ).toBeDisabled();
   });
 
+  it("终端下载失败时保留菜单、显示原因并回收对象 URL", async () => {
+    useWorkbenchStore.setState({ terminalEntries: SEARCH_ENTRIES });
+    const createDescriptor = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+    const revokeDescriptor = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+    const createObjectUrl = vi
+      .fn<() => string>()
+      .mockImplementationOnce(() => {
+        throw new Error("无法创建下载资源");
+      })
+      .mockReturnValue("blob:terminal-export");
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectUrl,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrl,
+    });
+    const anchorClick = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {
+        throw new Error("系统拒绝下载");
+      });
+
+    try {
+      const user = userEvent.setup();
+      render(<TerminalPanel />);
+      await user.click(screen.getByRole("button", { name: "导出终端记录" }));
+      const exportMenu = await screen.findByRole("menu", { name: "终端导出范围" });
+      const exportAll = within(exportMenu).getByRole("menuitem", { name: "全部缓存 3 条" });
+
+      await user.click(exportAll);
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "终端导出失败：无法创建下载资源",
+      );
+      expect(exportMenu).toBeVisible();
+      expect(revokeObjectUrl).not.toHaveBeenCalled();
+
+      await user.click(exportAll);
+      expect(screen.getByRole("alert")).toHaveTextContent("终端导出失败：系统拒绝下载");
+      expect(exportMenu).toBeVisible();
+      expect(revokeObjectUrl).toHaveBeenCalledWith("blob:terminal-export");
+    } finally {
+      anchorClick.mockRestore();
+      restoreProperty(URL, "createObjectURL", createDescriptor);
+      restoreProperty(URL, "revokeObjectURL", revokeDescriptor);
+    }
+  });
+
   it("搜索当前显示格式并在 TEXT 与 HEX 间重新计算结果", async () => {
     useWorkbenchStore.setState({ terminalEntries: SEARCH_ENTRIES });
     const user = userEvent.setup();
@@ -474,6 +599,29 @@ describe("TerminalPanel", () => {
     );
     expect(search).toHaveAttribute("placeholder", "搜索 HEX 内容");
     expect(screen.getByText("1 / 3 条记录")).toBeVisible();
+  });
+
+  it("自动应答运行时仍允许切换终端显示格式并锁定相关编码", async () => {
+    useWorkbenchStore.setState({
+      displayMode: "hex",
+      autoResponder: {
+        ...createInitialAutoResponderSnapshot(),
+        status: "armed",
+        sessionId: 7,
+        enabledRuleCount: 1,
+      },
+    });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    const displayFormat = screen.getByRole("group", { name: "接收显示格式" });
+    const textDisplay = within(displayFormat).getByRole("button", { name: "TEXT" });
+    expect(textDisplay).toBeEnabled();
+    await user.click(textDisplay);
+
+    expect(useWorkbenchStore.getState().displayMode).toBe("text");
+    expect(screen.getByRole("combobox", { name: "接收文本编码" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "发送文本编码" })).toBeDisabled();
   });
 
   it("用上下键恢复命令格式并在末尾返回原草稿", async () => {
@@ -644,6 +792,95 @@ describe("TerminalPanel", () => {
     await waitFor(() => expect(sendButton).toBeEnabled());
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(send).toHaveBeenCalledWith("PING", "text", "none"));
+  });
+
+  it.each(RUNTIME_BUSY_STATUSES)(
+    "运行事务 %s 期间统一锁定全部发送入口",
+    async (runtimeTransitionStatus) => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      const startFileSend = vi.fn().mockResolvedValue(true);
+      const startPeriodicSend = vi.fn();
+      const startModbusPolling = vi.fn();
+      const startModbusTransaction = vi.fn().mockResolvedValue(true);
+      selectSerialFilePathMock.mockResolvedValue("C:\\firmware\\payload.bin");
+      useWorkbenchStore.setState({
+        isNativeRuntime: true,
+        source: "serial",
+        runtimeTransitionStatus,
+        send,
+        startFileSend,
+        startPeriodicSend,
+        startModbusPolling,
+        startModbusTransaction,
+      });
+      const user = userEvent.setup();
+      render(<TerminalPanel />);
+      const input = screen.getByRole("textbox", { name: "发送内容" });
+
+      await user.type(input, "PING");
+      const sendButton = screen.getByRole("button", { name: "发送" });
+      expect(sendButton).toBeDisabled();
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      await user.click(screen.getByRole("button", { name: "展开周期发送设置" }));
+      const periodicButton = screen.getByRole("button", { name: "启动" });
+      expect(periodicButton).toBeDisabled();
+
+      await user.click(screen.getByRole("button", { name: "打开文件发送" }));
+      const fileDialog = screen.getByRole("dialog", { name: "原始文件发送" });
+      await user.click(within(fileDialog).getByRole("button", { name: "选择" }));
+      await waitFor(() => expect(within(fileDialog).getByText("payload.bin")).toBeVisible());
+      const fileButton = within(fileDialog).getByRole("button", { name: "开始发送" });
+      expect(fileButton).toBeDisabled();
+
+      await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
+      const builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
+      const executeButton = within(builder).getByRole("button", { name: "执行一次" });
+      const pollButton = within(builder).getByRole("button", { name: "开始轮询" });
+      expect(executeButton).toBeDisabled();
+      expect(pollButton).toBeDisabled();
+
+      fireEvent.click(sendButton);
+      fireEvent.click(periodicButton);
+      fireEvent.click(fileButton);
+      fireEvent.click(executeButton);
+      fireEvent.click(pollButton);
+      expect(send).not.toHaveBeenCalled();
+      expect(startPeriodicSend).not.toHaveBeenCalled();
+      expect(startFileSend).not.toHaveBeenCalled();
+      expect(startModbusTransaction).not.toHaveBeenCalled();
+      expect(startModbusPolling).not.toHaveBeenCalled();
+    },
+  );
+
+  it("运行事务结束后恢复发送入口", async () => {
+    selectSerialFilePathMock.mockResolvedValue("C:\\firmware\\payload.bin");
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      runtimeTransitionStatus: "disconnecting",
+    });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.type(screen.getByRole("textbox", { name: "发送内容" }), "PING");
+    await user.click(screen.getByRole("button", { name: "展开周期发送设置" }));
+    await user.click(screen.getByRole("button", { name: "打开文件发送" }));
+    const fileDialog = screen.getByRole("dialog", { name: "原始文件发送" });
+    await user.click(within(fileDialog).getByRole("button", { name: "选择" }));
+    await waitFor(() => expect(within(fileDialog).getByText("payload.bin")).toBeVisible());
+
+    useWorkbenchStore.setState({ runtimeTransitionStatus: "idle" });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "启动" })).toBeEnabled();
+      expect(within(fileDialog).getByRole("button", { name: "开始发送" })).toBeEnabled();
+    });
+    await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
+    const builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
+    expect(within(builder).getByRole("button", { name: "执行一次" })).toBeEnabled();
+    expect(within(builder).getByRole("button", { name: "开始轮询" })).toBeEnabled();
   });
 
   it("发送完成前编辑新草稿时保留新内容", async () => {
@@ -1374,7 +1611,7 @@ describe("TerminalPanel", () => {
     fireEvent.change(input, { target: { value: "SET ${seq}" } });
     await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "cr");
     await user.click(screen.getByRole("button", { name: "打开快捷命令" }));
-    const dialog = screen.getByRole("dialog", { name: "快捷命令" });
+    const dialog = await screen.findByRole("dialog", { name: "快捷命令" });
     const nameInput = within(dialog).getByRole("textbox", { name: "快捷命令名称" });
     expect(nameInput).toHaveFocus();
     await user.type(nameInput, "启动采样");
@@ -1403,7 +1640,7 @@ describe("TerminalPanel", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: "行尾" }), "none");
     await user.selectOptions(screen.getByRole("combobox", { name: "校验" }), "sum8");
     await user.click(screen.getByRole("button", { name: "打开快捷命令" }));
-    await user.click(screen.getByRole("button", { name: "载入快捷命令 启动采样" }));
+    await user.click(await screen.findByRole("button", { name: "载入快捷命令 启动采样" }));
 
     expect(input).toHaveValue("SET ${seq}");
     expect(
@@ -1431,7 +1668,7 @@ describe("TerminalPanel", () => {
     const trigger = screen.getByRole("button", { name: "打开快捷命令" });
 
     await user.click(trigger);
-    const dialog = screen.getByRole("dialog", { name: "快捷命令" });
+    const dialog = await screen.findByRole("dialog", { name: "快捷命令" });
     expect(within(dialog).getByRole("button", { name: "关闭快捷命令" })).toHaveFocus();
     await user.keyboard("{Escape}");
 
@@ -1451,7 +1688,7 @@ describe("TerminalPanel", () => {
     const trigger = screen.getByRole("button", { name: "打开快捷命令" });
 
     await user.click(trigger);
-    await user.click(screen.getByRole("button", { name: "重命名快捷命令 第二条" }));
+    await user.click(await screen.findByRole("button", { name: "重命名快捷命令 第二条" }));
     const renameInput = screen.getByRole("textbox", { name: "重命名快捷命令 第二条" });
     await user.clear(renameInput);
     await user.type(renameInput, "状态查询");
@@ -1485,7 +1722,7 @@ describe("TerminalPanel", () => {
     const trigger = screen.getByRole("button", { name: "打开快捷命令" });
 
     await user.click(trigger);
-    expect(screen.getByRole("dialog", { name: "快捷命令" })).toBeVisible();
+    expect(await screen.findByRole("dialog", { name: "快捷命令" })).toBeVisible();
     useWorkbenchStore.setState({ workspaceTransitionStatus: "switching" });
 
     await waitFor(() => {
@@ -1678,3 +1915,15 @@ describe("TerminalPanel", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeVisible();
   });
 });
+
+function restoreProperty(
+  target: typeof URL,
+  property: "createObjectURL" | "revokeObjectURL",
+  descriptor: PropertyDescriptor | undefined,
+): void {
+  if (descriptor) {
+    Object.defineProperty(target, property, descriptor);
+    return;
+  }
+  Reflect.deleteProperty(target, property);
+}

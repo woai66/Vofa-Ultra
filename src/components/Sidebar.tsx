@@ -1,6 +1,15 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Cable,
+  ChartNoAxesCombined,
   Check,
   ChevronDown,
   CircleCheck,
@@ -28,7 +37,7 @@ import {
   presentChannelSeries,
   type PresentedChannelSeries,
 } from "../core/channelPresentation";
-import { APP_DISPLAY_VERSION } from "../core/appMetadata";
+import { APP_BUILD_ID, APP_DISPLAY_VERSION } from "../core/appMetadata";
 import { isModbusPollActive } from "../core/modbusPoller";
 import {
   BUILTIN_PROTOCOLS,
@@ -40,6 +49,8 @@ import { presentSerialPort, sortSerialPorts } from "../core/serialPorts";
 import type { ThemePreference } from "../App";
 import {
   BAUD_RATES,
+  type ConnectionStatus,
+  type DataSource,
   type ProtocolKind,
   type SerialDiagnosticsReport,
   type SerialRecoveryPhase,
@@ -64,9 +75,11 @@ import {
   type SimulatorSignalType,
 } from "../types/simulator";
 import type { SidebarPanel } from "./ActivityRail";
-import { CapturePanel } from "./CapturePanel";
 import { WorkspacePanel } from "./WorkspacePanel";
 
+const CapturePanel = lazy(() =>
+  import("./CapturePanel").then(({ CapturePanel }) => ({ default: CapturePanel })),
+);
 const AutomationPanel = lazy(() =>
   import("./AutomationPanel").then(({ AutomationPanel }) => ({ default: AutomationPanel })),
 );
@@ -79,6 +92,11 @@ const ExtensionPanel = lazy(() =>
 
 const MIN_BAUD_RATE = 1;
 const MAX_BAUD_RATE = 12_000_000;
+const MAX_BAUD_RATE_OPTIONS_HEIGHT = 260;
+const MIN_BAUD_RATE_OPTIONS_HEIGHT = 42;
+// 能完整展示至少四个常用值时，向下展开更符合字段阅读顺序。
+const PREFERRED_BAUD_RATE_OPTIONS_HEIGHT = 152;
+const BAUD_RATE_OPTIONS_GAP = 6;
 
 interface SidebarProps {
   activePanel: SidebarPanel;
@@ -91,39 +109,174 @@ interface BaudRateFieldProps {
   value: number;
   disabled: boolean;
   onChange(value: number): void;
+  onValidityChange(valid: boolean): void;
 }
 
-function BaudRateField({ value, disabled, onChange }: BaudRateFieldProps) {
+function BaudRateField({ value, disabled, onChange, onValidityChange }: BaudRateFieldProps) {
   const [draftValue, setDraftValue] = useState(String(value));
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [optionsPlacement, setOptionsPlacement] = useState<"top" | "bottom">("bottom");
+  const [optionsMaxHeight, setOptionsMaxHeight] = useState(MAX_BAUD_RATE_OPTIONS_HEIGHT);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const comboboxRef = useRef<HTMLDivElement>(null);
+  const optionsRef = useRef<HTMLDivElement>(null);
+  const activeOptionRef = useRef<HTMLButtonElement>(null);
   const parsedDraftValue = parseBaudRate(draftValue);
 
   useEffect(() => {
     setDraftValue(String(value));
-  }, [value]);
+    onValidityChange(true);
+  }, [onValidityChange, value]);
+
+  useEffect(() => {
+    if (disabled) {
+      setOpen(false);
+    }
+  }, [disabled]);
+
+  useLayoutEffect(() => {
+    const combobox = comboboxRef.current;
+    const options = optionsRef.current;
+    const scroller = combobox?.closest<HTMLElement>(".connection-panel-scroll");
+    if (!open || !combobox || !options || !scroller) {
+      return;
+    }
+
+    const updatePlacement = () => {
+      const comboboxRect = combobox.getBoundingClientRect();
+      const scrollerRect = scroller.getBoundingClientRect();
+      const spaceAbove = Math.max(
+        0,
+        comboboxRect.top - scrollerRect.top - BAUD_RATE_OPTIONS_GAP - 1,
+      );
+      const spaceBelow = Math.max(
+        0,
+        scrollerRect.bottom - comboboxRect.bottom - BAUD_RATE_OPTIONS_GAP - 1,
+      );
+      const placement =
+        spaceBelow >= PREFERRED_BAUD_RATE_OPTIONS_HEIGHT ||
+        (spaceBelow >= MIN_BAUD_RATE_OPTIONS_HEIGHT && spaceBelow >= spaceAbove) ||
+        spaceAbove < MIN_BAUD_RATE_OPTIONS_HEIGHT
+          ? "bottom"
+          : "top";
+      const availableHeight = placement === "bottom" ? spaceBelow : spaceAbove;
+      setOptionsPlacement(placement);
+      setOptionsMaxHeight(
+        Math.max(
+          MIN_BAUD_RATE_OPTIONS_HEIGHT,
+          Math.min(MAX_BAUD_RATE_OPTIONS_HEIGHT, Math.floor(availableHeight)),
+        ),
+      );
+    };
+
+    updatePlacement();
+    window.addEventListener("resize", updatePlacement);
+    scroller.addEventListener("scroll", updatePlacement, { passive: true });
+    return () => {
+      window.removeEventListener("resize", updatePlacement);
+      scroller.removeEventListener("scroll", updatePlacement);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    const options = optionsRef.current;
+    const activeOption = activeOptionRef.current;
+    if (!open || !options || !activeOption) {
+      return;
+    }
+    const optionTop = activeOption.offsetTop;
+    const optionBottom = optionTop + activeOption.offsetHeight;
+    if (optionTop < options.scrollTop) {
+      options.scrollTop = optionTop;
+    } else if (optionBottom > options.scrollTop + options.clientHeight) {
+      options.scrollTop = optionBottom - options.clientHeight;
+    }
+  }, [activeIndex, open, optionsMaxHeight]);
 
   const commitDraftValue = () => {
     const parsed = parseBaudRate(draftValue);
     if (parsed === null) {
-      setDraftValue(String(value));
+      onValidityChange(false);
       return;
     }
     setDraftValue(String(parsed));
+    onValidityChange(true);
     if (parsed !== value) {
       onChange(parsed);
     }
   };
 
+  const openPresetList = (direction: "first" | "last" | "current" = "current") => {
+    const currentIndex = BAUD_RATES.findIndex((rate) => rate === value);
+    setActiveIndex(
+      direction === "first"
+        ? 0
+        : direction === "last"
+          ? BAUD_RATES.length - 1
+          : Math.max(0, currentIndex),
+    );
+    setOpen(true);
+  };
+
+  const selectPreset = (baudRate: number) => {
+    setDraftValue(String(baudRate));
+    onValidityChange(true);
+    setOpen(false);
+    if (baudRate !== value) {
+      onChange(baudRate);
+    }
+    inputRef.current?.focus({ preventScroll: true });
+  };
+
+  const moveActivePreset = (direction: 1 | -1) => {
+    if (!open) {
+      const currentIndex = BAUD_RATES.findIndex((rate) => rate === value);
+      const fallbackIndex = direction === 1 ? 0 : BAUD_RATES.length - 1;
+      setActiveIndex(
+        currentIndex < 0
+          ? fallbackIndex
+          : Math.min(BAUD_RATES.length - 1, Math.max(0, currentIndex + direction)),
+      );
+      setOpen(true);
+      return;
+    }
+    setActiveIndex((index) =>
+      Math.min(BAUD_RATES.length - 1, Math.max(0, index + direction)),
+    );
+  };
+
   return (
-    <div className="baud-rate-field">
+    <div
+      className="baud-rate-field"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setOpen(false);
+          commitDraftValue();
+        }
+      }}
+    >
       <label className="field-label" htmlFor="baud-rate">
         波特率
       </label>
-      <div className="baud-rate-combobox">
+      <div
+        ref={comboboxRef}
+        className="baud-rate-combobox"
+        data-invalid={parsedDraftValue === null}
+        data-open={open}
+      >
         <input
+          ref={inputRef}
           id="baud-rate"
           name="baud-rate"
           aria-describedby="baud-rate-hint"
           aria-invalid={parsedDraftValue === null}
+          aria-autocomplete="none"
+          aria-controls="baud-rate-options"
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          aria-activedescendant={open ? `baud-rate-option-${BAUD_RATES[activeIndex]}` : undefined}
+          role="combobox"
           type="text"
           inputMode="numeric"
           pattern="[0-9]*"
@@ -132,45 +285,94 @@ function BaudRateField({ value, disabled, onChange }: BaudRateFieldProps) {
           spellCheck={false}
           value={draftValue}
           disabled={disabled}
-          onChange={(event) => setDraftValue(event.target.value)}
-          onBlur={commitDraftValue}
+          onChange={(event) => {
+            const nextValue = event.target.value;
+            setDraftValue(nextValue);
+            onValidityChange(parseBaudRate(nextValue) !== null);
+          }}
           onKeyDown={(event) => {
-            if (event.key === "Enter") {
+            if (event.key === "ArrowDown") {
               event.preventDefault();
+              moveActivePreset(1);
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              moveActivePreset(-1);
+            } else if (event.key === "Enter") {
+              event.preventDefault();
+              if (open) {
+                const activeRate = BAUD_RATES[activeIndex];
+                if (activeRate !== undefined) {
+                  selectPreset(activeRate);
+                }
+              } else {
+                commitDraftValue();
+              }
+            } else if (event.key === "Tab") {
+              if (open) {
+                setOpen(false);
+              }
               commitDraftValue();
             } else if (event.key === "Escape") {
               event.preventDefault();
-              setDraftValue(String(value));
+              if (open) {
+                setOpen(false);
+              } else {
+                setDraftValue(String(value));
+                onValidityChange(true);
+              }
             }
           }}
         />
-        <span className="baud-rate-preset-control">
-          <select
-            id="baud-rate-preset"
-            name="baud-rate-preset"
-            aria-label="选择常用波特率"
-            title="选择常用波特率"
-            value={isPresetBaudRate(value) ? String(value) : ""}
-            disabled={disabled}
-            onChange={(event) => {
-              const baudRate = Number(event.target.value);
-              setDraftValue(String(baudRate));
-              if (baudRate !== value) {
-                onChange(baudRate);
-              }
-            }}
+        <button
+          className="baud-rate-toggle"
+          type="button"
+          tabIndex={-1}
+          aria-label={open ? "收起常用波特率" : "展开常用波特率"}
+          title={open ? "收起常用波特率" : "选择常用波特率"}
+          aria-controls="baud-rate-options"
+          aria-expanded={open}
+          disabled={disabled}
+          onClick={() => {
+            if (open) {
+              setOpen(false);
+            } else {
+              openPresetList();
+            }
+            inputRef.current?.focus({ preventScroll: true });
+          }}
+        >
+          <ChevronDown aria-hidden="true" size={17} />
+        </button>
+        {open && (
+          <div
+            ref={optionsRef}
+            className="baud-rate-options"
+            id="baud-rate-options"
+            role="listbox"
+            aria-label="常用波特率"
+            data-placement={optionsPlacement}
+            style={{ maxHeight: `${optionsMaxHeight}px` }}
           >
-            <option value="" disabled>
-              常用波特率
-            </option>
             {BAUD_RATES.map((rate) => (
-              <option key={rate} value={rate}>
+              <button
+                key={rate}
+                ref={rate === BAUD_RATES[activeIndex] ? activeOptionRef : undefined}
+                id={`baud-rate-option-${rate}`}
+                type="button"
+                role="option"
+                tabIndex={-1}
+                aria-selected={rate === value}
+                data-active={rate === BAUD_RATES[activeIndex]}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseMove={() => setActiveIndex(BAUD_RATES.indexOf(rate))}
+                onClick={() => selectPreset(rate)}
+              >
                 {rate}
-              </option>
+                {rate === value && <Check aria-hidden="true" size={15} />}
+              </button>
             ))}
-          </select>
-          <ChevronDown aria-hidden="true" size={15} />
-        </span>
+          </div>
+        )}
       </div>
       <span
         className={parsedDraftValue === null ? "field-hint" : "sr-only"}
@@ -180,10 +382,6 @@ function BaudRateField({ value, disabled, onChange }: BaudRateFieldProps) {
       </span>
     </div>
   );
-}
-
-function isPresetBaudRate(value: number): boolean {
-  return BAUD_RATES.some((rate) => rate === value);
 }
 
 function parseBaudRate(value: string): number | null {
@@ -244,7 +442,13 @@ export function Sidebar({
           <AutomationPanel />
         </Suspense>
       )}
-      {activePanel === "capture" && <CapturePanel />}
+      {activePanel === "capture" && (
+        <Suspense
+          fallback={<div className="sidebar-panel" aria-label="加载中" aria-busy="true" />}
+        >
+          <CapturePanel />
+        </Suspense>
+      )}
       <div className="workspace-panel-host" hidden={activePanel !== "workspaces"}>
         <WorkspacePanel />
       </div>
@@ -263,9 +467,16 @@ function ConnectionPanel() {
   const source = useWorkbenchStore((state) => state.source);
   const protocol = useWorkbenchStore((state) => state.protocol);
   const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
-  const statusMessage = useWorkbenchStore((state) => state.statusMessage);
+  const connectionActionError = useWorkbenchStore((state) => state.connectionActionError);
+  const connectionStatusMessage = useWorkbenchStore((state) => state.connectionMessage);
   const ports = useWorkbenchStore((state) => state.ports);
   const isRefreshingPorts = useWorkbenchStore((state) => state.isRefreshingPorts);
+  const serialPortDiscoveryStatus = useWorkbenchStore(
+    (state) => state.serialPortDiscoveryStatus,
+  );
+  const serialPortDiscoveryMessage = useWorkbenchStore(
+    (state) => state.serialPortDiscoveryMessage,
+  );
   const config = useWorkbenchStore((state) => state.serialConfig);
   const simulatorConfig = useWorkbenchStore((state) => state.simulatorConfig);
   const serialControlLineOperation = useWorkbenchStore(
@@ -281,6 +492,7 @@ function ConnectionPanel() {
   const isCancellingSerialConnection = useWorkbenchStore(
     (state) => state.isCancellingSerialConnection,
   );
+  const serialRuntimeError = useWorkbenchStore((state) => state.serialRuntimeError);
   const setSource = useWorkbenchStore((state) => state.setSource);
   const setProtocol = useWorkbenchStore((state) => state.setProtocol);
   const updateConfig = useWorkbenchStore((state) => state.updateSerialConfig);
@@ -313,6 +525,7 @@ function ConnectionPanel() {
   const numericLogStatus = useWorkbenchStore((state) => state.numericLogStatus);
   const replayStatus = useWorkbenchStore((state) => state.replayStatus);
   const replaySessionId = useWorkbenchStore((state) => state.replaySessionId);
+  const [baudRateDraftValid, setBaudRateDraftValid] = useState(true);
 
   const isConnected = connectionStatus === "connected";
   const isTransitioning = workspaceTransitionStatus !== "idle";
@@ -350,12 +563,80 @@ function ConnectionPanel() {
     const selectedPort = ports.find((port) => port.name === config.portName);
     return selectedPort ? presentSerialPort(selectedPort) : null;
   }, [config.portName, ports]);
+  const selectedPortDescription = selectedPortPresentation
+    ? [
+        selectedPortPresentation.primaryLabel,
+        selectedPortPresentation.secondaryLabel,
+        [
+          selectedPortPresentation.kindLabel,
+          selectedPortPresentation.usbIdentifier,
+        ].filter(Boolean).join(" "),
+        selectedPortPresentation.hasUniqueUsbIdentity ? "支持唯一设备识别" : "",
+      ].filter(Boolean).join(" · ")
+    : "";
   const serialConnectUnavailable =
-    source === "serial" && selectedPortPresentation === null;
+    source === "serial" &&
+    (selectedPortPresentation === null || !baudRateDraftValid || Boolean(serialRuntimeError));
+  const simulatorConnectUnavailable = source === "simulator" && protocol === "raw";
+  const connectUnavailable = serialConnectUnavailable || simulatorConnectUnavailable;
   const primaryActionDisabled =
     isCancellingSerialConnection ||
     (!canCancelConnection &&
-      (isBusy || (!isConnected && serialConnectUnavailable)));
+      (isBusy || (!isConnected && connectUnavailable)));
+  const connectionMessage = serialRuntimeError
+    ? serialRuntimeError
+    : connectionActionError
+      ? connectionActionError
+      : simulatorConnectUnavailable && !isConnected
+        ? "Raw Data 不提供模拟，请选择串口或回放"
+        : resolveConnectionMessage({
+            source,
+            connectionStatus,
+            portName: config.portName,
+            portAvailable: selectedPortPresentation !== null,
+            connectionStatusMessage,
+            serialRuntimeError,
+            isRefreshingPorts,
+            serialPortDiscoveryStatus,
+            serialPortDiscoveryMessage,
+            isCancelling: isCancellingSerialConnection,
+            recoveryActive,
+            recoveryMessage: serialRecovery.message,
+          });
+  const connectionMessageStatus: ConnectionStatus =
+    serialRuntimeError || connectionActionError
+    ? "error"
+    : isCancellingSerialConnection || recoveryActive
+      ? "connecting"
+      : connectionStatus === "connected" || connectionStatus === "connecting"
+        ? connectionStatus
+        : source === "serial" && isRefreshingPorts
+          ? "connecting"
+          : source === "serial" && serialPortDiscoveryStatus === "error"
+            ? "error"
+            : source === "serial" && serialPortDiscoveryStatus !== "idle"
+              ? "disconnected"
+              : connectionStatus;
+  let connectButtonTitle: string | undefined;
+  if (!isConnected && !canCancelConnection && connectUnavailable) {
+    if (simulatorConnectUnavailable) {
+      connectButtonTitle = "Raw Data 不提供模拟，请选择串口或回放";
+    } else if (serialRuntimeError) {
+      connectButtonTitle = serialRuntimeError;
+    } else if (!baudRateDraftValid) {
+      connectButtonTitle = "请先输入有效波特率";
+    } else if (isRefreshingPorts) {
+      connectButtonTitle = "正在扫描串口设备";
+    } else if (serialPortDiscoveryStatus === "error") {
+      connectButtonTitle = serialPortDiscoveryMessage;
+    } else if (config.portName) {
+      connectButtonTitle = `${config.portName} 当前不可用，请刷新或选择其他串口`;
+    } else if (serialPortDiscoveryStatus === "empty") {
+      connectButtonTitle = "未发现串口设备，请连接设备后刷新";
+    } else {
+      connectButtonTitle = "请选择串口设备后连接";
+    }
+  }
 
   useEffect(() => {
     if (isNativeRuntime && source === "serial") {
@@ -367,7 +648,6 @@ function ConnectionPanel() {
     <div className="sidebar-panel connection-panel">
       <div className="sidebar-heading">
         <div>
-          <span className="eyebrow">DATA SOURCE</span>
           <h1>设备连接</h1>
         </div>
         <Cable size={20} />
@@ -399,7 +679,7 @@ function ConnectionPanel() {
         </div>
       </section>
 
-      {source === "simulator" && (
+      {source === "simulator" && protocol !== "raw" && (
         <section
           className="sidebar-section connection-fields simulator-fields"
           aria-label="模拟器配置"
@@ -483,8 +763,9 @@ function ConnectionPanel() {
               className="icon-button compact"
               type="button"
               aria-label="刷新串口列表"
-              title="刷新串口列表"
-              disabled={isRefreshingPorts || configDisabled}
+              aria-busy={isRefreshingPorts}
+              title={isRefreshingPorts ? "正在刷新串口列表" : "刷新串口列表"}
+              disabled={isRefreshingPorts || configDisabled || Boolean(serialRuntimeError)}
               onClick={() => void refreshPorts()}
             >
               <RefreshCw size={15} className={isRefreshingPorts ? "spin" : undefined} />
@@ -494,12 +775,17 @@ function ConnectionPanel() {
             id="serial-port"
             name="serial-port"
             value={config.portName}
+            aria-busy={isRefreshingPorts}
             disabled={configDisabled}
             onChange={(event) => updateConfig("portName", event.target.value)}
           >
-            {ports.length === 0 && <option value="">未发现设备</option>}
+            {ports.length === 0 && (
+              <option value="">{isRefreshingPorts ? "正在扫描设备" : "未发现设备"}</option>
+            )}
             {config.portName && !ports.some((port) => port.name === config.portName) && (
-              <option value={config.portName}>{config.portName} · 当前不可用</option>
+              <option value={config.portName}>
+                {config.portName} · {isConnected ? "当前连接" : "当前不可用"}
+              </option>
             )}
             {sortedPorts.map((port) => (
               <option key={port.name} value={port.name}>
@@ -508,24 +794,26 @@ function ConnectionPanel() {
             ))}
           </select>
           {selectedPortPresentation && (
-            <div className="serial-port-summary" role="group" aria-label="已选端口信息">
+            <div
+              className="serial-port-summary"
+              role="group"
+              aria-label={`已选端口信息：${selectedPortDescription}`}
+              title={selectedPortDescription}
+            >
               <div className="serial-port-summary-name">
                 <Cable size={14} aria-hidden="true" />
-                <strong title={selectedPortPresentation.primaryLabel}>
-                  {selectedPortPresentation.primaryLabel}
-                </strong>
+                <strong>{selectedPortPresentation.primaryLabel}</strong>
               </div>
-              {selectedPortPresentation.secondaryLabel && (
-                <span title={selectedPortPresentation.secondaryLabel}>
-                  {selectedPortPresentation.secondaryLabel}
-                </span>
-              )}
               <div className="serial-port-summary-meta">
-                <span>{selectedPortPresentation.kindLabel}</span>
-                {selectedPortPresentation.usbIdentifier && (
-                  <code>{selectedPortPresentation.usbIdentifier}</code>
+                {selectedPortPresentation.secondaryLabel && (
+                  <span>{selectedPortPresentation.secondaryLabel}</span>
                 )}
-                {selectedPortPresentation.hasUniqueUsbIdentity && <span>唯一身份</span>}
+                <span>
+                  {selectedPortPresentation.kindLabel}
+                  {selectedPortPresentation.usbIdentifier && (
+                    <code>{` ${selectedPortPresentation.usbIdentifier}`}</code>
+                  )}
+                </span>
               </div>
             </div>
           )}
@@ -534,7 +822,46 @@ function ConnectionPanel() {
             value={config.baudRate}
             disabled={configDisabled}
             onChange={(baudRate) => updateConfig("baudRate", baudRate)}
+            onValidityChange={setBaudRateDraftValid}
           />
+        </section>
+      )}
+
+      <section className="sidebar-section">
+        <span className="field-label" id="protocol-parser-label">协议解析</span>
+        <div
+          className="protocol-list"
+          role="radiogroup"
+          aria-labelledby="protocol-parser-label"
+        >
+          {BUILTIN_PROTOCOLS.map(({ id, displayName, description }) => (
+            <button
+              key={id}
+              className="protocol-option"
+              type="button"
+              role="radio"
+              aria-checked={protocol === id}
+              data-active={protocol === id}
+              disabled={configDisabled}
+              onClick={() => setProtocol(id)}
+            >
+              <span className="protocol-dot" />
+              <span>
+                <strong>{displayName}</strong>
+                <small>{description}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {source === "serial" && (
+        <details className="sidebar-section serial-advanced-section">
+          <summary>
+            <span>高级串口设置</span>
+            <ChevronDown size={16} aria-hidden="true" />
+          </summary>
+          <div className="connection-fields serial-advanced-fields">
 
           <div className="field-grid three-columns">
             <label htmlFor="serial-data-bits">
@@ -674,7 +1001,8 @@ function ConnectionPanel() {
               ))}
             </dl>
           )}
-        </section>
+          </div>
+        </details>
       )}
 
       {source === "serial" && (
@@ -686,7 +1014,7 @@ function ConnectionPanel() {
               name="serial-auto-reconnect"
               type="checkbox"
               checked={serialRecovery.enabled}
-              disabled={isCancellingSerialConnection}
+              disabled={isCancellingSerialConnection || Boolean(serialRuntimeError)}
               onChange={(event) => void setSerialRecoveryEnabled(event.target.checked)}
             />
           </label>
@@ -739,56 +1067,36 @@ function ConnectionPanel() {
         </section>
       )}
 
-      <section className="sidebar-section">
-        <span className="field-label" id="protocol-parser-label">协议解析</span>
-        <div
-          className="protocol-list"
-          role="radiogroup"
-          aria-labelledby="protocol-parser-label"
-        >
-          {BUILTIN_PROTOCOLS.map(({ id, displayName, description }) => (
-            <button
-              key={id}
-              className="protocol-option"
-              type="button"
-              role="radio"
-              aria-checked={protocol === id}
-              data-active={protocol === id}
-              disabled={configDisabled}
-              onClick={() => setProtocol(id)}
-            >
-              <span className="protocol-dot" />
-              <span>
-                <strong>{displayName}</strong>
-                <small>{description}</small>
-              </span>
-            </button>
-          ))}
-        </div>
-      </section>
       </div>
 
       <div className="connection-action-area">
         <div
+          id="serial-connection-status"
           className="connection-message"
-          data-status={connectionStatus}
+          data-status={connectionMessageStatus}
           role="status"
         >
           <span className="status-dot" />
-          <span>{statusMessage}</span>
+          <span>{connectionMessage}</span>
         </div>
+        {connectButtonTitle && (
+          <span id="connection-action-hint" className="sr-only">
+            {connectButtonTitle}
+          </span>
+        )}
         <button
           className="primary-button connect-button"
           type="button"
           data-action={showCancelAction ? "cancel" : "primary"}
-          disabled={primaryActionDisabled}
-          title={
-            !isConnected && !canCancelConnection && serialConnectUnavailable
-              ? config.portName
-                ? `${config.portName} 当前不可用，请刷新或选择其他串口`
-                : "未发现可用串口，请连接设备后刷新"
-              : undefined
+          aria-describedby={
+            connectButtonTitle
+              ? "connection-action-hint"
+              : source === "serial"
+                ? "serial-connection-status"
+                : undefined
           }
+          disabled={primaryActionDisabled}
+          title={connectButtonTitle}
           onClick={() =>
             void (canCancelConnection
               ? cancelSerialConnection()
@@ -813,7 +1121,9 @@ function ConnectionPanel() {
               : isBusy
                 ? "处理中"
                 : isConnected
-                  ? "断开连接"
+                  ? source === "serial"
+                    ? "断开连接"
+                    : "停止模拟"
                   : isReplayLoaded
                     ? "退出回放并连接"
                     : source === "serial"
@@ -822,6 +1132,76 @@ function ConnectionPanel() {
         </button>
       </div>
     </div>
+  );
+}
+
+interface ConnectionMessageInput {
+  source: DataSource;
+  connectionStatus: ConnectionStatus;
+  portName: string;
+  portAvailable: boolean;
+  connectionStatusMessage: string;
+  serialRuntimeError: string;
+  isRefreshingPorts: boolean;
+  serialPortDiscoveryStatus: "idle" | "ready" | "empty" | "error";
+  serialPortDiscoveryMessage: string;
+  isCancelling: boolean;
+  recoveryActive: boolean;
+  recoveryMessage: string;
+}
+
+function resolveConnectionMessage(input: ConnectionMessageInput): string {
+  if (input.serialRuntimeError) {
+    return input.serialRuntimeError;
+  }
+  if (input.isCancelling) {
+    return input.recoveryActive ? "正在取消自动重连" : "正在取消串口连接";
+  }
+  if (input.recoveryActive) {
+    return input.recoveryMessage;
+  }
+  if (input.connectionStatus === "connecting") {
+    return (
+      input.connectionStatusMessage ||
+      (input.source === "serial" && input.portName
+        ? `正在打开 ${input.portName}`
+        : "正在启动模拟数据")
+    );
+  }
+  if (input.connectionStatus === "connected") {
+    return (
+      input.connectionStatusMessage ||
+      (input.source === "serial"
+        ? input.portName
+          ? `${input.portName} 已连接`
+          : "串口已连接"
+        : "模拟数据正在运行")
+    );
+  }
+  if (input.source === "serial" && input.isRefreshingPorts) {
+    return "正在扫描串口设备";
+  }
+  if (input.source === "simulator") {
+    if (input.connectionStatus === "error") {
+      return input.connectionStatusMessage || "模拟数据发生错误";
+    }
+    return input.connectionStatusMessage || "模拟数据源已就绪";
+  }
+  if (input.serialPortDiscoveryStatus !== "idle" && input.serialPortDiscoveryMessage) {
+    return input.serialPortDiscoveryMessage;
+  }
+  if (input.connectionStatus === "error") {
+    return input.connectionStatusMessage || "串口连接发生错误";
+  }
+  if (!input.portName) {
+    return "选择设备后连接";
+  }
+  if (!input.portAvailable) {
+    return `${input.portName} 当前不可用`;
+  }
+  return (
+    input.connectionStatusMessage ||
+    `${input.portName} 已就绪`
   );
 }
 
@@ -889,7 +1269,6 @@ function ChannelPanel() {
     <div className="sidebar-panel">
       <div className="sidebar-heading">
         <div>
-          <span className="eyebrow">SIGNALS</span>
           <h1>数据通道</h1>
         </div>
         <Gauge size={20} />
@@ -1277,10 +1656,9 @@ function SettingsPanel({
   );
 
   return (
-    <div className="sidebar-panel">
+    <div className="sidebar-panel settings-sidebar-panel">
       <div className="sidebar-heading">
         <div>
-          <span className="eyebrow">PREFERENCES</span>
           <h1>工作台设置</h1>
         </div>
         <Settings size={20} />
@@ -1368,6 +1746,12 @@ function SettingsPanel({
             <dt>许可证</dt>
             <dd>MIT</dd>
           </div>
+          <div>
+            <dt>构建</dt>
+            <dd>
+              <code>{APP_BUILD_ID}</code>
+            </dd>
+          </div>
         </dl>
       </section>
     </div>
@@ -1409,7 +1793,7 @@ function formatProtocolDropTime(timestamp: number): string {
 }
 
 function AudioEmptyIcon() {
-  return <span className="empty-signal" aria-hidden="true">~</span>;
+  return <ChartNoAxesCombined className="empty-signal" aria-hidden="true" size={28} />;
 }
 
 function formatChannelValue(value: number): string {

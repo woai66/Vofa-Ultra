@@ -1,6 +1,6 @@
 import { create, type StoreApi } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
-import { APP_VERSION } from "../core/appMetadata";
+import { APP_BUILD_ID, APP_VERSION } from "../core/appMetadata";
 import {
   AutoResponderRuntime,
   CommandSendArbiter,
@@ -150,6 +150,7 @@ import {
   cancelSerialConnect,
   connectSerial,
   disconnectSerial,
+  getSerialState,
   isTauriRuntime,
   listSerialPorts,
   sendSerial,
@@ -268,10 +269,22 @@ import {
   type ExtensionStatePayload,
 } from "../types/extensions";
 
-const MAX_POINTS_PER_CHANNEL = 2_000;
+// 覆盖内置模拟器 200 Hz 采样率下的完整 60 秒最大时间窗。
+export const MAX_POINTS_PER_CHANNEL = 12_000;
 const MAX_TERMINAL_ENTRIES = 800;
 const MAX_TERMINAL_BYTES_PER_ENTRY =
   MAX_TERMINAL_UNTERMINATED_LINE_BYTES + MAX_TERMINAL_LINE_ENDING_BYTES;
+
+type TerminalPresentationContext =
+  | "live:justfloat"
+  | `replay:${number}:justfloat`;
+
+interface TerminalPresentationOverride {
+  context: TerminalPresentationContext;
+  displayMode: DisplayMode;
+  recordMode: TerminalRxRecordMode;
+}
+
 export const WORKBENCH_STORAGE_KEY = "vofa-ultra-workbench";
 export const WORKBENCH_STORAGE_VERSION = 13;
 export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [
@@ -335,6 +348,7 @@ let terminalDecoderEncoding = INITIAL_WORKSPACE_CONFIG.terminalRxTextEncoding;
 let terminalDecoder = createTerminalTextDecoder(terminalDecoderEncoding);
 const terminalLineAssembler = new TerminalLineAssembler();
 let terminalEntryId = 0;
+let chartFrameSequence = 0;
 const channelBuffers = new Map<string, RingBuffer<DataPoint>>();
 const processingChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
 const extensionChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
@@ -354,6 +368,7 @@ let replayProcessingRuntime = new ProcessingGraphRuntime(
 );
 let captureStopPromise: Promise<boolean> | null = null;
 let numericLogStopPromise: Promise<boolean> | null = null;
+let appClosePromise: Promise<void> | null = null;
 let serialRecoveryCoordinator: SerialReconnectCoordinator | null = null;
 let serialConnectOperation = 0;
 let serialPortRefreshOperation = 0;
@@ -384,6 +399,8 @@ type RuntimeTransitionStatus =
   | "switching-workspace"
   | "closing-app";
 
+type SerialPortDiscoveryStatus = "idle" | "ready" | "empty" | "error";
+
 export interface WorkbenchStore {
   isNativeRuntime: boolean;
   source: DataSource;
@@ -391,9 +408,14 @@ export interface WorkbenchStore {
   connectionStatus: ConnectionStatus;
   serialGeneration: number;
   serialStateRevision: number;
+  serialRuntimeError: string;
+  connectionActionError: string;
+  connectionMessage: string;
   statusMessage: string;
   ports: SerialPortInfo[];
   isRefreshingPorts: boolean;
+  serialPortDiscoveryStatus: SerialPortDiscoveryStatus;
+  serialPortDiscoveryMessage: string;
   serialConfig: SerialConfig;
   simulatorConfig: SimulatorConfig;
   serialControlLineOperation: "idle" | SerialControlLine;
@@ -402,9 +424,12 @@ export interface WorkbenchStore {
   isCancellingSerialConnection: boolean;
   channels: ChannelSeries[];
   processedChannels: ChannelSeries[];
+  chartFrozenChannels: ChannelSeries[] | null;
+  chartFrozenProcessedChannels: ChannelSeries[] | null;
   channelVisibility: Record<string, boolean>;
   channelPresentations: ChannelPresentations;
   extensionChannels: ChannelSeries[];
+  chartFrozenExtensionChannels: ChannelSeries[] | null;
   extensionChannelVisibility: Record<string, boolean>;
   extensionInspection: ExtensionInspectionPayload | null;
   extensionPackagePath: string;
@@ -419,6 +444,7 @@ export interface WorkbenchStore {
   attitudeSample: (AttitudeSample & { readonly receivedAt: number }) | null;
   terminalEntries: TerminalEntry[];
   displayMode: DisplayMode;
+  terminalPresentationOverride: TerminalPresentationOverride | null;
   sendMode: DisplayMode;
   lineEnding: LineEnding;
   commandChecksum: CommandChecksumMode;
@@ -514,6 +540,8 @@ export interface WorkbenchStore {
   replayNextSequence: number;
   replayMessage: string;
   setRuntimeAvailability(nativeRuntime: boolean): void;
+  setSerialRuntimeError(message: string): void;
+  reportSerialRuntimeWarning(message: string): void;
   setSource(source: DataSource): Promise<void>;
   setProtocol(protocol: ProtocolKind): void;
   updateSerialConfig<K extends keyof SerialConfig>(key: K, value: SerialConfig[K]): void;
@@ -666,9 +694,14 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       connectionStatus: "disconnected",
       serialGeneration: 0,
       serialStateRevision: 0,
+      serialRuntimeError: "",
+      connectionActionError: "",
+      connectionMessage: "等待连接",
       statusMessage: "等待连接",
       ports: [],
       isRefreshingPorts: false,
+      serialPortDiscoveryStatus: "idle",
+      serialPortDiscoveryMessage: "",
       serialConfig: { ...INITIAL_WORKSPACE_CONFIG.serialConfig },
       simulatorConfig: cloneSimulatorConfig(INITIAL_WORKSPACE_CONFIG.simulatorConfig),
       serialControlLineOperation: "idle",
@@ -677,11 +710,14 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       isCancellingSerialConnection: false,
       channels: [],
       processedChannels: [],
+      chartFrozenChannels: null,
+      chartFrozenProcessedChannels: null,
       channelVisibility: {},
       channelPresentations: cloneChannelPresentations(
         INITIAL_WORKSPACE_CONFIG.channelPresentations,
       ),
       extensionChannels: [],
+      chartFrozenExtensionChannels: null,
       extensionChannelVisibility: {},
       extensionInspection: null,
       extensionPackagePath: "",
@@ -696,6 +732,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       attitudeSample: null,
       terminalEntries: [],
       displayMode: INITIAL_WORKSPACE_CONFIG.displayMode,
+      terminalPresentationOverride: null,
       sendMode: INITIAL_WORKSPACE_CONFIG.sendMode,
       lineEnding: INITIAL_WORKSPACE_CONFIG.lineEnding,
       commandChecksum: INITIAL_WORKSPACE_CONFIG.commandChecksum,
@@ -811,6 +848,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             extensionOperation: "idle",
             extensionMessage: "扩展运行时已就绪",
             extensionChannels: [],
+            chartFrozenExtensionChannels: null,
             extensionChannelVisibility: {},
             extensionQueue: createIdleExtensionQueue(),
           });
@@ -920,6 +958,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             extensionOperation: "idle",
             extensionMessage: payload.message ?? "协议扩展已启用",
             extensionChannels: [],
+            chartFrozenExtensionChannels: null,
             extensionChannelVisibility: {},
           });
           return true;
@@ -962,6 +1001,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             extensionOperation: "idle",
             extensionMessage: payload.message ?? "协议扩展已停用",
             extensionChannels: [],
+            chartFrozenExtensionChannels: null,
             extensionChannelVisibility: {},
           });
           return payload.status === "idle";
@@ -1006,6 +1046,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             extensionOperation: "idle",
             extensionMessage: payload.message ?? "扩展解析状态已重置",
             extensionChannels: [],
+            chartFrozenExtensionChannels: null,
           });
           return payload.status === "active";
         } catch (error) {
@@ -1049,6 +1090,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             extensionChannels: state.extensionChannels.map((candidate) =>
               candidate.id === channelId ? { ...candidate, visible } : candidate,
             ),
+            chartFrozenExtensionChannels: state.chartFrozenExtensionChannels
+              ? state.chartFrozenExtensionChannels.map((candidate) =>
+                  candidate.id === channelId ? { ...candidate, visible } : candidate,
+                )
+              : null,
           };
         });
       },
@@ -1092,11 +1138,32 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           serialModemStatus: availabilityChanged
             ? createUnavailableSerialModemStatus(latest.serialGeneration)
             : latest.serialModemStatus,
+          serialRuntimeError: nativeRuntime ? latest.serialRuntimeError : "",
+          connectionActionError: availabilityChanged ? "" : latest.connectionActionError,
+          connectionMessage: nativeRuntime
+            ? latest.connectionMessage
+            : "浏览器预览模式，仅使用模拟数据",
           terminalEntries,
           statusMessage: nativeRuntime
             ? latest.statusMessage
             : "浏览器预览模式，仅使用模拟数据",
         }));
+      },
+
+      setSerialRuntimeError: (message) => {
+        set((state) => ({
+          serialRuntimeError: message,
+          connectionMessage: message || state.connectionMessage,
+          statusMessage: message || state.statusMessage,
+        }));
+      },
+
+      reportSerialRuntimeWarning: (message) => {
+        set((state) =>
+          state.serialRuntimeError
+            ? state
+            : { connectionMessage: message, statusMessage: message },
+        );
       },
 
       setSource: async (source) => {
@@ -1110,7 +1177,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return;
         }
         if (source === "serial" && !get().isNativeRuntime) {
-          set({ statusMessage: "浏览器预览无法使用本机串口" });
+          set({
+            connectionActionError: "",
+            connectionMessage: "浏览器预览无法使用本机串口",
+            statusMessage: "浏览器预览无法使用本机串口",
+          });
           return;
         }
         if (source === get().source) {
@@ -1132,22 +1203,32 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           }
           revokeExtensionForBoundary(get, set, "数据源已切换，扩展会话已撤销");
           const latest = get();
-          const terminalEntries = settleTerminalPresentation(latest, terminalLineAssembler);
+          const terminalEntries = appendTerminalSessionBoundary(
+            settleTerminalPresentation(latest, terminalLineAssembler),
+            `数据源：${dataSourceDisplayName(latest.source)} → ${dataSourceDisplayName(source)}`,
+          );
           resetProtocolState(get().protocol);
-          set((state) => ({
+          set({
             source,
+            terminalPresentationOverride: null,
             channels: [],
             processedChannels: [],
+            chartFrozenChannels: latest.chartPaused ? [] : null,
+            chartFrozenProcessedChannels: latest.chartPaused ? [] : null,
+            chartFrozenExtensionChannels: latest.chartPaused ? [] : null,
             attitudeSample: null,
-            chartDataRevision: state.chartDataRevision + 1,
+            chartDataRevision: latest.chartDataRevision + 1,
             waveformTrigger: createIdleWaveformTriggerState(),
             processingStatus: liveProcessingRuntime.getSnapshot(),
             protocolHealth: protocolParser.getHealthSnapshot(),
             terminalEntries,
             connectionStatus: "disconnected",
-            serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
+            connectionActionError: "",
+            serialModemStatus: createUnavailableSerialModemStatus(latest.serialGeneration),
+            connectionMessage:
+              source === "serial" ? "选择设备后连接" : "模拟数据源已就绪",
             statusMessage: source === "serial" ? "选择设备后连接" : "模拟数据源已就绪",
-          }));
+          });
         } finally {
           endRuntimeTransition(get, set, "switching-source");
         }
@@ -1168,27 +1249,32 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return;
         }
         const currentState = get();
-        if (protocol !== currentState.protocol) {
-          getAutoResponderRuntime().stop("protocol-change");
-          revokeExtensionForBoundary(get, set, "基础协议已切换，扩展会话已撤销");
+        if (protocol === currentState.protocol) {
+          return;
         }
-        const terminalEntries = settleTerminalPresentation(
-          currentState,
-          terminalLineAssembler,
+        getAutoResponderRuntime().stop("protocol-change");
+        revokeExtensionForBoundary(get, set, "基础协议已切换，扩展会话已撤销");
+        const terminalEntries = appendTerminalSessionBoundary(
+          settleTerminalPresentation(currentState, terminalLineAssembler),
+          `协议：${protocolDisplayName(currentState.protocol)} → ${protocolDisplayName(protocol)}`,
         );
         resetProtocolState(protocol);
-        set((state) => ({
+        set({
           protocol,
+          terminalPresentationOverride: null,
           channels: [],
           processedChannels: [],
+          chartFrozenChannels: currentState.chartPaused ? [] : null,
+          chartFrozenProcessedChannels: currentState.chartPaused ? [] : null,
+          chartFrozenExtensionChannels: currentState.chartPaused ? [] : null,
           attitudeSample: null,
-          chartDataRevision: state.chartDataRevision + 1,
+          chartDataRevision: currentState.chartDataRevision + 1,
           waveformTrigger: createIdleWaveformTriggerState(),
           processingStatus: liveProcessingRuntime.getSnapshot(),
           protocolHealth: protocolParser.getHealthSnapshot(),
           terminalEntries,
           statusMessage: protocolDisplayName(protocol) + " 已启用",
-        }));
+        });
       },
 
       updateSerialConfig: (key, value) => {
@@ -1207,6 +1293,12 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
         set((state) => ({
           serialConfig: { ...state.serialConfig, [key]: value },
+          connectionMessage:
+            key === "portName" && state.connectionStatus === "disconnected"
+              ? value
+                ? `${String(value)} 已就绪`
+                : "选择设备后连接"
+              : state.connectionMessage,
         }));
       },
 
@@ -1239,7 +1331,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           return false;
         }
         if (line === "rts" && state.serialConfig.flowControl === "hardware") {
-          set({ statusMessage: "硬件流控已接管 RTS，无法手动设置" });
+          set({
+            connectionMessage: "硬件流控已接管 RTS，无法手动设置",
+            statusMessage: "硬件流控已接管 RTS，无法手动设置",
+          });
           return false;
         }
 
@@ -1248,6 +1343,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const label = line.toUpperCase();
         set({
           serialControlLineOperation: line,
+          connectionMessage: `正在设置 ${label}`,
           statusMessage: `正在设置 ${label}`,
         });
         try {
@@ -1264,6 +1360,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           const serialConfig = { ...latest.serialConfig, [line]: asserted };
           set({
             serialConfig,
+            connectionMessage: `${label} 已设为${asserted ? "有效" : "无效"}`,
             statusMessage: `${label} 已设为${asserted ? "有效" : "无效"}`,
           });
           getSerialRecoveryCoordinator().updateConfig(serialConfig);
@@ -1291,7 +1388,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             latest.source === "serial" &&
             latest.serialGeneration === generation
           ) {
-            set({ statusMessage: `设置 ${label} 失败：${message}` });
+            set({
+              connectionMessage: `设置 ${label} 失败：${message}`,
+              statusMessage: `设置 ${label} 失败：${message}`,
+            });
           }
           return false;
         } finally {
@@ -1314,7 +1414,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
         if (!state.isNativeRuntime) {
           if (mode === "manual") {
-            set({ statusMessage: "浏览器预览无法枚举本机串口" });
+            set({
+              connectionMessage: "浏览器预览无法枚举本机串口",
+              statusMessage: "浏览器预览无法枚举本机串口",
+            });
           }
           return;
         }
@@ -1324,7 +1427,11 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const operation = ++serialPortRefreshOperation;
         const context = state;
 
-        set({ isRefreshingPorts: true });
+        set({
+          isRefreshingPorts: true,
+          serialPortDiscoveryStatus: "idle",
+          serialPortDiscoveryMessage: "",
+        });
         try {
           const ports = sortSerialPorts(await listSerialPorts());
           if (!ownsSerialPortRefresh(operation, context, get())) {
@@ -1333,9 +1440,27 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           const currentPort = get().serialConfig.portName;
           const currentPortAvailable = ports.some((port) => port.name === currentPort);
           const selectedPort = currentPort || ports[0]?.name || "";
+          const discoveryMessage =
+            ports.length > 0 ? `发现 ${ports.length} 个串口设备` : "未发现串口设备";
           set((state) => ({
             ports,
+            serialPortDiscoveryStatus:
+              ports.length > 0 ? (mode === "manual" ? "ready" : "idle") : "empty",
+            serialPortDiscoveryMessage:
+              ports.length > 0 && mode === "background" ? "" : discoveryMessage,
             serialConfig: { ...state.serialConfig, portName: selectedPort },
+            connectionMessage:
+              state.connectionStatus === "error"
+                ? state.connectionMessage
+                : currentPort && !currentPortAvailable
+                  ? `${currentPort} 当前不可用`
+                  : mode === "background"
+                    ? selectedPort
+                      ? `${selectedPort} 已就绪`
+                      : "未发现串口设备"
+                    : ports.length > 0
+                      ? `发现 ${ports.length} 个串口设备`
+                      : "未发现串口设备",
             statusMessage:
               mode === "background"
                 ? state.statusMessage
@@ -1349,15 +1474,37 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           if (!ownsSerialPortRefresh(operation, context, get())) {
             return;
           }
+          getSerialRecoveryCoordinator().recordPortDiscoveryFailure(mode);
+          const message = getErrorMessage(error);
+          const discoveryMessage = `扫描串口失败：${message}`;
           if (mode === "manual") {
-            set({
-              connectionStatus: "error",
-              statusMessage: getErrorMessage(error),
+            set((state) => ({
+              connectionMessage:
+                state.connectionStatus === "error"
+                  ? state.connectionMessage
+                  : discoveryMessage,
+              serialPortDiscoveryStatus: "error",
+              serialPortDiscoveryMessage: discoveryMessage,
+              statusMessage: discoveryMessage,
               serialModemStatus: createUnavailableSerialModemStatus(
-                get().serialGeneration,
+                state.serialGeneration,
               ),
               waveformTrigger: createIdleWaveformTriggerState(),
-            });
+            }));
+          } else {
+            const latest = get();
+            if (
+              latest.connectionStatus === "disconnected" &&
+              latest.ports.length === 0 &&
+              (latest.connectionMessage === "" ||
+                latest.connectionMessage === "等待连接" ||
+                latest.connectionMessage === "未发现串口设备")
+            ) {
+              set({
+                serialPortDiscoveryStatus: "error",
+                serialPortDiscoveryMessage: discoveryMessage,
+              });
+            }
           }
         } finally {
           if (operation === serialPortRefreshOperation) {
@@ -1368,6 +1515,22 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       connect: async () => {
         if (get().isCancellingSerialConnection) {
+          return;
+        }
+        set({ connectionActionError: "" });
+        const currentState = get();
+        if (currentState.source === "simulator" && currentState.protocol === "raw") {
+          const message = "Raw Data 不提供模拟，请选择串口或回放";
+          set({
+            connectionStatus: "disconnected",
+            connectionMessage: message,
+            statusMessage: message,
+          });
+          return;
+        }
+        const runtimeError = currentState.serialRuntimeError;
+        if (currentState.source === "serial" && runtimeError) {
+          set({ connectionMessage: runtimeError, statusMessage: runtimeError });
           return;
         }
         if (!beginRuntimeTransition(get, set, "connecting")) {
@@ -1386,7 +1549,12 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           }
           const hadReplaySession = hasReplaySession(get());
           if (!(await closeCurrentReplay(get, set))) {
-            set({ statusMessage: "关闭回放失败，未连接数据源" });
+            const message = "关闭回放失败，未连接数据源";
+            set({
+              connectionActionError: message,
+              connectionMessage: message,
+              statusMessage: message,
+            });
             return;
           }
           if (operation !== serialConnectOperation) {
@@ -1396,7 +1564,12 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             resetLiveView(get().protocol, set);
           }
           if (!(await stopCurrentRecordings(get, set))) {
-            set({ statusMessage: "结束录制失败，未连接数据源" });
+            const message = "结束录制失败，未连接数据源";
+            set({
+              connectionActionError: message,
+              connectionMessage: message,
+              statusMessage: message,
+            });
             return;
           }
           if (operation !== serialConnectOperation) {
@@ -1412,6 +1585,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             resetProtocolState(state.protocol);
             set({
               connectionStatus: "connected",
+              connectionMessage: "模拟数据正在运行",
               statusMessage: "模拟数据正在运行",
               serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
               stats: { ...emptyStats(), startedAt: Date.now() },
@@ -1424,6 +1598,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           if (!state.serialConfig.portName) {
             set({
               connectionStatus: "error",
+              connectionMessage: "请先选择串口设备",
               statusMessage: "请先选择串口设备",
               serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
               waveformTrigger: createIdleWaveformTriggerState(),
@@ -1442,6 +1617,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           );
           set({
             connectionStatus: "connecting",
+            connectionMessage: `正在打开 ${state.serialConfig.portName}`,
             statusMessage: `正在打开 ${state.serialConfig.portName}`,
             serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
             protocolHealth: protocolParser.getHealthSnapshot(),
@@ -1456,13 +1632,40 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             get().handleSerialState(payload);
             set({ stats: { ...emptyStats(), startedAt: Date.now() } });
           } catch (error) {
+            if (operation !== serialConnectOperation) {
+              return;
+            }
+            let failureSnapshot: SerialStatePayload | undefined;
+            if (get().connectionStatus === "connecting") {
+              try {
+                const snapshot = await getSerialState();
+                if (snapshot.status === "error") {
+                  failureSnapshot = snapshot;
+                }
+                if (
+                  operation === serialConnectOperation &&
+                  get().connectionStatus === "connecting"
+                ) {
+                  get().handleSerialState(snapshot);
+                }
+              } catch {
+                // 保留原始连接错误作为面向用户的原因。
+              }
+            }
             if (
               operation === serialConnectOperation &&
               get().connectionStatus === "connecting"
             ) {
+              const latest = get();
+              getSerialRecoveryCoordinator().recordManualConnectionFailure({
+                generation: failureSnapshot?.generation ?? latest.serialGeneration,
+                revision: failureSnapshot?.revision ?? latest.serialStateRevision,
+                errorCode: failureSnapshot?.errorCode ?? "unknown",
+              });
               set({
                 connectionStatus: "error",
-                statusMessage: getErrorMessage(error),
+                connectionMessage: failureSnapshot?.message ?? getErrorMessage(error),
+                statusMessage: failureSnapshot?.message ?? getErrorMessage(error),
                 serialModemStatus: createUnavailableSerialModemStatus(
                   get().serialGeneration,
                 ),
@@ -1481,11 +1684,17 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (!beginRuntimeTransition(get, set, "disconnecting")) {
           return false;
         }
+        set({ connectionActionError: "" });
         stopCurrentCommandWorkflows("connection-change");
         try {
           await getSerialRecoveryCoordinator().cancel("manual-disconnect", true);
           if (!(await stopCurrentRecordings(get, set))) {
-            set({ statusMessage: "结束录制失败，未断开数据源" });
+            const message = "结束录制失败，当前仍保持连接";
+            set({
+              connectionActionError: message,
+              connectionMessage: message,
+              statusMessage: message,
+            });
             return false;
           }
           const disconnected = await disconnectCurrentSource(get, set);
@@ -1500,9 +1709,13 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
 
       setSerialRecoveryEnabled: async (enabled) => {
         const operation = ++serialRecoverySettingOperation;
+        set({ connectionActionError: "" });
         const state = get();
         if (enabled && (!state.isNativeRuntime || state.source !== "serial")) {
-          set({ statusMessage: "自动重连仅适用于桌面串口数据源" });
+          set({
+            connectionMessage: "自动重连仅适用于桌面串口数据源",
+            statusMessage: "自动重连仅适用于桌面串口数据源",
+          });
           return;
         }
         const selectedPort = state.ports.find(
@@ -1517,7 +1730,12 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           });
         } catch (error) {
           if (operation === serialRecoverySettingOperation) {
-            set({ statusMessage: `取消串口连接失败：${getErrorMessage(error)}` });
+            const message = `取消串口连接失败：${getErrorMessage(error)}`;
+            set({
+              connectionActionError: message,
+              connectionMessage: message,
+              statusMessage: message,
+            });
           }
         }
       },
@@ -1535,10 +1753,12 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         serialConnectOperation += 1;
         set({
           isCancellingSerialConnection: true,
+          connectionActionError: "",
           runtimeTransitionStatus:
             state.runtimeTransitionStatus === "connecting"
               ? "idle"
               : state.runtimeTransitionStatus,
+          connectionMessage: recoveryActive ? "正在取消自动重连" : "正在取消串口连接",
           statusMessage: recoveryActive ? "正在取消自动重连" : "正在取消串口连接",
         });
         try {
@@ -1546,10 +1766,15 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           if (manualConnecting && !recoveryWasConnecting) {
             await cancelPendingSerialConnection();
           } else if (!recoveryWasConnecting) {
-            set({ statusMessage: "自动重连已取消" });
+            set({ connectionMessage: "自动重连已取消", statusMessage: "自动重连已取消" });
           }
         } catch (error) {
-          set({ statusMessage: `取消串口连接失败：${getErrorMessage(error)}` });
+          const message = `取消串口连接失败：${getErrorMessage(error)}`;
+          set({
+            connectionActionError: message,
+            connectionMessage: message,
+            statusMessage: message,
+          });
         } finally {
           set({ isCancellingSerialConnection: false });
         }
@@ -1563,6 +1788,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const state = get();
         return getSerialRecoveryCoordinator().exportDiagnostics({
           appVersion: APP_VERSION,
+          buildId: APP_BUILD_ID,
           connectionStatus: state.connectionStatus,
           generation: state.serialGeneration,
           revision: state.serialStateRevision,
@@ -1844,23 +2070,33 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             handleNumericLogQueueError,
           );
         }
-        const nextChannels = state.chartPaused
-          ? state.channels
-          : appendFrames(state.channels, frames, state.channelVisibility);
-        const nextProcessedChannels = state.chartPaused
-          ? state.processedChannels
-          : appendProcessedSamples(
-              state.processedChannels,
-              processedSamples,
-              state.channelVisibility,
-              processingChannelBuffers,
-            );
+        const chartFrameTimestamps = createChartFrameTimestamps(
+          frames,
+          state.channels[0]?.points.at(-1)?.x,
+        );
+        const chartFrameSequences = createChartFrameSequences(frames.length);
+        const nextChannels = appendFrames(
+          state.channels,
+          frames,
+          state.channelVisibility,
+          channelBuffers,
+          chartFrameTimestamps,
+          chartFrameSequences,
+        );
+        const nextProcessedChannels = appendProcessedSamples(
+          state.processedChannels,
+          processedSamples,
+          state.channelVisibility,
+          processingChannelBuffers,
+          chartFrameTimestamps,
+          chartFrameSequences,
+        );
         const terminalEntries = state.terminalPaused
           ? []
           : createRxTerminalEntries(
               bytes,
               timestamp,
-              state.terminalRxRecordMode,
+              selectEffectiveTerminalRxRecordMode(state),
               state.terminalRxLineEnding,
               terminalLineAssembler,
               terminalDecoder,
@@ -1869,6 +2105,21 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         set({
           channels: nextChannels,
           processedChannels: nextProcessedChannels,
+          chartFrozenChannels: state.chartPaused
+            ? (state.chartFrozenChannels ?? state.channels)
+            : waveformTriggerAdvance.shouldFreeze
+              ? nextChannels
+              : null,
+          chartFrozenProcessedChannels: state.chartPaused
+            ? (state.chartFrozenProcessedChannels ?? state.processedChannels)
+            : waveformTriggerAdvance.shouldFreeze
+              ? nextProcessedChannels
+              : null,
+          chartFrozenExtensionChannels: state.chartPaused
+            ? (state.chartFrozenExtensionChannels ?? state.extensionChannels)
+            : waveformTriggerAdvance.shouldFreeze
+              ? state.extensionChannels
+              : null,
           processingStatus,
           attitudeSample: attitudeSample ?? state.attitudeSample,
           chartPaused: state.chartPaused || waveformTriggerAdvance.shouldFreeze,
@@ -1905,6 +2156,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (
           hasReplaySession(state) ||
           state.source !== "serial" ||
+          state.connectionStatus !== "connected" ||
           payload.generation !== state.serialGeneration
         ) {
           return;
@@ -1921,6 +2173,13 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           payload.revision <= state.serialStateRevision
         ) {
           return;
+        }
+        if (payload.status === "connecting" || payload.status === "connected") {
+          invalidateSerialPortRefresh(set);
+          state = get();
+        } else if (payload.status === "error" && !state.isRefreshingPorts) {
+          clearSerialPortDiscovery(set);
+          state = get();
         }
         const serialModemStatus =
           payload.status === "connected" &&
@@ -1966,8 +2225,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         if (payload.status === "error") {
           set({
             connectionStatus: "error",
+            connectionActionError: "",
             serialGeneration: payload.generation,
             serialStateRevision: payload.revision,
+            connectionMessage: payload.message ?? "串口发生未知错误",
             statusMessage: payload.message ?? "串口发生未知错误",
             serialControlLineOperation: "idle",
             serialModemStatus,
@@ -1985,8 +2246,16 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
         set({
           connectionStatus: payload.status,
+          connectionActionError: "",
           serialGeneration: payload.generation,
           serialStateRevision: payload.revision,
+          serialConfig:
+            payload.portName &&
+            (payload.status === "connecting" || payload.status === "connected")
+              ? { ...state.serialConfig, portName: payload.portName }
+              : state.serialConfig,
+          connectionMessage:
+            payload.message ?? serialStatusMessage(payload.status, payload.portName),
           statusMessage:
             payload.message ?? serialStatusMessage(payload.status, payload.portName),
           serialControlLineOperation:
@@ -2133,9 +2402,22 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
 
       setDisplayMode: (displayMode) => {
-        if (get().workspaceTransitionStatus === "idle") {
-          set({ displayMode });
+        const state = get();
+        if (state.workspaceTransitionStatus !== "idle") {
+          return;
         }
+        const context = terminalPresentationContext(state);
+        if (!context) {
+          set({ displayMode });
+          return;
+        }
+        set({
+          terminalPresentationOverride: {
+            context,
+            displayMode,
+            recordMode: selectEffectiveTerminalRxRecordMode(state),
+          },
+        });
       },
       setSendMode: (sendMode) => {
         if (get().workspaceTransitionStatus === "idle") {
@@ -2154,18 +2436,28 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       },
       setTerminalRxRecordMode: (terminalRxRecordMode) => {
         const state = get();
+        const effectiveRecordMode = selectEffectiveTerminalRxRecordMode(state);
         if (
           state.workspaceTransitionStatus !== "idle" ||
-          terminalRxRecordMode === state.terminalRxRecordMode
+          terminalRxRecordMode === effectiveRecordMode
         ) {
           return;
         }
         const terminalEntries = settleActiveTerminalPresentation(state);
         resetRxTerminalPresentationState();
-        set({
-          terminalRxRecordMode,
-          terminalEntries,
-        });
+        const context = terminalPresentationContext(state);
+        set(
+          context
+            ? {
+                terminalPresentationOverride: {
+                  context,
+                  displayMode: selectEffectiveTerminalDisplayMode(state),
+                  recordMode: terminalRxRecordMode,
+                },
+                terminalEntries,
+              }
+            : { terminalRxRecordMode, terminalEntries },
+        );
       },
       setTerminalRxLineEnding: (terminalRxLineEnding) => {
         const state = get();
@@ -2226,11 +2518,19 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           set({ terminalAutoScroll });
         }
       },
-      setChartPaused: (chartPaused) =>
+      setChartPaused: (chartPaused) => {
+        const state = get();
+        if (chartPaused === state.chartPaused) {
+          return;
+        }
         set({
           chartPaused,
+          chartFrozenChannels: chartPaused ? state.channels : null,
+          chartFrozenProcessedChannels: chartPaused ? state.processedChannels : null,
+          chartFrozenExtensionChannels: chartPaused ? state.extensionChannels : null,
           waveformTrigger: createIdleWaveformTriggerState(),
-        }),
+        });
+      },
       setChartWindowSeconds: (chartWindowSeconds) => {
         const state = get();
         if (
@@ -2265,6 +2565,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         );
         set({
           chartPaused: false,
+          chartFrozenChannels: null,
+          chartFrozenProcessedChannels: null,
+          chartFrozenExtensionChannels: null,
           waveformTrigger: armedState,
         });
         return true;
@@ -2283,6 +2586,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           processingGraph: configuredGraph,
           processingStatus: activeProcessingRuntime(state).getSnapshot(),
           processedChannels: [],
+          chartFrozenProcessedChannels: state.chartPaused ? [] : null,
           attitudeConfig: pruneAttitudeConfigForGraph(state.attitudeConfig, configuredGraph),
           attitudeSample: null,
           chartDataRevision: state.chartDataRevision + 1,
@@ -2303,6 +2607,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         replayProcessingChannelBuffers.clear();
         set((state) => ({
           processedChannels: [],
+          chartFrozenProcessedChannels: state.chartPaused ? [] : null,
           attitudeSample: null,
           chartDataRevision: state.chartDataRevision + 1,
           waveformTrigger: createIdleWaveformTriggerState(),
@@ -2343,6 +2648,20 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             processedChannels: state.processedChannels.map((candidate) =>
               candidate.id === channelId ? { ...candidate, visible: nextVisible } : candidate,
             ),
+            chartFrozenChannels: state.chartFrozenChannels
+              ? state.chartFrozenChannels.map((candidate) =>
+                  candidate.id === channelId
+                    ? { ...candidate, visible: nextVisible }
+                    : candidate,
+                )
+              : null,
+            chartFrozenProcessedChannels: state.chartFrozenProcessedChannels
+              ? state.chartFrozenProcessedChannels.map((candidate) =>
+                  candidate.id === channelId
+                    ? { ...candidate, visible: nextVisible }
+                    : candidate,
+                )
+              : null,
           };
         });
       },
@@ -2377,6 +2696,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           channels: [],
           processedChannels: [],
           extensionChannels: [],
+          chartFrozenChannels: state.chartPaused ? [] : null,
+          chartFrozenProcessedChannels: state.chartPaused ? [] : null,
+          chartFrozenExtensionChannels: state.chartPaused ? [] : null,
           chartDataRevision: state.chartDataRevision + 1,
           waveformTrigger: createIdleWaveformTriggerState(),
         }));
@@ -3213,6 +3535,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           replayMarkerCount: payload.markerCount,
           replayMarkers:
             replaySessionChanged || payload.status === "idle" ? [] : latest.replayMarkers,
+          terminalPresentationOverride:
+            replaySessionChanged || payload.status === "idle"
+              ? null
+              : latest.terminalPresentationOverride,
           replayProtocolHealth:
             replaySessionChanged || timelineChanged || payload.status === "idle"
               ? replayProtocolParser.getHealthSnapshot()
@@ -3555,25 +3881,100 @@ export function disposeWorkbenchRuntime(): void {
   })().catch(() => undefined);
 }
 
-export async function prepareWorkbenchForAppClose(): Promise<void> {
+export function prepareWorkbenchForAppClose(): Promise<void> {
+  if (appClosePromise) {
+    return appClosePromise;
+  }
+
+  let resolveClose!: () => void;
+  let rejectClose!: (reason?: unknown) => void;
+  const pending = new Promise<void>((resolve, reject) => {
+    resolveClose = resolve;
+    rejectClose = reject;
+  });
+  appClosePromise = pending;
+  void prepareWorkbenchForAppCloseOnce().then(resolveClose, rejectClose);
+  void pending.then(
+    () => {
+      if (appClosePromise === pending) {
+        appClosePromise = null;
+      }
+    },
+    () => {
+      if (appClosePromise === pending) {
+        appClosePromise = null;
+      }
+    },
+  );
+  return pending;
+}
+
+async function prepareWorkbenchForAppCloseOnce(): Promise<void> {
+  const state = useWorkbenchStore.getState();
+  const manualConnectionPending =
+    state.source === "serial" &&
+    state.connectionStatus === "connecting" &&
+    state.serialRecovery.phase !== "connecting";
+  const failures: string[] = [];
+
+  invalidateSerialPortRefresh(useWorkbenchStore.setState);
+  serialConnectOperation += 1;
+  serialControlLineOperation += 1;
+  serialRecoverySettingOperation += 1;
   stopCurrentModbusPolling("runtime-dispose", false);
-  const modbusCancellation = cancelActiveModbusTransaction(useWorkbenchStore.getState);
+  const modbusCancellation = cancelActiveModbusTransaction(useWorkbenchStore.getState).catch(
+    (error: unknown) => {
+      failures.push(`取消 Modbus RTU 事务失败：${getErrorMessage(error)}`);
+    },
+  );
   stopCurrentCommandWorkflows("runtime-dispose");
   useWorkbenchStore.setState({
     runtimeTransitionStatus: "closing-app",
     statusMessage: "正在完成记录并关闭应用",
+    serialControlLineOperation: "idle",
     waveformTrigger: createIdleWaveformTriggerState(),
   });
-  const recordingsCompletion = stopCurrentRecordings(
-    useWorkbenchStore.getState,
-    useWorkbenchStore.setState,
-  );
-  const [recordingsStopped] = await Promise.all([
-    recordingsCompletion,
-    modbusCancellation,
-  ]);
-  if (!recordingsStopped) {
-    throw new Error("记录任务未能在应用关闭前正常完成");
+
+  try {
+    await serialRecoveryCoordinator?.cancel("runtime-dispose", true);
+    if (manualConnectionPending) {
+      await cancelPendingSerialConnection();
+    }
+  } catch (error) {
+    failures.push(`取消串口连接失败：${getErrorMessage(error)}`);
+  }
+
+  if (state.isNativeRuntime) {
+    try {
+      const payload = await disconnectSerial();
+      useWorkbenchStore.getState().handleSerialState(payload);
+      if (payload.status !== "disconnected") {
+        failures.push(`串口未正常断开：${serialStatusMessage(payload.status, payload.portName)}`);
+      }
+    } catch (error) {
+      failures.push(`断开串口失败：${getErrorMessage(error)}`);
+    }
+  }
+
+  await modbusCancellation;
+  useWorkbenchStore.setState({ statusMessage: "正在完成记录并关闭应用" });
+
+  try {
+    const recordingsStopped = await stopCurrentRecordings(
+      useWorkbenchStore.getState,
+      useWorkbenchStore.setState,
+    );
+    if (!recordingsStopped) {
+      failures.push("记录任务未能在应用关闭前正常完成");
+    }
+  } catch (error) {
+    failures.push(`记录任务未能在应用关闭前正常完成：${getErrorMessage(error)}`);
+  }
+
+  if (failures.length > 0) {
+    const message = `应用关闭收尾失败：${failures.join("；")}`;
+    useWorkbenchStore.setState({ statusMessage: message });
+    throw new Error(message);
   }
 }
 
@@ -3673,6 +4074,47 @@ export function selectActiveProtocol(state: WorkbenchStore): ProtocolKind {
     : state.protocol;
 }
 
+export function selectEffectiveTerminalDisplayMode(state: WorkbenchStore): DisplayMode {
+  const context = terminalPresentationContext(state);
+  if (!context) {
+    return state.displayMode;
+  }
+  return state.terminalPresentationOverride?.context === context
+    ? state.terminalPresentationOverride.displayMode
+    : "hex";
+}
+
+export function selectEffectiveTerminalRxRecordMode(
+  state: WorkbenchStore,
+): TerminalRxRecordMode {
+  const context = terminalPresentationContext(state);
+  if (!context) {
+    return state.terminalRxRecordMode;
+  }
+  return state.terminalPresentationOverride?.context === context
+    ? state.terminalPresentationOverride.recordMode
+    : "chunk";
+}
+
+export function selectUsesBinaryTerminalDefaults(state: WorkbenchStore): boolean {
+  return terminalPresentationContext(state) !== null;
+}
+
+function terminalPresentationContext(
+  state: WorkbenchStore,
+): TerminalPresentationContext | null {
+  if (hasReplaySession(state) && state.replayHeader?.protocol === "justfloat") {
+    return `replay:${state.replaySessionId}:justfloat`;
+  }
+  if (hasReplaySession(state)) {
+    return null;
+  }
+  if (state.protocol === "justfloat") {
+    return "live:justfloat";
+  }
+  return null;
+}
+
 export function selectActiveProtocolHealth(state: WorkbenchStore): ProtocolHealthSnapshot {
   return hasReplaySession(state) ? state.replayProtocolHealth : state.protocolHealth;
 }
@@ -3686,11 +4128,11 @@ export function selectIsWorkspaceDirty(state: WorkbenchStore): boolean {
   if (!state.isNativeRuntime && savedConfig.source === "serial") {
     savedConfig.source = "simulator";
   }
-  return !areWorkspaceConfigsEqual(captureWorkspaceConfig(state), savedConfig);
+  return !areWorkspaceConfigsEqual(captureWorkbenchWorkspaceConfig(state), savedConfig);
 }
 
 function captureWorkspaceConfigForSave(state: WorkbenchStore) {
-  const config = captureWorkspaceConfig(state);
+  const config = captureWorkbenchWorkspaceConfig(state);
   const activeWorkspace = selectActiveWorkspace(state);
   if (
     !state.isNativeRuntime &&
@@ -3700,6 +4142,10 @@ function captureWorkspaceConfigForSave(state: WorkbenchStore) {
     config.source = "serial";
   }
   return config;
+}
+
+function captureWorkbenchWorkspaceConfig(state: WorkbenchStore) {
+  return captureWorkspaceConfig(state);
 }
 
 function assertWorkspaceIdle(state: WorkbenchStore): void {
@@ -3772,6 +4218,7 @@ function revokeExtensionForBoundary(
     extensionOperation: "idle",
     extensionMessage: message,
     extensionChannels: [],
+    chartFrozenExtensionChannels: null,
     extensionChannelVisibility: {},
     extensionQueue: createIdleExtensionQueue(),
     ...(clearInspection
@@ -3800,7 +4247,7 @@ function handleExtensionBatch(payload: ExtensionBatchPayload, appendFrames: bool
       return state;
     }
     const manifest = state.extensionState.manifest;
-    const extensionChannels = state.chartPaused || !manifest || !appendFrames
+    const extensionChannels = !manifest || !appendFrames
       ? state.extensionChannels
       : appendExtensionFrames(
           state.extensionChannels,
@@ -3810,6 +4257,9 @@ function handleExtensionBatch(payload: ExtensionBatchPayload, appendFrames: bool
         );
     return {
       extensionChannels,
+      chartFrozenExtensionChannels: state.chartPaused
+        ? (state.chartFrozenExtensionChannels ?? state.extensionChannels)
+        : null,
       extensionState: {
         ...state.extensionState,
         nextSequence: payload.sequence + 1,
@@ -4375,6 +4825,14 @@ function executePreparedCommand(
       }));
     } catch (error) {
       set({ isSendingCommand: false, commandSendOrigin: null });
+      const latest = get();
+      if (state.source === "serial") {
+        getSerialRecoveryCoordinator().recordSerialSendFailure({
+          origin,
+          generation: latest.serialGeneration,
+          revision: latest.serialStateRevision,
+        });
+      }
       throw error;
     }
   });
@@ -4440,9 +4898,6 @@ function isSameSerialPortRefreshContext(
   return (
     isSerialPortRefreshContext(current) &&
     current.source === initial.source &&
-    current.connectionStatus === initial.connectionStatus &&
-    current.serialGeneration === initial.serialGeneration &&
-    current.serialStateRevision === initial.serialStateRevision &&
     current.serialRecovery.enabled === initial.serialRecovery.enabled &&
     current.serialRecovery.phase === initial.serialRecovery.phase &&
     current.activeWorkspaceId === initial.activeWorkspaceId &&
@@ -4465,9 +4920,20 @@ function ownsSerialPortRefresh(
   );
 }
 
+function clearSerialPortDiscovery(set: WorkbenchSet): void {
+  set({
+    serialPortDiscoveryStatus: "idle",
+    serialPortDiscoveryMessage: "",
+  });
+}
+
 function invalidateSerialPortRefresh(set: WorkbenchSet): void {
   serialPortRefreshOperation += 1;
-  set({ isRefreshingPorts: false });
+  set({
+    isRefreshingPorts: false,
+    serialPortDiscoveryStatus: "idle",
+    serialPortDiscoveryMessage: "",
+  });
 }
 
 function isCaptureExportBusy(status: CaptureExportUiStatus): boolean {
@@ -4799,8 +5265,10 @@ function applyCancelledSerialState(payload: SerialStatePayload): void {
   ) {
     useWorkbenchStore.setState({
       connectionStatus: payload.status,
+      connectionActionError: "",
       serialGeneration: payload.generation,
       serialStateRevision: payload.revision,
+      connectionMessage: payload.message ?? serialStatusMessage(payload.status, payload.portName),
       statusMessage: payload.message ?? serialStatusMessage(payload.status, payload.portName),
       serialModemStatus: createUnavailableSerialModemStatus(payload.generation),
       runtimeTransitionStatus:
@@ -4818,6 +5286,7 @@ async function disconnectCurrentSource(
   get: WorkbenchGet,
   set: WorkbenchSet,
 ): Promise<boolean> {
+  set({ connectionActionError: "" });
   stopCurrentModbusPolling("connection-change", false);
   await cancelActiveSerialFileSend(get);
   await cancelActiveModbusTransaction(get);
@@ -4827,6 +5296,8 @@ async function disconnectCurrentSource(
     resetLiveTerminalPresentationState();
     set({
       connectionStatus: "disconnected",
+      connectionActionError: "",
+      connectionMessage: "模拟数据已停止",
       statusMessage: "模拟数据已停止",
       serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
       waveformTrigger: createIdleWaveformTriggerState(),
@@ -4838,11 +5309,53 @@ async function disconnectCurrentSource(
   try {
     const payload = await disconnectSerial();
     get().handleSerialState(payload);
+    if (payload.status === "connected") {
+      const detail = payload.message?.trim() || "串口服务仍报告已连接";
+      const message = `断开失败，当前仍保持连接：${detail}`;
+      set({
+        connectionActionError: message,
+        connectionMessage: message,
+        statusMessage: message,
+      });
+    }
     return payload.status === "disconnected";
   } catch (error) {
+    const message = getErrorMessage(error);
+    try {
+      const payload = await getSerialState();
+      get().handleSerialState(payload);
+      const latest = get();
+      getSerialRecoveryCoordinator().recordDisconnectCommandFailure({
+        generation: latest.serialGeneration,
+        revision: latest.serialStateRevision,
+        outcome: payload.status,
+      });
+      if (payload.status === "disconnected") {
+        return true;
+      }
+      if (payload.status === "connected") {
+        const failureMessage = `断开失败，当前仍保持连接：${message}`;
+        set({
+          connectionActionError: failureMessage,
+          connectionMessage: failureMessage,
+          statusMessage: failureMessage,
+        });
+        return false;
+      }
+      return false;
+    } catch {
+      // 无法读取真实状态时保留原始断开错误，避免用二次错误覆盖用户原因。
+    }
+    const latest = get();
+    getSerialRecoveryCoordinator().recordDisconnectCommandFailure({
+      generation: latest.serialGeneration,
+      revision: latest.serialStateRevision,
+      outcome: "state-unavailable",
+    });
     set({
       connectionStatus: "error",
-      statusMessage: getErrorMessage(error),
+      connectionMessage: message,
+      statusMessage: message,
       serialModemStatus: createUnavailableSerialModemStatus(get().serialGeneration),
       waveformTrigger: createIdleWaveformTriggerState(),
     });
@@ -4893,15 +5406,17 @@ async function applyWorkspaceSnapshot(
   }
   const config = cloneWorkspaceConfig(latestTarget.config);
   const usesBrowserFallback = !get().isNativeRuntime && config.source === "serial";
+  const source = usesBrowserFallback ? "simulator" : config.source;
   const processingGraph = configureProcessingGraph(config.processingGraph);
   resetProtocolState(config.protocol, config.terminalRxTextEncoding);
   set((state) => ({
     activeWorkspaceId: latestTarget.id,
-    source: usesBrowserFallback ? "simulator" : config.source,
+    source,
     protocol: config.protocol,
     serialConfig: config.serialConfig,
     simulatorConfig: cloneSimulatorConfig(config.simulatorConfig),
     displayMode: config.displayMode,
+    terminalPresentationOverride: null,
     sendMode: config.sendMode,
     lineEnding: config.lineEnding,
     commandChecksum: config.commandChecksum,
@@ -4921,6 +5436,9 @@ async function applyWorkspaceSnapshot(
     attitudeSample: null,
     channels: [],
     processedChannels: [],
+    chartFrozenChannels: null,
+    chartFrozenProcessedChannels: null,
+    chartFrozenExtensionChannels: null,
     chartDataRevision: state.chartDataRevision + 1,
     terminalEntries: [],
     terminalPaused: false,
@@ -4929,7 +5447,11 @@ async function applyWorkspaceSnapshot(
     stats: emptyStats(),
     protocolHealth: protocolParser.getHealthSnapshot(),
     connectionStatus: "disconnected",
+    connectionActionError: "",
     serialModemStatus: createUnavailableSerialModemStatus(state.serialGeneration),
+    connectionMessage: usesBrowserFallback
+      ? `“${latestTarget.name}”需要串口，浏览器预览已改用模拟器`
+      : `工作区“${latestTarget.name}”已应用，等待连接`,
     statusMessage: usesBrowserFallback
       ? `“${latestTarget.name}”需要串口，浏览器预览已改用模拟器`
       : `工作区“${latestTarget.name}”已应用`,
@@ -5001,6 +5523,9 @@ function resetLiveView(protocol: ProtocolKind, set: WorkbenchSet): void {
     channels: [],
     processedChannels: [],
     extensionChannels: [],
+    chartFrozenChannels: null,
+    chartFrozenProcessedChannels: null,
+    chartFrozenExtensionChannels: null,
     attitudeSample: null,
     chartDataRevision: state.chartDataRevision + 1,
     processingStatus: liveProcessingRuntime.getSnapshot(),
@@ -5039,6 +5564,9 @@ function resetReplayView(protocol: ProtocolKind, set: WorkbenchSet): void {
     channels: [],
     processedChannels: [],
     extensionChannels: [],
+    chartFrozenChannels: null,
+    chartFrozenProcessedChannels: null,
+    chartFrozenExtensionChannels: null,
     attitudeSample: null,
     chartDataRevision: state.chartDataRevision + 1,
     processingStatus: replayProcessingRuntime.getSnapshot(),
@@ -5082,7 +5610,7 @@ function ingestReplayBatch(
           ...createRxTerminalEntries(
             bytes,
             timestamp,
-            state.terminalRxRecordMode,
+            selectEffectiveTerminalRxRecordMode(state),
             state.terminalRxLineEnding,
             replayRxLineAssembler,
             replayRxDecoder,
@@ -5103,32 +5631,46 @@ function ingestReplayBatch(
       }
     }
   }
-  if (!state.chartPaused) {
-    channels = appendFrames(
-      channels,
-      processingFrames,
-      state.channelVisibility,
-      replayChannelBuffers,
-    );
-  }
+  const chartFrameTimestamps = createChartFrameTimestamps(
+    processingFrames,
+    channels[0]?.points.at(-1)?.x,
+  );
+  const chartFrameSequences = createChartFrameSequences(processingFrames.length);
+  channels = appendFrames(
+    channels,
+    processingFrames,
+    state.channelVisibility,
+    replayChannelBuffers,
+    chartFrameTimestamps,
+    chartFrameSequences,
+  );
   const processedSamples = replayProcessingRuntime.process(processingFrames);
   const attitudeSample = extractRuntimeAttitudeSample(
     state.attitudeConfig,
     processingFrames,
     processedSamples,
   );
-  if (!state.chartPaused) {
-    processedChannels = appendProcessedSamples(
-      processedChannels,
-      processedSamples,
-      state.channelVisibility,
-      replayProcessingChannelBuffers,
-    );
-  }
+  processedChannels = appendProcessedSamples(
+    processedChannels,
+    processedSamples,
+    state.channelVisibility,
+    replayProcessingChannelBuffers,
+    chartFrameTimestamps,
+    chartFrameSequences,
+  );
 
   return {
     channels,
     processedChannels,
+    chartFrozenChannels: state.chartPaused
+      ? (state.chartFrozenChannels ?? state.channels)
+      : null,
+    chartFrozenProcessedChannels: state.chartPaused
+      ? (state.chartFrozenProcessedChannels ?? state.processedChannels)
+      : null,
+    chartFrozenExtensionChannels: state.chartPaused
+      ? (state.chartFrozenExtensionChannels ?? state.extensionChannels)
+      : null,
     processingStatus: replayProcessingRuntime.getSnapshot(),
     attitudeSample: attitudeSample ?? state.attitudeSample,
     terminalEntries:
@@ -5148,11 +5690,51 @@ function ingestReplayBatch(
   };
 }
 
+function createChartFrameTimestamps(
+  frames: readonly ParsedFrame[],
+  previousTimestampSeconds: number | undefined,
+): number[] {
+  return createNondecreasingChartTimestamps(
+    frames.map((frame) => frame.timestamp / 1_000),
+    previousTimestampSeconds,
+  );
+}
+
+function createNondecreasingChartTimestamps(
+  timestamps: readonly number[],
+  previousTimestampSeconds: number | undefined,
+): number[] {
+  let lastTimestamp = Number.isFinite(previousTimestampSeconds)
+    ? (previousTimestampSeconds as number)
+    : null;
+
+  return timestamps.map((candidate) => {
+    let timestamp = candidate;
+    if (!Number.isFinite(timestamp)) {
+      return timestamp;
+    }
+    if (lastTimestamp !== null && timestamp < lastTimestamp) {
+      timestamp = lastTimestamp;
+    }
+    lastTimestamp = timestamp;
+    return timestamp;
+  });
+}
+
+function createChartFrameSequences(frameCount: number): number[] {
+  return Array.from({ length: frameCount }, () => {
+    chartFrameSequence += 1;
+    return chartFrameSequence;
+  });
+}
+
 function appendFrames(
   channels: ChannelSeries[],
   frames: ParsedFrame[],
   channelVisibility: Record<string, boolean>,
   buffers: Map<string, RingBuffer<DataPoint>> = channelBuffers,
+  chartFrameTimestamps: readonly number[] = frames.map((frame) => frame.timestamp / 1_000),
+  chartFrameSequences: readonly number[] = createChartFrameSequences(frames.length),
 ): ChannelSeries[] {
   if (frames.length === 0) {
     return channels;
@@ -5160,7 +5742,11 @@ function appendFrames(
 
   const nextChannels = channels.map((channel) => ({ ...channel }));
   const updatedChannelIndexes = new Set<number>();
-  for (const frame of frames) {
+  for (const [frameIndex, frame] of frames.entries()) {
+    const chartTimestamp = chartFrameTimestamps[frameIndex];
+    if (chartTimestamp === undefined || !Number.isFinite(chartTimestamp)) {
+      continue;
+    }
     const channelCount = Math.min(frame.values.length, MAX_PROTOCOL_CHANNELS);
     for (let index = 0; index < channelCount; index += 1) {
       const value = frame.values[index];
@@ -5174,7 +5760,11 @@ function appendFrames(
         buffer = new RingBuffer<DataPoint>(MAX_POINTS_PER_CHANNEL);
         buffers.set(channelId, buffer);
       }
-      buffer.push({ x: frame.timestamp / 1_000, y: value });
+      buffer.push({
+        x: chartTimestamp,
+        y: value,
+        frameSequence: chartFrameSequences[frameIndex],
+      });
 
       const label = frame.labels?.[index]?.trim();
       const existing = nextChannels[index];
@@ -5217,7 +5807,20 @@ function appendExtensionFrames(
   }
   const nextChannels = channels.map((channel) => ({ ...channel }));
   const updatedIndexes = new Set<number>();
-  for (const frame of payload.frames) {
+  const firstChannelId = `extension:${extensionId}:0`;
+  const previousTimestamp = channels
+    .find((channel) => channel.id === firstChannelId)
+    ?.points.at(-1)?.x;
+  const chartFrameTimestamps = createNondecreasingChartTimestamps(
+    payload.frames.map(() => payload.receivedAt / 1_000),
+    previousTimestamp,
+  );
+  const chartFrameSequences = createChartFrameSequences(payload.frames.length);
+  for (const [frameIndex, frame] of payload.frames.entries()) {
+    const chartTimestamp = chartFrameTimestamps[frameIndex];
+    if (chartTimestamp === undefined || !Number.isFinite(chartTimestamp)) {
+      continue;
+    }
     for (const [channelIndex, value] of frame.values.entries()) {
       if (!Number.isFinite(value)) {
         continue;
@@ -5229,8 +5832,9 @@ function appendExtensionFrames(
         extensionChannelBuffers.set(channelId, buffer);
       }
       buffer.push({
-        x: payload.receivedAt / 1_000,
+        x: chartTimestamp,
         y: value,
+        frameSequence: chartFrameSequences[frameIndex],
       });
       const label = frame.labels?.[channelIndex]?.trim();
       const existing = nextChannels[channelIndex];
@@ -5357,6 +5961,7 @@ function createNumericLogSamples(
   channels: readonly ChannelSeries[],
 ): NumericLogSample[] {
   const samples: NumericLogSample[] = [];
+  const channelNames = channels.map((channel) => channel.name);
   for (const frame of frames) {
     const timestampUnixUs = toUnixMicroseconds(frame.timestamp);
     if (timestampUnixUs === null) {
@@ -5369,11 +5974,14 @@ function createNumericLogSamples(
         continue;
       }
       const label = frame.labels?.[index]?.trim();
+      if (label) {
+        channelNames[index] = label;
+      }
       samples.push({
         timestampUnixUs,
         channelKind: "base",
         channelId: `channel-${index}`,
-        channelName: label || channels[index]?.name || `CH ${index + 1}`,
+        channelName: channelNames[index] || `CH ${index + 1}`,
         value,
       });
     }
@@ -5405,6 +6013,8 @@ function appendProcessedSamples(
   samples: readonly ProcessingOutputSample[],
   channelVisibility: Record<string, boolean>,
   buffers: Map<string, RingBuffer<DataPoint>>,
+  chartFrameTimestamps: readonly number[] = [],
+  chartFrameSequences: readonly number[] = [],
 ): ChannelSeries[] {
   if (samples.length === 0) {
     return channels;
@@ -5424,7 +6034,11 @@ function appendProcessedSamples(
       buffer = new RingBuffer<DataPoint>(MAX_POINTS_PER_CHANNEL);
       buffers.set(sample.channelId, buffer);
     }
-    buffer.push({ x: sample.timestamp / 1_000, y: sample.value });
+    buffer.push({
+      x: chartFrameTimestamps[sample.frameIndex] ?? sample.timestamp / 1_000,
+      y: sample.value,
+      frameSequence: chartFrameSequences[sample.frameIndex],
+    });
 
     const existingIndex = channelIndexes.get(sample.channelId);
     if (existingIndex === undefined) {
@@ -5467,16 +6081,30 @@ function createTerminalEntry(
 ): TerminalEntry {
   const visibleBytes = bytes.slice(0, MAX_TERMINAL_BYTES_PER_ENTRY);
   const truncatedSuffix = bytes.length > visibleBytes.length ? " …" : "";
+  const decodedText = text.slice(0, MAX_TERMINAL_BYTES_PER_ENTRY);
   terminalEntryId += 1;
   return {
     id: terminalEntryId,
     direction,
     timestamp,
-    text: sanitizeText(text.slice(0, MAX_TERMINAL_BYTES_PER_ENTRY)) + truncatedSuffix,
+    text: sanitizeText(decodedText) + truncatedSuffix,
+    decodedText: decodedText + truncatedSuffix,
     hex: formatHex(visibleBytes) + truncatedSuffix,
     byteCount: bytes.length,
     ...(rxBoundary ? { rxBoundary } : {}),
   };
+}
+
+function appendTerminalSessionBoundary(
+  terminalEntries: TerminalEntry[],
+  message: string,
+): TerminalEntry[] {
+  const entry = createTerminalEntry("system", new Uint8Array(), Date.now(), message);
+  return appendBounded(
+    terminalEntries,
+    { ...entry, sessionBoundary: true },
+    MAX_TERMINAL_ENTRIES,
+  );
 }
 
 function createRxTerminalEntries(
@@ -5528,7 +6156,7 @@ function settleTerminalPresentation(
 ): TerminalEntry[] {
   const decoder = assembler === replayRxLineAssembler ? replayRxDecoder : terminalDecoder;
   let terminalEntries = state.terminalEntries;
-  if (!state.terminalPaused && state.terminalRxRecordMode === "line") {
+  if (!state.terminalPaused && selectEffectiveTerminalRxRecordMode(state) === "line") {
     const line = assembler.flush();
     if (line) {
       terminalEntries = appendBounded(
@@ -5560,6 +6188,7 @@ function appendDecoderRemainder(
     nextEntries[index] = {
       ...entry,
       text: entry.text + sanitizeText(remainder),
+      decodedText: (entry.decodedText ?? entry.text) + remainder,
     };
     return nextEntries;
   }
@@ -5626,6 +6255,9 @@ function sanitizeText(value: string): string {
     .replace(/\t/g, "\\t");
   return Array.from(escapedWhitespace, (character) => {
     const code = character.charCodeAt(0);
+    if ((code >= 0x80 && code <= 0x9f) || code === 0x2028 || code === 0x2029) {
+      return `\\u${code.toString(16).toUpperCase().padStart(4, "0")}`;
+    }
     return (code >= 0 && code <= 31) || code === 127 ? "·" : character;
   }).join("");
 }
@@ -5728,6 +6360,8 @@ function restorePersistedWorkbenchState(
     ...currentState,
     ...persistedConfig,
     source,
+    displayMode: persistedConfig.displayMode,
+    terminalPresentationOverride: null,
     processingGraph,
     processingStatus: liveProcessingRuntime.getSnapshot(),
     processedChannels: [],
@@ -5807,6 +6441,10 @@ function getErrorMessage(error: unknown): string {
 
 function protocolDisplayName(protocol: ProtocolKind): string {
   return getProtocolDefinition(protocol).displayName;
+}
+
+function dataSourceDisplayName(source: DataSource): string {
+  return source === "serial" ? "串口" : "模拟器";
 }
 
 function serialStatusMessage(status: ConnectionStatus, portName: string): string {

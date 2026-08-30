@@ -1,7 +1,449 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { ProcessingGraphConfig } from "../src/types/processingGraph";
+import { DEFAULT_SERIAL_CONFIG } from "../src/types/serial";
 import type { TerminalEntry } from "../src/types/workbench";
+
+type InteractiveLayoutAudit = {
+  documentWidth: number;
+  viewportWidth: number;
+  outsideViewport: string[];
+  overlaps: string[];
+  textOutsideViewport: string[];
+  textOverlaps: string[];
+  regionOverlaps: string[];
+};
+
+async function auditVisibleInteractiveLayout(page: Page): Promise<InteractiveLayoutAudit> {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }),
+  );
+  return page.evaluate(() => {
+    const selector =
+      'button, input, select, textarea, [role="button"], [role="radio"], ' +
+      '[role="slider"], [role="switch"], [role="tab"]';
+    const overlaySelector =
+      '[role="dialog"], [role="listbox"], [role="menu"], [popover], .sidebar, ' +
+      '.attitude-state-overlay, .panel-empty-state, .command-workflow';
+    const viewportWidth = document.documentElement.clientWidth;
+    const viewportHeight = document.documentElement.clientHeight;
+    const auditAxis = (
+      element: HTMLElement,
+      elementStart: number,
+      elementEnd: number,
+      axis: "x" | "y",
+      auditText = false,
+    ) => {
+      const viewportEnd = axis === "x" ? viewportWidth : viewportHeight;
+      const clips: Array<{
+        start: number;
+        end: number;
+        scrollable: boolean;
+        intentional: boolean;
+      }> = [];
+      let ancestor: HTMLElement | null = auditText ? element : element.parentElement;
+      while (ancestor) {
+        const style = getComputedStyle(ancestor);
+        const overflow = axis === "x" ? style.overflowX : style.overflowY;
+        if (overflow !== "visible") {
+          const rect = ancestor.getBoundingClientRect();
+          const start =
+            (axis === "x" ? rect.left : rect.top) +
+            (axis === "x" ? ancestor.clientLeft : ancestor.clientTop);
+          const size = axis === "x" ? ancestor.clientWidth : ancestor.clientHeight;
+          clips.push({
+            start,
+            end: start + size,
+            scrollable:
+              ["auto", "scroll"].includes(overflow) &&
+              (axis === "x"
+                ? ancestor.scrollWidth > ancestor.clientWidth + 1
+                : ancestor.scrollHeight > ancestor.clientHeight + 1),
+            intentional:
+              auditText &&
+              (axis === "x"
+                ? style.textOverflow === "ellipsis" &&
+                  ["nowrap", "pre"].includes(style.whiteSpace)
+                : Number.parseInt(
+                    style.getPropertyValue("-webkit-line-clamp"),
+                    10,
+                  ) > 0),
+          });
+        }
+        ancestor = ancestor.parentElement;
+      }
+
+      let intendedStart = elementStart;
+      let intendedEnd = elementEnd;
+      for (const clip of clips) {
+        if (clip.intentional) {
+          intendedStart = Math.max(intendedStart, clip.start);
+          intendedEnd = Math.min(intendedEnd, clip.end);
+        }
+      }
+      const intendedSize = Math.max(0, intendedEnd - intendedStart);
+      let visibleStart = Math.max(0, elementStart);
+      let visibleEnd = Math.min(viewportEnd, elementEnd);
+      for (const clip of clips) {
+        visibleStart = Math.max(visibleStart, clip.start);
+        visibleEnd = Math.min(visibleEnd, clip.end);
+      }
+
+      const scrollIndex = clips.findIndex((clip) => clip.scrollable);
+      let clippedOutside = false;
+      if (scrollIndex === -1) {
+        clippedOutside = visibleEnd - visibleStart < intendedSize - 1;
+      } else {
+        for (let index = 0; index < scrollIndex; index += 1) {
+          const clip = clips[index];
+          if (
+            clip &&
+            !clip.intentional &&
+            (intendedStart < clip.start - 1 || intendedEnd > clip.end + 1)
+          ) {
+            clippedOutside = true;
+          }
+        }
+        let reachableSize = viewportEnd;
+        for (let index = scrollIndex; index < clips.length; index += 1) {
+          const clip = clips[index];
+          if (clip) {
+            reachableSize = Math.min(reachableSize, Math.max(0, clip.end - clip.start));
+          }
+        }
+        clippedOutside ||= reachableSize < intendedSize - 1;
+      }
+      return { start: visibleStart, end: visibleEnd, clippedOutside };
+    };
+    const isVisibleInTree = (element: HTMLElement) => {
+      let candidate: HTMLElement | null = element;
+      while (candidate) {
+        const style = getComputedStyle(candidate);
+        const visuallyClipped =
+          (style.clip !== "auto" || style.clipPath !== "none") &&
+          (candidate.clientWidth <= 1 || candidate.clientHeight <= 1);
+        if (
+          candidate.hidden ||
+          candidate.inert ||
+          candidate.getAttribute("aria-hidden") === "true" ||
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          Number(style.opacity) === 0 ||
+          visuallyClipped
+        ) {
+          return false;
+        }
+        candidate = candidate.parentElement;
+      }
+      return true;
+    };
+    const shouldCompareLayers = (left: Element | null, right: Element | null) => {
+      if (left === right) {
+        return true;
+      }
+      if (!left || !right) {
+        return false;
+      }
+      return !left.contains(right) && !right.contains(left);
+    };
+    const isCoveredByOverlay = (element: HTMLElement, rect: DOMRect) => {
+      const ownLayer = element.closest(overlaySelector);
+      const visibleLeft = Math.max(0, rect.left);
+      const visibleTop = Math.max(0, rect.top);
+      const visibleRight = Math.min(viewportWidth, rect.right);
+      const visibleBottom = Math.min(viewportHeight, rect.bottom);
+      if (visibleRight - visibleLeft <= 1 || visibleBottom - visibleTop <= 1) {
+        return false;
+      }
+      const insetX = Math.min(2, (visibleRight - visibleLeft) / 4);
+      const insetY = Math.min(2, (visibleBottom - visibleTop) / 4);
+      const points = [
+        [(visibleLeft + visibleRight) / 2, (visibleTop + visibleBottom) / 2],
+        [visibleLeft + insetX, visibleTop + insetY],
+        [visibleRight - insetX, visibleTop + insetY],
+        [visibleLeft + insetX, visibleBottom - insetY],
+        [visibleRight - insetX, visibleBottom - insetY],
+      ];
+      return points.every(([x, y]) => {
+        const hit = document.elementFromPoint(x ?? 0, y ?? 0);
+        const hitLayer = hit?.closest(overlaySelector) ?? null;
+        return Boolean(
+          hit &&
+          hit !== element &&
+          !element.contains(hit) &&
+          !hit.contains(element) &&
+          hitLayer &&
+          hitLayer !== ownLayer,
+        );
+      });
+    };
+    const visibleControls = [...document.querySelectorAll<HTMLElement>(selector)].filter(
+      (element) => {
+        const rect = element.getBoundingClientRect();
+        return (
+          isVisibleInTree(element) &&
+          rect.width > 0 &&
+          rect.height > 0 &&
+          rect.right > 0 &&
+          rect.bottom > 0 &&
+          rect.left < viewportWidth &&
+          rect.top < viewportHeight &&
+          !isCoveredByOverlay(element, rect)
+        );
+      },
+    );
+    const controls = visibleControls
+      .filter(
+        (element) =>
+          !visibleControls.some(
+            (candidate) => candidate !== element && element.contains(candidate),
+          ),
+      )
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const horizontal = auditAxis(element, rect.left, rect.right, "x");
+        const vertical = auditAxis(element, rect.top, rect.bottom, "y");
+        return {
+          element,
+          name:
+            element.getAttribute("aria-label") ??
+            element.getAttribute("title") ??
+            element.textContent?.trim().replace(/\s+/g, " ").slice(0, 48) ??
+            element.tagName,
+          left: horizontal.start,
+          top: vertical.start,
+          right: horizontal.end,
+          bottom: vertical.end,
+          clippedOutside: horizontal.clippedOutside || vertical.clippedOutside,
+          layer: element.closest(overlaySelector),
+        };
+      });
+    const textRects = [...document.body.querySelectorAll<HTMLElement>("*")].flatMap((element) => {
+      if (
+        element.closest(".sr-only") ||
+        !isVisibleInTree(element)
+      ) {
+        return [];
+      }
+      return [...element.childNodes].flatMap((node) => {
+        const label = node.textContent?.trim().replace(/\s+/g, " ") ?? "";
+        if (node.nodeType !== Node.TEXT_NODE || label.length === 0) {
+          return [];
+        }
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        return [...range.getClientRects()].flatMap((rect, lineIndex) => {
+          if (
+            rect.width <= 1 ||
+            rect.height <= 1 ||
+            rect.right <= 0 ||
+            rect.bottom <= 0 ||
+            rect.left >= viewportWidth ||
+            rect.top >= viewportHeight ||
+            isCoveredByOverlay(element, rect)
+          ) {
+            return [];
+          }
+          const horizontal = auditAxis(element, rect.left, rect.right, "x", true);
+          const vertical = auditAxis(element, rect.top, rect.bottom, "y", true);
+          return [{
+            element,
+            node,
+            name: `${label.slice(0, 40)}${lineIndex > 0 ? `#${lineIndex + 1}` : ""}`,
+            left: horizontal.start,
+            top: vertical.start,
+            right: horizontal.end,
+            bottom: vertical.end,
+            clippedOutside: horizontal.clippedOutside || vertical.clippedOutside,
+            layer: element.closest(overlaySelector),
+          }];
+        });
+      });
+    });
+    const overlapControls = controls.filter(
+      (control) => control.right - control.left > 1 && control.bottom - control.top > 1,
+    );
+    const overlaps: string[] = [];
+    for (let leftIndex = 0; leftIndex < overlapControls.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < overlapControls.length; rightIndex += 1) {
+        const left = overlapControls[leftIndex];
+        const right = overlapControls[rightIndex];
+        if (
+          left &&
+          right &&
+          shouldCompareLayers(left.layer, right.layer) &&
+          Math.min(left.right, right.right) - Math.max(left.left, right.left) > 1 &&
+          Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 1
+        ) {
+          overlaps.push(`${left.name} / ${right.name}`);
+        }
+      }
+    }
+    const textOverlaps = new Set<string>();
+    const overlapTextRects = textRects.filter(
+      (textRect) => textRect.right - textRect.left > 1 && textRect.bottom - textRect.top > 1,
+    );
+    for (let leftIndex = 0; leftIndex < overlapTextRects.length; leftIndex += 1) {
+      for (
+        let rightIndex = leftIndex + 1;
+        rightIndex < overlapTextRects.length;
+        rightIndex += 1
+      ) {
+        const left = overlapTextRects[leftIndex];
+        const right = overlapTextRects[rightIndex];
+        const sameNodeLineFragment =
+          left &&
+          right &&
+          left.node === right.node &&
+          Math.abs(left.top - right.top) <= 1 &&
+          Math.abs(left.bottom - right.bottom) <= 1;
+        if (
+          left &&
+          right &&
+          !sameNodeLineFragment &&
+          shouldCompareLayers(left.layer, right.layer) &&
+          Math.min(left.right, right.right) - Math.max(left.left, right.left) > 1 &&
+          Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 1
+        ) {
+          textOverlaps.add(`${left.name} / ${right.name}`);
+        }
+      }
+    }
+    for (const textRect of textRects) {
+      for (const control of controls) {
+        if (
+          !control.element.contains(textRect.element) &&
+          shouldCompareLayers(textRect.layer, control.layer) &&
+          Math.min(textRect.right, control.right) - Math.max(textRect.left, control.left) > 1 &&
+          Math.min(textRect.bottom, control.bottom) - Math.max(textRect.top, control.top) > 1
+        ) {
+          textOverlaps.add(`${textRect.name} / ${control.name}`);
+        }
+      }
+    }
+    const regions = [".activity-rail", ".sidebar", ".workspace", ".status-bar"]
+      .map((regionSelector) => {
+        const element = document.querySelector<HTMLElement>(regionSelector);
+        if (!element) {
+          return null;
+        }
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          rect.width <= 0 ||
+          rect.height <= 0 ||
+          rect.right <= 0 ||
+          rect.bottom <= 0 ||
+          rect.left >= viewportWidth ||
+          rect.top >= viewportHeight
+        ) {
+          return null;
+        }
+        return {
+          name: regionSelector,
+          left: Math.max(0, rect.left),
+          top: Math.max(0, rect.top),
+          right: Math.min(viewportWidth, rect.right),
+          bottom: Math.min(viewportHeight, rect.bottom),
+          overlay: ["absolute", "fixed"].includes(style.position),
+        };
+      })
+      .filter((region): region is NonNullable<typeof region> => region !== null);
+    const regionOverlaps: string[] = [];
+    for (let leftIndex = 0; leftIndex < regions.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < regions.length; rightIndex += 1) {
+        const left = regions[leftIndex];
+        const right = regions[rightIndex];
+        const sidebarWorkspaceOverlay =
+          left &&
+          right &&
+          [left.name, right.name].includes(".sidebar") &&
+          [left.name, right.name].includes(".workspace") &&
+          (left.name === ".sidebar" ? left.overlay : right.overlay);
+        if (
+          left &&
+          right &&
+          !sidebarWorkspaceOverlay &&
+          Math.min(left.right, right.right) - Math.max(left.left, right.left) > 1 &&
+          Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 1
+        ) {
+          regionOverlaps.push(`${left.name} / ${right.name}`);
+        }
+      }
+    }
+    return {
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth,
+      outsideViewport: controls.filter((control) => control.clippedOutside).map((control) => control.name),
+      overlaps,
+      textOutsideViewport: textRects
+        .filter((textRect) => textRect.clippedOutside)
+        .map((textRect) => textRect.name),
+      textOverlaps: [...textOverlaps],
+      regionOverlaps,
+    };
+  });
+}
+
+async function expectVisibleInteractiveLayout(page: Page): Promise<void> {
+  const layout = await auditVisibleInteractiveLayout(page);
+  expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.outsideViewport).toEqual([]);
+  expect(layout.overlaps).toEqual([]);
+  expect(layout.textOutsideViewport).toEqual([]);
+  expect(layout.textOverlaps).toEqual([]);
+  expect(layout.regionOverlaps).toEqual([]);
+}
+
+async function findVisibleTextBelow(
+  root: Locator,
+  minimumFontSize = 12,
+): Promise<Array<{ label: string; fontSize: number }>> {
+  return root.evaluate((element, minimum) => {
+    const candidates = [element, ...element.querySelectorAll<HTMLElement>("*")];
+    return candidates.flatMap((candidate) => {
+      if (!(candidate instanceof HTMLElement)) {
+        return [];
+      }
+      const style = getComputedStyle(candidate);
+      const rect = candidate.getBoundingClientRect();
+      const directText = [...candidate.childNodes]
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent?.trim() ?? "")
+        .filter(Boolean)
+        .join(" ");
+      const isTextControl = candidate.matches("input, select, textarea");
+      if (
+        (!directText && !isTextControl) ||
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        Number(style.opacity) === 0 ||
+        rect.width <= 0 ||
+        rect.height <= 0
+      ) {
+        return [];
+      }
+      const fontSize = Number.parseFloat(style.fontSize);
+      if (!Number.isFinite(fontSize) || fontSize >= minimum) {
+        return [];
+      }
+      return [
+        {
+          label:
+            candidate.getAttribute("aria-label") ||
+            directText ||
+            candidate.tagName.toLowerCase(),
+          fontSize,
+        },
+      ];
+    });
+  }, minimumFontSize);
+}
 
 async function expectValidTabPanelReferences(page: Page, tablistName: string): Promise<void> {
   const tabs = page.getByRole("tablist", { name: tablistName }).getByRole("tab");
@@ -81,6 +523,7 @@ async function readWaveformTriggerSnapshot(page: Page): Promise<{
   previousValue: number | null;
   chartPaused: boolean;
   pointCount: number;
+  visiblePointCount: number;
   pointValues: number[];
   terminalEntryCount: number;
   rxFrames: number;
@@ -95,6 +538,7 @@ async function readWaveformTriggerSnapshot(page: Page): Promise<{
         };
         chartPaused: boolean;
         channels: Array<{ points: Array<{ y: number }> }>;
+        chartFrozenChannels: Array<{ points: Array<{ y: number }> }> | null;
         terminalEntries: unknown[];
         stats: { rxFrames: number };
       };
@@ -112,6 +556,8 @@ async function readWaveformTriggerSnapshot(page: Page): Promise<{
       previousValue: state.waveformTrigger.previousValue,
       chartPaused: state.chartPaused,
       pointCount: state.channels[0]?.points.length ?? 0,
+      visiblePointCount:
+        (state.chartPaused ? state.chartFrozenChannels : state.channels)?.[0]?.points.length ?? 0,
       pointValues: state.channels[0]?.points.map((point) => point.y) ?? [],
       terminalEntryCount: state.terminalEntries.length,
       rxFrames: state.stats.rxFrames,
@@ -233,6 +679,11 @@ test("主题偏好跟随系统并持久化固定选择", async ({ page }, testIn
   await page.goto("/");
 
   const root = page.locator("html");
+  const bodyFontFamily = await page
+    .locator("body")
+    .evaluate((element) => getComputedStyle(element).fontFamily);
+  expect(bodyFontFamily).toContain("Segoe UI Variable Text");
+  expect(bodyFontFamily).not.toContain("Inter");
   await expect(root).toHaveAttribute("data-theme", "dark");
   expect(await page.evaluate(() => localStorage.getItem("vofa-ultra-theme"))).toBe("system");
 
@@ -321,7 +772,46 @@ test("状态栏显示当前双向吞吐并在空闲后归零", async ({ page }) 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 });
 
-test("模拟信号实验室支持十六通道配置、运行锁定与可复现重启", async ({ page }, testInfo) => {
+test("状态栏在主工作区持续显示数值 CSV 记录与失败", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+  await setWorkbenchState(page, {
+    numericLogStatus: "recording",
+    numericLogOutputBytes: 2_048,
+    numericLogMessage: "",
+  });
+
+  await expect(page.getByLabel("数值 CSV 记录中：2.0 KB")).toBeVisible();
+  await setWorkbenchState(page, {
+    numericLogStatus: "error",
+    numericLogMessage: "磁盘空间不足",
+  });
+
+  const failure = page.getByRole("status", {
+    name: "数值 CSV 记录失败：磁盘空间不足",
+  });
+  await expect(failure).toBeVisible();
+  await expect(failure).toContainText("CSV 失败");
+  await page.setViewportSize({ width: 600, height: 700 });
+  await expect(failure).toBeVisible();
+  const bounds = await failure.evaluate((element) => {
+    const item = element.getBoundingClientRect();
+    const statusBar = element.parentElement?.getBoundingClientRect();
+    return {
+      itemLeft: item.left,
+      itemRight: item.right,
+      statusLeft: statusBar?.left ?? 0,
+      statusRight: statusBar?.right ?? 0,
+    };
+  });
+  expect(bounds.itemLeft).toBeGreaterThanOrEqual(bounds.statusLeft);
+  expect(bounds.itemRight).toBeLessThanOrEqual(bounds.statusRight);
+  await page.screenshot({
+    path: testInfo.outputPath("numeric-log-status-error.png"),
+  });
+});
+
+test("模拟器只生成结构化协议并明确 Raw Data 边界", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -332,9 +822,66 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
 
   await page.setViewportSize({ width: 1_280, height: 800 });
   await page.goto("/");
-  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
+  const receive_display = page.getByRole("group", { name: "接收显示格式" });
+  const receive_records = page.getByRole("group", { name: "接收记录方式" });
+  await expect(receive_display.getByRole("button", { name: "TEXT" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await receive_records.getByRole("button", { name: "按文本行记录" }).click();
   await page.getByRole("radio", { name: /Raw Data/ }).click();
+  await expect(receive_display.getByRole("button", { name: "TEXT" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(receive_records.getByRole("button", { name: "按文本行记录" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("radio", { name: /FireWater/ }).click();
+  await expect(receive_display.getByRole("button", { name: "TEXT" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(receive_records.getByRole("button", { name: "按文本行记录" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("radio", { name: /JustFloat/ }).click();
+  await expect(receive_display.getByRole("button", { name: "HEX" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(receive_records.getByRole("button", { name: "按读取块记录" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await receive_display.getByRole("button", { name: "TEXT" }).click();
+  await receive_records.getByRole("button", { name: "按文本行记录" }).click();
+  await expect(receive_display.getByRole("button", { name: "TEXT" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("radio", { name: /FireWater/ }).click();
+  await page.getByRole("radio", { name: /JustFloat/ }).click();
+  await expect(receive_display.getByRole("button", { name: "HEX" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(receive_records.getByRole("button", { name: "按读取块记录" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("radio", { name: /FireWater/ }).click();
+  await page.getByRole("radio", { name: /Raw Data/ }).click();
+  const protocolBoundary = page.locator('.terminal-line[data-direction="system"]').last();
+  await expect(protocolBoundary).toContainText("协议：FireWater → Raw Data");
+  await expect(protocolBoundary).toHaveAttribute("data-session-boundary", "true");
+  await expect(protocolBoundary.locator(".direction-label")).toHaveText("SYS");
+  await expect(protocolBoundary.locator("small")).toHaveText("边界");
 
+  await page.getByRole("radio", { name: /FireWater/ }).click();
   const signal = page.getByLabel("信号类型");
   const channelCount = page.getByRole("spinbutton", { name: "模拟器通道数" });
   const sampleRate = page.getByLabel("模拟器采样率");
@@ -350,21 +897,21 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   await expect(signal).toBeDisabled();
   await expect(channelCount).toBeDisabled();
   await expect(sampleRate).toBeDisabled();
+  await expect(page.getByRole("button", { name: "停止模拟" })).toBeEnabled();
 
   const rxLines = page.locator('.terminal-line[data-direction="rx"]');
   await expect.poll(() => rxLines.count()).toBeGreaterThanOrEqual(3);
   const firstRun = (await rxLines.locator("code").allTextContents()).slice(0, 3);
   expect(firstRun).toHaveLength(3);
-  expect(firstRun[0]).toContain("sample=00000");
-  expect(firstRun[1]).toContain("sample=00001");
-  expect(firstRun[2]).toContain("sample=00002");
-  expect(firstRun.every((line) => line.includes("ch16="))).toBe(true);
+  expect(
+    firstRun.every((line) => line.trim().split(",").length === 16),
+  ).toBe(true);
   await page.screenshot({
-    path: testInfo.outputPath("simulator-signals-desktop.png"),
+    path: testInfo.outputPath("firewater-simulator-desktop.png"),
     fullPage: true,
   });
 
-  await page.getByRole("button", { name: "断开连接" }).click();
+  await page.getByRole("button", { name: "停止模拟" }).click();
   await expect(page.getByText("模拟数据已停止")).toBeVisible();
   await page.getByRole("button", { name: "清空终端", exact: true }).click();
   await expect(rxLines).toHaveCount(0);
@@ -373,34 +920,64 @@ test("模拟信号实验室支持十六通道配置、运行锁定与可复现�
   await expect.poll(() => rxLines.count()).toBeGreaterThanOrEqual(3);
   const secondRun = (await rxLines.locator("code").allTextContents()).slice(0, 3);
   expect(secondRun).toEqual(firstRun);
-  await page.getByRole("button", { name: "断开连接" }).click();
+  await page.getByRole("button", { name: "停止模拟" }).click();
+  await page.getByRole("button", { name: "清空终端", exact: true }).click();
+  await expect(rxLines).toHaveCount(0);
 
-  await page.setViewportSize({ width: 320, height: 700 });
-  await page.getByRole("button", { name: "连接", exact: true }).click();
-  const simulatorPanel = page.getByRole("region", { name: "模拟器配置" });
-  await expect(simulatorPanel).toBeVisible();
-  await expect
-    .poll(() => simulatorPanel.evaluate((element) => element.getBoundingClientRect().left))
-    .toBeGreaterThanOrEqual(0);
-  const mobileLayout = await simulatorPanel.evaluate((element) => {
+  const enabledActionAppearance = await page
+    .getByRole("button", { name: "启动模拟" })
+    .evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { backgroundColor: style.backgroundColor, opacity: style.opacity };
+    });
+
+  await page.getByRole("radio", { name: /Raw Data/ }).click();
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
+  await expect(page.getByRole("region", { name: "模拟器配置" })).toHaveCount(0);
+  await expect(signal).toHaveCount(0);
+  await expect(channelCount).toHaveCount(0);
+  await expect(sampleRate).toHaveCount(0);
+  const startSimulator = page.getByRole("button", { name: "启动模拟" });
+  await expect(startSimulator).toBeDisabled();
+  await expect(startSimulator).toHaveAttribute(
+    "title",
+    "Raw Data 不提供模拟，请选择串口或回放",
+  );
+  const disabledActionAppearance = await startSimulator.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      backgroundColor: style.backgroundColor,
+      cursor: style.cursor,
+      opacity: style.opacity,
+    };
+  });
+  expect(disabledActionAppearance).toMatchObject({ cursor: "not-allowed", opacity: "1" });
+  expect(disabledActionAppearance.backgroundColor).not.toBe(
+    enabledActionAppearance.backgroundColor,
+  );
+  await expect(page.locator("#serial-connection-status")).toContainText(
+    "Raw Data 不提供模拟，请选择串口或回放",
+  );
+  const waveform = page.locator(".waveform-panel");
+  await expect(waveform.getByText("Raw Data 不生成波形")).toBeVisible();
+  await expect(waveform.getByText("原始字节保留在数据终端中")).toBeVisible();
+
+  await page.waitForTimeout(350);
+  await expect(rxLines).toHaveCount(0);
+  const windowsLayout = await page.locator(".connection-panel").evaluate((element) => {
     const bounds = element.getBoundingClientRect();
     return {
       left: bounds.left,
-      width: bounds.width,
       right: bounds.right,
       scrollWidth: document.documentElement.scrollWidth,
-      controlHeights: [...element.querySelectorAll<HTMLElement>("input, select")].map(
-        (control) => control.getBoundingClientRect().height,
-      ),
     };
   });
-  expect(mobileLayout.left).toBeGreaterThanOrEqual(0);
-  expect(mobileLayout.width).toBeGreaterThanOrEqual(280);
-  expect(mobileLayout.right).toBeLessThanOrEqual(320);
-  expect(mobileLayout.scrollWidth).toBeLessThanOrEqual(320);
-  expect(mobileLayout.controlHeights.every((height) => height >= 44)).toBe(true);
+  expect(windowsLayout.left).toBeGreaterThanOrEqual(0);
+  expect(windowsLayout.right).toBeLessThanOrEqual(1_024);
+  expect(windowsLayout.scrollWidth).toBeLessThanOrEqual(1_024);
   await page.screenshot({
-    path: testInfo.outputPath("simulator-signals-mobile.png"),
+    path: testInfo.outputPath("raw-simulator-boundary-windows.png"),
     fullPage: true,
   });
   expect(pageErrors).toEqual([]);
@@ -495,6 +1072,7 @@ test("串口输入握手线状态在桌面与窄屏保持可读", async ({ page 
     },
   });
 
+  await page.getByText("高级串口设置", { exact: true }).click();
   const status = page.locator('dl[aria-label="串口输入握手线状态"]');
   const items = status.locator(".modem-status-item");
   await expect(status).toBeVisible();
@@ -502,6 +1080,7 @@ test("串口输入握手线状态在桌面与窄屏保持可读", async ({ page 
   await expect
     .poll(() => items.evaluateAll((elements) => elements.map((element) => element.dataset.state)))
     .toEqual(["asserted", "deasserted", "unavailable", "asserted"]);
+  expect(await findVisibleTextBelow(status)).toEqual([]);
 
   const desktopLayout = await items.evaluateAll((elements) =>
     elements.map((element) => {
@@ -687,18 +1266,40 @@ test("工作台分栏支持拖拽、键盘、持久化、专注模式和窄屏�
 });
 
 test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离", async ({ page }, testInfo) => {
+  const widthSweep = Array.from({ length: 27 }, (_, index) => ({
+    width: 1_440 - index * 16,
+    height: 680,
+  }));
+  const heightSweep = Array.from({ length: 12 }, (_, index) => ({
+    width: 1_024,
+    height: 680 + index * 20,
+  }));
   const viewports = [
+    { width: 1_440, height: 900 },
+    { width: 1_366, height: 768 },
+    { width: 1_345, height: 768 },
+    { width: 1_344, height: 768 },
     { width: 1_280, height: 800 },
     { width: 1_200, height: 800 },
+    { width: 1_101, height: 680 },
     { width: 1_100, height: 680 },
     { width: 1_024, height: 680 },
-  ];
+    ...widthSweep,
+    ...heightSweep,
+  ].filter(
+    (viewport, index, candidates) =>
+      candidates.findIndex(
+        (candidate) =>
+          candidate.width === viewport.width && candidate.height === viewport.height,
+      ) === index,
+  );
   await page.setViewportSize(viewports[0]);
   await page.goto("/");
 
   const app_shell = page.locator(".app-shell");
   const sidebar = page.locator(".sidebar");
   const send_row = page.locator(".send-main-row");
+  const workspace_header = page.locator(".workspace-header");
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
     await expect(app_shell).toHaveAttribute("data-sidebar-open", "true");
@@ -748,8 +1349,62 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
     expect(layout.overflow).toBeLessThanOrEqual(1);
     expect(layout.outside).toEqual([]);
     expect(layout.overlaps).toEqual([]);
+
+    const header_layout = await workspace_header.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const controls = [...element.children]
+        .filter((child): child is HTMLElement => child instanceof HTMLElement)
+        .filter((control) => {
+          const control_rect = control.getBoundingClientRect();
+          return control_rect.width > 0 && control_rect.height > 0;
+        })
+        .map((control) => {
+          const control_rect = control.getBoundingClientRect();
+          return {
+            name: control.className,
+            left: control_rect.left,
+            top: control_rect.top,
+            right: control_rect.right,
+            bottom: control_rect.bottom,
+          };
+        });
+      const overlaps: string[] = [];
+      for (let left_index = 0; left_index < controls.length; left_index += 1) {
+        for (let right_index = left_index + 1; right_index < controls.length; right_index += 1) {
+          const left = controls[left_index];
+          const right = controls[right_index];
+          if (
+            left &&
+            right &&
+            Math.min(left.right, right.right) - Math.max(left.left, right.left) > 0.5 &&
+            Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 0.5
+          ) {
+            overlaps.push(`${left.name} / ${right.name}`);
+          }
+        }
+      }
+      const primary_title = element.querySelector<HTMLElement>(".workspace-title strong");
+      return {
+        outside: controls.filter(
+          (control) =>
+            control.left < rect.left - 1 ||
+            control.right > rect.right + 1 ||
+            control.top < rect.top - 1 ||
+            control.bottom > rect.bottom + 1,
+        ),
+        overlaps,
+        primary_title_truncated:
+          (primary_title?.scrollWidth ?? 0) > (primary_title?.clientWidth ?? 0) + 1,
+      };
+    });
+    expect(header_layout.outside).toEqual([]);
+    expect(header_layout.overlaps).toEqual([]);
+    expect(header_layout.primary_title_truncated).toBe(false);
+
+    await expectVisibleInteractiveLayout(page);
   }
 
+  await page.setViewportSize({ width: 900, height: 520 });
   const message = page.getByRole("textbox", { name: "发送内容" });
   await message.fill("PING");
   await page.getByRole("button", { name: "展开周期发送设置" }).click();
@@ -767,9 +1422,9 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
     };
   });
   expect(vertical_layout.composer_bottom).toBeLessThanOrEqual(vertical_layout.panel_bottom + 1);
-  expect(vertical_layout.panel_bottom).toBeLessThanOrEqual(vertical_layout.status_top + 1);
+  expect(Math.abs(vertical_layout.panel_bottom - vertical_layout.status_top)).toBeLessThanOrEqual(1);
   expect(vertical_layout.log_height).toBeGreaterThanOrEqual(20);
-  expect(vertical_layout.document_height).toBeLessThanOrEqual(680);
+  expect(vertical_layout.document_height).toBeLessThanOrEqual(520);
 
   await page.getByRole("group", { name: "波形视图" }).getByRole("button", { name: "频谱" }).click();
   const spectrum = page.getByLabel("频谱设置", { exact: true });
@@ -796,13 +1451,42 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
   });
   expect(spectrum_layout.overflow).toBeLessThanOrEqual(1);
   expect(spectrum_layout.outside).toEqual([]);
+
+  const sidebar_toggle = page.getByRole("button", { name: "显示或隐藏侧栏" });
+  await expect(sidebar_toggle).toBeHidden();
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(app_shell).toHaveAttribute("data-sidebar-open", "false");
+  await expect(sidebar).toBeHidden();
+  await expect(sidebar_toggle).toBeVisible();
+  await sidebar_toggle.click();
+  await expect(app_shell).toHaveAttribute("data-sidebar-open", "true");
+  await expect(sidebar).toBeVisible();
+  await expect(sidebar_toggle).toBeHidden();
+
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await expect(sidebar_toggle).toBeVisible();
+  const workspace_width_before_collapse = await page
+    .locator(".workspace")
+    .evaluate((element) => element.getBoundingClientRect().width);
+  await sidebar_toggle.click();
+  await expect(app_shell).toHaveAttribute("data-sidebar-open", "false");
+  await expect(sidebar).toBeHidden();
+  const workspace_width_after_collapse = await page
+    .locator(".workspace")
+    .evaluate((element) => element.getBoundingClientRect().width);
+  expect(workspace_width_after_collapse).toBeGreaterThan(workspace_width_before_collapse + 200);
+  await sidebar_toggle.click();
+  await expect(app_shell).toHaveAttribute("data-sidebar-open", "true");
+  await expect(sidebar).toBeVisible();
+  await expectVisibleInteractiveLayout(page);
+
   await page.screenshot({
     path: testInfo.outputPath("windows-minimum-responsive-layout.png"),
     fullPage: true,
   });
 });
 
-test("Windows 最小窗口中连接主操作始终可达", async ({ page }, testInfo) => {
+test("Windows 支持窗口中连接主操作始终可达", async ({ page }, testInfo) => {
   await installTauriSerialMock(page);
   await page.setViewportSize({ width: 1_024, height: 680 });
   await page.goto("/");
@@ -810,9 +1494,27 @@ test("Windows 最小窗口中连接主操作始终可达", async ({ page }, test
   const panel = page.locator(".connection-panel");
   const scroller = page.locator(".connection-panel-scroll");
   const connect_button = page.getByRole("button", { name: "连接设备" });
+  const advanced_serial = page.locator(".serial-advanced-section");
 
+  await expect(advanced_serial).not.toHaveAttribute("open", "");
+  await expect(page.getByRole("radio", { name: /FireWater/ })).toBeInViewport();
+
+  for (const viewport of [
+    { width: 1_024, height: 680 },
+    { width: 1_100, height: 680 },
+    { width: 1_101, height: 680 },
+    { width: 1_280, height: 720 },
+    { width: 1_344, height: 768 },
+    { width: 1_345, height: 768 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect(connect_button).toBeInViewport();
+    await expectVisibleInteractiveLayout(page);
+  }
+  await page.setViewportSize({ width: 1_024, height: 680 });
   await expect(connect_button).toBeInViewport();
   expect(await clippedVisibleHeight(connect_button)).toBeGreaterThanOrEqual(36);
+  expect(await findVisibleTextBelow(panel)).toEqual([]);
 
   const layout = await panel.evaluate((element) => {
     const panel_rect = element.getBoundingClientRect();
@@ -852,18 +1554,217 @@ test("Windows 最小窗口中连接主操作始终可达", async ({ page }, test
   });
 });
 
-test("波特率可直接输入且常用值始终可选", async ({ page }) => {
+test("串口发现三态在 Windows 最小窗口中保持一致反馈", async ({ page }, testInfo) => {
   await installTauriSerialMock(page);
   await page.setViewportSize({ width: 1_024, height: 680 });
   await page.goto("/");
 
-  const baud_rate = page.getByRole("textbox", { name: "波特率" });
-  const baud_rate_presets = page.getByRole("combobox", { name: "选择常用波特率" });
+  const port_select = page.getByLabel("串口设备");
+  const connection_status = page.locator("#serial-connection-status");
+  const connect_button = page.getByRole("button", { name: "连接设备" });
+  const common_state = {
+    source: "serial",
+    connectionStatus: "disconnected",
+    connectionMessage: "等待连接",
+    serialRuntimeError: "",
+    ports: [],
+    serialConfig: { ...DEFAULT_SERIAL_CONFIG, portName: "" },
+  };
+
+  await setWorkbenchState(page, {
+    ...common_state,
+    isRefreshingPorts: true,
+    serialPortDiscoveryStatus: "idle",
+    serialPortDiscoveryMessage: "",
+  });
+  await expect(port_select).toHaveText(/正在扫描设备/);
+  await expect(port_select).toHaveAttribute("aria-busy", "true");
+  await expect(connection_status).toHaveText("正在扫描串口设备");
+  await expect(connection_status).toHaveAttribute("data-status", "connecting");
+  await expect(connect_button).toHaveAttribute("title", "正在扫描串口设备");
+  await page.screenshot({
+    path: testInfo.outputPath("serial-discovery-scanning.png"),
+    fullPage: false,
+  });
+
+  await setWorkbenchState(page, {
+    ...common_state,
+    isRefreshingPorts: false,
+    serialPortDiscoveryStatus: "empty",
+    serialPortDiscoveryMessage: "未发现串口设备",
+  });
+  await expect(port_select).toHaveText(/未发现设备/);
+  await expect(connection_status).toHaveText("未发现串口设备");
+  await expect(connection_status).toHaveAttribute("data-status", "disconnected");
+  await expect(connect_button).toHaveAttribute(
+    "title",
+    "未发现串口设备，请连接设备后刷新",
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("serial-discovery-empty.png"),
+    fullPage: false,
+  });
+
+  await setWorkbenchState(page, {
+    ...common_state,
+    isRefreshingPorts: false,
+    serialPortDiscoveryStatus: "error",
+    serialPortDiscoveryMessage: "扫描串口失败：串口驱动不可用",
+  });
+  await expect(connection_status).toHaveText("扫描串口失败：串口驱动不可用");
+  await expect(connection_status).toHaveAttribute("data-status", "error");
+  await expect(connect_button).toHaveAttribute(
+    "title",
+    "扫描串口失败：串口驱动不可用",
+  );
+  await expect(connect_button).toHaveAttribute(
+    "aria-describedby",
+    "connection-action-hint",
+  );
+  await expect(connect_button).toHaveAccessibleDescription(
+    "扫描串口失败：串口驱动不可用",
+  );
+  await expect(connect_button).toBeInViewport();
+  await page.screenshot({
+    path: testInfo.outputPath("serial-discovery-error.png"),
+    fullPage: false,
+  });
+});
+
+test("连接错误后可通过刷新重新发现串口设备", async ({ page }) => {
+  await installTauriSerialMock(page, undefined, undefined, 150);
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+  await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
+
+  await setWorkbenchState(page, {
+    source: "serial",
+    connectionStatus: "error",
+    connectionMessage: "COM3 打开失败：拒绝访问",
+    serialRuntimeError: "",
+    ports: [],
+    serialConfig: { ...DEFAULT_SERIAL_CONFIG, portName: "" },
+    isRefreshingPorts: false,
+    serialPortDiscoveryStatus: "idle",
+    serialPortDiscoveryMessage: "",
+  });
+
+  const refresh_button = page.getByRole("button", { name: "刷新串口列表" });
+  const connection_status = page.locator("#serial-connection-status");
+  await refresh_button.click();
+  await expect(refresh_button).toHaveAttribute("aria-busy", "true");
+  await expect(connection_status).toHaveText("正在扫描串口设备");
+  await expect(connection_status).toHaveAttribute("data-status", "connecting");
+
+  await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
+  await expect(connection_status).toHaveText("发现 1 个串口设备");
+  await expect(connection_status).toHaveAttribute("data-status", "disconnected");
+  await expect(page.getByRole("button", { name: "连接设备" })).toBeEnabled();
+});
+
+test("波特率可直接输入且常用值始终可选", async ({ page }, testInfo) => {
+  await installTauriSerialMock(page);
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+
+  const baud_rate = page.getByRole("combobox", { name: "波特率" });
 
   await expect(baud_rate).toHaveValue("115200");
-  await expect(baud_rate_presets.locator("option")).toHaveCount(14);
-  await baud_rate_presets.selectOption("9600");
+  await page.getByRole("button", { name: "展开常用波特率" }).click();
+  const baud_rate_presets = page.getByRole("listbox", { name: "常用波特率" });
+  await expect(baud_rate_presets.getByRole("option")).toHaveCount(13);
+  await expect(baud_rate_presets.getByRole("option", { name: "115200" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  expect(await findVisibleTextBelow(page.locator(".baud-rate-field"))).toEqual([]);
+  const open_layout = await baud_rate_presets.evaluate((element) => {
+    const list_rect = element.getBoundingClientRect();
+    const scroller_rect = element
+      .closest<HTMLElement>(".connection-panel-scroll")
+      ?.getBoundingClientRect();
+    const selected_rect = element
+      .querySelector<HTMLElement>('[aria-selected="true"]')
+      ?.getBoundingClientRect();
+    const combobox = element.closest<HTMLElement>(".baud-rate-combobox");
+    const input = combobox?.querySelector<HTMLInputElement>("input");
+    const combobox_style = combobox ? getComputedStyle(combobox) : null;
+    const input_style = input ? getComputedStyle(input) : null;
+    const combobox_rect = combobox?.getBoundingClientRect();
+    return {
+      list_left: list_rect.left,
+      list_right: list_rect.right,
+      list_top: list_rect.top,
+      list_bottom: list_rect.bottom,
+      combobox_left: combobox_rect?.left ?? Number.NEGATIVE_INFINITY,
+      combobox_right: combobox_rect?.right ?? Number.POSITIVE_INFINITY,
+      combobox_bottom: combobox_rect?.bottom ?? Number.POSITIVE_INFINITY,
+      scroller_top: scroller_rect?.top ?? Number.NEGATIVE_INFINITY,
+      scroller_bottom: scroller_rect?.bottom ?? Number.POSITIVE_INFINITY,
+      selected_top: selected_rect?.top ?? Number.NEGATIVE_INFINITY,
+      selected_bottom: selected_rect?.bottom ?? Number.POSITIVE_INFINITY,
+      placement: element.getAttribute("data-placement"),
+      focus_shadow: combobox_style?.boxShadow ?? "none",
+      input_outline_width: input_style?.outlineWidth ?? "",
+      document_width: document.documentElement.scrollWidth,
+    };
+  });
+  expect(open_layout.list_top).toBeGreaterThanOrEqual(open_layout.scroller_top - 1);
+  expect(open_layout.list_bottom).toBeLessThanOrEqual(open_layout.scroller_bottom + 1);
+  expect(Math.abs(open_layout.list_left - open_layout.combobox_left)).toBeLessThanOrEqual(1);
+  expect(Math.abs(open_layout.list_right - open_layout.combobox_right)).toBeLessThanOrEqual(1);
+  expect(open_layout.list_top).toBeGreaterThan(open_layout.combobox_bottom);
+  expect(open_layout.selected_top).toBeGreaterThanOrEqual(open_layout.list_top - 1);
+  expect(open_layout.selected_bottom).toBeLessThanOrEqual(open_layout.list_bottom + 1);
+  expect(open_layout.placement).toBe("bottom");
+  expect(open_layout.focus_shadow).not.toBe("none");
+  expect(open_layout.input_outline_width).toBe("0px");
+  expect(open_layout.document_width).toBeLessThanOrEqual(1_024);
+  await expectVisibleInteractiveLayout(page);
+  await page.screenshot({
+    path: testInfo.outputPath("baud-rate-options-windows-minimum.png"),
+    fullPage: false,
+  });
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.screenshot({
+    path: testInfo.outputPath("baud-rate-options-windows-minimum-light.png"),
+    fullPage: false,
+  });
+  await baud_rate_presets.getByRole("option", { name: "9600" }).click();
   await expect(baud_rate).toHaveValue("9600");
+
+  await baud_rate.press("ArrowDown");
+  await expect(baud_rate).toHaveAttribute(
+    "aria-activedescendant",
+    "baud-rate-option-19200",
+  );
+  await baud_rate.press("ArrowDown");
+  await baud_rate.press("ArrowUp");
+  await baud_rate.press("Enter");
+  await expect(baud_rate).toHaveValue("19200");
+  await expect(baud_rate_presets).toBeHidden();
+
+  await baud_rate.press("ArrowUp");
+  await expect(baud_rate_presets).toBeVisible();
+  await baud_rate.press("Escape");
+  await expect(baud_rate_presets).toBeHidden();
+  await expect(baud_rate).toHaveValue("19200");
+
+  await baud_rate.press("ArrowDown");
+  await expect(baud_rate_presets).toBeVisible();
+  expect(
+    await baud_rate_presets
+      .getByRole("option")
+      .evaluateAll((options) => options.every((option) => option.tabIndex === -1)),
+  ).toBe(true);
+  await expect(page.getByRole("button", { name: "收起常用波特率" })).toHaveAttribute(
+    "tabindex",
+    "-1",
+  );
+  await page.keyboard.press("Tab");
+  await expect(baud_rate_presets).toBeHidden();
+  await expect(page.getByRole("radio", { name: /FireWater/ })).toBeFocused();
 
   await baud_rate.fill("250000");
   await baud_rate.hover();
@@ -873,9 +1774,68 @@ test("波特率可直接输入且常用值始终可选", async ({ page }) => {
 
   await baud_rate.fill("12000001");
   await expect(baud_rate).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByRole("button", { name: "连接设备" })).toBeDisabled();
   await baud_rate.press("Escape");
   await expect(baud_rate).toHaveValue("250000");
   await expect(baud_rate).toHaveAttribute("aria-invalid", "false");
+  await expect(page.getByRole("button", { name: "连接设备" })).toBeEnabled();
+});
+
+test("串口核心事件监听失败时显示故障并阻止连接", async ({ page }) => {
+  await installTauriSerialMock(page, "serial://state");
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+
+  await expect(page.locator("#serial-connection-status")).toContainText(
+    /串口核心事件监听初始化失败/,
+  );
+  await expect(page.getByRole("button", { name: "刷新串口列表" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "连接设备" })).toBeDisabled();
+});
+
+test("可选串口状态读取失败时仍允许核心连接", async ({ page }) => {
+  await installTauriSerialMock(page, undefined, "get_serial_file_send_state");
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+
+  await expect(page.getByRole("button", { name: "刷新串口列表" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "连接设备" })).toBeEnabled();
+  await expect(page.getByText(/串口核心事件监听初始化失败/)).toHaveCount(0);
+});
+
+test("串口初始状态读取失败后仍可刷新并连接", async ({ page }) => {
+  await installTauriSerialMock(page, undefined, "get_serial_state");
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+
+  const refresh_button = page.getByRole("button", { name: "刷新串口列表" });
+  const connect_button = page.getByRole("button", { name: "连接设备" });
+  await expect(refresh_button).toBeEnabled();
+  await expect(connect_button).toBeEnabled();
+  await refresh_button.click();
+  await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
+  await connect_button.click();
+  await expect(page.getByText("COM3 已连接")).toBeVisible();
+  await expect(page.getByText(/串口核心事件监听初始化失败/)).toHaveCount(0);
+});
+
+test("断开命令失败但串口仍连接时显示红色错误并允许重试", async ({ page }) => {
+  await installTauriSerialMock(page, undefined, "disconnect_serial");
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  await page.goto("/");
+
+  await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
+  await page.getByRole("button", { name: "连接设备" }).click();
+  const connection_status = page.locator("#serial-connection-status");
+  const disconnect_button = page.getByRole("button", { name: "断开连接" });
+  await expect(connection_status).toHaveText("COM3 已连接");
+
+  await disconnect_button.click();
+  await expect(connection_status).toHaveText(
+    "断开失败，当前仍保持连接：disconnect_serial 调用失败",
+  );
+  await expect(connection_status).toHaveAttribute("data-status", "error");
+  await expect(disconnect_button).toBeEnabled();
 });
 
 test("终端上滚挂起跟随并可回到最新", async ({ page }) => {
@@ -1055,6 +2015,7 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   await expect(page.getByText("模拟数据正在运行")).toBeVisible();
   await expect(page.locator(".terminal-line").first()).toBeVisible({ timeout: 5_000 });
   await expect(page.locator(".waveform-chart canvas").first()).toBeVisible({ timeout: 5_000 });
+  expect(await findVisibleTextBelow(page.locator(".channel-strip"), 13)).toEqual([]);
   await page.waitForTimeout(800);
 
   await expect
@@ -1071,6 +2032,17 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   expect(canvasStats.height).toBeGreaterThan(200);
   expect(canvasStats.opaquePixels).toBeGreaterThan(50);
   expect(canvasStats.chromaticPixels).toBeGreaterThan(100);
+
+  const [timeAxisBounds, waveformBounds] = await Promise.all([
+    page.locator(".waveform-chart .u-axis").first().boundingBox(),
+    page.locator(".waveform-canvas-wrap").boundingBox(),
+  ]);
+  expect(timeAxisBounds).not.toBeNull();
+  expect(waveformBounds).not.toBeNull();
+  expect(timeAxisBounds?.height ?? 0).toBeGreaterThanOrEqual(40);
+  expect((timeAxisBounds?.y ?? 0) + (timeAxisBounds?.height ?? 0)).toBeLessThanOrEqual(
+    (waveformBounds?.y ?? 0) + (waveformBounds?.height ?? 0),
+  );
 
   const terminalCount = async () => {
     const text = await page.locator(".terminal-toolbar .panel-subtitle").textContent();
@@ -1157,6 +2129,16 @@ test("模拟数据贯通波形与终端", async ({ page }, testInfo) => {
   await page.getByRole("button", { name: "清空波形" }).click();
   await expect(page.getByText("HISTORY")).toBeVisible();
   await expect(page.getByRole("button", { name: "继续波形显示" })).toBeVisible();
+  for (const selector of [
+    ".workspace-header",
+    ".waveform-panel .panel-toolbar",
+    ".terminal-filter-bar",
+    ".terminal-viewport",
+    ".send-main-row",
+    ".status-bar",
+  ]) {
+    expect(await findVisibleTextBelow(page.locator(selector), 13), selector).toEqual([]);
+  }
   expect(pageErrors).toEqual([]);
 
   await page.screenshot({
@@ -1223,6 +2205,9 @@ test("独立量程让混合数量级通道保持可读并正确映射测量游�
   await focusChannel.selectOption("current");
   await expect(focusChannel).toHaveValue("current");
   await page.getByRole("button", { name: "开启波形测量" }).click();
+  expect(
+    await findVisibleTextBelow(page.locator(".waveform-measurement-strip"), 11),
+  ).toEqual([]);
   await page.getByRole("combobox", { name: "测量通道" }).selectOption("current");
   const intervalStatistics = page.getByLabel("A/B 区间统计");
   await expect(intervalStatistics.getByText("样本数", { exact: true }).locator("..")).toContainText(
@@ -1533,6 +2518,14 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
       hex: "66 61 75 6C 74 20 73 65 6E 73 6F 72",
       byteCount: 12,
     },
+    {
+      id: 44_004,
+      direction: "system",
+      timestamp: 1_700_000_200_300,
+      text: "协议：FireWater → Raw Data",
+      hex: "",
+      byteCount: 0,
+    },
   ];
   await replaceTerminalEntries(page, entries);
 
@@ -1546,13 +2539,13 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
     .getByRole("group", { name: "终端方向筛选" })
     .getByRole("button", { name: "RX" })
     .click();
-  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 3 条记录");
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 4 条记录");
 
   const exportTrigger = page.getByRole("button", { name: "导出终端记录" });
   const viewDownloadPromise = page.waitForEvent("download");
   await exportTrigger.click();
   const exportMenu = page.getByRole("menu", { name: "终端导出范围" });
-  await expect(exportMenu.getByRole("menuitem", { name: "全部缓存 3 条" })).toBeEnabled();
+  await expect(exportMenu.getByRole("menuitem", { name: "全部缓存 4 条" })).toBeEnabled();
   await exportMenu.getByRole("menuitem", { name: "当前视图 1 条" }).click();
   const viewDownload = await viewDownloadPromise;
   expect(viewDownload.suggestedFilename()).toMatch(
@@ -1569,10 +2562,10 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
     .getByRole("button", { name: "HEX" })
     .click();
   await search.fill("66 61");
-  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 3 条记录");
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 4 条记录");
   const allDownloadPromise = page.waitForEvent("download");
   await exportTrigger.click();
-  await exportMenu.getByRole("menuitem", { name: "全部缓存 3 条" }).click();
+  await exportMenu.getByRole("menuitem", { name: "全部缓存 4 条" }).click();
   const allDownload = await allDownloadPromise;
   expect(allDownload.suggestedFilename()).toMatch(/^vofa-ultra-terminal-all-.+\.log$/);
   const allPath = testInfo.outputPath("terminal-all.log");
@@ -1582,15 +2575,31 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
       .map(
         (entry) =>
           `${new Date(entry.timestamp).toISOString()}\t${entry.direction.toUpperCase()}` +
-          `\t${entry.byteCount}\t${entry.hex}`,
+          `\t${entry.byteCount}\t${entry.direction === "system" ? entry.text : entry.hex}`,
       )
       .join("\n"),
+  );
+
+  await page
+    .getByRole("group", { name: "终端方向筛选" })
+    .getByRole("button", { name: "全部" })
+    .click();
+  await search.fill("协议");
+  await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("1 / 4 条记录");
+  const systemDownloadPromise = page.waitForEvent("download");
+  await exportTrigger.click();
+  await exportMenu.getByRole("menuitem", { name: "当前视图 1 条" }).click();
+  const systemDownload = await systemDownloadPromise;
+  const systemPath = testInfo.outputPath("terminal-system-view.log");
+  await systemDownload.saveAs(systemPath);
+  expect(await readFile(systemPath, "utf8")).toBe(
+    `${new Date(entries[3].timestamp).toISOString()}\tSYSTEM\t0\t${entries[3].text}`,
   );
 
   await search.fill("FF FF");
   await exportTrigger.click();
   await expect(exportMenu.getByRole("menuitem", { name: "当前视图 0 条" })).toBeDisabled();
-  await expect(exportMenu.getByRole("menuitem", { name: "全部缓存 3 条" })).toBeEnabled();
+  await expect(exportMenu.getByRole("menuitem", { name: "全部缓存 4 条" })).toBeEnabled();
   await page.keyboard.press("Escape");
   await expect(exportTrigger).toBeFocused();
 
@@ -1619,7 +2628,7 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
   expect(pageErrors).toEqual([]);
 });
 
-test("频谱按帧顺序分析同时间戳数据并适配窄屏", async ({ page }, testInfo) => {
+test("测量和频谱按帧顺序分析同时间戳数据并适配窄屏", async ({ page }, testInfo) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
   await page.waitForLoadState("networkidle");
@@ -1646,6 +2655,32 @@ test("频谱按帧顺序分析同时间戳数据并适配窄屏", async ({ page 
     return new Set(points.map((point) => point.x)).size;
   });
   expect(timestampCount).toBe(1);
+
+  await page.getByRole("button", { name: "开启波形测量" }).click();
+  const cursorA = page.getByRole("slider", { name: "游标 A 采样点" });
+  const cursorB = page.getByRole("slider", { name: "游标 B 采样点" });
+  await cursorA.focus();
+  await page.keyboard.press("Home");
+  await cursorB.focus();
+  await page.keyboard.press("End");
+  const measurementResults = page.getByLabel("波形测量结果");
+  const intervalStatistics = page.getByLabel("A/B 区间统计");
+  await expect(measurementResults.getByText("Δt", { exact: true }).locator("..")).toContainText(
+    "0.000 ns",
+  );
+  await expect(measurementResults.getByText("1/Δt", { exact: true }).locator("..")).toContainText(
+    "--",
+  );
+  await expect(intervalStatistics.getByText("样本数", { exact: true }).locator("..")).toContainText(
+    "256",
+  );
+  await expect(intervalStatistics.getByText("均值", { exact: true }).locator("..")).toContainText(
+    "3.000",
+  );
+  await expect(intervalStatistics.getByText("RMS", { exact: true }).locator("..")).toContainText(
+    "3.317",
+  );
+  await page.getByRole("button", { name: "关闭波形测量" }).click();
 
   await page.getByRole("button", { name: "频谱" }).click();
   await page.getByRole("spinbutton", { name: "频谱采样率" }).fill("256");
@@ -1777,12 +2812,14 @@ test("单次触发在后半窗结束时冻结且后台接收继续", async ({ pa
     phase: "frozen",
     chartPaused: true,
     pointCount: 4,
+    visiblePointCount: 4,
     rxFrames: 4,
   });
 
   await ingestProtocolText(page, "30,2,3\n", 5_000);
   const afterFrozen = await readWaveformTriggerSnapshot(page);
-  expect(afterFrozen.pointCount).toBe(frozen.pointCount);
+  expect(afterFrozen.pointCount).toBeGreaterThan(frozen.pointCount);
+  expect(afterFrozen.visiblePointCount).toBe(frozen.visiblePointCount);
   expect(afterFrozen.terminalEntryCount).toBeGreaterThan(frozen.terminalEntryCount);
   expect(afterFrozen.rxFrames).toBeGreaterThan(frozen.rxFrames);
 
@@ -2120,9 +3157,30 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   await expect(page.locator(".protocol-warning-status")).toContainText("丢帧 1");
   await page.getByRole("button", { name: "通道", exact: true }).click();
   const health = page.getByRole("region", { name: "协议解析健康度" });
+  const channelPanel = health.locator("..");
   await expect(health).toContainText("已丢弃 1 帧");
   await expect(health).toContainText("最近：包含非有限数值");
   await expect(health).toContainText("FireWater：每行 1–16 个有限数值，命名字段使用 : 或 =");
+  const emptyTypography = await channelPanel.evaluate((element) => {
+    const fontSize = (selector: string) => {
+      const target = element.querySelector<HTMLElement>(selector);
+      return target ? Number.parseFloat(getComputedStyle(target).fontSize) : 0;
+    };
+    return {
+      summary: fontSize(".channel-summary span"),
+      healthLabel: fontSize(".protocol-health-heading > div"),
+      healthStatus: fontSize(".protocol-health-heading > strong"),
+      counter: fontSize(".protocol-health-counters span"),
+      empty: fontSize(".sidebar-empty span"),
+    };
+  });
+  expect(emptyTypography).toEqual({
+    summary: 12,
+    healthLabel: 12,
+    healthStatus: 12,
+    counter: 12,
+    empty: 12,
+  });
 
   await page.getByRole("button", { name: "清空解析统计" }).click();
   await expect(health).toContainText("等待完整帧");
@@ -2138,6 +3196,17 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
     "pitch",
     "cur",
   ]);
+  const channelTypography = await channelPanel.evaluate((element) => {
+    const fontSize = (selector: string) => {
+      const target = element.querySelector<HTMLElement>(selector);
+      return target ? Number.parseFloat(getComputedStyle(target).fontSize) : 0;
+    };
+    return {
+      group: fontSize(".channel-group-label"),
+      value: fontSize(".channel-row strong"),
+    };
+  });
+  expect(channelTypography).toEqual({ group: 12, value: 13 });
   await expect(page.locator(".terminal-line").last()).toContainText(
     "yaw=1.234 pitch=0.567 cur=0.8",
   );
@@ -2464,7 +3533,7 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
   await page.getByRole("tab", { name: "姿态" }).click();
 
   const configuration = page.getByRole("dialog", { name: "姿态通道配置" });
-  await expect(configuration).toBeVisible();
+  await expect(configuration).toBeVisible({ timeout: 15_000 });
   await configuration.getByRole("combobox", { name: "Roll 姿态通道" }).selectOption("channel-0");
   await configuration.getByRole("combobox", { name: "Pitch 姿态通道" }).selectOption("channel-1");
   await configuration.getByRole("combobox", { name: "Yaw 姿态通道" }).selectOption("channel-2");
@@ -2570,12 +3639,14 @@ test("姿态视图渲染同帧数据并支持冻结与窄屏配置", async ({ pa
     expect(layout.bottom).toBeLessThanOrEqual(viewport.height);
     expect(layout.documentWidth).toBeLessThanOrEqual(viewport.width);
     expect(layout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(true);
+    await expectVisibleInteractiveLayout(page);
     await configuration.getByRole("button", { name: "关闭姿态配置" }).click();
     await expect(configuration).not.toBeVisible();
     const mobileCanvas = await canvasScreenshotStats(canvas);
     expect(mobileCanvas.width).toBeGreaterThan(200);
     expect(mobileCanvas.height).toBeGreaterThan(100);
     expect(mobileCanvas.bytes).toBeGreaterThan(5_000);
+    await expectVisibleInteractiveLayout(page);
     await page.screenshot({
       path: testInfo.outputPath(`mobile-${viewport.width}-attitude.png`),
       fullPage: true,
@@ -2617,6 +3688,30 @@ test("通道监视显示有界统计并支持本地冻结与窄屏布局", async
   await expect(table.getByRole("columnheader", { name: "变化" })).toBeVisible();
   await expect(table.getByRole("columnheader", { name: "均值" })).toBeVisible();
   await expect(table.getByRole("columnheader", { name: "RMS" })).toBeVisible();
+  const monitorTypography = await monitor.evaluate((element) => {
+    const fontSize = (selector: string) => {
+      const target = element.querySelector<HTMLElement>(selector);
+      return target ? Number.parseFloat(getComputedStyle(target).fontSize) : 0;
+    };
+    return {
+      scope: fontSize(".channel-monitor-scope button"),
+      heading: fontSize("thead th"),
+      group: fontSize(".channel-monitor-group-row th"),
+      groupDetail: fontSize(".channel-monitor-group-row small"),
+      value: fontSize(".channel-monitor-data-row td"),
+      channel: fontSize(".channel-monitor-channel-label strong"),
+      detail: fontSize(".channel-monitor-channel-label small"),
+    };
+  });
+  expect(monitorTypography).toEqual({
+    scope: 12,
+    heading: 12,
+    group: 12,
+    groupDetail: 12,
+    value: 12,
+    channel: 13,
+    detail: 12,
+  });
 
   await page.getByRole("button", { name: "冻结通道监视" }).click();
   await expect(monitor.locator(".live-state")).toContainText("HOLD");
@@ -2637,9 +3732,33 @@ test("通道监视显示有界统计并支持本地冻结与窄屏布局", async
     fullPage: true,
   });
 
+  await page.setViewportSize({ width: 1_024, height: 680 });
+  const windowsMinimumLayout = await monitor.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const scroller = element.querySelector<HTMLElement>(".channel-monitor-scroll");
+    return {
+      left: rect.left,
+      right: rect.right,
+      bottom: rect.bottom,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      horizontalOverflow: scroller ? scroller.scrollWidth - scroller.clientWidth : 0,
+    };
+  });
+  expect(windowsMinimumLayout.left).toBeGreaterThanOrEqual(0);
+  expect(windowsMinimumLayout.right).toBeLessThanOrEqual(windowsMinimumLayout.viewportWidth);
+  expect(windowsMinimumLayout.bottom).toBeLessThanOrEqual(windowsMinimumLayout.viewportHeight);
+  expect(windowsMinimumLayout.horizontalOverflow).toBeLessThanOrEqual(1);
+  await expectVisibleInteractiveLayout(page);
+  await page.screenshot({
+    path: testInfo.outputPath("windows-minimum-channel-monitor.png"),
+    fullPage: true,
+  });
+
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "关闭侧栏" }).click();
   await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+  await expect(page.locator(".sidebar")).toBeHidden();
   await expect(table.getByRole("columnheader", { name: "当前" })).toBeVisible();
   await expect(table.getByRole("columnheader", { name: "变化" })).toBeVisible();
   await expect(table.getByRole("columnheader", { name: "样本" })).toBeVisible();
@@ -2666,6 +3785,7 @@ test("通道监视显示有界统计并支持本地冻结与窄屏布局", async
   expect(mobileLayout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(
     true,
   );
+  await expectVisibleInteractiveLayout(page);
   await page.screenshot({
     path: testInfo.outputPath("mobile-390-channel-monitor.png"),
     fullPage: true,
@@ -2725,6 +3845,58 @@ test("有界命令历史与可取消周期发送形成完整工作流", async ({
   await expect(taskStatus).toContainText("已完成 1 次发送", { timeout: 5_000 });
   await page.getByRole("button", { name: "命令历史，2 条" }).click();
   await expect(page.getByRole("dialog", { name: "命令历史" })).toContainText("<CR>");
+});
+
+test("运行事务期间统一锁定发送入口并在结束后恢复", async ({ page }) => {
+  await installTauriSerialMock(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "连接设备" }).click();
+  await expect(page.getByText("COM3 已连接")).toBeVisible();
+
+  const input = page.getByRole("textbox", { name: "发送内容" });
+  const sendButton = page.locator(".send-button");
+  await input.fill("PING");
+  await page.getByRole("button", { name: "展开周期发送设置" }).click();
+  const periodicButton = page.getByRole("button", { name: "启动", exact: true });
+  await expect(sendButton).toBeEnabled();
+  await expect(periodicButton).toBeEnabled();
+
+  const fileTrigger = page.getByRole("button", { name: "打开文件发送" });
+  const fileDialog = page.getByRole("dialog", { name: "原始文件发送" });
+  await fileTrigger.click();
+  await fileDialog.getByRole("button", { name: "选择", exact: true }).click();
+  const fileStartButton = fileDialog.getByRole("button", { name: "开始发送" });
+  await expect(fileStartButton).toBeEnabled();
+  await fileDialog.getByRole("button", { name: "关闭文件发送" }).click();
+
+  const modbusTrigger = page.getByRole("button", { name: "打开 Modbus RTU 构帧器" });
+  await modbusTrigger.click();
+  const builder = page.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+  const executeButton = builder.getByRole("button", { name: "执行一次" });
+  const pollButton = builder.getByRole("button", { name: "开始轮询" });
+  await expect(executeButton).toBeEnabled();
+  await expect(pollButton).toBeEnabled();
+
+  await setWorkbenchState(page, { runtimeTransitionStatus: "disconnecting" });
+
+  for (const button of [sendButton, periodicButton, executeButton, pollButton]) {
+    await expect(button).toBeDisabled();
+  }
+  await input.press("Enter");
+  await expect(input).toHaveValue("PING");
+  await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
+
+  await fileTrigger.click();
+  await expect(fileStartButton).toBeDisabled();
+
+  await setWorkbenchState(page, { runtimeTransitionStatus: "idle" });
+
+  await expect(sendButton).toBeEnabled();
+  await expect(periodicButton).toBeEnabled();
+  await expect(fileStartButton).toBeEnabled();
+  await modbusTrigger.click();
+  await expect(executeButton).toBeEnabled();
+  await expect(pollButton).toBeEnabled();
 });
 
 test("GB18030 文本发送使用实际字节并从历史恢复编码", async ({ page }) => {
@@ -2937,6 +4109,8 @@ test("快捷命令持久载入且只经显式发送产生 TX", async ({ page }, 
   await dialog.getByRole("textbox", { name: "快捷命令名称" }).fill("状态查询");
   await dialog.getByRole("button", { name: "保存当前草稿为快捷命令" }).click();
   await expect(dialog.getByRole("button", { name: "载入快捷命令 状态查询" })).toBeVisible();
+  expect(await findVisibleTextBelow(dialog)).toEqual([]);
+  expect(await findVisibleTextBelow(page.locator(".send-composer"))).toEqual([]);
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
 
   await dialog.getByRole("button", { name: "关闭快捷命令" }).click();
@@ -3324,6 +4498,7 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
       .filter(Boolean),
     );
   expect(undersizedTargets).toEqual([]);
+  await expectVisibleInteractiveLayout(page);
 
   await page.screenshot({
     path: testInfo.outputPath("mobile-workbench.png"),
@@ -3389,6 +4564,7 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
     documentWidth: document.documentElement.scrollWidth,
   }));
   expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth);
+  await expectVisibleInteractiveLayout(page);
 
   await page.getByRole("button", { name: "启动模拟" }).click();
   await page.getByRole("button", { name: "关闭侧栏" }).click();
@@ -3399,7 +4575,11 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
     const rect = element.getBoundingClientRect();
     const targets = [...element.querySelectorAll("button, input")].map((target) => {
       const targetRect = target.getBoundingClientRect();
-      return { width: targetRect.width, height: targetRect.height };
+      return {
+        name: target.getAttribute("aria-label") ?? target.textContent?.trim() ?? target.tagName,
+        width: targetRect.width,
+        height: targetRect.height,
+      };
     });
     return {
       left: rect.left,
@@ -3411,9 +4591,10 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
   expect(rangeLayout.left).toBeGreaterThanOrEqual(0);
   expect(rangeLayout.right).toBeLessThanOrEqual(320);
   expect(rangeLayout.documentWidth).toBeLessThanOrEqual(320);
-  expect(rangeLayout.targets.every((target) => target.width >= 44 && target.height >= 44)).toBe(
-    true,
-  );
+  expect(
+    rangeLayout.targets.filter((target) => target.width < 44 || target.height < 44),
+  ).toEqual([]);
+  await expectVisibleInteractiveLayout(page);
   await page.screenshot({
     path: testInfo.outputPath("mobile-320-waveform-range.png"),
     fullPage: true,
@@ -3449,6 +4630,7 @@ test("320 px 窄屏测量与底部导航保持可操作", async ({ page }, testI
   expect(
     measurementLayout.targets.every((target) => target.width >= 44 && target.height >= 44),
   ).toBe(true);
+  await expectVisibleInteractiveLayout(page);
 
   await page.screenshot({
     path: testInfo.outputPath("mobile-320-measurement.png"),
@@ -3633,10 +4815,72 @@ test("命名工作区可保存、切换、导出并重新导入", async ({ page 
 test("短窗口仍可操作发送栏", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 520 });
   await page.goto("/");
+  await page.getByRole("button", { name: "启动模拟" }).click();
+  const waveformChart = page.locator(".waveform-chart .uplot").first();
+  await expect(waveformChart).toBeVisible();
   await page.getByRole("button", { name: "关闭侧栏" }).click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+  await expect(page.locator(".sidebar")).toHaveCSS("visibility", "hidden");
 
-  await expect(page.getByRole("textbox", { name: "发送内容" })).toBeInViewport();
-  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeInViewport();
+  const sendInput = page.getByRole("textbox", { name: "发送内容" });
+  const sendButton = page.getByRole("button", { name: "发送", exact: true });
+  await expect(sendInput).toBeInViewport();
+  await expect(sendButton).toBeInViewport();
+  const terminalLayout = await page.locator("#workspace-terminal-panel").evaluate((element) => {
+    const panelRect = element.getBoundingClientRect();
+    const composerRect = element.querySelector<HTMLElement>(".send-composer")?.getBoundingClientRect();
+    const logRect = element.querySelector<HTMLElement>(".terminal-log-shell")?.getBoundingClientRect();
+    const statusRect = document.querySelector<HTMLElement>(".status-bar")?.getBoundingClientRect();
+    return {
+      composerBottom: composerRect?.bottom ?? Number.POSITIVE_INFINITY,
+      logHeight: logRect?.height ?? 0,
+      panelBottom: panelRect.bottom,
+      statusTop: statusRect?.top ?? 0,
+    };
+  });
+  expect(terminalLayout.composerBottom).toBeLessThanOrEqual(terminalLayout.panelBottom + 1);
+  expect(Math.abs(terminalLayout.panelBottom - terminalLayout.statusTop)).toBeLessThanOrEqual(1);
+  expect(terminalLayout.logHeight).toBeGreaterThanOrEqual(40);
+  expect(await clippedVisibleHeight(sendInput)).toBeGreaterThanOrEqual(32);
+  expect(await clippedVisibleHeight(sendButton)).toBeGreaterThanOrEqual(32);
+  await expectVisibleInteractiveLayout(page);
+  await page.getByRole("button", { name: "展开周期发送设置" }).click();
+  const expandedTerminalLayout = await page
+    .locator("#workspace-terminal-panel")
+    .evaluate((element) => {
+      const panelRect = element.getBoundingClientRect();
+      const composerRect = element.querySelector<HTMLElement>(".send-composer")?.getBoundingClientRect();
+      const logRect = element.querySelector<HTMLElement>(".terminal-log-shell")?.getBoundingClientRect();
+      const statusRect = document.querySelector<HTMLElement>(".status-bar")?.getBoundingClientRect();
+      return {
+        composerBottom: composerRect?.bottom ?? Number.POSITIVE_INFINITY,
+        logHeight: logRect?.height ?? 0,
+        panelBottom: panelRect.bottom,
+        statusTop: statusRect?.top ?? 0,
+      };
+    });
+  expect(expandedTerminalLayout.composerBottom).toBeLessThanOrEqual(
+    expandedTerminalLayout.panelBottom + 1,
+  );
+  expect(Math.abs(expandedTerminalLayout.panelBottom - expandedTerminalLayout.statusTop)).toBeLessThanOrEqual(1);
+  expect(expandedTerminalLayout.logHeight).toBeGreaterThanOrEqual(40);
+  expect(await clippedVisibleHeight(sendInput)).toBeGreaterThanOrEqual(32);
+  expect(await clippedVisibleHeight(sendButton)).toBeGreaterThanOrEqual(32);
+  await expectVisibleInteractiveLayout(page);
+  const waveformLayout = await waveformChart.evaluate((element) => {
+    const chartRect = element.getBoundingClientRect();
+    const wrapRect = element.closest<HTMLElement>(".waveform-canvas-wrap")?.getBoundingClientRect();
+    return {
+      chartTop: chartRect.top,
+      chartBottom: chartRect.bottom,
+      chartHeight: chartRect.height,
+      wrapTop: wrapRect?.top ?? Number.NEGATIVE_INFINITY,
+      wrapBottom: wrapRect?.bottom ?? Number.POSITIVE_INFINITY,
+    };
+  });
+  expect(waveformLayout.chartTop).toBeGreaterThanOrEqual(waveformLayout.wrapTop - 1);
+  expect(waveformLayout.chartBottom).toBeLessThanOrEqual(waveformLayout.wrapBottom + 1);
+  expect(waveformLayout.chartHeight).toBeGreaterThanOrEqual(96);
   await page
     .getByRole("group", { name: "发送格式" })
     .getByRole("button", { name: "HEX" })
@@ -3647,6 +4891,7 @@ test("短窗口仍可操作发送栏", async ({ page }) => {
   const firstVariable = variableDialog.getByRole("button", { name: /插入序号 U8/ });
   await expect(firstVariable).toBeFocused();
   expect(await clippedVisibleHeight(firstVariable)).toBeGreaterThanOrEqual(48);
+  await expectVisibleInteractiveLayout(page);
   await page.keyboard.press("Escape");
   await expect(variableDialog).toHaveCount(0);
   await expect(variableTrigger).toBeFocused();
@@ -3898,11 +5143,12 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
 
   await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
   await expect(page.getByLabel("串口设备")).toHaveValue("COM3");
-  const deviceInfo = page.getByRole("group", { name: "已选端口信息" });
+  const deviceInfo = page.getByRole("group", { name: /已选端口信息/ });
   await expect(deviceInfo).toContainText("Telemetry");
   await expect(deviceInfo).toContainText("Acme Devices");
   await expect(deviceInfo).toContainText("1234:5678");
-  await expect(deviceInfo).toContainText("唯一身份");
+  await expect(deviceInfo).not.toContainText("唯一身份");
+  await expect(deviceInfo).toHaveAccessibleName(/支持唯一设备识别/);
   await expect(deviceInfo).not.toContainText("DEVICE-001");
 
   const desktopViewport = page.viewportSize();
@@ -3934,6 +5180,8 @@ test("自动重连可跨端口恢复同一 USB 设备", async ({ page }, testInf
   await page.getByRole("button", { name: "连接设备" }).click();
   await expect(page.getByText("自动重连已待命")).toBeVisible();
 
+  await page.getByText("高级串口设置", { exact: true }).click();
+  await expect(page.locator(".serial-advanced-section")).toHaveAttribute("open", "");
   await page.getByRole("checkbox", { name: "DTR" }).uncheck();
   await page.getByRole("checkbox", { name: "RTS" }).uncheck();
   await expect(page.getByRole("checkbox", { name: "DTR" })).not.toBeChecked();
@@ -4185,6 +5433,7 @@ test("桌面串口原始文件需显式开始并可观察地取消", async ({ pa
   await expect(dialog.getByText("2.0 KiB / 4.0 KiB", { exact: true })).toBeVisible();
   await expect(txStats).toHaveText("TX 2.0 KB");
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(1);
+  expect(await findVisibleTextBelow(dialog)).toEqual([]);
 
   await page.getByRole("textbox", { name: "发送内容" }).fill("PING");
   await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
@@ -4496,8 +5745,13 @@ async function installTauriReplayMock(
   }, { replayProtocol: protocol, replaySeekSnapUs: seekSnapUs });
 }
 
-async function installTauriSerialMock(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+async function installTauriSerialMock(
+  page: Page,
+  failedEvent?: string,
+  failedCommand?: string,
+  portListDelayMs = 0,
+): Promise<void> {
+  await page.addInitScript(({ eventToFail, commandToFail, serialPortListDelayMs }) => {
     type Callback = (data: unknown) => unknown;
     type InvokeArgs = Record<string, unknown> | undefined;
     const callbacks = new Map<number, Callback>();
@@ -4580,6 +5834,9 @@ async function installTauriSerialMock(page: Page): Promise<void> {
     const invoke = async (command: string, args: InvokeArgs): Promise<unknown> => {
       if (command === "plugin:event|listen") {
         const event = String(args?.event);
+        if (event === eventToFail) {
+          throw new Error(`${event} 监听注册失败`);
+        }
         const handler = Number(args?.handler);
         listeners.set(event, [...(listeners.get(event) ?? []), handler]);
         return handler;
@@ -4593,6 +5850,9 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         );
         return undefined;
       }
+      if (command === commandToFail) {
+        throw new Error(`${command} 调用失败`);
+      }
       if (command === "plugin:window|destroy") {
         closeOperations.push("destroy");
         destroyCount += 1;
@@ -4600,6 +5860,9 @@ async function installTauriSerialMock(page: Page): Promise<void> {
       }
       if (command === "list_serial_ports") {
         portListCalls += 1;
+        if (serialPortListDelayMs > 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, serialPortListDelayMs));
+        }
         return ports.map((port) => ({ ...port }));
       }
       if (command === "get_serial_state") {
@@ -4963,5 +6226,9 @@ async function installTauriSerialMock(page: Page): Promise<void> {
         ];
       },
     };
+  }, {
+    eventToFail: failedEvent ?? null,
+    commandToFail: failedCommand ?? null,
+    serialPortListDelayMs: portListDelayMs,
   });
 }

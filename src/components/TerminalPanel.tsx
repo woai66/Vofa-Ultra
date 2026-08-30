@@ -91,7 +91,12 @@ import {
   type ModbusRtuRequest,
 } from "../core/modbusRtu";
 import { selectSerialFilePath } from "../services/serialClient";
-import { useWorkbenchStore } from "../store/workbenchStore";
+import {
+  selectEffectiveTerminalDisplayMode,
+  selectEffectiveTerminalRxRecordMode,
+  selectUsesBinaryTerminalDefaults,
+  useWorkbenchStore,
+} from "../store/workbenchStore";
 import type { DisplayMode, LineEnding, SerialFileSendStatus } from "../types/serial";
 import type {
   CommandTaskSnapshot,
@@ -99,12 +104,13 @@ import type {
   TerminalEntry,
   TerminalTextEncoding,
 } from "../types/workbench";
-import { QuickCommandPopover } from "./QuickCommandPopover";
-
 const TerminalExportMenu = lazy(() => import("./TerminalExportMenu"));
 const CommandHistoryPopover = lazy(() => import("./CommandHistoryPopover"));
 const ModbusRtuBuilder = lazy(() =>
   import("./ModbusRtuBuilder").then((module) => ({ default: module.ModbusRtuBuilder })),
+);
+const QuickCommandPopover = lazy(() =>
+  import("./QuickCommandPopover").then((module) => ({ default: module.QuickCommandPopover })),
 );
 
 type RepeatMode = "count" | "continuous";
@@ -121,7 +127,7 @@ const TERMINAL_TIME_MODE_OPTIONS: readonly {
   { mode: "interval", label: "ΔT", description: "距上一条可见记录" },
 ];
 
-const TERMINAL_LATEST_THRESHOLD_PX = 24;
+const TERMINAL_LATEST_THRESHOLD_PX = 26;
 const MAX_ASCII_SEARCH_CHARACTERS = 32;
 
 interface AsciiReferenceEntry {
@@ -297,11 +303,12 @@ interface CopiedConverterOutput {
 
 export function TerminalPanel() {
   const entries = useWorkbenchStore((state) => state.terminalEntries);
-  const displayMode = useWorkbenchStore((state) => state.displayMode);
+  const displayMode = useWorkbenchStore(selectEffectiveTerminalDisplayMode);
   const sendMode = useWorkbenchStore((state) => state.sendMode);
   const lineEnding = useWorkbenchStore((state) => state.lineEnding);
   const commandChecksum = useWorkbenchStore((state) => state.commandChecksum);
-  const terminalRxRecordMode = useWorkbenchStore((state) => state.terminalRxRecordMode);
+  const terminalRxRecordMode = useWorkbenchStore(selectEffectiveTerminalRxRecordMode);
+  const usesBinaryTerminalDefaults = useWorkbenchStore(selectUsesBinaryTerminalDefaults);
   const terminalRxLineEnding = useWorkbenchStore((state) => state.terminalRxLineEnding);
   const terminalRxTextEncoding = useWorkbenchStore((state) => state.terminalRxTextEncoding);
   const terminalTxTextEncoding = useWorkbenchStore((state) => state.terminalTxTextEncoding);
@@ -319,7 +326,10 @@ export function TerminalPanel() {
   const commandSendOrigin = useWorkbenchStore((state) => state.commandSendOrigin);
   const terminalPaused = useWorkbenchStore((state) => state.terminalPaused);
   const terminalAutoScroll = useWorkbenchStore((state) => state.terminalAutoScroll);
-  const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
+  const connectionReady = useWorkbenchStore(
+    (state) =>
+      state.runtimeTransitionStatus === "idle" && state.connectionStatus === "connected",
+  );
   const source = useWorkbenchStore((state) => state.source);
   const isNativeRuntime = useWorkbenchStore((state) => state.isNativeRuntime);
   const isWorkspaceTransitioning = useWorkbenchStore(
@@ -491,7 +501,7 @@ export function TerminalPanel() {
     manualSendPending ||
     (isSendingCommand && commandSendOrigin !== "auto-responder");
   const canSendManually =
-    connectionStatus === "connected" &&
+    connectionReady &&
     hasSendableFrame &&
     !templatePreview.error &&
     !templatePreview.loading &&
@@ -500,10 +510,10 @@ export function TerminalPanel() {
     !manualSendBlocked;
   const workflowVisible = workflowOpen || taskActive;
   const canStartPeriodic =
-    connectionStatus === "connected" &&
+    connectionReady &&
     !templatePreview.error &&
     !templatePreview.loading &&
-    templatePreview.byteCount > 0 &&
+    hasSendableFrame &&
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
     !autoResponderActive &&
@@ -514,7 +524,7 @@ export function TerminalPanel() {
     !taskActive &&
     !taskStartPending;
   const canExecuteModbus =
-    connectionStatus === "connected" &&
+    connectionReady &&
     serialControlLineOperation === "idle" &&
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
@@ -526,7 +536,7 @@ export function TerminalPanel() {
   const canStartFileSend =
     isNativeRuntime &&
     source === "serial" &&
-    connectionStatus === "connected" &&
+    connectionReady &&
     serialControlLineOperation === "idle" &&
     selectedFilePath.length > 0 &&
     !fileSelectionPending &&
@@ -579,7 +589,7 @@ export function TerminalPanel() {
     count: visibleEntries.length,
     getScrollElement: () => viewportRef.current,
     getItemKey: (index) => visibleEntries[index]?.id ?? index,
-    estimateSize: () => 24,
+    estimateSize: () => 26,
     overscan: 12,
     useFlushSync: false,
     anchorTo: "end",
@@ -1056,12 +1066,21 @@ export function TerminalPanel() {
           </div>
         </div>
         <div className="panel-actions">
-          <div className="segmented-control compact-segments" role="group" aria-label="接收显示格式">
+          <div
+            className="segmented-control compact-segments"
+            role="group"
+            aria-label="接收显示格式"
+            title={
+              usesBinaryTerminalDefaults
+                ? "二进制协议默认使用 HEX 显示，可在当前会话中手动切换"
+                : undefined
+            }
+          >
             <button
               type="button"
               aria-pressed={displayMode === "text"}
               data-active={displayMode === "text"}
-              disabled={isWorkspaceTransitioning || autoResponderActive}
+              disabled={isWorkspaceTransitioning}
               onClick={() => setDisplayMode("text")}
             >
               TEXT
@@ -1139,6 +1158,11 @@ export function TerminalPanel() {
             className="segmented-control compact-segments terminal-rx-record-mode"
             role="group"
             aria-label="接收记录方式"
+            title={
+              usesBinaryTerminalDefaults
+                ? "二进制协议默认按读取块记录，可在当前会话中手动切换"
+                : undefined
+            }
           >
             <button
               type="button"
@@ -1189,7 +1213,7 @@ export function TerminalPanel() {
               aria-label="接收文本编码"
               title="接收文本编码"
               value={terminalRxTextEncoding}
-              disabled={isWorkspaceTransitioning}
+              disabled={isWorkspaceTransitioning || autoResponderActive}
               onChange={(event) =>
                 setTerminalRxTextEncoding(event.target.value as typeof terminalRxTextEncoding)
               }
@@ -1357,6 +1381,7 @@ export function TerminalPanel() {
                     ref={rowVirtualizer.measureElement}
                     className="terminal-line"
                     data-direction={entry.direction}
+                    data-session-boundary={entry.sessionBoundary || undefined}
                     data-index={virtualRow.index}
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
@@ -1368,7 +1393,12 @@ export function TerminalPanel() {
                     >
                       {timeLabel}
                     </time>
-                    <span className="direction-label">{entry.direction.toUpperCase()}</span>
+                    <span
+                      className="direction-label"
+                      title={entry.sessionBoundary ? "会话边界" : undefined}
+                    >
+                      {entry.direction === "system" ? "SYS" : entry.direction.toUpperCase()}
+                    </span>
                     <code>
                       <HighlightedTerminalPayload
                         value={terminalEntryPayload(entry, displayMode)}
@@ -1376,7 +1406,7 @@ export function TerminalPanel() {
                       />
                     </code>
                     <small>
-                      {entry.byteCount} B
+                      {entry.sessionBoundary ? "边界" : `${entry.byteCount} B`}
                       {entry.rxBoundary ? (
                         <span
                           className="terminal-rx-boundary"
@@ -1870,15 +1900,17 @@ export function TerminalPanel() {
         )}
 
         {quickCommandsOpen && (
-          <QuickCommandPopover
-            draft={{ template: message, mode: sendMode, lineEnding }}
-            canSaveDraft={hasPayload && !templatePreview.error && !templatePreview.loading}
-            onApply={applyQuickCommand}
-            onClose={() => {
-              setQuickCommandsOpen(false);
-              quickCommandTriggerRef.current?.focus();
-            }}
-          />
+          <Suspense fallback={null}>
+            <QuickCommandPopover
+              draft={{ template: message, mode: sendMode, lineEnding }}
+              canSaveDraft={hasPayload && !templatePreview.error && !templatePreview.loading}
+              onApply={applyQuickCommand}
+              onClose={() => {
+                setQuickCommandsOpen(false);
+                quickCommandTriggerRef.current?.focus();
+              }}
+            />
+          </Suspense>
         )}
 
         {workflowVisible && (

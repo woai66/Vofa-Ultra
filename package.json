@@ -32,7 +32,7 @@
     "supply-chain:check": "node scripts/supply-chain.mjs check",
     "supply-chain:generate": "node scripts/supply-chain.mjs generate",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=1",
     "test:e2e": "playwright test",
     "test:tooling": "node --test scripts/*.node-test.mjs",
     "test:watch": "vitest",
