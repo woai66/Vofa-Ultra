@@ -19,11 +19,6 @@ import {
   Rows2,
   Table2,
 } from "lucide-react";
-import {
-  APP_BUILD_ID,
-  APP_DISPLAY_BUILD_ID,
-  APP_DISPLAY_VERSION,
-} from "./core/appMetadata";
 import { getHorizontalTabTarget } from "./core/tabNavigation";
 import { ActivityRail, type SidebarPanel } from "./components/ActivityRail";
 import { Sidebar } from "./components/Sidebar";
@@ -349,17 +344,6 @@ export default function App() {
             >
               <PanelBottom size={15} />
             </button>
-          </div>
-          <div className="workspace-header-meta">
-            <span className="build-label">Vofa-Ultra</span>
-            <span className="version-label">{APP_DISPLAY_VERSION}</span>
-            <span
-              className="build-id-label"
-              aria-label={`构建 ${APP_BUILD_ID}`}
-              title={`构建 ${APP_BUILD_ID}`}
-            >
-              {APP_DISPLAY_BUILD_ID}
-            </span>
           </div>
         </header>
 

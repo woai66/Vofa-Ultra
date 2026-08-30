@@ -3005,16 +3005,6 @@ textarea:focus {
   white-space: nowrap;
 }
 
-.workspace-header-meta {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
-  white-space: nowrap;
-  gap: 7px;
-}
-
 .workspace-view-tabs {
   display: grid;
   height: 38px;
@@ -3085,17 +3075,6 @@ textarea:focus {
   background: var(--surface-hover);
   color: var(--text);
   box-shadow: inset 0 -2px var(--accent);
-}
-
-.build-label {
-  color: var(--text-muted);
-}
-
-.version-label,
-.build-id-label {
-  padding-left: 7px;
-  border-left: 1px solid var(--border);
-  color: var(--text-subtle);
 }
 
 .workspace-content {
@@ -6966,12 +6945,6 @@ textarea:focus {
   }
 }
 
-@container workspace (max-width: 900px) {
-  .workspace-header-meta {
-    display: none;
-  }
-}
-
 @container workspace (max-width: 760px) {
   .panel-subtitle {
     display: none;
@@ -7016,7 +6989,6 @@ textarea:focus {
 }
 
 @media (max-width: 720px) {
-  .workspace-header-meta,
   .workspace-layout-controls,
   .panel-subtitle,
   .live-state {
