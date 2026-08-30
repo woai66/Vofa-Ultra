@@ -73,7 +73,13 @@ export interface SerialConfig {
 export interface SerialDataPayload {
   data: string;
   receivedAt: number;
+  receivedAtMonotonicUs: number;
   generation: number;
+  sequence: number;
+  streamOffset: number;
+  byteCount: number;
+  backendRxBytes: number;
+  backendRxEvents: number;
 }
 
 export interface SerialTxPayload {
@@ -137,6 +143,33 @@ export interface SerialStatePayload {
   errorCode?: SerialErrorCode;
   generation: number;
   revision: number;
+  backendRxBytes?: number;
+  backendRxEvents?: number;
+}
+
+export type SerialRxIntegrityStatus = "idle" | "monitoring" | "verified" | "degraded";
+
+export interface SerialRxObservabilitySnapshot {
+  status: SerialRxIntegrityStatus;
+  generation: number;
+  finalized: boolean;
+  backendRxBytes: number;
+  backendRxEvents: number;
+  acceptedRxBytes: number;
+  acceptedRxEvents: number;
+  ipcGapBytes: number;
+  ipcGapEvents: number;
+  duplicateEvents: number;
+  outOfOrderEvents: number;
+  staleGenerationEvents: number;
+  contractViolations: number;
+  unfinalizedGenerations: number;
+  nextSequence: number;
+  nextStreamOffset: number;
+  lastSequence?: number;
+  lastStreamOffset?: number;
+  lastByteCount?: number;
+  lastReceivedAtMonotonicUs?: number;
 }
 
 export interface SerialModemStatusPayload {
@@ -181,7 +214,7 @@ export interface SerialDiagnosticEvent {
 
 export interface SerialDiagnosticsReport {
   format: "vofa-ultra.serial-diagnostics";
-  schemaVersion: 1;
+  schemaVersion: 2;
   generatedAt: number;
   appVersion: string;
   buildId: string;
@@ -193,6 +226,7 @@ export interface SerialDiagnosticsReport {
     revision: number;
   };
   serial: Omit<SerialConfig, "portName">;
+  rxObservability: SerialRxObservabilitySnapshot;
   target?: {
     kind: "usb";
     vendorId: number;

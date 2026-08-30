@@ -81,12 +81,28 @@ export function CapturePanel() {
   );
   const protocol = useWorkbenchStore((state) => state.protocol);
   const captureStatus = useWorkbenchStore((state) => state.captureStatus);
+  const captureSessionId = useWorkbenchStore((state) => state.captureSessionId);
   const capturePath = useWorkbenchStore((state) => state.capturePath);
   const captureStartedAt = useWorkbenchStore((state) => state.captureStartedAt);
   const captureEndedAt = useWorkbenchStore((state) => state.captureEndedAt);
   const captureDataBytes = useWorkbenchStore((state) => state.captureDataBytes);
   const captureRecordCount = useWorkbenchStore((state) => state.captureRecordCount);
   const captureMarkerCount = useWorkbenchStore((state) => state.captureMarkerCount);
+  const captureQueueBytes = useWorkbenchStore((state) => state.captureQueueBytes);
+  const captureQueueCapacityBytes = useWorkbenchStore(
+    (state) => state.captureQueueCapacityBytes,
+  );
+  const captureQueueRecords = useWorkbenchStore((state) => state.captureQueueRecords);
+  const captureQueueCapacityRecords = useWorkbenchStore(
+    (state) => state.captureQueueCapacityRecords,
+  );
+  const captureQueuePeakBytes = useWorkbenchStore((state) => state.captureQueuePeakBytes);
+  const captureQueuePeakRecords = useWorkbenchStore(
+    (state) => state.captureQueuePeakRecords,
+  );
+  const captureTerminationReason = useWorkbenchStore(
+    (state) => state.captureTerminationReason,
+  );
   const captureFormatVersion = useWorkbenchStore((state) => state.captureFormatVersion);
   const captureMessage = useWorkbenchStore((state) => state.captureMessage);
   const numericLogStatus = useWorkbenchStore((state) => state.numericLogStatus);
@@ -467,6 +483,18 @@ export function CapturePanel() {
               markerCount={captureMarkerCount}
             />
           </section>
+
+          {(captureSessionId > 0 || captureStatus !== "idle") && (
+            <CaptureQueueMetrics
+              bytes={captureQueueBytes}
+              capacityBytes={captureQueueCapacityBytes}
+              records={captureQueueRecords}
+              capacityRecords={captureQueueCapacityRecords}
+              peakBytes={captureQueuePeakBytes}
+              peakRecords={captureQueuePeakRecords}
+              terminationReason={captureTerminationReason}
+            />
+          )}
 
           <RecordingDirectoryControl
             path={recordingDirectory}
@@ -1072,6 +1100,63 @@ function SessionState({
   );
 }
 
+function CaptureQueueMetrics({
+  bytes,
+  capacityBytes,
+  records,
+  capacityRecords,
+  peakBytes,
+  peakRecords,
+  terminationReason,
+}: {
+  bytes: number;
+  capacityBytes: number;
+  records: number;
+  capacityRecords: number;
+  peakBytes: number;
+  peakRecords: number;
+  terminationReason: string;
+}) {
+  const bytePressure = capacityBytes > 0 ? bytes / capacityBytes : 0;
+  const recordPressure = capacityRecords > 0 ? records / capacityRecords : 0;
+  const pressure = Math.min(1, Math.max(bytePressure, recordPressure));
+  return (
+    <section
+      className="sidebar-section capture-queue-section"
+      data-pressure={pressure >= 0.8 ? "high" : pressure >= 0.5 ? "medium" : "low"}
+      aria-label="录制写入队列"
+    >
+      <div className="capture-queue-heading">
+        <span>
+          <Database size={15} />
+          写入队列
+        </span>
+        <strong>{Math.round(pressure * 100)}%</strong>
+      </div>
+      <progress
+        className="replay-progress capture-queue-progress"
+        max={100}
+        value={Math.round(pressure * 100)}
+        aria-label="录制写入队列占用"
+      />
+      <div className="capture-queue-details">
+        <span>
+          当前 {formatBytes(bytes)} · {records.toLocaleString()} 条
+        </span>
+        <span>
+          峰值 {formatBytes(peakBytes)} · {peakRecords.toLocaleString()} 条 / 容量{" "}
+          {formatBytes(capacityBytes)} · {capacityRecords.toLocaleString()} 条
+        </span>
+      </div>
+      {terminationReason && (
+        <span className="capture-queue-termination">
+          {captureTerminationReasonLabel(terminationReason)}
+        </span>
+      )}
+    </section>
+  );
+}
+
 function ExportMetrics({
   inputBytes,
   totalInputBytes,
@@ -1310,6 +1395,14 @@ function captureStatusLabel(status: CaptureUiStatus): string {
     default:
       return "未录制";
   }
+}
+
+function captureTerminationReasonLabel(reason: string): string {
+  return reason === "queue-byte-capacity"
+    ? "因字节队列达到上限而终止"
+    : reason === "queue-record-capacity"
+      ? "因记录队列达到上限而终止"
+      : "录制因写入链路故障而终止";
 }
 
 function numericLogStatusLabel(status: NumericLogUiStatus): string {

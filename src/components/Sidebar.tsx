@@ -54,6 +54,7 @@ import {
   type ProtocolKind,
   type SerialDiagnosticsReport,
   type SerialRecoveryPhase,
+  type SerialRxObservabilitySnapshot,
 } from "../types/serial";
 import {
   selectActiveProtocol,
@@ -484,6 +485,7 @@ function ConnectionPanel() {
   );
   const serialModemStatus = useWorkbenchStore((state) => state.serialModemStatus);
   const serialRecovery = useWorkbenchStore((state) => state.serialRecovery);
+  const serialRxObservability = useWorkbenchStore((state) => state.serialRxObservability);
   const serialFileSendStatus = useWorkbenchStore((state) => state.serialFileSend.status);
   const modbusPoll = useWorkbenchStore((state) => state.modbusPoll);
   const modbusTransactionStatus = useWorkbenchStore(
@@ -1062,6 +1064,15 @@ function ConnectionPanel() {
               >
                 <Trash2 size={14} />
               </button>
+            </div>
+          </div>
+          <div
+            className="serial-rx-integrity"
+            data-status={serialRxObservability.status}
+          >
+            <div>
+              <span>接收链路</span>
+              <strong>{serialRxIntegrityLabel(serialRxObservability)}</strong>
             </div>
           </div>
         </section>
@@ -1822,6 +1833,19 @@ function recoveryPhaseLabel(phase: SerialRecoveryPhase): string {
       return "等待连接";
     default:
       return "自动重连关闭";
+  }
+}
+
+function serialRxIntegrityLabel(snapshot: SerialRxObservabilitySnapshot): string {
+  switch (snapshot.status) {
+    case "monitoring":
+      return "监测中";
+    case "verified":
+      return "本次完整";
+    case "degraded":
+      return "发现异常";
+    default:
+      return "等待数据";
   }
 }
 

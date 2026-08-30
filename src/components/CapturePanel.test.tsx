@@ -365,6 +365,13 @@ describe("CapturePanel replay controls", () => {
       captureDataBytes: 128,
       captureRecordCount: 3,
       captureMarkerCount: 1,
+      captureQueueBytes: 1024 * 1024,
+      captureQueueCapacityBytes: 4 * 1024 * 1024,
+      captureQueueRecords: 512,
+      captureQueueCapacityRecords: 4096,
+      captureQueuePeakBytes: 2 * 1024 * 1024,
+      captureQueuePeakRecords: 1024,
+      captureTerminationReason: "",
       addCaptureMarker: addCaptureMarkerMock,
     });
 
@@ -377,6 +384,11 @@ describe("CapturePanel replay controls", () => {
     expect(addCaptureMarkerMock).toHaveBeenCalledWith("进入稳态", "orange");
     expect(input).toHaveValue("");
     expect(screen.getByText("VUCAP v2")).toBeInTheDocument();
+    const queue = screen.getByRole("region", { name: "录制写入队列" });
+    expect(queue).toHaveTextContent("25%");
+    expect(queue).toHaveTextContent("1.0 MiB · 512 条");
+    expect(queue).toHaveTextContent("4.0 MiB · 4,096 条");
+    expect(queue).toHaveTextContent("2.0 MiB · 1,024 条");
 
     const maximumEmojiLabel = "😀".repeat(64);
     fireEvent.change(input, { target: { value: `${maximumEmojiLabel}extra` } });
@@ -385,6 +397,14 @@ describe("CapturePanel replay controls", () => {
     act(() => useWorkbenchStore.setState({ captureMarkerCount: 512 }));
     expect(input).toBeDisabled();
     expect(screen.getByRole("button", { name: "添加时间线标记" })).toBeDisabled();
+
+    act(() =>
+      useWorkbenchStore.setState({
+        captureStatus: "error",
+        captureTerminationReason: "queue-byte-capacity",
+      }),
+    );
+    expect(queue).toHaveTextContent("因字节队列达到上限而终止");
   });
 
   it("Raw 与浏览器预览明确禁用数值文件记录", async () => {

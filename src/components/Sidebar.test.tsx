@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { APP_BUILD_ID, APP_DISPLAY_VERSION } from "../core/appMetadata";
 import { createInitialModbusPollSnapshot } from "../core/modbusPoller";
 import { createEmptyProtocolHealth } from "../core/protocols";
+import { createIdleSerialRxObservability } from "../core/serialRxObservability";
 import { useWorkbenchStore } from "../store/workbenchStore";
 import { Sidebar } from "./Sidebar";
 
@@ -64,6 +65,7 @@ describe("Sidebar 串口恢复界面", () => {
         diagnosticEventCount: 8,
         diagnosticDroppedEvents: 2,
       },
+      serialRxObservability: createIdleSerialRxObservability(),
       isCancellingSerialConnection: false,
       workspaceTransitionStatus: "idle",
       runtimeTransitionStatus: "idle",
@@ -119,6 +121,41 @@ describe("Sidebar 串口恢复界面", () => {
     const connection_status = screen.getByRole("status");
     expect(connection_status).toHaveTextContent("COM3 已就绪");
     expect(connection_status).not.toHaveTextContent("回放已关闭");
+  });
+
+  it("接收链路异常独立呈现且不抢占连接状态播报", () => {
+    useWorkbenchStore.setState((state) => ({
+      connectionStatus: "connected",
+      connectionMessage: "COM3 已连接",
+      serialRecovery: { ...state.serialRecovery, phase: "armed" },
+      serialRxObservability: {
+        ...createIdleSerialRxObservability(),
+        status: "degraded",
+        generation: 7,
+        finalized: false,
+        backendRxBytes: 12,
+        backendRxEvents: 3,
+        acceptedRxBytes: 8,
+        acceptedRxEvents: 2,
+        ipcGapBytes: 4,
+        ipcGapEvents: 1,
+        nextSequence: 3,
+        nextStreamOffset: 12,
+      },
+    }));
+
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("发现异常")).toBeInTheDocument();
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent("COM3 已连接");
   });
 
   it("区分串口扫描中、未发现设备和扫描失败", () => {

@@ -35,6 +35,13 @@ export interface CaptureStatePayload {
   dataBytes: number;
   recordCount: number;
   markerCount: number;
+  queueBytes?: number;
+  queueCapacityBytes?: number;
+  queueRecords?: number;
+  queueCapacityRecords?: number;
+  queuePeakBytes?: number;
+  queuePeakRecords?: number;
+  terminationReason?: string;
   message?: string;
 }
 

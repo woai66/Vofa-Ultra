@@ -116,6 +116,8 @@ struct SharedSerialState {
     file_send_revision: u64,
     file_send_snapshot: SerialFileSendSnapshot,
     active_file_send: Option<ActiveFileSendControl>,
+    backend_rx_bytes: u64,
+    backend_rx_events: u64,
 }
 
 impl Default for SharedSerialState {
@@ -139,6 +141,8 @@ impl Default for SharedSerialState {
             file_send_revision: 0,
             file_send_snapshot: SerialFileSendSnapshot::default(),
             active_file_send: None,
+            backend_rx_bytes: 0,
+            backend_rx_events: 0,
         }
     }
 }
@@ -186,6 +190,15 @@ impl SharedSerialState {
     }
 
     fn snapshot(&self) -> SerialStatePayload {
+        let rx_snapshot = self
+            .worker
+            .as_ref()
+            .filter(|worker| worker.generation == self.generation)
+            .map(|worker| worker.rx_counters.snapshot())
+            .unwrap_or(SerialRxSnapshot {
+                backend_rx_bytes: self.backend_rx_bytes,
+                backend_rx_events: self.backend_rx_events,
+            });
         SerialStatePayload {
             status: self.status.as_str().to_owned(),
             port_name: self.port_name.clone(),
@@ -193,6 +206,8 @@ impl SharedSerialState {
             error_code: self.error_code.map(|code| code.as_str().to_owned()),
             generation: self.generation,
             revision: self.revision,
+            backend_rx_bytes: rx_snapshot.backend_rx_bytes,
+            backend_rx_events: rx_snapshot.backend_rx_events,
         }
     }
 
@@ -763,7 +778,104 @@ struct SerialWorker {
     hardware_flow_control: bool,
     command_tx: Option<mpsc::SyncSender<WorkerCommand>>,
     cancel: Arc<AtomicBool>,
+    rx_counters: Arc<SerialRxCounters>,
     join_handle: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SerialRxSnapshot {
+    backend_rx_bytes: u64,
+    backend_rx_events: u64,
+}
+
+#[derive(Default)]
+struct SerialRxCounters {
+    snapshot: Mutex<SerialRxSnapshot>,
+}
+
+impl SerialRxCounters {
+    fn publish(&self, snapshot: SerialRxSnapshot) {
+        *self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = snapshot;
+    }
+
+    fn snapshot(&self) -> SerialRxSnapshot {
+        *self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SerialRxProgress {
+    backend_rx_bytes: u64,
+    backend_rx_events: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SerialRxMetadata {
+    sequence: u64,
+    stream_offset: u64,
+    byte_count: u64,
+    received_at_monotonic_us: u64,
+    backend_rx_bytes: u64,
+    backend_rx_events: u64,
+}
+
+impl SerialRxProgress {
+    fn observe(
+        &mut self,
+        byte_count: usize,
+        received_at_monotonic_us: u64,
+    ) -> Result<SerialRxMetadata, SerialFailure> {
+        let byte_count = u64::try_from(byte_count).map_err(|_| {
+            SerialFailure::new(
+                SerialErrorCode::Unknown,
+                "串口接收块大小无法计数".to_owned(),
+            )
+        })?;
+        let backend_rx_bytes = self
+            .backend_rx_bytes
+            .checked_add(byte_count)
+            .filter(|value| *value <= MAX_JAVASCRIPT_SAFE_INTEGER)
+            .ok_or_else(|| {
+                SerialFailure::new(
+                    SerialErrorCode::Unknown,
+                    "串口接收字节计数已超过可精确观测上限".to_owned(),
+                )
+            })?;
+        let backend_rx_events = self
+            .backend_rx_events
+            .checked_add(1)
+            .filter(|value| *value <= MAX_JAVASCRIPT_SAFE_INTEGER)
+            .ok_or_else(|| {
+                SerialFailure::new(
+                    SerialErrorCode::Unknown,
+                    "串口接收事件计数已超过可精确观测上限".to_owned(),
+                )
+            })?;
+        let metadata = SerialRxMetadata {
+            sequence: self.backend_rx_events,
+            stream_offset: self.backend_rx_bytes,
+            byte_count,
+            received_at_monotonic_us,
+            backend_rx_bytes,
+            backend_rx_events,
+        };
+        self.backend_rx_bytes = backend_rx_bytes;
+        self.backend_rx_events = backend_rx_events;
+        Ok(metadata)
+    }
+
+    fn snapshot(self) -> SerialRxSnapshot {
+        SerialRxSnapshot {
+            backend_rx_bytes: self.backend_rx_bytes,
+            backend_rx_events: self.backend_rx_events,
+        }
+    }
 }
 
 struct ActiveControlLine {
@@ -986,7 +1098,13 @@ pub struct SerialPortInfoDto {
 struct SerialDataPayload {
     data: String,
     received_at: u64,
+    received_at_monotonic_us: u64,
     generation: u64,
+    sequence: u64,
+    stream_offset: u64,
+    byte_count: u64,
+    backend_rx_bytes: u64,
+    backend_rx_events: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -1030,6 +1148,8 @@ pub struct SerialStatePayload {
     error_code: Option<String>,
     generation: u64,
     revision: u64,
+    backend_rx_bytes: u64,
+    backend_rx_events: u64,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -1464,6 +1584,8 @@ fn connect_serial_blocking(
     let (start_tx, start_rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
+    let rx_counters = Arc::new(SerialRxCounters::default());
+    let worker_rx_counters = Arc::clone(&rx_counters);
     let worker_shared = Arc::clone(&shared_state);
     let worker_app = app.clone();
     let worker_port_name = port_name.clone();
@@ -1473,6 +1595,7 @@ fn connect_serial_blocking(
             let panic_app = worker_app.clone();
             let panic_shared = Arc::clone(&worker_shared);
             let panic_port_name = worker_port_name.clone();
+            let panic_rx_counters = Arc::clone(&worker_rx_counters);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_serial_worker(
                     worker_app,
@@ -1485,6 +1608,7 @@ fn connect_serial_blocking(
                     worker_cancel,
                     recorder,
                     modbus_silent_interval,
+                    worker_rx_counters,
                 );
             }));
             if let Err(panic) = result {
@@ -1497,6 +1621,7 @@ fn connect_serial_blocking(
                         SerialErrorCode::WorkerPanic,
                         format!("串口工作线程异常退出: {}", panic_message(panic)),
                     )),
+                    panic_rx_counters.snapshot(),
                 );
             }
         }) {
@@ -1520,6 +1645,7 @@ fn connect_serial_blocking(
         hardware_flow_control,
         command_tx: Some(command_tx),
         cancel,
+        rx_counters,
         join_handle: Some(join_handle),
     });
 
@@ -2344,6 +2470,8 @@ fn advance_generation(shared: &mut SharedSerialState) -> Result<u64, String> {
         .generation
         .checked_add(1)
         .ok_or_else(|| "串口连接代次已耗尽，请重启应用".to_owned())?;
+    shared.backend_rx_bytes = 0;
+    shared.backend_rx_events = 0;
     Ok(shared.generation)
 }
 
@@ -2762,6 +2890,7 @@ fn run_serial_worker(
     cancel: Arc<AtomicBool>,
     recorder: CaptureRecorderHandle,
     modbus_silent_interval: Duration,
+    rx_counters: Arc<SerialRxCounters>,
 ) {
     if start_rx.recv().is_err() {
         return;
@@ -2775,6 +2904,8 @@ fn run_serial_worker(
     let mut last_bus_activity = Instant::now();
     let mut output_needs_drain = false;
     let mut next_modem_status_poll = Instant::now();
+    let rx_started = Instant::now();
+    let mut rx_progress = SerialRxProgress::default();
 
     'worker: while !cancel.load(Ordering::Acquire) {
         let now = Instant::now();
@@ -3402,6 +3533,15 @@ fn run_serial_worker(
         match port.read(&mut read_buffer) {
             Ok(byte_count) if byte_count > 0 => {
                 last_bus_activity = Instant::now();
+                let rx_metadata =
+                    match rx_progress.observe(byte_count, duration_micros(rx_started.elapsed())) {
+                        Ok(metadata) => metadata,
+                        Err(failure) => {
+                            terminal_error = Some(failure);
+                            break;
+                        }
+                    };
+                rx_counters.publish(rx_progress.snapshot());
                 if let Some(session_id) = capture_session_id {
                     let _ = recorder.append_for_session(
                         &app,
@@ -3415,7 +3555,13 @@ fn run_serial_worker(
                     SerialDataPayload {
                         data: BASE64_STANDARD.encode(&read_buffer[..byte_count]),
                         received_at: unix_millis(),
+                        received_at_monotonic_us: rx_metadata.received_at_monotonic_us,
                         generation,
+                        sequence: rx_metadata.sequence,
+                        stream_offset: rx_metadata.stream_offset,
+                        byte_count: rx_metadata.byte_count,
+                        backend_rx_bytes: rx_metadata.backend_rx_bytes,
+                        backend_rx_events: rx_metadata.backend_rx_events,
                     },
                 );
                 let response_match = match modbus_runtime.as_mut() {
@@ -3534,10 +3680,24 @@ fn run_serial_worker(
 
     if let Some(failure_reply) = normal_failure_reply {
         reply_normal_write_failure_after_terminal(failure_reply, || {
-            finish_worker(&app, &shared_state, generation, port_name, terminal_error);
+            finish_worker(
+                &app,
+                &shared_state,
+                generation,
+                port_name,
+                terminal_error,
+                rx_progress.snapshot(),
+            );
         });
     } else {
-        finish_worker(&app, &shared_state, generation, port_name, terminal_error);
+        finish_worker(
+            &app,
+            &shared_state,
+            generation,
+            port_name,
+            terminal_error,
+            rx_progress.snapshot(),
+        );
     }
 }
 
@@ -3657,6 +3817,7 @@ fn finish_worker(
     generation: u64,
     port_name: String,
     terminal_error: Option<SerialFailure>,
+    rx_snapshot: SerialRxSnapshot,
 ) {
     let active_transaction = shared_state.lock().ok().and_then(|shared| {
         shared
@@ -3737,6 +3898,9 @@ fn finish_worker(
             return;
         }
 
+        shared.backend_rx_bytes = rx_snapshot.backend_rx_bytes;
+        shared.backend_rx_events = rx_snapshot.backend_rx_events;
+
         if let Some(worker) = shared.worker.as_mut() {
             if worker.generation == generation {
                 worker.command_tx.take();
@@ -3786,6 +3950,10 @@ fn unix_millis() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+fn duration_micros(duration: Duration) -> u64 {
+    duration.as_micros().try_into().unwrap_or(u64::MAX)
 }
 
 fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
@@ -4139,6 +4307,7 @@ mod tests {
                 hardware_flow_control: false,
                 command_tx: None,
                 cancel: Arc::clone(&worker_cancel),
+                rx_counters: Arc::new(SerialRxCounters::default()),
                 join_handle: Some(join_handle),
             });
         }
@@ -4313,6 +4482,64 @@ mod tests {
         };
         let binary_json = serde_json::to_value(binary).unwrap();
         assert!(binary_json.get("textEncoding").is_none());
+    }
+
+    #[test]
+    fn serial_rx_progress_assigns_contiguous_offsets_and_sequences() {
+        let mut progress = SerialRxProgress::default();
+
+        let Ok(first) = progress.observe(3, 100) else {
+            panic!("首个接收块应可计数");
+        };
+        let Ok(second) = progress.observe(5, 250) else {
+            panic!("后续接收块应可计数");
+        };
+
+        assert_eq!(
+            first,
+            SerialRxMetadata {
+                sequence: 0,
+                stream_offset: 0,
+                byte_count: 3,
+                received_at_monotonic_us: 100,
+                backend_rx_bytes: 3,
+                backend_rx_events: 1,
+            }
+        );
+        assert_eq!(second.sequence, 1);
+        assert_eq!(second.stream_offset, 3);
+        assert_eq!(second.backend_rx_bytes, 8);
+        assert_eq!(second.backend_rx_events, 2);
+        assert_eq!(
+            progress.snapshot(),
+            SerialRxSnapshot {
+                backend_rx_bytes: 8,
+                backend_rx_events: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn serial_rx_payload_uses_stable_camel_case_observability_fields() {
+        let payload = SerialDataPayload {
+            data: "AQID".to_owned(),
+            received_at: 1_000,
+            received_at_monotonic_us: 125,
+            generation: 7,
+            sequence: 2,
+            stream_offset: 8,
+            byte_count: 3,
+            backend_rx_bytes: 11,
+            backend_rx_events: 3,
+        };
+        let json = serde_json::to_value(payload).unwrap();
+
+        assert_eq!(json["receivedAtMonotonicUs"], 125);
+        assert_eq!(json["streamOffset"], 8);
+        assert_eq!(json["byteCount"], 3);
+        assert_eq!(json["backendRxBytes"], 11);
+        assert_eq!(json["backendRxEvents"], 3);
+        assert!(json.get("stream_offset").is_none());
     }
 
     #[test]
@@ -5289,6 +5516,7 @@ mod tests {
             hardware_flow_control: false,
             command_tx: Some(command_tx),
             cancel: Arc::new(AtomicBool::new(false)),
+            rx_counters: Arc::new(SerialRxCounters::default()),
             join_handle: None,
         }
     }

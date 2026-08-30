@@ -541,6 +541,14 @@ pub struct CaptureStatePayload {
     data_bytes: u64,
     record_count: u64,
     marker_count: u64,
+    queue_bytes: usize,
+    queue_capacity_bytes: usize,
+    queue_records: usize,
+    queue_capacity_records: usize,
+    queue_peak_bytes: usize,
+    queue_peak_records: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    termination_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
 }
@@ -712,6 +720,8 @@ struct SharedCaptureState {
     data_bytes: u64,
     record_count: u64,
     marker_count: u64,
+    queue_budget: Option<Arc<ByteBudget>>,
+    termination_reason: Option<String>,
     message: Option<String>,
     worker: Option<CaptureWorker>,
     finalizing: Option<FinalizingCapture>,
@@ -729,6 +739,8 @@ impl Default for SharedCaptureState {
             data_bytes: 0,
             record_count: 0,
             marker_count: 0,
+            queue_budget: None,
+            termination_reason: None,
             message: None,
             worker: None,
             finalizing: None,
@@ -738,6 +750,11 @@ impl Default for SharedCaptureState {
 
 impl SharedCaptureState {
     fn snapshot(&self) -> CaptureStatePayload {
+        let queue = self
+            .queue_budget
+            .as_ref()
+            .map(|budget| budget.snapshot())
+            .unwrap_or_default();
         CaptureStatePayload {
             status: self.status.as_str().to_owned(),
             session_id: self.session_id,
@@ -749,6 +766,13 @@ impl SharedCaptureState {
             data_bytes: self.data_bytes,
             record_count: self.record_count,
             marker_count: self.marker_count,
+            queue_bytes: queue.bytes,
+            queue_capacity_bytes: queue.capacity_bytes,
+            queue_records: queue.records,
+            queue_capacity_records: queue.capacity_records,
+            queue_peak_bytes: queue.peak_bytes,
+            queue_peak_records: queue.peak_records,
+            termination_reason: self.termination_reason.clone(),
             message: self.message.clone(),
         }
     }
@@ -1067,35 +1091,120 @@ struct QueuedMarker {
 struct ByteBudget {
     capacity: usize,
     used: AtomicUsize,
+    record_capacity: usize,
+    used_records: AtomicUsize,
+    peak: AtomicUsize,
+    peak_records: AtomicUsize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueueReserveError {
+    ByteCapacity,
+    RecordCapacity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CaptureQueueSnapshot {
+    bytes: usize,
+    capacity_bytes: usize,
+    records: usize,
+    capacity_records: usize,
+    peak_bytes: usize,
+    peak_records: usize,
+}
+
+impl Default for CaptureQueueSnapshot {
+    fn default() -> Self {
+        Self {
+            bytes: 0,
+            capacity_bytes: WRITER_QUEUE_BYTES,
+            records: 0,
+            capacity_records: WRITER_QUEUE_RECORDS,
+            peak_bytes: 0,
+            peak_records: 0,
+        }
+    }
 }
 
 impl ByteBudget {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, record_capacity: usize) -> Self {
         Self {
             capacity,
             used: AtomicUsize::new(0),
+            record_capacity,
+            used_records: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            peak_records: AtomicUsize::new(0),
         }
     }
 
-    fn try_reserve(self: &Arc<Self>, size: usize) -> Option<ByteReservation> {
+    fn try_reserve(self: &Arc<Self>, size: usize) -> Result<ByteReservation, QueueReserveError> {
+        let mut used_records = self.used_records.load(Ordering::Acquire);
+        let reserved_records = loop {
+            let next = used_records
+                .checked_add(1)
+                .ok_or(QueueReserveError::RecordCapacity)?;
+            if next > self.record_capacity {
+                return Err(QueueReserveError::RecordCapacity);
+            }
+            match self.used_records.compare_exchange_weak(
+                used_records,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    break next;
+                }
+                Err(actual) => used_records = actual,
+            }
+        };
+
         let mut used = self.used.load(Ordering::Acquire);
         loop {
-            let next = used.checked_add(size)?;
+            let Some(next) = used.checked_add(size) else {
+                self.used_records.fetch_sub(1, Ordering::AcqRel);
+                return Err(QueueReserveError::ByteCapacity);
+            };
             if next > self.capacity {
-                return None;
+                self.used_records.fetch_sub(1, Ordering::AcqRel);
+                return Err(QueueReserveError::ByteCapacity);
             }
             match self
                 .used
                 .compare_exchange_weak(used, next, Ordering::AcqRel, Ordering::Acquire)
             {
                 Ok(_) => {
-                    return Some(ByteReservation {
+                    update_peak(&self.peak, next);
+                    update_peak(&self.peak_records, reserved_records);
+                    return Ok(ByteReservation {
                         budget: Arc::clone(self),
                         size,
-                    })
+                    });
                 }
                 Err(actual) => used = actual,
             }
+        }
+    }
+
+    fn snapshot(&self) -> CaptureQueueSnapshot {
+        CaptureQueueSnapshot {
+            bytes: self.used.load(Ordering::Acquire),
+            capacity_bytes: self.capacity,
+            records: self.used_records.load(Ordering::Acquire),
+            capacity_records: self.record_capacity,
+            peak_bytes: self.peak.load(Ordering::Acquire),
+            peak_records: self.peak_records.load(Ordering::Acquire),
+        }
+    }
+}
+
+fn update_peak(peak: &AtomicUsize, value: usize) {
+    let mut current = peak.load(Ordering::Acquire);
+    while value > current {
+        match peak.compare_exchange_weak(current, value, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
         }
     }
 }
@@ -1108,6 +1217,7 @@ struct ByteReservation {
 impl Drop for ByteReservation {
     fn drop(&mut self) {
         self.budget.used.fetch_sub(self.size, Ordering::AcqRel);
+        self.budget.used_records.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -1152,7 +1262,11 @@ impl CaptureCore {
                             "单条录制数据不能超过 {} KiB，录制已中止",
                             MAX_CAPTURE_RECORD_BYTES / 1024
                         );
-                        event = Some(fail_active_capture(&mut shared, message.clone()));
+                        event = Some(fail_active_capture(
+                            &mut shared,
+                            "record-too-large",
+                            message.clone(),
+                        ));
                         Err(message)
                     } else if let Some(worker) = shared.worker.as_ref() {
                         let worker_session_id = worker.session_id;
@@ -1161,46 +1275,78 @@ impl CaptureCore {
                         let worker_sender = worker.sender.clone();
 
                         if let Some(worker_sender) = worker_sender {
-                            let reservation = worker_budget.try_reserve(size);
-                            if let Some(reservation) = reservation {
-                                let record = QueuedRecord {
-                                    session_id: worker_session_id,
-                                    direction,
-                                    timestamp_us: duration_micros(worker_started.elapsed()),
-                                    payload: payload.to_vec(),
-                                    _reservation: reservation,
-                                };
-                                match worker_sender.try_send(WriterCommand::Record(record)) {
-                                    Ok(()) => Ok(()),
-                                    Err(mpsc::TrySendError::Full(_)) => {
-                                        let message = "录制写入队列已满，录制已中止".to_owned();
-                                        event =
-                                            Some(fail_active_capture(&mut shared, message.clone()));
-                                        Err(message)
-                                    }
-                                    Err(mpsc::TrySendError::Disconnected(_)) => {
-                                        let message = "录制写入线程已停止，录制已中止".to_owned();
-                                        event =
-                                            Some(fail_active_capture(&mut shared, message.clone()));
-                                        Err(message)
+                            match worker_budget.try_reserve(size) {
+                                Ok(reservation) => {
+                                    let record = QueuedRecord {
+                                        session_id: worker_session_id,
+                                        direction,
+                                        timestamp_us: duration_micros(worker_started.elapsed()),
+                                        payload: payload.to_vec(),
+                                        _reservation: reservation,
+                                    };
+                                    match worker_sender.try_send(WriterCommand::Record(record)) {
+                                        Ok(()) => Ok(()),
+                                        Err(mpsc::TrySendError::Full(_)) => {
+                                            let message = "录制写入队列已满，录制已中止".to_owned();
+                                            event = Some(fail_active_capture(
+                                                &mut shared,
+                                                "queue-record-capacity",
+                                                message.clone(),
+                                            ));
+                                            Err(message)
+                                        }
+                                        Err(mpsc::TrySendError::Disconnected(_)) => {
+                                            let message =
+                                                "录制写入线程已停止，录制已中止".to_owned();
+                                            event = Some(fail_active_capture(
+                                                &mut shared,
+                                                "writer-disconnected",
+                                                message.clone(),
+                                            ));
+                                            Err(message)
+                                        }
                                     }
                                 }
-                            } else {
-                                let message = format!(
-                                    "录制写入队列超过 {} MiB，录制已中止",
-                                    WRITER_QUEUE_BYTES / 1024 / 1024
-                                );
-                                event = Some(fail_active_capture(&mut shared, message.clone()));
-                                Err(message)
+                                Err(reservation_error) => {
+                                    let (reason, message) = match reservation_error {
+                                        QueueReserveError::RecordCapacity => (
+                                            "queue-record-capacity",
+                                            format!(
+                                                "录制写入队列超过 {WRITER_QUEUE_RECORDS} 条，录制已中止"
+                                            ),
+                                        ),
+                                        QueueReserveError::ByteCapacity => (
+                                            "queue-byte-capacity",
+                                            format!(
+                                                "录制写入队列超过 {} MiB，录制已中止",
+                                                WRITER_QUEUE_BYTES / 1024 / 1024
+                                            ),
+                                        ),
+                                    };
+                                    event = Some(fail_active_capture(
+                                        &mut shared,
+                                        reason,
+                                        message.clone(),
+                                    ));
+                                    Err(message)
+                                }
                             }
                         } else {
                             let message = "录制写入通道已关闭，录制已中止".to_owned();
-                            event = Some(fail_active_capture(&mut shared, message.clone()));
+                            event = Some(fail_active_capture(
+                                &mut shared,
+                                "writer-channel-closed",
+                                message.clone(),
+                            ));
                             Err(message)
                         }
                     } else {
                         let message = "录制状态异常：写入线程不存在".to_owned();
-                        event = Some(fail_active_capture(&mut shared, message.clone()));
+                        event = Some(fail_active_capture(
+                            &mut shared,
+                            "writer-missing",
+                            message.clone(),
+                        ));
                         Err(message)
                     }
                 }
@@ -1250,13 +1396,14 @@ impl CaptureCore {
                                 Err((
                                     format!("单次捕获最多添加 {MAX_CAPTURE_MARKERS} 个标记"),
                                     false,
+                                    None,
                                 ))
                             }
                             Some(worker) => {
                                 let timestamp_us = duration_micros(worker.started.elapsed());
                                 match worker.sender.clone() {
                                     Some(sender) => match worker.budget.try_reserve(size) {
-                                        Some(reservation) => {
+                                        Ok(reservation) => {
                                             let marker = QueuedMarker {
                                                 session_id: worker.session_id,
                                                 color,
@@ -1274,34 +1421,54 @@ impl CaptureCore {
                                                 Err(mpsc::TrySendError::Full(_)) => Err((
                                                     "录制写入队列已满，录制已中止".to_owned(),
                                                     true,
+                                                    Some("queue-record-capacity"),
                                                 )),
                                                 Err(mpsc::TrySendError::Disconnected(_)) => Err((
                                                     "录制写入线程已停止，录制已中止".to_owned(),
                                                     true,
+                                                    Some("writer-disconnected"),
                                                 )),
                                             }
                                         }
-                                        None => Err((
+                                        Err(QueueReserveError::ByteCapacity) => Err((
                                             format!(
                                                 "录制写入队列超过 {} MiB，录制已中止",
                                                 WRITER_QUEUE_BYTES / 1024 / 1024
                                             ),
                                             true,
+                                            Some("queue-byte-capacity"),
+                                        )),
+                                        Err(QueueReserveError::RecordCapacity) => Err((
+                                            format!(
+                                                "录制写入队列超过 {WRITER_QUEUE_RECORDS} 条，录制已中止"
+                                            ),
+                                            true,
+                                            Some("queue-record-capacity"),
                                         )),
                                     },
-                                    None => {
-                                        Err(("录制写入通道已关闭，录制已中止".to_owned(), true))
-                                    }
+                                    None => Err((
+                                        "录制写入通道已关闭，录制已中止".to_owned(),
+                                        true,
+                                        Some("writer-channel-closed"),
+                                    )),
                                 }
                             }
-                            None => Err(("录制状态异常：写入线程不存在".to_owned(), true)),
+                            None => Err((
+                                "录制状态异常：写入线程不存在".to_owned(),
+                                true,
+                                Some("writer-missing"),
+                            )),
                         };
 
                         match enqueue_result {
                             Ok(()) => Ok(()),
-                            Err((message, false)) => Err(message),
-                            Err((message, true)) => {
-                                event = Some(fail_active_capture(&mut shared, message.clone()));
+                            Err((message, false, _)) => Err(message),
+                            Err((message, true, reason)) => {
+                                event = Some(fail_active_capture(
+                                    &mut shared,
+                                    reason.unwrap_or("queue-failed"),
+                                    message.clone(),
+                                ));
                                 Err(message)
                             }
                         }
@@ -1365,14 +1532,17 @@ impl CaptureCore {
                 match outcome {
                     WriterOutcome::Completed => {
                         shared.status = CaptureStatus::Idle;
+                        shared.termination_reason = None;
                         shared.message = None;
                     }
                     WriterOutcome::Aborted => {
                         shared.status = CaptureStatus::Error;
+                        shared.termination_reason = Some("writer-aborted".to_owned());
                         shared.message = Some("录制已中止，文件未写入结束标记".to_owned());
                     }
                     WriterOutcome::Failed(message) => {
                         shared.status = CaptureStatus::Error;
+                        shared.termination_reason = Some("writer-failed".to_owned());
                         shared.message = Some(message);
                     }
                 }
@@ -1392,6 +1562,7 @@ impl CaptureCore {
             }
             if shared.status != CaptureStatus::Error || shared.message.is_none() {
                 shared.status = CaptureStatus::Error;
+                shared.termination_reason = Some("writer-panic".to_owned());
                 shared.message = Some(message);
             }
             shared.ended_at_unix_ms = Some(unix_millis());
@@ -1537,7 +1708,7 @@ fn start_capture_blocking(
     let (sender, receiver) = mpsc::sync_channel(WRITER_QUEUE_RECORDS);
     let (ready_sender, ready_receiver) = mpsc::channel();
     let control = Arc::new(WriterControl::new());
-    let budget = Arc::new(ByteBudget::new(WRITER_QUEUE_BYTES));
+    let budget = Arc::new(ByteBudget::new(WRITER_QUEUE_BYTES, WRITER_QUEUE_RECORDS));
     let worker_control = Arc::clone(&control);
     let worker_core = Arc::clone(&state.core);
     let worker_app = app.clone();
@@ -1583,7 +1754,7 @@ fn start_capture_blocking(
         session_id,
         sender: Some(sender),
         control,
-        budget,
+        budget: Arc::clone(&budget),
         started,
         accepted_marker_count: 0,
         join_handle: Some(join_handle),
@@ -1628,6 +1799,8 @@ fn start_capture_blocking(
         shared.data_bytes = 0;
         shared.record_count = 0;
         shared.marker_count = 0;
+        shared.queue_budget = Some(Arc::clone(&budget));
+        shared.termination_reason = None;
         shared.message = None;
         shared.worker = Some(worker);
         shared.touch()
@@ -1728,6 +1901,7 @@ pub fn abort_capture(
         let payload = if should_abort {
             shared.status = CaptureStatus::Error;
             shared.ended_at_unix_ms = Some(unix_millis());
+            shared.termination_reason = Some("caller-aborted".to_owned());
             shared.message = Some(message);
             Some(shared.touch())
         } else {
@@ -2129,12 +2303,17 @@ fn read_exact_section<R: Read>(
     })
 }
 
-fn fail_active_capture(shared: &mut SharedCaptureState, message: String) -> CaptureStatePayload {
+fn fail_active_capture(
+    shared: &mut SharedCaptureState,
+    reason: &str,
+    message: String,
+) -> CaptureStatePayload {
     if let Some(worker) = shared.worker.as_ref() {
         worker.control.request_abort();
     }
     shared.status = CaptureStatus::Error;
     shared.ended_at_unix_ms = Some(unix_millis());
+    shared.termination_reason = Some(reason.to_owned());
     shared.message = Some(message);
     shared.touch()
 }
@@ -2156,6 +2335,8 @@ fn publish_start_error(
         shared.data_bytes = 0;
         shared.record_count = 0;
         shared.marker_count = 0;
+        shared.queue_budget = None;
+        shared.termination_reason = Some("start-failed".to_owned());
         shared.message = Some(message);
         shared.touch()
     });
@@ -2176,6 +2357,7 @@ fn publish_worker_finalization_error(
         }
         shared.status = CaptureStatus::Error;
         shared.ended_at_unix_ms = Some(unix_millis());
+        shared.termination_reason = Some("finalization-failed".to_owned());
         shared.message = Some(message);
         Some(shared.touch())
     });
@@ -2535,7 +2717,7 @@ mod tests {
 
     #[test]
     fn writer_emits_v2_and_round_trips_mixed_items() {
-        let budget = Arc::new(ByteBudget::new(1024));
+        let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
         let first = queued_record(&budget, CaptureDirection::Rx, 0, vec![1, 2]);
         let marker = queued_marker(&budget, CaptureMarkerColor::Blue, 12, "启动");
         let second = queued_record(&budget, CaptureDirection::Tx, 12, vec![3, 4, 5]);
@@ -2646,7 +2828,7 @@ mod tests {
 
     #[test]
     fn rejects_timestamp_regression_across_record_and_marker() {
-        let budget = Arc::new(ByteBudget::new(1024));
+        let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
         let record = queued_record(&budget, CaptureDirection::Rx, 10, vec![1]);
         let marker = queued_marker(&budget, CaptureMarkerColor::Yellow, 9, "回退");
         let mut bytes = file_with_header();
@@ -2676,7 +2858,7 @@ mod tests {
 
     #[test]
     fn resumes_from_verified_offset_with_footer_statistics() {
-        let budget = Arc::new(ByteBudget::new(1024));
+        let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
         let first = queued_record(&budget, CaptureDirection::Rx, 5, vec![1, 2]);
         let marker = queued_marker(&budget, CaptureMarkerColor::Red, 6, "检查点");
         let second = queued_record(&budget, CaptureDirection::Tx, 8, vec![3, 4, 5]);
@@ -3070,7 +3252,7 @@ mod tests {
 
     #[test]
     fn rejects_more_than_maximum_marker_count() {
-        let budget = Arc::new(ByteBudget::new(1024));
+        let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
         let mut bytes = file_with_header();
         for timestamp_us in 0..=MAX_CAPTURE_MARKERS {
             let marker = queued_marker(&budget, CaptureMarkerColor::Gray, timestamp_us, "x");
@@ -3089,18 +3271,75 @@ mod tests {
 
     #[test]
     fn byte_budget_rejection_does_not_wait_for_release() {
-        let budget = Arc::new(ByteBudget::new(8));
+        let budget = Arc::new(ByteBudget::new(8, 2));
         let reservation = budget.try_reserve(8).unwrap();
         let worker_budget = Arc::clone(&budget);
         let (sender, receiver) = mpsc::channel();
 
         let join_handle = thread::spawn(move || {
-            sender.send(worker_budget.try_reserve(1).is_none()).unwrap();
+            sender
+                .send(matches!(
+                    worker_budget.try_reserve(1),
+                    Err(QueueReserveError::ByteCapacity)
+                ))
+                .unwrap();
         });
         assert_eq!(receiver.recv_timeout(Duration::from_secs(1)), Ok(true));
         join_handle.join().unwrap();
 
         drop(reservation);
-        assert!(budget.try_reserve(8).is_some());
+        assert!(budget.try_reserve(8).is_ok());
+    }
+
+    #[test]
+    fn record_budget_rejects_a_stalled_full_queue() {
+        let budget = Arc::new(ByteBudget::new(32, 1));
+        let reservation = budget.try_reserve(1).unwrap();
+
+        assert!(matches!(
+            budget.try_reserve(1),
+            Err(QueueReserveError::RecordCapacity)
+        ));
+        assert_eq!(budget.snapshot().peak_records, 1);
+
+        drop(reservation);
+        assert!(budget.try_reserve(1).is_ok());
+    }
+
+    #[test]
+    fn stalled_writer_queue_reports_current_and_peak_watermarks() {
+        let budget = Arc::new(ByteBudget::new(16, 3));
+        let first = budget.try_reserve(6).unwrap();
+        let second = budget.try_reserve(8).unwrap();
+
+        assert_eq!(
+            budget.snapshot(),
+            CaptureQueueSnapshot {
+                bytes: 14,
+                capacity_bytes: 16,
+                records: 2,
+                capacity_records: 3,
+                peak_bytes: 14,
+                peak_records: 2,
+            }
+        );
+        assert!(matches!(
+            budget.try_reserve(3),
+            Err(QueueReserveError::ByteCapacity)
+        ));
+
+        drop(first);
+        drop(second);
+        assert_eq!(
+            budget.snapshot(),
+            CaptureQueueSnapshot {
+                bytes: 0,
+                capacity_bytes: 16,
+                records: 0,
+                capacity_records: 3,
+                peak_bytes: 14,
+                peak_records: 2,
+            }
+        );
     }
 }

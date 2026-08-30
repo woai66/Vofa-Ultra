@@ -2,6 +2,7 @@
 
 import { bench, describe, vi } from "vitest";
 import { encodeJustFloatFrame } from "../src/core/protocols";
+import { createIdleSerialRxObservability } from "../src/core/serialRxObservability";
 import {
   MAX_POINTS_PER_CHANNEL,
   useWorkbenchStore,
@@ -45,6 +46,8 @@ let replayTimelineRevision = 0;
 let replayGeneration = 0;
 let replaySequence = 2;
 let liveTimestamp = 2_000;
+let liveSequence = 0;
+let liveOffset = 0;
 
 describe("工作台数据平面", () => {
   bench(
@@ -52,10 +55,20 @@ describe("工作台数据平面", () => {
     () => {
       const before = useWorkbenchStore.getState();
       liveTimestamp += 1;
+      const sequence = liveSequence;
+      const streamOffset = liveOffset;
+      liveSequence += 1;
+      liveOffset += liveBytes.length;
       before.handleSerialData({
         data: liveData,
         receivedAt: liveTimestamp,
+        receivedAtMonotonicUs: liveTimestamp * 1_000,
         generation: LIVE_GENERATION,
+        sequence,
+        streamOffset,
+        byteCount: liveBytes.length,
+        backendRxBytes: liveOffset,
+        backendRxEvents: liveSequence,
       });
       assertWorkbenchResult(
         "protocolHealth",
@@ -107,10 +120,22 @@ function prepareLiveBenchmark(): void {
   state.clearProtocolHealth();
   useWorkbenchStore.setState({
     source: "serial",
-    connectionStatus: "connected",
-    serialGeneration: LIVE_GENERATION,
+    connectionStatus: "disconnected",
+    serialGeneration: 0,
+    serialStateRevision: 0,
+    serialRxObservability: createIdleSerialRxObservability(),
+  });
+  useWorkbenchStore.getState().handleSerialState({
+    status: "connected",
+    portName: "COM17",
+    generation: LIVE_GENERATION,
+    revision: 1,
+    backendRxBytes: 0,
+    backendRxEvents: 0,
   });
   liveTimestamp = 2_000;
+  liveSequence = 0;
+  liveOffset = 0;
   assertSaturatedState("protocolHealth");
 }
 
