@@ -1,16 +1,17 @@
 # VUCAP 捕获文件格式
 
 `.vucap` 是 Vofa-Ultra 的原始会话捕获格式。v1 以小端序保存 RX / TX 原始字节和相对单调时间，v2 在同一
-时间线上增加持久命名标记。新录制只写 v2；当前 reader 明确支持 v1 和 v2。文件供后续回放、诊断和转换任务
-复用，不保存解析后的波形点，也不依赖当前界面的缓存上限。
+时间线上增加持久命名标记，v3 为文件头、每个时间线条目和完成 footer 增加独立 SHA-256 完整性校验。新录制只写
+v3；当前 reader 明确支持 v1、v2 和 v3。文件供后续回放、诊断和转换任务复用，不保存解析后的波形点，也不依赖
+当前界面的缓存上限。
 
 ## 文件结构
 
-文件由固定前缀、JSON 头、零到多个时间线条目和可选的完成 footer 组成。v1 时间线只有数据记录，v2 可混排
-数据记录和标记：
+文件由固定前缀、JSON 头、零到多个时间线条目和可选的完成 footer 组成。v1 时间线只有数据记录，v2 / v3 可混排
+数据记录和标记；方括号内的 SHA-256 字段仅在 v3 存在：
 
 ```text
-prefix | header JSON | item... | footer
+prefix | header JSON | [header SHA-256] | item [item SHA-256]... | footer [footer SHA-256]
 ```
 
 ### 固定前缀
@@ -18,8 +19,8 @@ prefix | header JSON | item... | footer
 | 偏移 | 长度 | 类型 | 内容 |
 | ---: | ---: | --- | --- |
 | 0 | 8 | bytes | magic：`VUCAP\0\r\n` |
-| 8 | 2 | u16 LE | 格式版本，v1 为 `1`，v2 为 `2` |
-| 10 | 2 | u16 LE | flags，v1 / v2 必须为 `0` |
+| 8 | 2 | u16 LE | 格式版本，v1 / v2 / v3 分别为 `1` / `2` / `3` |
+| 10 | 2 | u16 LE | flags，v1 / v2 / v3 必须为 `0` |
 | 12 | 4 | u32 LE | JSON 头字节数，最大 64 KiB |
 
 JSON 头使用 UTF-8，字段采用 camelCase：
@@ -28,7 +29,10 @@ JSON 头使用 UTF-8，字段采用 camelCase：
 - `protocol`：`firewater`、`justfloat` 或 `raw`
 - `serialConfig`：开始录制时冻结的完整串口参数
 - `startedAtUnixMs`：会话起始 Unix 毫秒时间
-- `timeUnit`：v1 / v2 固定为 `microseconds`
+- `timeUnit`：v1 / v2 / v3 固定为 `microseconds`
+
+v3 在 JSON 头之后追加 32 字节 SHA-256，输入为从 magic 开始的 16 字节固定前缀与原始 JSON 字节的顺序拼接。
+reader 在解析 JSON 前验证该摘要；摘要缺失视为截断，摘要不匹配视为文件损坏。
 
 ### 数据记录
 
@@ -36,16 +40,20 @@ JSON 头使用 UTF-8，字段采用 camelCase：
 | ---: | --- | --- |
 | 1 | u8 | tag：`0x01` |
 | 1 | u8 | direction：`0` 为 RX，`1` 为 TX |
-| 2 | u16 LE | reserved，v1 / v2 必须为 `0` |
+| 2 | u16 LE | reserved，v1 / v2 / v3 必须为 `0` |
 | 8 | u64 LE | 相对会话开始的单调微秒时间 |
 | 4 | u32 LE | payload 字节数，最大 64 KiB |
 | N | bytes | 原始 payload |
+| 32 | bytes | 以上完整记录的 SHA-256，仅 v3 存在 |
 
 相对时间来自单调时钟，不受系统时间校准影响。TX 在每次串口 `write` 成功后记录实际写入的字节分片；一次
 发送可能产生多条 TX record，读取方必须按记录顺序拼接才能恢复线上字节流，不能把 record 边界解释为发送
 命令边界。RX 在进入 Base64 事件边界前记录，因此原生串口采集不需要让原始数据绕 WebView 一圈。
 
-### 时间线标记（v2）
+v3 记录摘要覆盖 tag、direction、reserved、时间戳、payload 长度和 payload。条目只有在摘要验证通过后才会交给
+回放或导出；校验块被截断时，该条目不会进入可恢复的完整前缀。
+
+### 时间线标记（v2 / v3）
 
 | 长度 | 类型 | 内容 |
 | ---: | --- | --- |
@@ -55,24 +63,32 @@ JSON 头使用 UTF-8，字段采用 camelCase：
 | 8 | u64 LE | 相对会话开始的单调微秒时间 |
 | 4 | u32 LE | UTF-8 标签字节数，最大 256 字节 |
 | N | bytes | UTF-8 标签 |
+| 32 | bytes | 以上完整标记的 SHA-256，仅 v3 存在 |
 
 标签去除首尾空白后必须包含 1 到 64 个 Unicode 字符，不允许控制字符。每个文件最多 512 个标记。标记与
 RX / TX 记录使用同一个 writer 队列和单调时钟基准，因此文件顺序就是用户看到的数据与标记顺序；跨类型时间戳
 必须单调不减，允许相同时间戳。
+
+v3 标记摘要覆盖 tag、color、reserved、时间戳、标签长度和原始 UTF-8 标签字节。
 
 ### 完成 footer
 
 | 长度 | 类型 | 内容 |
 | ---: | --- | --- |
 | 1 | u8 | tag：`0xff` |
-| 7 | bytes | reserved，v1 / v2 必须全为 `0` |
+| 7 | bytes | reserved，v1 / v2 / v3 必须全为 `0` |
 | 8 | u64 LE | payload 总字节数 |
 | 8 | u64 LE | 数据记录总数 |
-| 8 | u64 LE | 标记总数，仅 v2 存在 |
+| 8 | u64 LE | 标记总数，仅 v2 / v3 存在 |
+| 32 | bytes | 以上完整 footer 的 SHA-256，仅 v3 存在 |
 
-v1 footer 在数据记录总数后结束，v2 footer 继续携带标记总数。主动停止会 flush、同步并写入 footer。磁盘错误、
-队列溢出、显式中止或进程异常不会伪造 footer；reader 可读取最后一个完整条目，并把缺失 footer 的文件标记为
-未完成。未知版本、错误 magic、超长头部、超长条目和截断条目必须返回确定错误，不能按当前版本猜测解析。
+v1 footer 在数据记录总数后结束，v2 / v3 footer 继续携带标记总数，v3 再追加 footer 摘要。主动停止会 flush、
+同步并写入 footer。磁盘错误、队列溢出、显式中止或进程异常不会伪造 footer；reader 可读取最后一个完整且校验
+通过的条目，并把缺失 footer 的文件标记为未完成。未知版本、错误 magic、超长头部、超长条目、截断条目和
+SHA-256 不匹配必须返回确定错误，不能按当前版本猜测解析。
+
+这些 SHA-256 是无密钥完整性校验，用于发现存储、传输或内存中的非恶意位翻转，不是数字签名。能够修改文件的
+攻击者也能重新计算摘要，因此 v3 不提供来源认证或防恶意篡改保证。
 
 ## 写入边界
 
@@ -87,7 +103,7 @@ v1 footer 在数据记录总数后结束，v2 footer 继续携带标记总数。
 
 ## 回放边界
 
-- 打开时流式扫描完整文件，不构建全量数据记录索引；倒退时间戳、错误 footer 统计和未知条目会被拒绝。
+- 打开时流式扫描完整文件，不构建全量数据记录索引；倒退时间戳、错误 footer 统计、校验失败和未知条目会被拒绝。
 - 缺少 footer 或尾部截断时，只回放扫描阶段已验证的完整条目前缀，并在界面中明确标记为不完整。
 - 扫描阶段最多收集 512 个标记并通过一次性会话事件发送；标记不会进入数据批次或改变 ACK 协议。
 - 回放时间轴显示标记刻度和有界列表。暂停、就绪或完成状态可点击标记定位；播放和定位期间禁用该操作。
@@ -102,9 +118,9 @@ v1 footer 在数据记录总数后结束，v2 footer 继续携带标记总数。
 - 导出直接在 Rust worker 中流式迭代 `CaptureReader`，IPC 只发送进度和终态，不传输 payload。
 - CSV 每条记录包含 `record_index`、`timestamp_us`、`unix_time_us`、`direction`、`payload_length` 和
   `payload_hex`。不输出不可信文本字段，避免电子表格公式注入和控制字符歧义。
-- JSONL 首行为 capture metadata，中间为时间线条目，末行为完整性和计数 summary。v1 schema 保持不变；v2
+- JSONL 首行为 capture metadata，中间为时间线条目，末行为完整性和计数 summary。v1 schema 保持不变；v2+
   使用 Base64 record 和 `type="marker"` 行，summary 增加 `processedMarkers`。
-- 方向过滤只过滤 RX / TX record，不移除 v2 marker。CSV 和 BIN 明确跳过标记，保持既有纯数据契约；BIN 只按
+- 方向过滤只过滤 RX / TX record，不移除 v2+ marker。CSV 和 BIN 明确跳过标记，保持既有纯数据契约；BIN 只按
   记录顺序拼接显式选择的 RX 或 TX payload，不允许双向输出，因为裸字节流无法保留方向。
 - 不完整文件默认拒绝；用户明确允许后只提交已验证的完整条目前缀，并标记 `sourceComplete=false`。
 - 输出先写目标同目录临时文件并同步，再通过备份/恢复流程替换目标。取消、损坏或写入失败不提交半成品。
@@ -140,9 +156,10 @@ Rust 单批最多接受 512 行，writer 队列限制 64 批、4 MiB 与 4,096 �
 
 ## 兼容策略
 
-reader 必须先验证 magic 和版本，再分配 JSON、payload 或标签缓冲。当前 reader 按版本解析 v1 / v2，并把 v1
-的 `marker_count` 归一化为 0；writer 只产生 v2。这里的“兼容 v1 reader”指升级后的 reader 继续读取既有 v1
-文件，不代表旧版程序能读取 v2。旧版 reader 应以未来版本错误明确拒绝 v2，而不是尝试猜测新条目。
+reader 必须先验证 magic 和版本，再分配 JSON、payload 或标签缓冲。当前 reader 按版本解析 v1 / v2 / v3，把
+v1 的 `marker_count` 归一化为 0，并只为 v3 读取校验块；writer 只产生 v3。这里的“兼容旧版 reader”指升级后的
+reader 继续读取既有 v1 / v2 文件，不代表旧版程序能读取 v3。旧版 reader 应以未来版本错误明确拒绝 v3，而不是
+尝试忽略校验块或按 v2 猜测条目边界。
 
 后续版本如改变条目语义，应继续提升格式版本并保留旧格式读取路径，不能复用 flags 静默改变既有含义。
 

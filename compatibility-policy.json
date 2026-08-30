@@ -14,8 +14,8 @@
   },
   "capture": {
     "fileFormat": "VUCAP",
-    "writeVersion": 2,
-    "readVersions": [1, 2],
+    "writeVersion": 3,
+    "readVersions": [1, 2, 3],
     "futureVersionBehavior": "reject"
   },
   "protocols": {

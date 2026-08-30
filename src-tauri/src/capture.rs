@@ -8,13 +8,14 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::recording_directory::resolve_custom_recording_directory;
 use crate::serial::SerialConfig;
 
 pub const CAPTURE_MAGIC: [u8; 8] = *b"VUCAP\0\r\n";
-pub const CAPTURE_VERSION: u16 = 2;
+pub const CAPTURE_VERSION: u16 = CAPTURE_VERSION_V3;
 pub const MAX_CAPTURE_HEADER_BYTES: usize = 64 * 1024;
 pub const MAX_CAPTURE_RECORD_BYTES: usize = 64 * 1024;
 pub const MAX_CAPTURE_MARKERS: u64 = 512;
@@ -23,7 +24,10 @@ pub const MAX_CAPTURE_MARKER_LABEL_BYTES: usize = 256;
 
 const FILE_HEADER_SIZE: usize = 16;
 const CAPTURE_VERSION_V1: u16 = 1;
-const CAPTURE_READABLE_VERSIONS: &[u16] = &[CAPTURE_VERSION_V1, CAPTURE_VERSION];
+pub(crate) const CAPTURE_VERSION_V2: u16 = 2;
+const CAPTURE_VERSION_V3: u16 = 3;
+const CAPTURE_READABLE_VERSIONS: &[u16] =
+    &[CAPTURE_VERSION_V1, CAPTURE_VERSION_V2, CAPTURE_VERSION_V3];
 const RECORD_TAG: u8 = 0x01;
 const MARKER_TAG: u8 = 0x02;
 const FOOTER_TAG: u8 = 0xff;
@@ -31,6 +35,7 @@ const RECORD_HEADER_SIZE: usize = 16;
 const MARKER_HEADER_SIZE: usize = 16;
 const V1_FOOTER_SIZE: usize = 24;
 const V2_FOOTER_SIZE: usize = 32;
+const SHA256_CHECKSUM_SIZE: usize = 32;
 const WRITER_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const WRITER_QUEUE_RECORDS: usize = 4096;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
@@ -320,6 +325,14 @@ impl<R: Read> CaptureReader<R> {
 
         let mut header_bytes = vec![0_u8; header_size as usize];
         read_exact_section(&mut reader, &mut header_bytes, "JSON 文件头")?;
+        if version >= CAPTURE_VERSION_V3 {
+            read_and_verify_sha256(
+                &mut reader,
+                &[&prefix, &header_bytes],
+                "文件头校验值",
+                "固定文件头与 JSON 文件头",
+            )?;
+        }
         let header: CaptureHeader = serde_json::from_slice(&header_bytes)
             .map_err(|error| CaptureReadError::InvalidHeader(error.to_string()))?;
         header.validate().map_err(CaptureReadError::InvalidHeader)?;
@@ -347,15 +360,17 @@ impl<R: Read> CaptureReader<R> {
 
         match tag[0] {
             RECORD_TAG => self.read_record(),
-            MARKER_TAG if self.version >= CAPTURE_VERSION => self.read_marker(),
+            MARKER_TAG if self.version >= CAPTURE_VERSION_V2 => self.read_marker(),
             FOOTER_TAG => self.read_footer(),
             tag => Err(CaptureReadError::InvalidTag(tag)),
         }
     }
 
     fn read_record(&mut self) -> Result<CaptureItem, CaptureReadError> {
-        let mut header = [0_u8; RECORD_HEADER_SIZE - 1];
-        read_exact_section(&mut self.reader, &mut header, "记录头")?;
+        let mut item_header = [0_u8; RECORD_HEADER_SIZE];
+        item_header[0] = RECORD_TAG;
+        read_exact_section(&mut self.reader, &mut item_header[1..], "记录头")?;
+        let header = &item_header[1..];
 
         let direction = CaptureDirection::from_code(header[0])?;
         let reserved = u16::from_le_bytes([header[1], header[2]]);
@@ -373,6 +388,14 @@ impl<R: Read> CaptureReader<R> {
 
         let mut payload = vec![0_u8; payload_size as usize];
         read_exact_section(&mut self.reader, &mut payload, "记录数据")?;
+        if self.version >= CAPTURE_VERSION_V3 {
+            read_and_verify_sha256(
+                &mut self.reader,
+                &[&item_header, &payload],
+                "记录校验值",
+                "数据记录",
+            )?;
+        }
         let record = CaptureRecord {
             direction,
             timestamp_us,
@@ -386,8 +409,10 @@ impl<R: Read> CaptureReader<R> {
     }
 
     fn read_marker(&mut self) -> Result<CaptureItem, CaptureReadError> {
-        let mut header = [0_u8; MARKER_HEADER_SIZE - 1];
-        read_exact_section(&mut self.reader, &mut header, "标记头")?;
+        let mut item_header = [0_u8; MARKER_HEADER_SIZE];
+        item_header[0] = MARKER_TAG;
+        read_exact_section(&mut self.reader, &mut item_header[1..], "标记头")?;
+        let header = &item_header[1..];
 
         let color = CaptureMarkerColor::from_code(header[0])?;
         let reserved = u16::from_le_bytes([header[1], header[2]]);
@@ -405,6 +430,14 @@ impl<R: Read> CaptureReader<R> {
 
         let mut label_bytes = vec![0_u8; label_size as usize];
         read_exact_section(&mut self.reader, &mut label_bytes, "标记标签")?;
+        if self.version >= CAPTURE_VERSION_V3 {
+            read_and_verify_sha256(
+                &mut self.reader,
+                &[&item_header, &label_bytes],
+                "标记校验值",
+                "时间线标记",
+            )?;
+        }
         let label = String::from_utf8(label_bytes)
             .map_err(|_| CaptureReadError::Corrupt("标记标签不是有效 UTF-8".to_owned()))?;
         validate_marker_label(&label).map_err(CaptureReadError::Corrupt)?;
@@ -427,23 +460,34 @@ impl<R: Read> CaptureReader<R> {
     }
 
     fn read_footer(&mut self) -> Result<CaptureItem, CaptureReadError> {
-        let mut footer = [0_u8; V1_FOOTER_SIZE - 1];
-        read_exact_section(&mut self.reader, &mut footer, "结束标记")?;
+        let mut footer = [0_u8; V2_FOOTER_SIZE];
+        footer[0] = FOOTER_TAG;
+        read_exact_section(&mut self.reader, &mut footer[1..V1_FOOTER_SIZE], "结束标记")?;
 
-        if footer[..7].iter().any(|byte| *byte != 0) {
+        if footer[1..8].iter().any(|byte| *byte != 0) {
             return Err(CaptureReadError::Corrupt(
                 "结束标记保留字段必须为 0".to_owned(),
             ));
         }
-        let data_bytes = u64::from_le_bytes(footer[7..15].try_into().expect("字节计数字段固定"));
-        let record_count = u64::from_le_bytes(footer[15..23].try_into().expect("记录计数字段固定"));
-        let marker_count = if self.version >= CAPTURE_VERSION {
-            let mut marker_count = [0_u8; V2_FOOTER_SIZE - V1_FOOTER_SIZE];
-            read_exact_section(&mut self.reader, &mut marker_count, "标记计数")?;
-            u64::from_le_bytes(marker_count)
+        let data_bytes = u64::from_le_bytes(footer[8..16].try_into().expect("字节计数字段固定"));
+        let record_count = u64::from_le_bytes(footer[16..24].try_into().expect("记录计数字段固定"));
+        let marker_count = if self.version >= CAPTURE_VERSION_V2 {
+            read_exact_section(
+                &mut self.reader,
+                &mut footer[V1_FOOTER_SIZE..V2_FOOTER_SIZE],
+                "标记计数",
+            )?;
+            u64::from_le_bytes(
+                footer[V1_FOOTER_SIZE..V2_FOOTER_SIZE]
+                    .try_into()
+                    .expect("标记计数字段固定"),
+            )
         } else {
             0
         };
+        if self.version >= CAPTURE_VERSION_V3 {
+            read_and_verify_sha256(&mut self.reader, &[&footer], "结束标记校验值", "结束标记")?;
+        }
         if data_bytes != self.stats.data_bytes()
             || record_count != self.stats.record_count()
             || marker_count != self.stats.marker_count()
@@ -2121,11 +2165,14 @@ fn flush_progress_if_due<W: Write>(
 fn write_file_header<W: Write>(writer: &mut W, header_bytes: &[u8]) -> io::Result<()> {
     let header_size = u32::try_from(header_bytes.len())
         .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "JSON 文件头过长"))?;
-    writer.write_all(&CAPTURE_MAGIC)?;
-    writer.write_all(&CAPTURE_VERSION.to_le_bytes())?;
-    writer.write_all(&0_u16.to_le_bytes())?;
-    writer.write_all(&header_size.to_le_bytes())?;
-    writer.write_all(header_bytes)
+    let mut prefix = [0_u8; FILE_HEADER_SIZE];
+    prefix[..CAPTURE_MAGIC.len()].copy_from_slice(&CAPTURE_MAGIC);
+    prefix[8..10].copy_from_slice(&CAPTURE_VERSION.to_le_bytes());
+    prefix[12..16].copy_from_slice(&header_size.to_le_bytes());
+
+    writer.write_all(&prefix)?;
+    writer.write_all(header_bytes)?;
+    write_sha256(writer, &[&prefix, header_bytes])
 }
 
 fn write_record<W: Write>(writer: &mut W, record: &QueuedRecord) -> io::Result<()> {
@@ -2138,11 +2185,15 @@ fn write_record<W: Write>(writer: &mut W, record: &QueuedRecord) -> io::Result<(
         ));
     }
 
-    writer.write_all(&[RECORD_TAG, record.direction.code()])?;
-    writer.write_all(&0_u16.to_le_bytes())?;
-    writer.write_all(&record.timestamp_us.to_le_bytes())?;
-    writer.write_all(&payload_size.to_le_bytes())?;
-    writer.write_all(&record.payload)
+    let mut header = [0_u8; RECORD_HEADER_SIZE];
+    header[0] = RECORD_TAG;
+    header[1] = record.direction.code();
+    header[4..12].copy_from_slice(&record.timestamp_us.to_le_bytes());
+    header[12..16].copy_from_slice(&payload_size.to_le_bytes());
+
+    writer.write_all(&header)?;
+    writer.write_all(&record.payload)?;
+    write_sha256(writer, &[&header, &record.payload])
 }
 
 fn write_marker<W: Write>(writer: &mut W, marker: &QueuedMarker) -> io::Result<()> {
@@ -2151,11 +2202,15 @@ fn write_marker<W: Write>(writer: &mut W, marker: &QueuedMarker) -> io::Result<(
     let label_size = u32::try_from(marker.label.len())
         .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "捕获标记标签过长"))?;
 
-    writer.write_all(&[MARKER_TAG, marker.color.code()])?;
-    writer.write_all(&0_u16.to_le_bytes())?;
-    writer.write_all(&marker.timestamp_us.to_le_bytes())?;
-    writer.write_all(&label_size.to_le_bytes())?;
-    writer.write_all(marker.label.as_bytes())
+    let mut header = [0_u8; MARKER_HEADER_SIZE];
+    header[0] = MARKER_TAG;
+    header[1] = marker.color.code();
+    header[4..12].copy_from_slice(&marker.timestamp_us.to_le_bytes());
+    header[12..16].copy_from_slice(&label_size.to_le_bytes());
+
+    writer.write_all(&header)?;
+    writer.write_all(marker.label.as_bytes())?;
+    write_sha256(writer, &[&header, marker.label.as_bytes()])
 }
 
 fn write_footer<W: Write>(
@@ -2164,11 +2219,29 @@ fn write_footer<W: Write>(
     record_count: u64,
     marker_count: u64,
 ) -> io::Result<()> {
-    writer.write_all(&[FOOTER_TAG])?;
-    writer.write_all(&[0_u8; 7])?;
-    writer.write_all(&data_bytes.to_le_bytes())?;
-    writer.write_all(&record_count.to_le_bytes())?;
-    writer.write_all(&marker_count.to_le_bytes())
+    let mut footer = [0_u8; V2_FOOTER_SIZE];
+    footer[0] = FOOTER_TAG;
+    footer[8..16].copy_from_slice(&data_bytes.to_le_bytes());
+    footer[16..24].copy_from_slice(&record_count.to_le_bytes());
+    footer[24..32].copy_from_slice(&marker_count.to_le_bytes());
+
+    writer.write_all(&footer)?;
+    write_sha256(writer, &[&footer])
+}
+
+fn sha256(parts: &[&[u8]]) -> [u8; SHA256_CHECKSUM_SIZE] {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    let digest = hasher.finalize();
+    let mut checksum = [0_u8; SHA256_CHECKSUM_SIZE];
+    checksum.copy_from_slice(&digest);
+    checksum
+}
+
+fn write_sha256<W: Write>(writer: &mut W, parts: &[&[u8]]) -> io::Result<()> {
+    writer.write_all(&sha256(parts))
 }
 
 fn validate_marker_label(label: &str) -> Result<(), String> {
@@ -2301,6 +2374,23 @@ fn read_exact_section<R: Read>(
             CaptureReadError::Io(error)
         }
     })
+}
+
+fn read_and_verify_sha256<R: Read>(
+    reader: &mut R,
+    parts: &[&[u8]],
+    checksum_section: &'static str,
+    content_name: &'static str,
+) -> Result<(), CaptureReadError> {
+    let mut actual = [0_u8; SHA256_CHECKSUM_SIZE];
+    read_exact_section(reader, &mut actual, checksum_section)?;
+    let expected = sha256(parts);
+    if actual != expected {
+        return Err(CaptureReadError::Corrupt(format!(
+            "{content_name} SHA-256 校验不匹配"
+        )));
+    }
+    Ok(())
 }
 
 fn fail_active_capture(
@@ -2707,6 +2797,20 @@ mod tests {
         label_size: u32,
         label: &[u8],
     ) {
+        let item_offset = bytes.len();
+        append_raw_marker_without_checksum(bytes, color, reserved, timestamp_us, label_size, label);
+        let checksum = sha256(&[&bytes[item_offset..]]);
+        bytes.extend_from_slice(&checksum);
+    }
+
+    fn append_raw_marker_without_checksum(
+        bytes: &mut Vec<u8>,
+        color: u8,
+        reserved: u16,
+        timestamp_us: u64,
+        label_size: u32,
+        label: &[u8],
+    ) {
         bytes.push(MARKER_TAG);
         bytes.push(color);
         bytes.extend_from_slice(&reserved.to_le_bytes());
@@ -2716,7 +2820,7 @@ mod tests {
     }
 
     #[test]
-    fn writer_emits_v2_and_round_trips_mixed_items() {
+    fn writer_emits_v3_and_round_trips_mixed_items() {
         let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
         let first = queued_record(&budget, CaptureDirection::Rx, 0, vec![1, 2]);
         let marker = queued_marker(&budget, CaptureMarkerColor::Blue, 12, "启动");
@@ -2768,6 +2872,75 @@ mod tests {
     }
 
     #[test]
+    fn v3_rejects_header_item_footer_corruption_and_truncated_checksums() {
+        let mut header_corruption = file_with_header();
+        let header_size = u32::from_le_bytes(
+            header_corruption[12..16]
+                .try_into()
+                .expect("文件头长度字段固定"),
+        ) as usize;
+        let header_range = FILE_HEADER_SIZE..FILE_HEADER_SIZE + header_size;
+        let port_offset = header_corruption[header_range.clone()]
+            .windows(4)
+            .position(|window| window == b"COM3")
+            .expect("测试文件头包含串口名");
+        header_corruption[header_range.start + port_offset + 3] = b'4';
+        assert!(matches!(
+            CaptureReader::new(Cursor::new(header_corruption)),
+            Err(CaptureReadError::Corrupt(message)) if message.contains("文件头")
+        ));
+
+        let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
+        let record = queued_record(&budget, CaptureDirection::Rx, 1, vec![0xaa, 0xbb]);
+        let mut record_corruption = file_with_header();
+        let record_offset = record_corruption.len();
+        write_record(&mut record_corruption, &record).unwrap();
+        record_corruption[record_offset + RECORD_HEADER_SIZE] ^= 0x01;
+        let mut reader = CaptureReader::new(Cursor::new(record_corruption)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("数据记录")
+        ));
+
+        let marker = queued_marker(&budget, CaptureMarkerColor::Blue, 2, "检查");
+        let mut marker_corruption = file_with_header();
+        let marker_offset = marker_corruption.len();
+        write_marker(&mut marker_corruption, &marker).unwrap();
+        marker_corruption[marker_offset + MARKER_HEADER_SIZE] ^= 0x01;
+        let mut reader = CaptureReader::new(Cursor::new(marker_corruption)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("时间线标记")
+        ));
+
+        let mut footer_corruption = file_with_header();
+        let footer_offset = footer_corruption.len();
+        write_footer(&mut footer_corruption, 0, 0, 0).unwrap();
+        footer_corruption[footer_offset + V2_FOOTER_SIZE] ^= 0x01;
+        let mut reader = CaptureReader::new(Cursor::new(footer_corruption)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("结束标记")
+        ));
+
+        let mut truncated_header_checksum = file_with_header();
+        truncated_header_checksum.pop();
+        assert!(matches!(
+            CaptureReader::new(Cursor::new(truncated_header_checksum)),
+            Err(CaptureReadError::Truncated("文件头校验值"))
+        ));
+
+        let mut truncated_record_checksum = file_with_header();
+        write_record(&mut truncated_record_checksum, &record).unwrap();
+        truncated_record_checksum.pop();
+        let mut reader = CaptureReader::new(Cursor::new(truncated_record_checksum)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Truncated("记录校验值")))
+        ));
+    }
+
+    #[test]
     fn reads_v1_fixture_without_changing_record_layout() {
         let mut bytes = file_with_header_version(CAPTURE_VERSION_V1);
         bytes.extend_from_slice(&[
@@ -2791,6 +2964,37 @@ mod tests {
                 data_bytes: 3,
                 record_count: 1,
                 marker_count: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn reads_v2_fixture_without_checksums() {
+        let mut bytes = file_with_header_version(CAPTURE_VERSION_V2);
+        bytes.extend_from_slice(&[
+            RECORD_TAG, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0xaa, 0xbb,
+        ]);
+        append_raw_marker_without_checksum(
+            &mut bytes,
+            CaptureMarkerColor::Green.code(),
+            0,
+            10,
+            3,
+            b"tag",
+        );
+        write_v1_footer(&mut bytes, 2, 1).unwrap();
+        bytes.extend_from_slice(&1_u64.to_le_bytes());
+
+        let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(reader.version(), CAPTURE_VERSION_V2);
+        assert!(matches!(reader.next(), Some(Ok(CaptureItem::Record(_)))));
+        assert!(matches!(reader.next(), Some(Ok(CaptureItem::Marker(_)))));
+        assert_eq!(
+            reader.next().unwrap().unwrap(),
+            CaptureItem::Footer(CaptureFooter {
+                data_bytes: 2,
+                record_count: 1,
+                marker_count: 1,
             })
         );
     }
@@ -3015,7 +3219,10 @@ mod tests {
         assert!(json.get("startedAtUnixMs").is_none());
         assert!(json.get("endedAtUnixMs").is_none());
         assert!(json.get("message").is_none());
-        assert_eq!(json.get("formatVersion"), Some(&serde_json::json!(2)));
+        assert_eq!(
+            json.get("formatVersion"),
+            Some(&serde_json::json!(CAPTURE_VERSION))
+        );
         assert_eq!(json.get("markerCount"), Some(&serde_json::json!(0)));
     }
 
@@ -3199,7 +3406,7 @@ mod tests {
         ));
 
         let mut truncated_label = file_with_header();
-        append_raw_marker(
+        append_raw_marker_without_checksum(
             &mut truncated_label,
             CaptureMarkerColor::Orange.code(),
             0,

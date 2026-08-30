@@ -1745,7 +1745,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::capture::{CaptureMarkerColor, CAPTURE_MAGIC, CAPTURE_VERSION};
+    use crate::capture::{CaptureMarkerColor, CAPTURE_MAGIC, CAPTURE_VERSION_V2};
     use crate::serial::SerialConfig;
 
     struct TestDirectory {
@@ -1836,7 +1836,7 @@ mod tests {
         let header_bytes = serde_json::to_vec(&sample_header()).unwrap();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&CAPTURE_MAGIC);
-        bytes.extend_from_slice(&CAPTURE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&CAPTURE_VERSION_V2.to_le_bytes());
         bytes.extend_from_slice(&0_u16.to_le_bytes());
         bytes.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&header_bytes);
@@ -2026,7 +2026,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["metadata", "record", "marker", "record", "summary"]
         );
-        assert_eq!(lines[0]["version"], CAPTURE_VERSION);
+        assert_eq!(lines[0]["version"], CAPTURE_VERSION_V2);
         assert_eq!(lines[1]["recordIndex"], 1);
         assert_eq!(lines[2]["markerIndex"], 1);
         assert_eq!(lines[2]["timestampUs"], 15);
