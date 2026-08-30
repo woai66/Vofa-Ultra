@@ -1,4 +1,4 @@
-import type { DataSource, ProtocolKind, SerialConfig } from "./serial";
+import type { DataSource, ProtocolKind, SerialConfig, SerialPortInfo } from "./serial";
 
 export type CaptureStatus = "idle" | "recording" | "stopping" | "error";
 export type CaptureUiStatus = CaptureStatus | "starting";
@@ -21,6 +21,8 @@ export interface CaptureStartRequest {
   source: DataSource;
   protocol: ProtocolKind;
   serialConfig: SerialConfig;
+  buildId: string;
+  device?: SerialPortInfo;
   destinationDirectory?: string;
 }
 

@@ -32,6 +32,8 @@ const RECORD_TAG: u8 = 0x01;
 const MARKER_TAG: u8 = 0x02;
 const FOOTER_TAG: u8 = 0xff;
 const RECORD_HEADER_SIZE: usize = 16;
+const V3_RECORD_HEADER_SIZE: usize = 48;
+const RECORD_FLAG_RX_STREAM: u16 = 0x0001;
 const MARKER_HEADER_SIZE: usize = 16;
 const V1_FOOTER_SIZE: usize = 24;
 const V2_FOOTER_SIZE: usize = 32;
@@ -42,6 +44,7 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 const WRITER_START_TIMEOUT: Duration = Duration::from_secs(5);
 const SHUTDOWN_FINALIZE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_ABORT_MESSAGE_CHARS: usize = 512;
+const MAX_CAPTURE_METADATA_TEXT_BYTES: usize = 256;
 const WRITER_PHASE_ACTIVE: u8 = 0;
 const WRITER_PHASE_FINISH_REQUESTED: u8 = 1;
 const WRITER_PHASE_COMMITTING: u8 = 2;
@@ -57,10 +60,14 @@ pub struct CaptureHeader {
     pub serial_config: SerialConfig,
     pub started_at_unix_ms: u64,
     pub time_unit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application: Option<CaptureApplicationMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<CaptureDeviceMetadata>,
 }
 
 impl CaptureHeader {
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self, version: u16) -> Result<(), String> {
         if !matches!(self.source.as_str(), "serial" | "simulator") {
             return Err(format!("不支持的录制数据源: {}", self.source));
         }
@@ -71,6 +78,84 @@ impl CaptureHeader {
             return Err(format!("不支持的录制时间单位: {}", self.time_unit));
         }
         self.serial_config.validate(self.source == "serial")?;
+        if version < CAPTURE_VERSION_V3 {
+            if self.application.is_some() || self.device.is_some() {
+                return Err("VUCAP v1/v2 文件头不能包含 v3 会话元数据".to_owned());
+            }
+            return Ok(());
+        }
+        self.application
+            .as_ref()
+            .ok_or_else(|| "VUCAP v3 文件头缺少应用元数据".to_owned())?
+            .validate()?;
+        if let Some(device) = &self.device {
+            if self.source != "serial" {
+                return Err("模拟器捕获不能包含物理设备元数据".to_owned());
+            }
+            device.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureApplicationMetadata {
+    pub version: String,
+    pub build_id: String,
+}
+
+impl CaptureApplicationMetadata {
+    fn validate(&self) -> Result<(), String> {
+        if self.version.len() > 64 || semver::Version::parse(&self.version).is_err() {
+            return Err("捕获应用版本不是合法且有界的 SemVer".to_owned());
+        }
+        validate_build_id(&self.build_id)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureDeviceMetadata {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manufacturer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor_id: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product_id: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial_number_sha256: Option<String>,
+}
+
+impl CaptureDeviceMetadata {
+    fn validate(&self) -> Result<(), String> {
+        if !matches!(self.kind.as_str(), "usb" | "bluetooth" | "pci" | "unknown") {
+            return Err(format!("捕获设备类型无效: {}", self.kind));
+        }
+        validate_optional_metadata_text(&self.manufacturer, "设备制造商")?;
+        validate_optional_metadata_text(&self.product, "设备产品名")?;
+        if self.vendor_id.is_some() != self.product_id.is_some() {
+            return Err("捕获设备 VID 与 PID 必须同时存在或同时缺省".to_owned());
+        }
+        if self.kind != "usb"
+            && (self.vendor_id.is_some()
+                || self.product_id.is_some()
+                || self.serial_number_sha256.is_some())
+        {
+            return Err("只有 USB 设备可以保存 VID、PID 或序列号摘要".to_owned());
+        }
+        if let Some(digest) = &self.serial_number_sha256 {
+            if digest.len() != SHA256_CHECKSUM_SIZE * 2
+                || !digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err("捕获设备序列号摘要必须是 64 位小写 SHA-256".to_owned());
+            }
+        }
         Ok(())
     }
 }
@@ -111,6 +196,16 @@ pub struct CaptureRecord {
     pub direction: CaptureDirection,
     pub timestamp_us: u64,
     pub payload: Vec<u8>,
+    pub rx_stream: Option<CaptureRxStreamMetadata>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureRxStreamMetadata {
+    pub connection_generation: u64,
+    pub sequence: u64,
+    pub stream_offset: u64,
+    pub received_at_monotonic_us: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -155,6 +250,7 @@ pub struct CaptureMarker {
 #[derive(Clone, Default)]
 pub(crate) struct CaptureRecordStats {
     last_timestamp_us: Option<u64>,
+    last_rx_stream: Option<CaptureRxStreamEnd>,
     data_bytes: u64,
     record_count: u64,
     marker_count: u64,
@@ -162,7 +258,7 @@ pub(crate) struct CaptureRecordStats {
 
 impl CaptureRecordStats {
     pub(crate) fn observe(&mut self, record: &CaptureRecord) -> Result<(), String> {
-        self.observe_record_parts(record.timestamp_us, record.payload.len())
+        self.observe_record_parts(record.timestamp_us, record.payload.len(), record.rx_stream)
     }
 
     pub(crate) fn observe_marker(&mut self, marker: &CaptureMarker) -> Result<(), String> {
@@ -173,10 +269,60 @@ impl CaptureRecordStats {
         &mut self,
         timestamp_us: u64,
         payload_size: usize,
+        rx_stream: Option<CaptureRxStreamMetadata>,
     ) -> Result<(), String> {
         self.observe_timestamp(timestamp_us)?;
+        if let Some(rx_stream) = rx_stream {
+            self.observe_rx_stream(rx_stream, payload_size)?;
+        }
         self.data_bytes = self.data_bytes.saturating_add(payload_size as u64);
         self.record_count = self.record_count.saturating_add(1);
+        Ok(())
+    }
+
+    fn observe_rx_stream(
+        &mut self,
+        current: CaptureRxStreamMetadata,
+        payload_size: usize,
+    ) -> Result<(), String> {
+        if current.connection_generation == 0 {
+            return Err("RX 流位置的连接代次不能为 0".to_owned());
+        }
+        let next_stream_offset = current
+            .stream_offset
+            .checked_add(payload_size as u64)
+            .ok_or_else(|| "RX 流偏移与 payload 长度溢出".to_owned())?;
+        if let Some(previous) = self.last_rx_stream {
+            if current.connection_generation < previous.connection_generation {
+                return Err(format!(
+                    "RX 连接代次发生回退，上一代次 {}，当前代次 {}",
+                    previous.connection_generation, current.connection_generation
+                ));
+            }
+            if current.connection_generation == previous.connection_generation {
+                let expected_sequence = previous
+                    .sequence
+                    .checked_add(1)
+                    .ok_or_else(|| "RX 块序号已溢出".to_owned())?;
+                if current.sequence != expected_sequence
+                    || current.stream_offset != previous.next_stream_offset
+                {
+                    return Err(format!(
+                        "RX 流位置不连续，期望序号 {expected_sequence}/偏移 {}，实际序号 {}/偏移 {}",
+                        previous.next_stream_offset, current.sequence, current.stream_offset
+                    ));
+                }
+                if current.received_at_monotonic_us < previous.received_at_monotonic_us {
+                    return Err("RX 接收单调时间发生回退".to_owned());
+                }
+            }
+        }
+        self.last_rx_stream = Some(CaptureRxStreamEnd {
+            connection_generation: current.connection_generation,
+            sequence: current.sequence,
+            next_stream_offset,
+            received_at_monotonic_us: current.received_at_monotonic_us,
+        });
         Ok(())
     }
 
@@ -217,6 +363,14 @@ impl CaptureRecordStats {
     pub(crate) fn marker_count(&self) -> u64 {
         self.marker_count
     }
+}
+
+#[derive(Clone, Copy)]
+struct CaptureRxStreamEnd {
+    connection_generation: u64,
+    sequence: u64,
+    next_stream_offset: u64,
+    received_at_monotonic_us: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -335,7 +489,9 @@ impl<R: Read> CaptureReader<R> {
         }
         let header: CaptureHeader = serde_json::from_slice(&header_bytes)
             .map_err(|error| CaptureReadError::InvalidHeader(error.to_string()))?;
-        header.validate().map_err(CaptureReadError::InvalidHeader)?;
+        header
+            .validate(version)
+            .map_err(CaptureReadError::InvalidHeader)?;
 
         Ok(Self {
             reader,
@@ -367,16 +523,26 @@ impl<R: Read> CaptureReader<R> {
     }
 
     fn read_record(&mut self) -> Result<CaptureItem, CaptureReadError> {
-        let mut item_header = [0_u8; RECORD_HEADER_SIZE];
+        let header_size = if self.version >= CAPTURE_VERSION_V3 {
+            V3_RECORD_HEADER_SIZE
+        } else {
+            RECORD_HEADER_SIZE
+        };
+        let mut item_header = [0_u8; V3_RECORD_HEADER_SIZE];
         item_header[0] = RECORD_TAG;
-        read_exact_section(&mut self.reader, &mut item_header[1..], "记录头")?;
-        let header = &item_header[1..];
+        read_exact_section(&mut self.reader, &mut item_header[1..header_size], "记录头")?;
+        let header = &item_header[1..RECORD_HEADER_SIZE];
 
         let direction = CaptureDirection::from_code(header[0])?;
-        let reserved = u16::from_le_bytes([header[1], header[2]]);
-        if reserved != 0 {
+        let flags = u16::from_le_bytes([header[1], header[2]]);
+        if self.version < CAPTURE_VERSION_V3 && flags != 0 {
             return Err(CaptureReadError::Corrupt(format!(
-                "记录保留字段必须为 0，实际为 {reserved}"
+                "记录保留字段必须为 0，实际为 {flags}"
+            )));
+        }
+        if flags & !RECORD_FLAG_RX_STREAM != 0 {
+            return Err(CaptureReadError::Corrupt(format!(
+                "记录 flags 包含未知位: 0x{flags:04x}"
             )));
         }
 
@@ -385,13 +551,23 @@ impl<R: Read> CaptureReader<R> {
         if payload_size as usize > MAX_CAPTURE_RECORD_BYTES {
             return Err(CaptureReadError::RecordTooLarge(payload_size));
         }
+        let rx_stream = if self.version >= CAPTURE_VERSION_V3 {
+            parse_v3_rx_stream_metadata(
+                flags,
+                direction,
+                &item_header[RECORD_HEADER_SIZE..V3_RECORD_HEADER_SIZE],
+                payload_size,
+            )?
+        } else {
+            None
+        };
 
         let mut payload = vec![0_u8; payload_size as usize];
         read_exact_section(&mut self.reader, &mut payload, "记录数据")?;
         if self.version >= CAPTURE_VERSION_V3 {
             read_and_verify_sha256(
                 &mut self.reader,
-                &[&item_header, &payload],
+                &[&item_header[..header_size], &payload],
                 "记录校验值",
                 "数据记录",
             )?;
@@ -400,6 +576,7 @@ impl<R: Read> CaptureReader<R> {
             direction,
             timestamp_us,
             payload,
+            rx_stream,
         };
         self.stats
             .observe(&record)
@@ -536,6 +713,7 @@ impl<R: Read + Seek> CaptureReader<R> {
             .map_err(CaptureReadError::Io)?;
         self.stats = CaptureRecordStats {
             last_timestamp_us,
+            last_rx_stream: None,
             data_bytes,
             record_count,
             marker_count,
@@ -567,7 +745,42 @@ pub struct CaptureStartRequest {
     source: String,
     protocol: String,
     serial_config: SerialConfig,
+    build_id: String,
+    device: Option<CaptureDeviceRequest>,
     destination_directory: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CaptureDeviceRequest {
+    name: String,
+    kind: String,
+    manufacturer: Option<String>,
+    product: Option<String>,
+    serial_number: Option<String>,
+    vendor_id: Option<u16>,
+    product_id: Option<u16>,
+}
+
+impl CaptureDeviceRequest {
+    fn into_metadata(self, expected_port_name: &str) -> Result<CaptureDeviceMetadata, String> {
+        if self.name != expected_port_name {
+            return Err("捕获设备与串口配置的端口不一致".to_owned());
+        }
+        let serial_number = normalize_optional_metadata_text(self.serial_number, "设备序列号")?;
+        let metadata = CaptureDeviceMetadata {
+            kind: self.kind,
+            manufacturer: normalize_optional_metadata_text(self.manufacturer, "设备制造商")?,
+            product: normalize_optional_metadata_text(self.product, "设备产品名")?,
+            vendor_id: self.vendor_id,
+            product_id: self.product_id,
+            serial_number_sha256: serial_number
+                .as_deref()
+                .map(|value| sha256_hex(value.as_bytes())),
+        };
+        metadata.validate()?;
+        Ok(metadata)
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -735,7 +948,23 @@ impl CaptureRecorderHandle {
         direction: CaptureDirection,
         payload: &[u8],
     ) -> Result<(), String> {
-        self.core.append(app, session_id, direction, payload)
+        self.core.append(app, session_id, direction, payload, None)
+    }
+
+    pub fn append_serial_rx_for_session(
+        &self,
+        app: &AppHandle,
+        session_id: u64,
+        payload: &[u8],
+        rx_stream: CaptureRxStreamMetadata,
+    ) -> Result<(), String> {
+        self.core.append(
+            app,
+            session_id,
+            CaptureDirection::Rx,
+            payload,
+            Some(rx_stream),
+        )
     }
 
     pub fn append_marker_for_session(
@@ -1121,6 +1350,7 @@ struct QueuedRecord {
     direction: CaptureDirection,
     timestamp_us: u64,
     payload: Vec<u8>,
+    rx_stream: Option<CaptureRxStreamMetadata>,
     _reservation: ByteReservation,
 }
 
@@ -1278,6 +1508,7 @@ impl CaptureCore {
         expected_session_id: u64,
         direction: CaptureDirection,
         payload: &[u8],
+        rx_stream: Option<CaptureRxStreamMetadata>,
     ) -> Result<(), String> {
         let mut event = None;
         let result = {
@@ -1300,7 +1531,7 @@ impl CaptureCore {
                     .clone()
                     .unwrap_or_else(|| "录制已经终止".to_owned())),
                 CaptureStatus::Recording => {
-                    let size = RECORD_HEADER_SIZE.saturating_add(payload.len());
+                    let size = V3_RECORD_HEADER_SIZE.saturating_add(payload.len());
                     if payload.len() > MAX_CAPTURE_RECORD_BYTES {
                         let message = format!(
                             "单条录制数据不能超过 {} KiB，录制已中止",
@@ -1309,6 +1540,14 @@ impl CaptureCore {
                         event = Some(fail_active_capture(
                             &mut shared,
                             "record-too-large",
+                            message.clone(),
+                        ));
+                        Err(message)
+                    } else if rx_stream.is_some() && direction != CaptureDirection::Rx {
+                        let message = "只有 RX 记录可以携带流位置，录制已中止".to_owned();
+                        event = Some(fail_active_capture(
+                            &mut shared,
+                            "invalid-rx-stream-metadata",
                             message.clone(),
                         ));
                         Err(message)
@@ -1326,6 +1565,7 @@ impl CaptureCore {
                                         direction,
                                         timestamp_us: duration_micros(worker_started.elapsed()),
                                         payload: payload.to_vec(),
+                                        rx_stream,
                                         _reservation: reservation,
                                     };
                                     match worker_sender.try_send(WriterCommand::Record(record)) {
@@ -1720,16 +1960,26 @@ fn start_capture_blocking(
         source,
         protocol,
         serial_config,
+        build_id,
+        device,
         destination_directory,
     } = request;
+    let device = device
+        .map(|device| device.into_metadata(&serial_config.port_name))
+        .transpose()?;
     let header = CaptureHeader {
         source,
         protocol,
         serial_config,
         started_at_unix_ms,
         time_unit: "microseconds".to_owned(),
+        application: Some(CaptureApplicationMetadata {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            build_id,
+        }),
+        device,
     };
-    header.validate()?;
+    header.validate(CAPTURE_VERSION)?;
     let header_bytes = encode_header(&header)?;
     let (file, path) = create_capture_file(
         &app,
@@ -2042,9 +2292,11 @@ fn run_capture_writer(
                     continue;
                 }
                 let mut next_stats = stats.clone();
-                if let Err(message) =
-                    next_stats.observe_record_parts(record.timestamp_us, record.payload.len())
-                {
+                if let Err(message) = next_stats.observe_record_parts(
+                    record.timestamp_us,
+                    record.payload.len(),
+                    record.rx_stream,
+                ) {
                     outcome = Some(WriterOutcome::Failed(message));
                     continue;
                 }
@@ -2185,11 +2437,34 @@ fn write_record<W: Write>(writer: &mut W, record: &QueuedRecord) -> io::Result<(
         ));
     }
 
-    let mut header = [0_u8; RECORD_HEADER_SIZE];
+    if record.rx_stream.is_some() && record.direction != CaptureDirection::Rx {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "只有 RX 记录可以携带流位置",
+        ));
+    }
+    let mut header = [0_u8; V3_RECORD_HEADER_SIZE];
     header[0] = RECORD_TAG;
     header[1] = record.direction.code();
     header[4..12].copy_from_slice(&record.timestamp_us.to_le_bytes());
     header[12..16].copy_from_slice(&payload_size.to_le_bytes());
+    if let Some(rx_stream) = record.rx_stream {
+        if rx_stream.connection_generation == 0 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "RX 流位置的连接代次不能为 0",
+            ));
+        }
+        rx_stream
+            .stream_offset
+            .checked_add(u64::from(payload_size))
+            .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "RX 流位置溢出"))?;
+        header[2..4].copy_from_slice(&RECORD_FLAG_RX_STREAM.to_le_bytes());
+        header[16..24].copy_from_slice(&rx_stream.connection_generation.to_le_bytes());
+        header[24..32].copy_from_slice(&rx_stream.sequence.to_le_bytes());
+        header[32..40].copy_from_slice(&rx_stream.stream_offset.to_le_bytes());
+        header[40..48].copy_from_slice(&rx_stream.received_at_monotonic_us.to_le_bytes());
+    }
 
     writer.write_all(&header)?;
     writer.write_all(&record.payload)?;
@@ -2238,6 +2513,74 @@ fn sha256(parts: &[&[u8]]) -> [u8; SHA256_CHECKSUM_SIZE] {
     let mut checksum = [0_u8; SHA256_CHECKSUM_SIZE];
     checksum.copy_from_slice(&digest);
     checksum
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = sha256(&[bytes]);
+    let mut output = String::with_capacity(SHA256_CHECKSUM_SIZE * 2);
+    for byte in digest {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn validate_build_id(build_id: &str) -> Result<(), String> {
+    if build_id == "development" {
+        return Ok(());
+    }
+    let commit = build_id.strip_suffix("-dirty").unwrap_or(build_id);
+    if !(7..=12).contains(&commit.len())
+        || !commit
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(
+            "捕获构建 ID 必须是 7 到 12 位小写 Git commit、可选 -dirty，或 development".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn normalize_optional_metadata_text(
+    value: Option<String>,
+    label: &str,
+) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    if normalized.len() > MAX_CAPTURE_METADATA_TEXT_BYTES {
+        return Err(format!(
+            "{label}不能超过 {MAX_CAPTURE_METADATA_TEXT_BYTES} 个 UTF-8 字节"
+        ));
+    }
+    if normalized.chars().any(char::is_control) {
+        return Err(format!("{label}不能包含控制字符"));
+    }
+    Ok(Some(normalized.to_owned()))
+}
+
+fn validate_optional_metadata_text(value: &Option<String>, label: &str) -> Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value.is_empty() || value.trim() != value {
+        return Err(format!("{label}必须是规范化的非空文本"));
+    }
+    if value.len() > MAX_CAPTURE_METADATA_TEXT_BYTES {
+        return Err(format!(
+            "{label}不能超过 {MAX_CAPTURE_METADATA_TEXT_BYTES} 个 UTF-8 字节"
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!("{label}不能包含控制字符"));
+    }
+    Ok(())
 }
 
 fn write_sha256<W: Write>(writer: &mut W, parts: &[&[u8]]) -> io::Result<()> {
@@ -2391,6 +2734,47 @@ fn read_and_verify_sha256<R: Read>(
         )));
     }
     Ok(())
+}
+
+fn parse_v3_rx_stream_metadata(
+    flags: u16,
+    direction: CaptureDirection,
+    extension: &[u8],
+    payload_size: u32,
+) -> Result<Option<CaptureRxStreamMetadata>, CaptureReadError> {
+    if flags & RECORD_FLAG_RX_STREAM == 0 {
+        if extension.iter().any(|byte| *byte != 0) {
+            return Err(CaptureReadError::Corrupt(
+                "未声明 RX 流位置的记录扩展字段必须为 0".to_owned(),
+            ));
+        }
+        return Ok(None);
+    }
+    if direction != CaptureDirection::Rx {
+        return Err(CaptureReadError::Corrupt(
+            "只有 RX 记录可以携带流位置".to_owned(),
+        ));
+    }
+    let connection_generation =
+        u64::from_le_bytes(extension[0..8].try_into().expect("连接代次字段固定"));
+    let sequence = u64::from_le_bytes(extension[8..16].try_into().expect("序号字段固定"));
+    let stream_offset = u64::from_le_bytes(extension[16..24].try_into().expect("流偏移字段固定"));
+    let received_at_monotonic_us =
+        u64::from_le_bytes(extension[24..32].try_into().expect("单调时间字段固定"));
+    if connection_generation == 0 {
+        return Err(CaptureReadError::Corrupt(
+            "RX 流位置的连接代次不能为 0".to_owned(),
+        ));
+    }
+    stream_offset
+        .checked_add(u64::from(payload_size))
+        .ok_or_else(|| CaptureReadError::Corrupt("RX 流偏移与 payload 长度溢出".to_owned()))?;
+    Ok(Some(CaptureRxStreamMetadata {
+        connection_generation,
+        sequence,
+        stream_offset,
+        received_at_monotonic_us,
+    }))
 }
 
 fn fail_active_capture(
@@ -2586,11 +2970,16 @@ mod tests {
             },
             started_at_unix_ms: 1_700_000_000_000,
             time_unit: "microseconds".to_owned(),
+            application: Some(CaptureApplicationMetadata {
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                build_id: "development".to_owned(),
+            }),
+            device: None,
         }
     }
 
     #[test]
-    fn start_request_reads_optional_camel_case_directory() {
+    fn start_request_reads_v3_metadata_and_optional_camel_case_directory() {
         let request: CaptureStartRequest = serde_json::from_str(
             r#"{
                 "source":"serial",
@@ -2605,12 +2994,35 @@ mod tests {
                     "dtr":true,
                     "rts":true
                 },
+                "buildId":"development",
+                "device":{
+                    "name":"COM3",
+                    "kind":"usb",
+                    "manufacturer":"Acme",
+                    "product":"Probe",
+                    "serialNumber":"DEVICE-001",
+                    "vendorId":4660,
+                    "productId":22136
+                },
                 "destinationDirectory":"/captures"
             }"#,
         )
         .unwrap();
 
         assert_eq!(request.destination_directory.as_deref(), Some("/captures"));
+        assert_eq!(request.build_id, "development");
+        let device = request.device.unwrap().into_metadata("COM3").unwrap();
+        assert_eq!(device.kind, "usb");
+        assert_eq!(device.manufacturer.as_deref(), Some("Acme"));
+        assert_eq!(device.product.as_deref(), Some("Probe"));
+        assert_eq!(device.vendor_id, Some(0x1234));
+        assert_eq!(device.product_id, Some(0x5678));
+        assert_eq!(
+            device.serial_number_sha256.as_deref(),
+            Some(sha256_hex(b"DEVICE-001").as_str())
+        );
+        let encoded = serde_json::to_string(&device).unwrap();
+        assert!(!encoded.contains("DEVICE-001"));
     }
 
     #[test]
@@ -2645,7 +3057,12 @@ mod tests {
     }
 
     fn file_with_header_version(version: u16) -> Vec<u8> {
-        let header_bytes = encode_header(&sample_header()).unwrap();
+        let mut header = sample_header();
+        if version < CAPTURE_VERSION_V3 {
+            header.application = None;
+            header.device = None;
+        }
+        let header_bytes = encode_header(&header).unwrap();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&CAPTURE_MAGIC);
         bytes.extend_from_slice(&version.to_le_bytes());
@@ -2723,13 +3140,16 @@ mod tests {
         for protocol in SUPPORTED_CAPTURE_PROTOCOLS {
             let mut header = sample_header();
             header.protocol = (*protocol).to_owned();
-            assert!(header.validate().is_ok(), "protocol={protocol}");
+            assert!(
+                header.validate(CAPTURE_VERSION).is_ok(),
+                "protocol={protocol}"
+            );
         }
 
         let mut header = sample_header();
         header.protocol = "future-protocol".to_owned();
         assert_eq!(
-            header.validate(),
+            header.validate(CAPTURE_VERSION),
             Err("不支持的录制协议: future-protocol".to_owned())
         );
     }
@@ -2763,14 +3183,42 @@ mod tests {
         timestamp_us: u64,
         payload: Vec<u8>,
     ) -> QueuedRecord {
-        let size = RECORD_HEADER_SIZE + payload.len();
+        let size = V3_RECORD_HEADER_SIZE + payload.len();
         QueuedRecord {
             session_id: 1,
             direction,
             timestamp_us,
             payload,
+            rx_stream: None,
             _reservation: budget.try_reserve(size).unwrap(),
         }
+    }
+
+    fn queued_rx_record(
+        budget: &Arc<ByteBudget>,
+        timestamp_us: u64,
+        payload: Vec<u8>,
+        rx_stream: CaptureRxStreamMetadata,
+    ) -> QueuedRecord {
+        let mut record = queued_record(budget, CaptureDirection::Rx, timestamp_us, payload);
+        record.rx_stream = Some(rx_stream);
+        record
+    }
+
+    fn append_raw_v3_record_header(
+        bytes: &mut Vec<u8>,
+        direction: CaptureDirection,
+        flags: u16,
+        timestamp_us: u64,
+        payload_size: u32,
+        extension: [u8; V3_RECORD_HEADER_SIZE - RECORD_HEADER_SIZE],
+    ) {
+        bytes.push(RECORD_TAG);
+        bytes.push(direction.code());
+        bytes.extend_from_slice(&flags.to_le_bytes());
+        bytes.extend_from_slice(&timestamp_us.to_le_bytes());
+        bytes.extend_from_slice(&payload_size.to_le_bytes());
+        bytes.extend_from_slice(&extension);
     }
 
     fn queued_marker(
@@ -2822,7 +3270,13 @@ mod tests {
     #[test]
     fn writer_emits_v3_and_round_trips_mixed_items() {
         let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
-        let first = queued_record(&budget, CaptureDirection::Rx, 0, vec![1, 2]);
+        let rx_stream = CaptureRxStreamMetadata {
+            connection_generation: 7,
+            sequence: 0,
+            stream_offset: 0,
+            received_at_monotonic_us: 25,
+        };
+        let first = queued_rx_record(&budget, 0, vec![1, 2], rx_stream);
         let marker = queued_marker(&budget, CaptureMarkerColor::Blue, 12, "启动");
         let second = queued_record(&budget, CaptureDirection::Tx, 12, vec![3, 4, 5]);
         let mut bytes = file_with_header();
@@ -2842,6 +3296,7 @@ mod tests {
                 direction: CaptureDirection::Rx,
                 timestamp_us: 0,
                 payload: vec![1, 2],
+                rx_stream: Some(rx_stream),
             })
         );
         assert_eq!(
@@ -2858,6 +3313,7 @@ mod tests {
                 direction: CaptureDirection::Tx,
                 timestamp_us: 12,
                 payload: vec![3, 4, 5],
+                rx_stream: None,
             })
         );
         assert_eq!(
@@ -2869,6 +3325,234 @@ mod tests {
             })
         );
         assert!(reader.next().is_none());
+    }
+
+    #[test]
+    fn v3_rejects_invalid_rx_stream_record_shapes() {
+        let mut undeclared_extension = [0_u8; V3_RECORD_HEADER_SIZE - RECORD_HEADER_SIZE];
+        undeclared_extension[0] = 1;
+        let mut bytes = file_with_header();
+        append_raw_v3_record_header(
+            &mut bytes,
+            CaptureDirection::Rx,
+            0,
+            0,
+            0,
+            undeclared_extension,
+        );
+        let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("未声明 RX 流位置")
+        ));
+
+        let mut rx_extension = [0_u8; V3_RECORD_HEADER_SIZE - RECORD_HEADER_SIZE];
+        rx_extension[0..8].copy_from_slice(&1_u64.to_le_bytes());
+        let mut bytes = file_with_header();
+        append_raw_v3_record_header(
+            &mut bytes,
+            CaptureDirection::Tx,
+            RECORD_FLAG_RX_STREAM,
+            0,
+            0,
+            rx_extension,
+        );
+        let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("只有 RX")
+        ));
+
+        let mut bytes = file_with_header();
+        append_raw_v3_record_header(
+            &mut bytes,
+            CaptureDirection::Rx,
+            RECORD_FLAG_RX_STREAM,
+            0,
+            0,
+            [0_u8; V3_RECORD_HEADER_SIZE - RECORD_HEADER_SIZE],
+        );
+        let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("代次不能为 0")
+        ));
+
+        let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
+        let mut tx = queued_record(&budget, CaptureDirection::Tx, 0, vec![1]);
+        tx.rx_stream = Some(CaptureRxStreamMetadata {
+            connection_generation: 1,
+            sequence: 0,
+            stream_offset: 0,
+            received_at_monotonic_us: 0,
+        });
+        assert_eq!(
+            write_record(&mut Vec::new(), &tx).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn v3_validates_rx_stream_continuity_and_reconnect_baselines() {
+        let assert_second_record_error =
+            |first: CaptureRxStreamMetadata, second: CaptureRxStreamMetadata, expected: &str| {
+                let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
+                let first = queued_rx_record(&budget, 0, vec![1, 2], first);
+                let second = queued_rx_record(&budget, 1, vec![3], second);
+                let mut bytes = file_with_header();
+                write_record(&mut bytes, &first).unwrap();
+                write_record(&mut bytes, &second).unwrap();
+
+                let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
+                assert!(matches!(reader.next(), Some(Ok(CaptureItem::Record(_)))));
+                assert!(matches!(
+                    reader.next(),
+                    Some(Err(CaptureReadError::Corrupt(message))) if message.contains(expected)
+                ));
+            };
+        let first = CaptureRxStreamMetadata {
+            connection_generation: 1,
+            sequence: 0,
+            stream_offset: 0,
+            received_at_monotonic_us: 100,
+        };
+        assert_second_record_error(
+            first,
+            CaptureRxStreamMetadata {
+                sequence: 2,
+                stream_offset: 2,
+                received_at_monotonic_us: 101,
+                ..first
+            },
+            "流位置不连续",
+        );
+        assert_second_record_error(
+            first,
+            CaptureRxStreamMetadata {
+                sequence: 1,
+                stream_offset: 3,
+                received_at_monotonic_us: 101,
+                ..first
+            },
+            "流位置不连续",
+        );
+        assert_second_record_error(
+            first,
+            CaptureRxStreamMetadata {
+                sequence: 1,
+                stream_offset: 2,
+                received_at_monotonic_us: 99,
+                ..first
+            },
+            "单调时间",
+        );
+        assert_second_record_error(
+            CaptureRxStreamMetadata {
+                connection_generation: 2,
+                ..first
+            },
+            CaptureRxStreamMetadata {
+                connection_generation: 1,
+                sequence: 0,
+                stream_offset: 0,
+                received_at_monotonic_us: 0,
+            },
+            "连接代次发生回退",
+        );
+
+        let budget = Arc::new(ByteBudget::new(1024, WRITER_QUEUE_RECORDS));
+        let first = queued_rx_record(
+            &budget,
+            0,
+            vec![1, 2],
+            CaptureRxStreamMetadata {
+                connection_generation: 1,
+                sequence: 5,
+                stream_offset: 100,
+                received_at_monotonic_us: 100,
+            },
+        );
+        let reconnected = queued_rx_record(
+            &budget,
+            1,
+            vec![3],
+            CaptureRxStreamMetadata {
+                connection_generation: 2,
+                sequence: 0,
+                stream_offset: 0,
+                received_at_monotonic_us: 0,
+            },
+        );
+        let mut bytes = file_with_header();
+        write_record(&mut bytes, &first).unwrap();
+        write_record(&mut bytes, &reconnected).unwrap();
+        write_footer(&mut bytes, 3, 2, 0).unwrap();
+
+        let mut reader = CaptureReader::new(Cursor::new(bytes)).unwrap();
+        assert!(matches!(reader.next(), Some(Ok(CaptureItem::Record(_)))));
+        assert!(matches!(reader.next(), Some(Ok(CaptureItem::Record(_)))));
+        assert!(matches!(reader.next(), Some(Ok(CaptureItem::Footer(_)))));
+    }
+
+    #[test]
+    fn validates_versioned_application_and_device_metadata() {
+        let mismatched_device = CaptureDeviceRequest {
+            name: "COM4".to_owned(),
+            kind: "usb".to_owned(),
+            manufacturer: None,
+            product: None,
+            serial_number: None,
+            vendor_id: None,
+            product_id: None,
+        };
+        assert_eq!(
+            mismatched_device.into_metadata("COM3"),
+            Err("捕获设备与串口配置的端口不一致".to_owned())
+        );
+
+        let mut header = sample_header();
+        header.application = None;
+        assert_eq!(
+            header.validate(CAPTURE_VERSION_V3),
+            Err("VUCAP v3 文件头缺少应用元数据".to_owned())
+        );
+
+        let header = sample_header();
+        assert_eq!(
+            header.validate(CAPTURE_VERSION_V2),
+            Err("VUCAP v1/v2 文件头不能包含 v3 会话元数据".to_owned())
+        );
+
+        let mut header = sample_header();
+        header.application.as_mut().unwrap().build_id = "INVALID".to_owned();
+        assert!(header.validate(CAPTURE_VERSION_V3).is_err());
+
+        let mut header = sample_header();
+        header.device = Some(CaptureDeviceMetadata {
+            kind: "usb".to_owned(),
+            manufacturer: None,
+            product: None,
+            vendor_id: Some(0x1234),
+            product_id: None,
+            serial_number_sha256: None,
+        });
+        assert!(header.validate(CAPTURE_VERSION_V3).is_err());
+
+        let mut header = sample_header();
+        header.source = "simulator".to_owned();
+        header.serial_config.port_name.clear();
+        header.device = Some(CaptureDeviceMetadata {
+            kind: "usb".to_owned(),
+            manufacturer: None,
+            product: None,
+            vendor_id: Some(0x1234),
+            product_id: Some(0x5678),
+            serial_number_sha256: None,
+        });
+        assert_eq!(
+            header.validate(CAPTURE_VERSION_V3),
+            Err("模拟器捕获不能包含物理设备元数据".to_owned())
+        );
     }
 
     #[test]
@@ -2895,7 +3579,7 @@ mod tests {
         let mut record_corruption = file_with_header();
         let record_offset = record_corruption.len();
         write_record(&mut record_corruption, &record).unwrap();
-        record_corruption[record_offset + RECORD_HEADER_SIZE] ^= 0x01;
+        record_corruption[record_offset + V3_RECORD_HEADER_SIZE] ^= 0x01;
         let mut reader = CaptureReader::new(Cursor::new(record_corruption)).unwrap();
         assert!(matches!(
             reader.next(),
@@ -2956,6 +3640,7 @@ mod tests {
                 direction: CaptureDirection::Tx,
                 timestamp_us: 9,
                 payload: vec![0xaa, 0xbb, 0xcc],
+                rx_stream: None,
             })
         );
         assert_eq!(
@@ -3014,6 +3699,7 @@ mod tests {
                 direction: CaptureDirection::Rx,
                 timestamp_us: 4,
                 payload: vec![1, 2],
+                rx_stream: None,
             })
             .unwrap();
         stats
@@ -3096,6 +3782,7 @@ mod tests {
                 direction: CaptureDirection::Tx,
                 timestamp_us: 8,
                 payload: vec![3, 4, 5],
+                rx_stream: None,
             })
         );
         assert_eq!(
@@ -3185,16 +3872,17 @@ mod tests {
             Some(Err(CaptureReadError::Corrupt(message))) if message.contains("标记保留字段")
         ));
 
-        let mut record_reserved = file_with_header();
-        record_reserved.push(RECORD_TAG);
-        record_reserved.push(CaptureDirection::Rx.code());
-        record_reserved.extend_from_slice(&1_u16.to_le_bytes());
-        record_reserved.extend_from_slice(&0_u64.to_le_bytes());
-        record_reserved.extend_from_slice(&0_u32.to_le_bytes());
-        let mut reader = CaptureReader::new(Cursor::new(record_reserved)).unwrap();
+        let mut record_unknown_flags = file_with_header();
+        record_unknown_flags.push(RECORD_TAG);
+        record_unknown_flags.push(CaptureDirection::Rx.code());
+        record_unknown_flags.extend_from_slice(&2_u16.to_le_bytes());
+        record_unknown_flags.extend_from_slice(&0_u64.to_le_bytes());
+        record_unknown_flags.extend_from_slice(&0_u32.to_le_bytes());
+        record_unknown_flags.extend_from_slice(&[0_u8; V3_RECORD_HEADER_SIZE - RECORD_HEADER_SIZE]);
+        let mut reader = CaptureReader::new(Cursor::new(record_unknown_flags)).unwrap();
         assert!(matches!(
             reader.next(),
-            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("记录保留字段")
+            Some(Err(CaptureReadError::Corrupt(message))) if message.contains("未知位")
         ));
     }
 
@@ -3289,6 +3977,7 @@ mod tests {
         oversized_record.extend_from_slice(&0_u16.to_le_bytes());
         oversized_record.extend_from_slice(&0_u64.to_le_bytes());
         oversized_record.extend_from_slice(&((MAX_CAPTURE_RECORD_BYTES + 1) as u32).to_le_bytes());
+        oversized_record.extend_from_slice(&[0_u8; V3_RECORD_HEADER_SIZE - RECORD_HEADER_SIZE]);
         let mut reader = CaptureReader::new(Cursor::new(oversized_record)).unwrap();
         assert!(matches!(
             reader.next(),
@@ -3320,6 +4009,7 @@ mod tests {
         truncated_record.extend_from_slice(&0_u16.to_le_bytes());
         truncated_record.extend_from_slice(&3_u64.to_le_bytes());
         truncated_record.extend_from_slice(&2_u32.to_le_bytes());
+        truncated_record.extend_from_slice(&[0_u8; V3_RECORD_HEADER_SIZE - RECORD_HEADER_SIZE]);
         truncated_record.push(0xaa);
         let mut reader = CaptureReader::new(Cursor::new(truncated_record)).unwrap();
         assert!(matches!(

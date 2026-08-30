@@ -12,7 +12,9 @@ use serde::Serialize;
 use serialport::{DataBits, FlowControl, Parity, SerialPortType, StopBits};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::capture::{CaptureDirection, CaptureRecorderHandle, CaptureState};
+use crate::capture::{
+    CaptureDirection, CaptureRecorderHandle, CaptureRxStreamMetadata, CaptureState,
+};
 use crate::modbus_rtu::{
     silent_interval, ModbusRequestSpec, ModbusResponseCollector, ResponseErrorCode, ResponseMatch,
     BUS_ACQUIRE_TIMEOUT, MAX_TRANSACTION_TIMEOUT_MS, MIN_TRANSACTION_TIMEOUT_MS,
@@ -3894,11 +3896,16 @@ fn run_serial_worker(
                     };
                 rx_counters.publish_backend(rx_progress.snapshot());
                 if let Some(session_id) = capture_session_id {
-                    let _ = recorder.append_for_session(
+                    let _ = recorder.append_serial_rx_for_session(
                         &app,
                         session_id,
-                        CaptureDirection::Rx,
                         &read_buffer[..byte_count],
+                        CaptureRxStreamMetadata {
+                            connection_generation: generation,
+                            sequence: rx_metadata.sequence,
+                            stream_offset: rx_metadata.stream_offset,
+                            received_at_monotonic_us: rx_metadata.received_at_monotonic_us,
+                        },
                     );
                 }
                 let _ = rx_publisher.try_publish(

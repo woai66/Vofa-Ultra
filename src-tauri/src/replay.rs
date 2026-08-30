@@ -2646,6 +2646,8 @@ mod tests {
             },
             started_at_unix_ms: 1_700_000_000_000,
             time_unit: "microseconds".to_owned(),
+            application: None,
+            device: None,
         }
     }
 
@@ -2871,6 +2873,7 @@ mod tests {
             direction: CaptureDirection::Rx,
             timestamp_us,
             payload: vec![0; payload_size],
+            rx_stream: None,
         }
     }
 

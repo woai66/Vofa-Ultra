@@ -1,9 +1,9 @@
 # VUCAP 捕获文件格式
 
 `.vucap` 是 Vofa-Ultra 的原始会话捕获格式。v1 以小端序保存 RX / TX 原始字节和相对单调时间，v2 在同一
-时间线上增加持久命名标记，v3 为文件头、每个时间线条目和完成 footer 增加独立 SHA-256 完整性校验。新录制只写
-v3；当前 reader 明确支持 v1、v2 和 v3。文件供后续回放、诊断和转换任务复用，不保存解析后的波形点，也不依赖
-当前界面的缓存上限。
+时间线上增加持久命名标记，v3 增加应用/设备摘要、原生串口 RX 流位置，并为文件头、每个时间线条目和完成 footer
+增加独立 SHA-256 完整性校验。新录制只写 v3；当前 reader 明确支持 v1、v2 和 v3。文件供后续回放、诊断和转换
+任务复用，不保存解析后的波形点，也不依赖当前界面的缓存上限。
 
 ## 文件结构
 
@@ -30,28 +30,51 @@ JSON 头使用 UTF-8，字段采用 camelCase：
 - `serialConfig`：开始录制时冻结的完整串口参数
 - `startedAtUnixMs`：会话起始 Unix 毫秒时间
 - `timeUnit`：v1 / v2 / v3 固定为 `microseconds`
+- `application`：仅 v3 必需，包含合法 SemVer `version` 和 `buildId`
+- `device`：仅 v3 可选，包含 `kind`、可选厂商/产品、成对 VID/PID 和可选 `serialNumberSha256`
+
+v1 / v2 禁止出现 `application` 或 `device`。v3 的 `buildId` 是 `development`，或 7–12 位小写 Git commit 加可选
+`-dirty`；它用于定位构建，不是可信构建证明。设备信息只在开始原生串口录制时从当前枚举结果冻结，模拟器不得携带
+该字段。USB 序列号先规范化，再只保存 64 位小写 SHA-256，不保存原文；非 USB 设备不得携带 VID、PID 或序列号
+摘要。摘要是可关联同一设备的稳定化名，低熵序列号仍可能被枚举反推，因此不能把它当作匿名化结果。
+
+当前 v3 不保存工作区、处理图、命令、扩展或 parser 构建摘要。原始字节回放可由文件复现，但派生曲线仍取决于
+打开文件时的当前配置；格式不能据此宣称分析结果完全确定。
 
 v3 在 JSON 头之后追加 32 字节 SHA-256，输入为从 magic 开始的 16 字节固定前缀与原始 JSON 字节的顺序拼接。
 reader 在解析 JSON 前验证该摘要；摘要缺失视为截断，摘要不匹配视为文件损坏。
 
 ### 数据记录
 
-| 长度 | 类型 | 内容 |
-| ---: | --- | --- |
-| 1 | u8 | tag：`0x01` |
-| 1 | u8 | direction：`0` 为 RX，`1` 为 TX |
-| 2 | u16 LE | reserved，v1 / v2 / v3 必须为 `0` |
-| 8 | u64 LE | 相对会话开始的单调微秒时间 |
-| 4 | u32 LE | payload 字节数，最大 64 KiB |
-| N | bytes | 原始 payload |
-| 32 | bytes | 以上完整记录的 SHA-256，仅 v3 存在 |
+v1 / v2 的固定记录头为 16 字节，v3 为 48 字节。表内偏移相对本条记录起点：
+
+| 偏移 | 长度 | 版本 | 类型 | 内容 |
+| ---: | ---: | --- | --- | --- |
+| 0 | 1 | 全部 | u8 | tag：`0x01` |
+| 1 | 1 | 全部 | u8 | direction：`0` 为 RX，`1` 为 TX |
+| 2 | 2 | v1 / v2 | u16 LE | reserved，必须为 `0` |
+| 2 | 2 | v3 | u16 LE | flags；`0x0001` 表示存在 RX 流位置，其他位必须为 `0` |
+| 4 | 8 | 全部 | u64 LE | 相对捕获开始的单调微秒时间 |
+| 12 | 4 | 全部 | u32 LE | payload 字节数，最大 64 KiB |
+| 16 | 8 | v3 | u64 LE | `connectionGeneration` |
+| 24 | 8 | v3 | u64 LE | 连接代次内从 `0` 开始的 `sequence` |
+| 32 | 8 | v3 | u64 LE | 连接代次内、该块首字节的 `streamOffset` |
+| 40 | 8 | v3 | u64 LE | 相对当前串口 worker 启动的 `receivedAtMonotonicUs` |
+| 16 / 48 | N | v1/v2 / v3 | bytes | 原始 payload |
+| 48+N | 32 | v3 | bytes | 完整 v3 记录头与 payload 的 SHA-256 |
 
 相对时间来自单调时钟，不受系统时间校准影响。TX 在每次串口 `write` 成功后记录实际写入的字节分片；一次
 发送可能产生多条 TX record，读取方必须按记录顺序拼接才能恢复线上字节流，不能把 record 边界解释为发送
 命令边界。RX 在进入 Base64 事件边界前记录，因此原生串口采集不需要让原始数据绕 WebView 一圈。
 
-v3 记录摘要覆盖 tag、direction、reserved、时间戳、payload 长度和 payload。条目只有在摘要验证通过后才会交给
-回放或导出；校验块被截断时，该条目不会进入可恢复的完整前缀。
+原生串口 RX 设置 `0x0001` 并填写四个流字段。TX、模拟器记录和没有该 flag 的 RX 必须把 32 字节扩展区全部写为
+零。同一 `connectionGeneration` 内，后续记录必须满足 `sequence = 前一序号 + 1`、`streamOffset = 前一偏移 +
+前一 payload 长度`，且接收单调时间不得回退。连接代次只能前进；新代次重新建立序号、偏移和时间基线，因此捕获
+在连接中途开始时，首条记录不要求从零开始。
+
+v3 记录摘要覆盖完整 48 字节头和 payload。reader 在交付记录前先验证字段、摘要及跨记录连续性；摘要不匹配按
+损坏拒绝，校验块截断时该条目不会进入可恢复的完整前缀。流位置证明的是 Rust 已成功读取之后、写入 VUCAP 的块
+序列，不证明 USB、驱动或操作系统在 `read` 之前没有丢数据。
 
 ### 时间线标记（v2 / v3）
 
@@ -88,7 +111,8 @@ v1 footer 在数据记录总数后结束，v2 / v3 footer 继续携带标记总�
 SHA-256 不匹配必须返回确定错误，不能按当前版本猜测解析。
 
 这些 SHA-256 是无密钥完整性校验，用于发现存储、传输或内存中的非恶意位翻转，不是数字签名。能够修改文件的
-攻击者也能重新计算摘要，因此 v3 不提供来源认证或防恶意篡改保证。
+攻击者也能重新计算摘要；应用版本、构建 ID 和设备摘要也都是自述元数据，因此 v3 不提供来源认证、防恶意篡改
+或软件供应链证明。
 
 ## 写入边界
 
@@ -119,7 +143,8 @@ SHA-256 不匹配必须返回确定错误，不能按当前版本猜测解析。
 - CSV 每条记录包含 `record_index`、`timestamp_us`、`unix_time_us`、`direction`、`payload_length` 和
   `payload_hex`。不输出不可信文本字段，避免电子表格公式注入和控制字符歧义。
 - JSONL 首行为 capture metadata，中间为时间线条目，末行为完整性和计数 summary。v1 schema 保持不变；v2+
-  使用 Base64 record 和 `type="marker"` 行，summary 增加 `processedMarkers`。
+  使用 Base64 record 和 `type="marker"` 行，summary 增加 `processedMarkers`；带 v3 RX 流位置的 record 另含
+  `rxStream` 对象。CSV 与 BIN 不增加该元数据，保持既有输出契约。
 - 方向过滤只过滤 RX / TX record，不移除 v2+ marker。CSV 和 BIN 明确跳过标记，保持既有纯数据契约；BIN 只按
   记录顺序拼接显式选择的 RX 或 TX payload，不允许双向输出，因为裸字节流无法保留方向。
 - 不完整文件默认拒绝；用户明确允许后只提交已验证的完整条目前缀，并标记 `sourceComplete=false`。
@@ -157,9 +182,9 @@ Rust 单批最多接受 512 行，writer 队列限制 64 批、4 MiB 与 4,096 �
 ## 兼容策略
 
 reader 必须先验证 magic 和版本，再分配 JSON、payload 或标签缓冲。当前 reader 按版本解析 v1 / v2 / v3，把
-v1 的 `marker_count` 归一化为 0，并只为 v3 读取校验块；writer 只产生 v3。这里的“兼容旧版 reader”指升级后的
-reader 继续读取既有 v1 / v2 文件，不代表旧版程序能读取 v3。旧版 reader 应以未来版本错误明确拒绝 v3，而不是
-尝试忽略校验块或按 v2 猜测条目边界。
+v1 的 `marker_count` 归一化为 0；v1 / v2 保持 16 字节记录头且没有条目摘要，v3 使用 48 字节记录头并读取校验块。
+writer 只产生 v3。这里的“兼容旧版 reader”指升级后的 reader 继续读取既有 v1 / v2 文件，不代表旧版程序能读取
+v3。旧版 reader 应以未来版本错误明确拒绝 v3，而不是尝试忽略扩展头、校验块或按 v2 猜测条目边界。
 
 后续版本如改变条目语义，应继续提升格式版本并保留旧格式读取路径，不能复用 flags 静默改变既有含义。
 

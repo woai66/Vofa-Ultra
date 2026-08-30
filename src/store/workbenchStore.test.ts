@@ -5919,6 +5919,7 @@ describe("workbenchStore", () => {
       source: "simulator",
       protocol: "justfloat",
       serialConfig: expect.objectContaining({ portName: "COM7", baudRate: 921_600 }),
+      buildId: APP_BUILD_ID,
     });
     expect(useWorkbenchStore.getState()).toMatchObject({
       captureStatus: "recording",
@@ -5932,6 +5933,54 @@ describe("workbenchStore", () => {
     expect(useWorkbenchStore.getState().protocol).toBe("justfloat");
     expect(useWorkbenchStore.getState().source).toBe("simulator");
     expect(useWorkbenchStore.getState().serialConfig.baudRate).toBe(921_600);
+  });
+
+  it("串口录制传入匹配的设备摘要输入，模拟器录制不携带设备", async () => {
+    startCaptureMock.mockResolvedValue({
+      status: "recording",
+      sessionId: 8,
+      revision: 1,
+      formatVersion: 3,
+      path: "C:\\captures\\serial-session.vucap",
+      startedAtUnixMs: 1_000,
+      dataBytes: 0,
+      recordCount: 0,
+      markerCount: 0,
+    });
+    const port: SerialPortInfo = {
+      name: "COM12",
+      kind: "usb",
+      manufacturer: "Acme",
+      product: "Debug Probe",
+      serialNumber: "DEVICE-001",
+      vendorId: 0x1234,
+      productId: 0x5678,
+    };
+    useWorkbenchStore.setState((state) => ({
+      isNativeRuntime: true,
+      source: "serial",
+      connectionStatus: "connected",
+      protocol: "raw",
+      ports: [port],
+      serialConfig: { ...state.serialConfig, portName: port.name },
+    }));
+
+    await expect(useWorkbenchStore.getState().startCapture()).resolves.toBe(true);
+    expect(startCaptureMock).toHaveBeenCalledWith({
+      source: "serial",
+      protocol: "raw",
+      serialConfig: expect.objectContaining({ portName: "COM12" }),
+      buildId: APP_BUILD_ID,
+      device: {
+        name: "COM12",
+        kind: "usb",
+        manufacturer: "Acme",
+        product: "Debug Probe",
+        serialNumber: "DEVICE-001",
+        vendorId: 0x1234,
+        productId: 0x5678,
+      },
+    });
   });
 
   it("目录选择取消不改状态，成功后可恢复系统默认", async () => {
@@ -6032,6 +6081,7 @@ describe("workbenchStore", () => {
       source: "simulator",
       protocol: "firewater",
       serialConfig: expect.any(Object),
+      buildId: APP_BUILD_ID,
       destinationDirectory: "D:\\sessions",
     });
     expect(startNumericLogMock).toHaveBeenCalledWith({

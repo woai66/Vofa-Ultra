@@ -2834,10 +2834,16 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
         set({ captureStatus: "starting", captureMessage: "正在创建捕获文件" });
         try {
+          const captureDevice =
+            state.source === "serial"
+              ? state.ports.find((port) => port.name === state.serialConfig.portName)
+              : undefined;
           const payload = await startCaptureClient({
             source: state.source,
             protocol: state.protocol,
             serialConfig: state.serialConfig,
+            buildId: APP_BUILD_ID,
+            ...(captureDevice ? { device: captureDevice } : {}),
             ...(state.recordingDirectory
               ? { destinationDirectory: state.recordingDirectory }
               : {}),
