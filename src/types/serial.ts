@@ -70,6 +70,19 @@ export interface SerialConfig {
   rts: boolean;
 }
 
+export interface SerialRxUiPipelineMetrics {
+  queueBytes: number;
+  queueEvents: number;
+  queueCapacityBytes: number;
+  queueCapacityEvents: number;
+  queuePeakBytes: number;
+  queuePeakEvents: number;
+  droppedBytes: number;
+  droppedEvents: number;
+  publisherFailures: number;
+  publisherTimeouts: number;
+}
+
 export interface SerialDataPayload {
   data: string;
   receivedAt: number;
@@ -145,6 +158,7 @@ export interface SerialStatePayload {
   revision: number;
   backendRxBytes?: number;
   backendRxEvents?: number;
+  uiPipeline?: SerialRxUiPipelineMetrics;
 }
 
 export type SerialRxIntegrityStatus = "idle" | "monitoring" | "verified" | "degraded";
@@ -155,6 +169,7 @@ export interface SerialRxObservabilitySnapshot {
   finalized: boolean;
   backendRxBytes: number;
   backendRxEvents: number;
+  uiPipeline?: SerialRxUiPipelineMetrics;
   acceptedRxBytes: number;
   acceptedRxEvents: number;
   ipcGapBytes: number;
@@ -214,7 +229,7 @@ export interface SerialDiagnosticEvent {
 
 export interface SerialDiagnosticsReport {
   format: "vofa-ultra.serial-diagnostics";
-  schemaVersion: 2;
+  schemaVersion: 3;
   generatedAt: number;
   appVersion: string;
   buildId: string;

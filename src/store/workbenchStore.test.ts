@@ -576,7 +576,7 @@ describe("workbenchStore", () => {
 
   it("诊断报告使用构建注入的应用版本", () => {
     expect(useWorkbenchStore.getState().getSerialDiagnostics()).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       appVersion: APP_VERSION,
       buildId: APP_BUILD_ID,
       rxObservability: createIdleSerialRxObservability(),

@@ -69,6 +69,7 @@ export function observeSerialRxState(
       reportedBackendRxEvents < base.backendRxEvents);
   const next = {
     ...base,
+    uiPipeline: payload.uiPipeline ?? base.uiPipeline,
     backendRxBytes,
     backendRxEvents,
     contractViolations:
