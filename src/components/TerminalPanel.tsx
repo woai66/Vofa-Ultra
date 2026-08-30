@@ -325,7 +325,10 @@ export function TerminalPanel() {
   const commandSendOrigin = useWorkbenchStore((state) => state.commandSendOrigin);
   const terminalPaused = useWorkbenchStore((state) => state.terminalPaused);
   const terminalAutoScroll = useWorkbenchStore((state) => state.terminalAutoScroll);
-  const connectionStatus = useWorkbenchStore((state) => state.connectionStatus);
+  const connectionReady = useWorkbenchStore(
+    (state) =>
+      state.runtimeTransitionStatus === "idle" && state.connectionStatus === "connected",
+  );
   const source = useWorkbenchStore((state) => state.source);
   const isNativeRuntime = useWorkbenchStore((state) => state.isNativeRuntime);
   const isWorkspaceTransitioning = useWorkbenchStore(
@@ -497,7 +500,7 @@ export function TerminalPanel() {
     manualSendPending ||
     (isSendingCommand && commandSendOrigin !== "auto-responder");
   const canSendManually =
-    connectionStatus === "connected" &&
+    connectionReady &&
     hasSendableFrame &&
     !templatePreview.error &&
     !templatePreview.loading &&
@@ -506,10 +509,10 @@ export function TerminalPanel() {
     !manualSendBlocked;
   const workflowVisible = workflowOpen || taskActive;
   const canStartPeriodic =
-    connectionStatus === "connected" &&
+    connectionReady &&
     !templatePreview.error &&
     !templatePreview.loading &&
-    templatePreview.byteCount > 0 &&
+    hasSendableFrame &&
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
     !autoResponderActive &&
@@ -520,7 +523,7 @@ export function TerminalPanel() {
     !taskActive &&
     !taskStartPending;
   const canExecuteModbus =
-    connectionStatus === "connected" &&
+    connectionReady &&
     serialControlLineOperation === "idle" &&
     !isWorkspaceTransitioning &&
     !isSendingCommand &&
@@ -532,7 +535,7 @@ export function TerminalPanel() {
   const canStartFileSend =
     isNativeRuntime &&
     source === "serial" &&
-    connectionStatus === "connected" &&
+    connectionReady &&
     serialControlLineOperation === "idle" &&
     selectedFilePath.length > 0 &&
     !fileSelectionPending &&

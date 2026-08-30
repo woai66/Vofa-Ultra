@@ -3828,6 +3828,58 @@ test("有界命令历史与可取消周期发送形成完整工作流", async ({
   await expect(page.getByRole("dialog", { name: "命令历史" })).toContainText("<CR>");
 });
 
+test("运行事务期间统一锁定发送入口并在结束后恢复", async ({ page }) => {
+  await installTauriSerialMock(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "连接设备" }).click();
+  await expect(page.getByText("COM3 已连接")).toBeVisible();
+
+  const input = page.getByRole("textbox", { name: "发送内容" });
+  const sendButton = page.locator(".send-button");
+  await input.fill("PING");
+  await page.getByRole("button", { name: "展开周期发送设置" }).click();
+  const periodicButton = page.getByRole("button", { name: "启动", exact: true });
+  await expect(sendButton).toBeEnabled();
+  await expect(periodicButton).toBeEnabled();
+
+  const fileTrigger = page.getByRole("button", { name: "打开文件发送" });
+  const fileDialog = page.getByRole("dialog", { name: "原始文件发送" });
+  await fileTrigger.click();
+  await fileDialog.getByRole("button", { name: "选择", exact: true }).click();
+  const fileStartButton = fileDialog.getByRole("button", { name: "开始发送" });
+  await expect(fileStartButton).toBeEnabled();
+  await fileDialog.getByRole("button", { name: "关闭文件发送" }).click();
+
+  const modbusTrigger = page.getByRole("button", { name: "打开 Modbus RTU 构帧器" });
+  await modbusTrigger.click();
+  const builder = page.getByRole("dialog", { name: "Modbus RTU 构帧器" });
+  const executeButton = builder.getByRole("button", { name: "执行一次" });
+  const pollButton = builder.getByRole("button", { name: "开始轮询" });
+  await expect(executeButton).toBeEnabled();
+  await expect(pollButton).toBeEnabled();
+
+  await setWorkbenchState(page, { runtimeTransitionStatus: "disconnecting" });
+
+  for (const button of [sendButton, periodicButton, executeButton, pollButton]) {
+    await expect(button).toBeDisabled();
+  }
+  await input.press("Enter");
+  await expect(input).toHaveValue("PING");
+  await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
+
+  await fileTrigger.click();
+  await expect(fileStartButton).toBeDisabled();
+
+  await setWorkbenchState(page, { runtimeTransitionStatus: "idle" });
+
+  await expect(sendButton).toBeEnabled();
+  await expect(periodicButton).toBeEnabled();
+  await expect(fileStartButton).toBeEnabled();
+  await modbusTrigger.click();
+  await expect(executeButton).toBeEnabled();
+  await expect(pollButton).toBeEnabled();
+});
+
 test("GB18030 文本发送使用实际字节并从历史恢复编码", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "启动模拟" }).click();

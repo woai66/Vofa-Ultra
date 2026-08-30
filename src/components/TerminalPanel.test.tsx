@@ -14,6 +14,18 @@ import { useWorkbenchStore } from "../store/workbenchStore";
 import type { TerminalEntry } from "../types/workbench";
 import { TerminalPanel } from "./TerminalPanel";
 
+const { selectSerialFilePathMock } = vi.hoisted(() => ({
+  selectSerialFilePathMock: vi.fn(),
+}));
+
+vi.mock("../services/serialClient", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/serialClient")>();
+  return {
+    ...actual,
+    selectSerialFilePath: selectSerialFilePathMock,
+  };
+});
+
 const SEARCH_ENTRIES: TerminalEntry[] = [
   {
     id: 101,
@@ -42,6 +54,24 @@ const SEARCH_ENTRIES: TerminalEntry[] = [
 ];
 
 const DEFAULT_SEND = useWorkbenchStore.getState().send;
+const DEFAULT_START_FILE_SEND = useWorkbenchStore.getState().startFileSend;
+const DEFAULT_START_PERIODIC_SEND = useWorkbenchStore.getState().startPeriodicSend;
+const DEFAULT_START_MODBUS_POLLING = useWorkbenchStore.getState().startModbusPolling;
+const DEFAULT_START_MODBUS_TRANSACTION = useWorkbenchStore.getState().startModbusTransaction;
+const RUNTIME_BUSY_STATUSES = [
+  "switching-source",
+  "connecting",
+  "disconnecting",
+  "starting-capture",
+  "stopping-capture",
+  "starting-numeric-log",
+  "stopping-numeric-log",
+  "selecting-replay",
+  "opening-replay",
+  "controlling-replay",
+  "switching-workspace",
+  "closing-app",
+] as const;
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -55,6 +85,8 @@ function createDeferred<T>() {
 
 describe("TerminalPanel", () => {
   beforeEach(() => {
+    selectSerialFilePathMock.mockReset();
+    selectSerialFilePathMock.mockResolvedValue(null);
     localStorage.removeItem(TERMINAL_TIME_MODE_STORAGE_KEY);
     useWorkbenchStore.getState().stopModbusPolling();
     useWorkbenchStore.getState().stopPeriodicSend();
@@ -100,6 +132,10 @@ describe("TerminalPanel", () => {
       terminalPaused: false,
       terminalAutoScroll: true,
       send: DEFAULT_SEND,
+      startFileSend: DEFAULT_START_FILE_SEND,
+      startPeriodicSend: DEFAULT_START_PERIODIC_SEND,
+      startModbusPolling: DEFAULT_START_MODBUS_POLLING,
+      startModbusTransaction: DEFAULT_START_MODBUS_TRANSACTION,
     });
   });
 
@@ -756,6 +792,95 @@ describe("TerminalPanel", () => {
     await waitFor(() => expect(sendButton).toBeEnabled());
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(send).toHaveBeenCalledWith("PING", "text", "none"));
+  });
+
+  it.each(RUNTIME_BUSY_STATUSES)(
+    "运行事务 %s 期间统一锁定全部发送入口",
+    async (runtimeTransitionStatus) => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      const startFileSend = vi.fn().mockResolvedValue(true);
+      const startPeriodicSend = vi.fn();
+      const startModbusPolling = vi.fn();
+      const startModbusTransaction = vi.fn().mockResolvedValue(true);
+      selectSerialFilePathMock.mockResolvedValue("C:\\firmware\\payload.bin");
+      useWorkbenchStore.setState({
+        isNativeRuntime: true,
+        source: "serial",
+        runtimeTransitionStatus,
+        send,
+        startFileSend,
+        startPeriodicSend,
+        startModbusPolling,
+        startModbusTransaction,
+      });
+      const user = userEvent.setup();
+      render(<TerminalPanel />);
+      const input = screen.getByRole("textbox", { name: "发送内容" });
+
+      await user.type(input, "PING");
+      const sendButton = screen.getByRole("button", { name: "发送" });
+      expect(sendButton).toBeDisabled();
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      await user.click(screen.getByRole("button", { name: "展开周期发送设置" }));
+      const periodicButton = screen.getByRole("button", { name: "启动" });
+      expect(periodicButton).toBeDisabled();
+
+      await user.click(screen.getByRole("button", { name: "打开文件发送" }));
+      const fileDialog = screen.getByRole("dialog", { name: "原始文件发送" });
+      await user.click(within(fileDialog).getByRole("button", { name: "选择" }));
+      await waitFor(() => expect(within(fileDialog).getByText("payload.bin")).toBeVisible());
+      const fileButton = within(fileDialog).getByRole("button", { name: "开始发送" });
+      expect(fileButton).toBeDisabled();
+
+      await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
+      const builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
+      const executeButton = within(builder).getByRole("button", { name: "执行一次" });
+      const pollButton = within(builder).getByRole("button", { name: "开始轮询" });
+      expect(executeButton).toBeDisabled();
+      expect(pollButton).toBeDisabled();
+
+      fireEvent.click(sendButton);
+      fireEvent.click(periodicButton);
+      fireEvent.click(fileButton);
+      fireEvent.click(executeButton);
+      fireEvent.click(pollButton);
+      expect(send).not.toHaveBeenCalled();
+      expect(startPeriodicSend).not.toHaveBeenCalled();
+      expect(startFileSend).not.toHaveBeenCalled();
+      expect(startModbusTransaction).not.toHaveBeenCalled();
+      expect(startModbusPolling).not.toHaveBeenCalled();
+    },
+  );
+
+  it("运行事务结束后恢复发送入口", async () => {
+    selectSerialFilePathMock.mockResolvedValue("C:\\firmware\\payload.bin");
+    useWorkbenchStore.setState({
+      isNativeRuntime: true,
+      source: "serial",
+      runtimeTransitionStatus: "disconnecting",
+    });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.type(screen.getByRole("textbox", { name: "发送内容" }), "PING");
+    await user.click(screen.getByRole("button", { name: "展开周期发送设置" }));
+    await user.click(screen.getByRole("button", { name: "打开文件发送" }));
+    const fileDialog = screen.getByRole("dialog", { name: "原始文件发送" });
+    await user.click(within(fileDialog).getByRole("button", { name: "选择" }));
+    await waitFor(() => expect(within(fileDialog).getByText("payload.bin")).toBeVisible());
+
+    useWorkbenchStore.setState({ runtimeTransitionStatus: "idle" });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "启动" })).toBeEnabled();
+      expect(within(fileDialog).getByRole("button", { name: "开始发送" })).toBeEnabled();
+    });
+    await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
+    const builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
+    expect(within(builder).getByRole("button", { name: "执行一次" })).toBeEnabled();
+    expect(within(builder).getByRole("button", { name: "开始轮询" })).toBeEnabled();
   });
 
   it("发送完成前编辑新草稿时保留新内容", async () => {
