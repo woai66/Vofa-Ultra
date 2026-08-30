@@ -14,22 +14,30 @@ export interface WaveformIntervalStatistics {
 
 export function calculateWaveformIntervalStatistics(
   points: readonly WaveformIntervalSample[],
-  firstTimestampSeconds: number,
-  secondTimestampSeconds: number,
+  firstIndex: number,
+  secondIndex: number,
 ): WaveformIntervalStatistics | null {
-  if (!Number.isFinite(firstTimestampSeconds) || !Number.isFinite(secondTimestampSeconds)) {
+  if (
+    !Number.isInteger(firstIndex) ||
+    !Number.isInteger(secondIndex) ||
+    firstIndex < 0 ||
+    secondIndex < 0 ||
+    firstIndex >= points.length ||
+    secondIndex >= points.length
+  ) {
     return null;
   }
 
-  const intervalStart = Math.min(firstTimestampSeconds, secondTimestampSeconds);
-  const intervalEnd = Math.max(firstTimestampSeconds, secondTimestampSeconds);
+  const intervalStart = Math.min(firstIndex, secondIndex);
+  const intervalEnd = Math.max(firstIndex, secondIndex);
   let sampleCount = 0;
   let minimum = Number.POSITIVE_INFINITY;
   let maximum = Number.NEGATIVE_INFINITY;
   let magnitudeScale = 0;
 
-  for (const point of points) {
-    if (!isFinitePointInInterval(point, intervalStart, intervalEnd)) {
+  for (let index = intervalStart; index <= intervalEnd; index += 1) {
+    const point = points[index];
+    if (!point || !isFiniteSample(point)) {
       continue;
     }
     sampleCount += 1;
@@ -50,8 +58,9 @@ export function calculateWaveformIntervalStatistics(
     let scaledSquareSum = 0;
     let squareCompensation = 0;
 
-    for (const point of points) {
-      if (!isFinitePointInInterval(point, intervalStart, intervalEnd)) {
+    for (let index = intervalStart; index <= intervalEnd; index += 1) {
+      const point = points[index];
+      if (!point || !isFiniteSample(point)) {
         continue;
       }
       const scaledValue = point.value / magnitudeScale;
@@ -84,15 +93,6 @@ export function calculateWaveformIntervalStatistics(
   };
 }
 
-function isFinitePointInInterval(
-  point: WaveformIntervalSample,
-  intervalStart: number,
-  intervalEnd: number,
-): boolean {
-  return (
-    Number.isFinite(point.timestampSeconds) &&
-    Number.isFinite(point.value) &&
-    point.timestampSeconds >= intervalStart &&
-    point.timestampSeconds <= intervalEnd
-  );
+function isFiniteSample(point: WaveformIntervalSample): boolean {
+  return Number.isFinite(point.timestampSeconds) && Number.isFinite(point.value);
 }

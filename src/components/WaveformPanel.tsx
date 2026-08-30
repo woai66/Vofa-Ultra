@@ -525,8 +525,29 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     });
   };
 
-  const setCursorToPoint = useCallback(
-    (cursor: WaveformMeasurementCursor, timestampSeconds: number) => {
+  const setCursorToIndex = useCallback(
+    (cursor: WaveformMeasurementCursor, requestedIndex: number) => {
+      setMeasurementAnchors((current) => {
+        if (!current) {
+          return current;
+        }
+        if (cursor === "A") {
+          return {
+            aIndex: Math.min(requestedIndex, current.bIndex),
+            bIndex: current.bIndex,
+          };
+        }
+        return {
+          aIndex: current.aIndex,
+          bIndex: Math.max(requestedIndex, current.aIndex),
+        };
+      });
+    },
+    [],
+  );
+
+  const handleChartMeasurement = useCallback(
+    (timestampSeconds: number) => {
       const point = snapToNearestMeasurementPoint(
         visibleMeasurementPoints,
         timestampSeconds,
@@ -534,37 +555,10 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
       if (!point) {
         return;
       }
-      setMeasurementAnchors((current) => {
-        if (!current) {
-          return current;
-        }
-        if (cursor === "A") {
-          return {
-            aTimestampSeconds: Math.min(
-              point.timestampSeconds,
-              current.bTimestampSeconds,
-            ),
-            bTimestampSeconds: current.bTimestampSeconds,
-          };
-        }
-        return {
-          aTimestampSeconds: current.aTimestampSeconds,
-          bTimestampSeconds: Math.max(
-            point.timestampSeconds,
-            current.aTimestampSeconds,
-          ),
-        };
-      });
-    },
-    [visibleMeasurementPoints],
-  );
-
-  const handleChartMeasurement = useCallback(
-    (timestampSeconds: number) => {
-      setCursorToPoint(activeCursor, timestampSeconds);
+      setCursorToIndex(activeCursor, point.index);
       setActiveCursor((cursor) => (cursor === "A" ? "B" : "A"));
     },
-    [activeCursor, setCursorToPoint],
+    [activeCursor, setCursorToIndex, visibleMeasurementPoints],
   );
 
   const handleCursorIndexChange = (
@@ -573,7 +567,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   ) => {
     const point = visibleMeasurementPoints[index];
     if (point) {
-      setCursorToPoint(cursor, point.timestampSeconds);
+      setCursorToIndex(cursor, point.index);
     }
   };
 

@@ -217,7 +217,8 @@ describe("WaveformPanel 波形测量", () => {
     expect(screen.getByText("原始字节保留在数据终端中")).toBeVisible();
   });
 
-  it("相同接收时刻仍按帧序号保留稀疏通道数据", () => {
+  it("相同接收时刻的图表、游标和区间统计使用同一组帧", async () => {
+    const user = userEvent.setup();
     useWorkbenchStore.setState({
       channels: [
         {
@@ -245,6 +246,21 @@ describe("WaveformPanel 波形测量", () => {
       [1, 2, 3],
       [10, null, 30],
     ]);
+
+    await user.click(screen.getByRole("button", { name: "开启波形测量" }));
+    const results = await screen.findByLabelText("波形测量结果");
+    const statistics = screen.getByLabelText("A/B 区间统计");
+    fireEvent.change(screen.getByRole("slider", { name: "游标 A 采样点" }), {
+      target: { value: "0" },
+    });
+
+    expect(within(results).getByText("yA").parentElement).toHaveTextContent("1.000");
+    expect(within(results).getByText("yB").parentElement).toHaveTextContent("3.000");
+    expect(within(results).getByText("Δt").parentElement).toHaveTextContent("0.000 ns");
+    expect(within(results).getByText("1/Δt").parentElement).toHaveTextContent("--");
+    expect(within(statistics).getByText("样本数").parentElement).toHaveTextContent("3");
+    expect(within(statistics).getByText("均值").parentElement).toHaveTextContent("2.000");
+    expect(within(statistics).getByText("RMS").parentElement).toHaveTextContent("2.160");
   });
 
   it("按连接、暂停和回放状态显示真实的波形运行状态", () => {

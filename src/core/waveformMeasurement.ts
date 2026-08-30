@@ -3,8 +3,8 @@ import type { DataPoint } from "../types/workbench";
 export type WaveformMeasurementCursor = "A" | "B";
 
 export interface WaveformMeasurementAnchors {
-  readonly aTimestampSeconds: number;
-  readonly bTimestampSeconds: number;
+  readonly aIndex: number;
+  readonly bIndex: number;
 }
 
 export interface WaveformMeasurementPoint {
@@ -24,6 +24,7 @@ export interface WaveformMeasurementResult {
 interface OrderedPoint {
   readonly timestampSeconds: number;
   readonly value: number;
+  readonly frameSequence: number | null;
   readonly sourceIndex: number;
 }
 
@@ -44,37 +45,41 @@ export function getVisibleMeasurementPoints(
       return {
         timestampSeconds: point.x,
         value: point.y,
+        frameSequence: normalizeFrameSequence(point.frameSequence),
         sourceIndex,
       };
     })
     .filter((point): point is OrderedPoint => point !== null)
     .sort((left, right) => {
       const timeDifference = left.timestampSeconds - right.timestampSeconds;
-      return timeDifference === 0 ? left.sourceIndex - right.sourceIndex : timeDifference;
+      if (timeDifference !== 0) {
+        return timeDifference;
+      }
+      if (
+        left.frameSequence !== null &&
+        right.frameSequence !== null &&
+        left.frameSequence !== right.frameSequence
+      ) {
+        return left.frameSequence < right.frameSequence ? -1 : 1;
+      }
+      if ((left.frameSequence === null) !== (right.frameSequence === null)) {
+        return left.frameSequence === null ? 1 : -1;
+      }
+      return left.sourceIndex - right.sourceIndex;
     });
 
-  const uniquePoints: OrderedPoint[] = [];
-  for (const point of orderedPoints) {
-    const previousPoint = uniquePoints.at(-1);
-    if (previousPoint?.timestampSeconds === point.timestampSeconds) {
-      uniquePoints[uniquePoints.length - 1] = point;
-    } else {
-      uniquePoints.push(point);
-    }
-  }
-
-  const latestTimestampSeconds = uniquePoints.at(-1)?.timestampSeconds;
+  const latestTimestampSeconds = orderedPoints.at(-1)?.timestampSeconds;
   if (latestTimestampSeconds === undefined) {
     return [];
   }
 
   const firstVisibleIndex = lowerBound(
-    uniquePoints,
+    orderedPoints,
     latestTimestampSeconds - windowSeconds,
     (point) => point.timestampSeconds,
   );
 
-  return uniquePoints.slice(firstVisibleIndex).map((point, index) => ({
+  return orderedPoints.slice(firstVisibleIndex).map((point, index) => ({
     index,
     timestampSeconds: point.timestampSeconds,
     value: point.value,
@@ -98,8 +103,8 @@ export function createInitialMeasurementAnchors(
   }
 
   return {
-    aTimestampSeconds: pointA.timestampSeconds,
-    bTimestampSeconds: pointB.timestampSeconds,
+    aIndex: pointA.index,
+    bIndex: pointB.index,
   };
 }
 
@@ -137,16 +142,16 @@ export function snapToNearestMeasurementPoint(
 export function resolveMeasurementAnchor(
   points: readonly DataPoint[],
   windowSeconds: number,
-  anchorTimestampSeconds: number,
+  anchorIndex: number,
 ): WaveformMeasurementPoint | null {
   const visiblePoints = getVisibleMeasurementPoints(points, windowSeconds);
-  return resolveAnchorInVisiblePoints(visiblePoints, anchorTimestampSeconds);
+  return resolveVisibleMeasurementPoint(visiblePoints, anchorIndex);
 }
 
 export function moveMeasurementAnchor(
   points: readonly DataPoint[],
   windowSeconds: number,
-  anchorTimestampSeconds: number,
+  anchorIndex: number,
   sampleOffset: number,
 ): WaveformMeasurementPoint | null {
   if (!Number.isInteger(sampleOffset)) {
@@ -154,7 +159,7 @@ export function moveMeasurementAnchor(
   }
 
   const visiblePoints = getVisibleMeasurementPoints(points, windowSeconds);
-  const currentPoint = resolveAnchorInVisiblePoints(visiblePoints, anchorTimestampSeconds);
+  const currentPoint = resolveVisibleMeasurementPoint(visiblePoints, anchorIndex);
   if (!currentPoint) {
     return null;
   }
@@ -169,14 +174,14 @@ export function calculateWaveformMeasurement(
   anchors: WaveformMeasurementAnchors,
 ): WaveformMeasurementResult | null {
   const visiblePoints = getVisibleMeasurementPoints(points, windowSeconds);
-  const resolvedA = resolveAnchorInVisiblePoints(visiblePoints, anchors.aTimestampSeconds);
-  const resolvedB = resolveAnchorInVisiblePoints(visiblePoints, anchors.bTimestampSeconds);
+  const resolvedA = resolveVisibleMeasurementPoint(visiblePoints, anchors.aIndex);
+  const resolvedB = resolveVisibleMeasurementPoint(visiblePoints, anchors.bIndex);
   if (!resolvedA || !resolvedB) {
     return null;
   }
 
   const [pointA, pointB] =
-    resolvedA.timestampSeconds <= resolvedB.timestampSeconds
+    resolvedA.index <= resolvedB.index
       ? [resolvedA, resolvedB]
       : [resolvedB, resolvedA];
   const deltaTimeSeconds = pointB.timestampSeconds - pointA.timestampSeconds;
@@ -190,26 +195,18 @@ export function calculateWaveformMeasurement(
   };
 }
 
-function resolveAnchorInVisiblePoints(
+function resolveVisibleMeasurementPoint(
   visiblePoints: readonly WaveformMeasurementPoint[],
-  anchorTimestampSeconds: number,
+  index: number,
 ): WaveformMeasurementPoint | null {
-  if (!Number.isFinite(anchorTimestampSeconds)) {
+  if (!Number.isInteger(index) || index < 0) {
     return null;
   }
+  return visiblePoints[index] ?? null;
+}
 
-  const firstPoint = visiblePoints[0];
-  const lastPoint = visiblePoints.at(-1);
-  if (
-    !firstPoint ||
-    !lastPoint ||
-    anchorTimestampSeconds < firstPoint.timestampSeconds ||
-    anchorTimestampSeconds > lastPoint.timestampSeconds
-  ) {
-    return null;
-  }
-
-  return snapToNearestMeasurementPoint(visiblePoints, anchorTimestampSeconds);
+function normalizeFrameSequence(frameSequence: number | undefined): number | null {
+  return Number.isSafeInteger(frameSequence) ? (frameSequence ?? null) : null;
 }
 
 function lowerBound<T>(

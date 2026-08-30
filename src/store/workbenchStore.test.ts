@@ -13,7 +13,10 @@ import {
   simulateModbusRtuResponse,
 } from "../core/modbusRtu";
 import { createEmptyProtocolHealth } from "../core/protocols";
-import { calculateWaveformMeasurement } from "../core/waveformMeasurement";
+import {
+  calculateWaveformMeasurement,
+  getVisibleMeasurementPoints,
+} from "../core/waveformMeasurement";
 import { createArmedWaveformTriggerState } from "../core/waveformTrigger";
 import { createDefaultWorkspaceConfig, createWorkspaceProfile } from "../core/workspaces";
 import {
@@ -3814,12 +3817,26 @@ describe("workbenchStore", () => {
     expect(
       state.processedChannels[0]?.points.map((point) => point.frameSequence),
     ).toEqual(frameSequences);
+    const sourcePoints = state.channels[0]?.points ?? [];
+    const measurementPoints = getVisibleMeasurementPoints(sourcePoints, 5);
+    expect(measurementPoints.map((point) => point.value)).toEqual([1, 2, 3, 4]);
+    const firstPoint = measurementPoints[0];
+    const lastPoint = measurementPoints.at(-1);
+    if (!firstPoint || !lastPoint) {
+      throw new Error("测量点未保留同一读取块的全部帧");
+    }
     expect(
-      calculateWaveformMeasurement(state.channels[0]?.points ?? [], 5, {
-        aTimestampSeconds: 1,
-        bTimestampSeconds: 1,
-      })?.frequencyHz,
-    ).toBeNull();
+      calculateWaveformMeasurement(sourcePoints, 5, {
+        aIndex: firstPoint.index,
+        bIndex: lastPoint.index,
+      }),
+    ).toMatchObject({
+      pointA: { value: 1 },
+      pointB: { value: 4 },
+      deltaTimeSeconds: 0,
+      frequencyHz: null,
+      deltaY: 3,
+    });
     expect(state.terminalEntries).toMatchObject([
       { timestamp: 1_000 },
       { timestamp: 1_000 },

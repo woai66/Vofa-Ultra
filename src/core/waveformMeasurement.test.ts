@@ -7,10 +7,19 @@ import {
   moveMeasurementAnchor,
   resolveMeasurementAnchor,
   snapToNearestMeasurementPoint,
+  type WaveformMeasurementPoint,
 } from "./waveformMeasurement";
 
-function point(x: number, y = x): DataPoint {
-  return { x, y };
+function point(x: number, y = x, frameSequence?: number): DataPoint {
+  return frameSequence === undefined ? { x, y } : { x, y, frameSequence };
+}
+
+function measurementPoint(
+  index: number,
+  timestampSeconds: number,
+  value: number,
+): WaveformMeasurementPoint {
+  return { index, timestampSeconds, value };
 }
 
 describe("波形测量可见窗口", () => {
@@ -26,8 +35,8 @@ describe("波形测量可见窗口", () => {
     ];
 
     expect(getVisibleMeasurementPoints(points, 10)).toEqual([
-      { index: 0, timestampSeconds: 10, value: 10 },
-      { index: 1, timestampSeconds: 20, value: 20 },
+      measurementPoint(0, 10, 10),
+      measurementPoint(1, 20, 20),
     ]);
     expect(getVisibleMeasurementPoints(points, Number.NaN)).toEqual([]);
     expect(getVisibleMeasurementPoints(points, -1)).toEqual([]);
@@ -35,43 +44,59 @@ describe("波形测量可见窗口", () => {
 
   it("窗口起点包含边界样本", () => {
     expect(getVisibleMeasurementPoints([point(0), point(5), point(10)], 5)).toEqual([
-      { index: 0, timestampSeconds: 5, value: 5 },
-      { index: 1, timestampSeconds: 10, value: 10 },
+      measurementPoint(0, 5, 5),
+      measurementPoint(1, 10, 10),
     ]);
   });
 
-  it("重复时间戳保留图表同样会显示的最后一个样本", () => {
+  it("同一时间的多帧全部保留，并优先按帧序号排序", () => {
     expect(
       getVisibleMeasurementPoints(
-        [point(2, 20), point(1, 10), point(2, 21), point(3, 30), point(2, 22)],
+        [
+          point(2, 20, 202),
+          point(1, 10, 101),
+          point(2, 21, 201),
+          point(3, 30, 301),
+          point(2, 22, 203),
+        ],
         2,
       ),
     ).toEqual([
-      { index: 0, timestampSeconds: 1, value: 10 },
-      { index: 1, timestampSeconds: 2, value: 22 },
-      { index: 2, timestampSeconds: 3, value: 30 },
+      measurementPoint(0, 1, 10),
+      measurementPoint(1, 2, 21),
+      measurementPoint(2, 2, 20),
+      measurementPoint(3, 2, 22),
+      measurementPoint(4, 3, 30),
+    ]);
+  });
+
+  it("没有帧序号的同刻样本按来源顺序保留", () => {
+    expect(getVisibleMeasurementPoints([point(1, 10), point(1, 20), point(1, 30)], 0)).toEqual([
+      measurementPoint(0, 1, 10),
+      measurementPoint(1, 1, 20),
+      measurementPoint(2, 1, 30),
     ]);
   });
 });
 
 describe("波形测量游标", () => {
-  it("空窗口不创建游标，单点窗口让 A/B 指向同一点", () => {
+  it("空窗口不创建游标，单点窗口让 A/B 指向同一样本", () => {
     expect(createInitialMeasurementAnchors([], 5)).toBeNull();
     expect(createInitialMeasurementAnchors([point(Number.NaN)], 5)).toBeNull();
     expect(createInitialMeasurementAnchors([point(7, 3)], 5)).toEqual({
-      aTimestampSeconds: 7,
-      bTimestampSeconds: 7,
+      aIndex: 0,
+      bIndex: 0,
     });
   });
 
   it("在可见样本约 25% 和 75% 处初始化固定 A/B 游标", () => {
     expect(createInitialMeasurementAnchors([0, 1, 2, 3, 4].map((x) => point(x)), 4)).toEqual({
-      aTimestampSeconds: 1,
-      bTimestampSeconds: 3,
+      aIndex: 1,
+      bIndex: 3,
     });
     expect(createInitialMeasurementAnchors([point(0), point(1)], 1)).toEqual({
-      aTimestampSeconds: 0,
-      bTimestampSeconds: 1,
+      aIndex: 0,
+      bIndex: 1,
     });
   });
 
@@ -85,52 +110,67 @@ describe("波形测量游标", () => {
     expect(snapToNearestMeasurementPoint([], 1)).toBeNull();
   });
 
-  it("从语义时间锚点解析当前样本，并按指定样本数移动", () => {
+  it("按冻结快照索引解析游标，并按指定样本数移动", () => {
     const points = [0, 1, 2, 3, 4].map((x) => point(x, x * 10));
 
-    expect(resolveMeasurementAnchor(points, 4, 2.4)).toEqual({
-      index: 2,
-      timestampSeconds: 2,
-      value: 20,
-    });
-    expect(moveMeasurementAnchor(points, 4, 2.4, 2)?.timestampSeconds).toBe(4);
-    expect(moveMeasurementAnchor(points, 4, 2.4, -10)?.timestampSeconds).toBe(0);
-    expect(moveMeasurementAnchor(points, 4, 2.4, 0.5)).toBeNull();
+    expect(resolveMeasurementAnchor(points, 4, 2)).toEqual(measurementPoint(2, 2, 20));
+    expect(moveMeasurementAnchor(points, 4, 2, 2)?.timestampSeconds).toBe(4);
+    expect(moveMeasurementAnchor(points, 4, 2, -10)?.timestampSeconds).toBe(0);
+    expect(moveMeasurementAnchor(points, 4, 2, 0.5)).toBeNull();
   });
 
-  it("锚点被时间窗或容量边界淘汰后返回失效", () => {
-    expect(resolveMeasurementAnchor([point(0), point(5), point(10)], 5, 4.9)).toBeNull();
-    expect(resolveMeasurementAnchor([point(5), point(6), point(7)], 10, 4)).toBeNull();
-    expect(moveMeasurementAnchor([point(5), point(6), point(7)], 10, 4, 1)).toBeNull();
+  it("非法或越界索引不解析为其他样本", () => {
+    const points = [point(5), point(6), point(7)];
+
+    expect(resolveMeasurementAnchor(points, 10, -1)).toBeNull();
+    expect(resolveMeasurementAnchor(points, 10, 3)).toBeNull();
+    expect(moveMeasurementAnchor(points, 10, 3, 1)).toBeNull();
   });
 });
 
 describe("波形区间测量", () => {
-  it("反向输入按时间排序并计算非负时间、频率和 B-A 差值", () => {
+  it("反向输入按样本顺序排列并计算非负时间、频率和 B-A 差值", () => {
     const result = calculateWaveformMeasurement(
       [point(1, 2), point(2, 5), point(4, 11)],
       3,
-      { aTimestampSeconds: 4, bTimestampSeconds: 1 },
+      { aIndex: 2, bIndex: 0 },
     );
 
     expect(result).toEqual({
-      pointA: { index: 0, timestampSeconds: 1, value: 2 },
-      pointB: { index: 2, timestampSeconds: 4, value: 11 },
+      pointA: measurementPoint(0, 1, 2),
+      pointB: measurementPoint(2, 4, 11),
       deltaTimeSeconds: 3,
       frequencyHz: 1 / 3,
       deltaY: 9,
     });
   });
 
-  it("两个游标落在同一时间时频率为空", () => {
+  it("同一时刻的不同帧保留各自读数，且频率为空", () => {
+    const points = [point(2, 1, 101), point(2, 2, 102), point(2, 3, 103)];
+
     expect(
-      calculateWaveformMeasurement([point(2, 7)], 5, {
-        aTimestampSeconds: 2,
-        bTimestampSeconds: 2,
+      calculateWaveformMeasurement(points, 0, {
+        aIndex: 0,
+        bIndex: 2,
       }),
     ).toEqual({
-      pointA: { index: 0, timestampSeconds: 2, value: 7 },
-      pointB: { index: 0, timestampSeconds: 2, value: 7 },
+      pointA: measurementPoint(0, 2, 1),
+      pointB: measurementPoint(2, 2, 3),
+      deltaTimeSeconds: 0,
+      frequencyHz: null,
+      deltaY: 2,
+    });
+  });
+
+  it("两个游标落在同一样本时频率为空", () => {
+    expect(
+      calculateWaveformMeasurement([point(2, 7)], 5, {
+        aIndex: 0,
+        bIndex: 0,
+      }),
+    ).toEqual({
+      pointA: measurementPoint(0, 2, 7),
+      pointB: measurementPoint(0, 2, 7),
       deltaTimeSeconds: 0,
       frequencyHz: null,
       deltaY: 0,
@@ -140,8 +180,8 @@ describe("波形区间测量", () => {
   it("任一锚点失效时不返回部分测量结果", () => {
     expect(
       calculateWaveformMeasurement([point(5), point(10)], 5, {
-        aTimestampSeconds: 4,
-        bTimestampSeconds: 10,
+        aIndex: -1,
+        bIndex: 1,
       }),
     ).toBeNull();
   });
@@ -151,11 +191,11 @@ describe("波形区间测量", () => {
     const visiblePoints = getVisibleMeasurementPoints(points, 1_999);
 
     expect(visiblePoints).toHaveLength(2_000);
-    expect(visiblePoints.at(-1)).toEqual({ index: 1_999, timestampSeconds: 1_999, value: 1_999 });
+    expect(visiblePoints.at(-1)).toEqual(measurementPoint(1_999, 1_999, 1_999));
     expect(snapToNearestMeasurementPoint(visiblePoints, 999.5)?.timestampSeconds).toBe(999);
     expect(createInitialMeasurementAnchors(points, 1_999)).toEqual({
-      aTimestampSeconds: 500,
-      bTimestampSeconds: 1_499,
+      aIndex: 500,
+      bIndex: 1_499,
     });
     expect(moveMeasurementAnchor(points, 1_999, 1_999, 1)?.index).toBe(1_999);
   });

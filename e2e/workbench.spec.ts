@@ -2579,7 +2579,7 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
   expect(pageErrors).toEqual([]);
 });
 
-test("频谱按帧顺序分析同时间戳数据并适配窄屏", async ({ page }, testInfo) => {
+test("测量和频谱按帧顺序分析同时间戳数据并适配窄屏", async ({ page }, testInfo) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
   await page.waitForLoadState("networkidle");
@@ -2606,6 +2606,32 @@ test("频谱按帧顺序分析同时间戳数据并适配窄屏", async ({ page 
     return new Set(points.map((point) => point.x)).size;
   });
   expect(timestampCount).toBe(1);
+
+  await page.getByRole("button", { name: "开启波形测量" }).click();
+  const cursorA = page.getByRole("slider", { name: "游标 A 采样点" });
+  const cursorB = page.getByRole("slider", { name: "游标 B 采样点" });
+  await cursorA.focus();
+  await page.keyboard.press("Home");
+  await cursorB.focus();
+  await page.keyboard.press("End");
+  const measurementResults = page.getByLabel("波形测量结果");
+  const intervalStatistics = page.getByLabel("A/B 区间统计");
+  await expect(measurementResults.getByText("Δt", { exact: true }).locator("..")).toContainText(
+    "0.000 ns",
+  );
+  await expect(measurementResults.getByText("1/Δt", { exact: true }).locator("..")).toContainText(
+    "--",
+  );
+  await expect(intervalStatistics.getByText("样本数", { exact: true }).locator("..")).toContainText(
+    "256",
+  );
+  await expect(intervalStatistics.getByText("均值", { exact: true }).locator("..")).toContainText(
+    "3.000",
+  );
+  await expect(intervalStatistics.getByText("RMS", { exact: true }).locator("..")).toContainText(
+    "3.317",
+  );
+  await page.getByRole("button", { name: "关闭波形测量" }).click();
 
   await page.getByRole("button", { name: "频谱" }).click();
   await page.getByRole("spinbutton", { name: "频谱采样率" }).fill("256");
@@ -3683,6 +3709,7 @@ test("通道监视显示有界统计并支持本地冻结与窄屏布局", async
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "关闭侧栏" }).click();
   await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+  await expect(page.locator(".sidebar")).toBeHidden();
   await expect(table.getByRole("columnheader", { name: "当前" })).toBeVisible();
   await expect(table.getByRole("columnheader", { name: "变化" })).toBeVisible();
   await expect(table.getByRole("columnheader", { name: "样本" })).toBeVisible();
