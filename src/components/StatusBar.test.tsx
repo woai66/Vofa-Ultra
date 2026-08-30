@@ -36,7 +36,7 @@ describe("StatusBar", () => {
 
   it("按实际间隔显示双向速率并在空闲后归零", () => {
     render(<StatusBar />);
-    const rate = screen.getByLabelText(/实时传输速率/);
+    const rate = screen.getByLabelText(/实时传输/);
     expect(rate).toHaveTextContent("RX 0 B/s");
     expect(rate).toHaveTextContent("TX 0 B/s");
 
@@ -53,7 +53,7 @@ describe("StatusBar", () => {
     expect(rate).toHaveTextContent("RX 2.0 KB/s");
     expect(rate).toHaveTextContent("TX 1.0 KB/s");
     expect(rate).toHaveAccessibleName(
-      "实时传输速率：RX 2.0 KB/s，TX 1.0 KB/s",
+      "实时传输：RX 2.0 KB/s，累计 2.0 KB；TX 1.0 KB/s，累计 1.0 KB",
     );
 
     act(() => {
@@ -67,7 +67,7 @@ describe("StatusBar", () => {
 
   it("统计重置后立即清零并从新基线继续采样", () => {
     render(<StatusBar />);
-    const rate = screen.getByLabelText(/实时传输速率/);
+    const rate = screen.getByLabelText(/实时传输/);
     act(() => {
       useWorkbenchStore.setState({
         stats: { rxBytes: 2_048, txBytes: 1_024, rxFrames: 1, startedAt: 100 },

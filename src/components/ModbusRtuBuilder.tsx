@@ -451,6 +451,8 @@ export function ModbusRtuBuilder({
           <label className="modbus-timeout-field">
             <span>响应超时</span>
             <input
+              id="modbus-response-timeout"
+              name="modbus-response-timeout"
               type="number"
               inputMode="numeric"
               aria-label="Modbus 响应超时毫秒"
@@ -469,6 +471,8 @@ export function ModbusRtuBuilder({
           <label className="modbus-timeout-field">
             <span>轮询间隔</span>
             <input
+              id="modbus-poll-interval"
+              name="modbus-poll-interval"
               type="number"
               inputMode="numeric"
               aria-label="Modbus 轮询间隔毫秒"

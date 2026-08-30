@@ -49,6 +49,7 @@ const DEFAULT_WORKSPACE_SPLIT = 1.35 / (1.35 + 0.85);
 const MIN_WORKSPACE_SPLIT = 0.4;
 const MAX_WORKSPACE_SPLIT = 0.66;
 const WORKSPACE_SPLIT_STEP = 0.02;
+const SIDEBAR_OVERLAY_MAX_WIDTH = 980;
 
 interface WorkspaceResizeState {
   pointerId: number;
@@ -85,6 +86,9 @@ const ChannelMonitorPanel = lazy(() =>
 export default function App() {
   const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>("connection");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOverlay, setSidebarOverlay] = useState(
+    () => window.innerWidth <= SIDEBAR_OVERLAY_MAX_WIDTH,
+  );
   const [waveformMeasuring, setWaveformMeasuring] = useState(false);
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("waveform");
   const [workspaceLayoutMode, setWorkspaceLayoutMode] =
@@ -92,6 +96,7 @@ export default function App() {
   const [workspaceSplit, setWorkspaceSplit] = useState(readWorkspaceSplit);
   const [workspaceResizing, setWorkspaceResizing] = useState(false);
   const workspaceTabRefs = useRef<Partial<Record<WorkspaceView, HTMLButtonElement>>>({});
+  const sidebarToggleRef = useRef<HTMLButtonElement>(null);
   const workspaceContentRef = useRef<HTMLDivElement>(null);
   const workspaceResizeRef = useRef<WorkspaceResizeState | null>(null);
   const activeWorkspace = useWorkbenchStore(selectActiveWorkspace);
@@ -134,6 +139,60 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(THEME_STORAGE_KEY, themePreference);
   }, [themePreference]);
+
+  useEffect(() => {
+    const updateSidebarLayout = () => {
+      setSidebarOverlay(window.innerWidth <= SIDEBAR_OVERLAY_MAX_WIDTH);
+    };
+    window.addEventListener("resize", updateSidebarLayout);
+    return () => window.removeEventListener("resize", updateSidebarLayout);
+  }, []);
+
+  useEffect(() => {
+    if (!sidebarOpen) {
+      return;
+    }
+
+    const closeOverlaySidebar = (event: globalThis.KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.key !== "Escape" ||
+        window.innerWidth > SIDEBAR_OVERLAY_MAX_WIDTH
+      ) {
+        return;
+      }
+      event.preventDefault();
+      setSidebarOpen(false);
+      window.requestAnimationFrame(() => {
+        sidebarToggleRef.current?.focus({ preventScroll: true });
+      });
+    };
+
+    document.addEventListener("keydown", closeOverlaySidebar);
+    return () => document.removeEventListener("keydown", closeOverlaySidebar);
+  }, [sidebarOpen]);
+
+  const closeSidebar = () => {
+    setSidebarOpen(false);
+    window.requestAnimationFrame(() => {
+      sidebarToggleRef.current?.focus({ preventScroll: true });
+    });
+  };
+
+  const toggleSidebar = () => {
+    if (sidebarOpen) {
+      closeSidebar();
+      return;
+    }
+    setSidebarOpen(true);
+    if (sidebarOverlay) {
+      window.requestAnimationFrame(() => {
+        document.querySelector<HTMLButtonElement>(".sidebar-close")?.focus({
+          preventScroll: true,
+        });
+      });
+    }
+  };
 
   const selectSidebarPanel = (panel: SidebarPanel) => {
     if (panel === sidebarPanel) {
@@ -260,18 +319,28 @@ export default function App() {
       <Sidebar
         activePanel={sidebarPanel}
         themePreference={themePreference}
-        onClose={() => setSidebarOpen(false)}
+        onClose={closeSidebar}
         onThemePreferenceChange={setThemePreference}
       />
+      <div
+        className="sidebar-backdrop"
+        aria-hidden="true"
+        onPointerDown={closeSidebar}
+      />
 
-      <main className="workspace">
+      <main
+        className="workspace"
+        aria-hidden={sidebarOpen && sidebarOverlay ? true : undefined}
+        inert={sidebarOpen && sidebarOverlay}
+      >
         <header className="workspace-header">
           <button
+            ref={sidebarToggleRef}
             className="icon-button sidebar-toggle"
             type="button"
             aria-label="显示或隐藏侧栏"
             title="显示或隐藏侧栏"
-            onClick={() => setSidebarOpen((open) => !open)}
+            onClick={toggleSidebar}
           >
             <Menu size={18} />
           </button>
@@ -297,8 +366,10 @@ export default function App() {
                   id={`workspace-${view}-tab`}
                   type="button"
                   role="tab"
+                  aria-label={label}
                   aria-controls={`workspace-${view}-panel`}
                   aria-selected={active}
+                  title={label}
                   tabIndex={active ? 0 : -1}
                   ref={(element) => {
                     workspaceTabRefs.current[view] = element ?? undefined;

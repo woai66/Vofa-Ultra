@@ -2129,6 +2129,8 @@ export function TerminalPanel() {
                   <Search size={14} aria-hidden="true" />
                   <input
                     ref={asciiSearchRef}
+                    id="ascii-reference-search"
+                    name="ascii-reference-search"
                     type="search"
                     aria-label="搜索 ASCII 字符"
                     placeholder="字符、缩写、DEC、HEX 或中文名称"
@@ -2406,6 +2408,8 @@ export function TerminalPanel() {
                   <span className="sr-only">校验输入</span>
                   <textarea
                     ref={checksumInputRef}
+                    id="checksum-reference-input"
+                    name="checksum-reference-input"
                     aria-label="校验输入"
                     aria-invalid={checksumPreview.error ? "true" : "false"}
                     aria-describedby="checksum-reference-error"

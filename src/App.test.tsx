@@ -70,6 +70,7 @@ let system_theme: MatchMediaController;
 beforeEach(() => {
   localStorage.clear();
   delete document.documentElement.dataset.theme;
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
   vi.mocked(window.matchMedia).mockReset();
   system_theme = installMatchMedia(false);
 });
@@ -170,6 +171,38 @@ describe("App", () => {
     expect(shell).toHaveAttribute("data-sidebar-open", "true");
   });
 
+  it("在窄窗口通过 Escape 和遮罩关闭侧栏并恢复焦点", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+    render(<App />);
+
+    const shell = document.querySelector(".app-shell");
+    const toggle = document.querySelector<HTMLButtonElement>(".sidebar-toggle");
+    const backdrop = document.querySelector<HTMLElement>(".sidebar-backdrop");
+    const workspace = document.querySelector<HTMLElement>("main.workspace");
+    expect(toggle).not.toBeNull();
+    expect(backdrop).not.toBeNull();
+    expect(workspace).toHaveAttribute("inert");
+    expect(workspace).toHaveAttribute("aria-hidden", "true");
+
+    await user.keyboard("{Escape}");
+    expect(shell).toHaveAttribute("data-sidebar-open", "false");
+    expect(workspace).not.toHaveAttribute("inert");
+    expect(workspace).not.toHaveAttribute("aria-hidden");
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    expect(toggle!).toHaveFocus();
+
+    await user.click(toggle!);
+    expect(shell).toHaveAttribute("data-sidebar-open", "true");
+    expect(workspace).toHaveAttribute("inert");
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    expect(screen.getByRole("button", { name: "关闭侧栏" })).toHaveFocus();
+    await user.pointer({ target: backdrop!, keys: "[MouseLeft]" });
+    expect(shell).toHaveAttribute("data-sidebar-open", "false");
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    expect(toggle!).toHaveFocus();
+  });
+
   it("从活动导航打开处理图编辑器", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -208,6 +241,12 @@ describe("App", () => {
     expect(waveformTab).toHaveAttribute("tabindex", "0");
     expect(monitorTab).toHaveAttribute("tabindex", "-1");
     expect(attitudeTab).toHaveAttribute("tabindex", "-1");
+    expect(waveformTab).toHaveAttribute("aria-label", "波形");
+    expect(monitorTab).toHaveAttribute("aria-label", "监视");
+    expect(attitudeTab).toHaveAttribute("aria-label", "姿态");
+    expect(waveformTab).toHaveAttribute("title", "波形");
+    expect(monitorTab).toHaveAttribute("title", "监视");
+    expect(attitudeTab).toHaveAttribute("title", "姿态");
     expect(waveformTab).toHaveAttribute("aria-controls", "workspace-waveform-panel");
     expect(monitorTab).toHaveAttribute("aria-controls", "workspace-monitor-panel");
     expect(attitudeTab).toHaveAttribute("aria-controls", "workspace-attitude-panel");

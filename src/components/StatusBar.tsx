@@ -67,7 +67,7 @@ export function StatusBar() {
         <span className="status-dot" />
         <span>{replayLoaded ? "回放" : connectionLabel(connectionStatus)}</span>
       </div>
-      <div className="status-item">
+      <div className="status-item source-status">
         <Radio size={13} />
         <span>
           {replayLoaded
@@ -151,17 +151,19 @@ export function StatusBar() {
         </div>
       )}
       <div
-        className="status-item transfer-rate"
-        aria-label={transferRateLabel(transferRates)}
-        title="实时传输速率"
+        className="status-item transfer-summary"
+        aria-label={transferSummaryLabel(transferRates, stats)}
+        title={transferSummaryLabel(transferRates, stats)}
       >
         <Database size={13} />
-        <span>RX {formatBytes(transferRates.rxBytesPerSecond)}/s</span>
-        <span>TX {formatBytes(transferRates.txBytesPerSecond)}/s</span>
-      </div>
-      <div className="status-item transfer-stats">
-        <span>RX {formatBytes(stats.rxBytes)}</span>
-        <span>TX {formatBytes(stats.txBytes)}</span>
+        <span className="transfer-direction">
+          <span>RX {formatBytes(transferRates.rxBytesPerSecond)}/s</span>
+          <span className="transfer-total">· {formatBytes(stats.rxBytes)}</span>
+        </span>
+        <span className="transfer-direction">
+          <span>TX {formatBytes(transferRates.txBytesPerSecond)}/s</span>
+          <span className="transfer-total">· {formatBytes(stats.txBytes)}</span>
+        </span>
       </div>
       <div className="status-item">
         <Rows3 size={13} />
@@ -213,10 +215,10 @@ function useTransferRates(stats: TransferStats): TransferRates {
   return rates;
 }
 
-function transferRateLabel(rates: TransferRates): string {
-  return `实时传输速率：RX ${formatBytes(rates.rxBytesPerSecond)}/s，TX ${formatBytes(
-    rates.txBytesPerSecond,
-  )}/s`;
+function transferSummaryLabel(rates: TransferRates, stats: TransferStats): string {
+  return `实时传输：RX ${formatBytes(rates.rxBytesPerSecond)}/s，累计 ${formatBytes(
+    stats.rxBytes,
+  )}；TX ${formatBytes(rates.txBytesPerSecond)}/s，累计 ${formatBytes(stats.txBytes)}`;
 }
 
 function connectionLabel(status: string): string {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getHorizontalTabTarget } from "./tabNavigation";
+import { getHorizontalTabTarget, getVerticalNavigationTarget } from "./tabNavigation";
 
 const TABS = ["first", "second", "third"] as const;
 
@@ -22,5 +22,21 @@ describe("getHorizontalTabTarget", () => {
     expect(
       getHorizontalTabTarget(TABS as readonly string[], "missing", "ArrowRight"),
     ).toBeUndefined();
+  });
+});
+
+describe("getVerticalNavigationTarget", () => {
+  it("使用上下方向键循环移动", () => {
+    expect(getVerticalNavigationTarget(TABS, "first", "ArrowDown")).toBe("second");
+    expect(getVerticalNavigationTarget(TABS, "third", "ArrowDown")).toBe("first");
+    expect(getVerticalNavigationTarget(TABS, "first", "ArrowUp")).toBe("third");
+    expect(getVerticalNavigationTarget(TABS, "third", "ArrowUp")).toBe("second");
+  });
+
+  it("支持边界跳转并忽略无关输入", () => {
+    expect(getVerticalNavigationTarget(TABS, "second", "Home")).toBe("first");
+    expect(getVerticalNavigationTarget(TABS, "second", "End")).toBe("third");
+    expect(getVerticalNavigationTarget(TABS, "first", "Enter")).toBeUndefined();
+    expect(getVerticalNavigationTarget([], "first", "ArrowDown")).toBeUndefined();
   });
 });

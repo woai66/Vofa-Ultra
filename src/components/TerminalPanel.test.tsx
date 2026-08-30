@@ -1226,6 +1226,8 @@ describe("TerminalPanel", () => {
     const dialog = screen.getByRole("dialog", { name: "命令参考与校验" });
     await user.click(within(dialog).getByRole("tab", { name: "ASCII" }));
     const search = within(dialog).getByRole("searchbox", { name: "搜索 ASCII 字符" });
+    expect(search).toHaveAttribute("id", "ascii-reference-search");
+    expect(search).toHaveAttribute("name", "ascii-reference-search");
     expect(search).toHaveFocus();
     expect(within(dialog).getAllByRole("row")).toHaveLength(129);
     expect(within(dialog).getByRole("row", { name: "NUL 0 00 空字符" })).toBeVisible();
@@ -1282,6 +1284,8 @@ describe("TerminalPanel", () => {
       "true",
     );
     const checksumInput = within(dialog).getByRole("textbox", { name: "校验输入" });
+    expect(checksumInput).toHaveAttribute("id", "checksum-reference-input");
+    expect(checksumInput).toHaveAttribute("name", "checksum-reference-input");
     expect(checksumInput).toHaveFocus();
     await user.type(checksumInput, "31 32 33 34 35 36 37 38 39");
 
@@ -1498,6 +1502,10 @@ describe("TerminalPanel", () => {
     const interval = within(builder).getByRole("spinbutton", {
       name: "Modbus 轮询间隔毫秒",
     });
+    expect(timeout).toHaveAttribute("id", "modbus-response-timeout");
+    expect(timeout).toHaveAttribute("name", "modbus-response-timeout");
+    expect(interval).toHaveAttribute("id", "modbus-poll-interval");
+    expect(interval).toHaveAttribute("name", "modbus-poll-interval");
     await user.clear(address);
     await user.type(address, "7");
     await user.clear(quantity);

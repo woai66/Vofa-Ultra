@@ -260,6 +260,10 @@ textarea:disabled {
   display: none;
 }
 
+.sidebar-backdrop {
+  display: none;
+}
+
 .sidebar-panel {
   display: flex;
   width: 100%;
@@ -1513,12 +1517,12 @@ textarea:focus {
 
 .automation-state strong {
   color: var(--text);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .automation-state span:last-child {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -1527,7 +1531,7 @@ textarea:focus {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 12px;
   gap: 6px;
 }
 
@@ -1557,7 +1561,7 @@ textarea:focus {
   display: flex;
   align-items: baseline;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   gap: 6px;
 }
@@ -1565,7 +1569,7 @@ textarea:focus {
 .automation-rules-heading strong {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .automation-rule-list {
@@ -1622,12 +1626,12 @@ textarea:focus {
 
 .automation-rule-select strong {
   color: var(--text);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .automation-rule-select span {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .automation-rule-toggle {
@@ -1656,7 +1660,7 @@ textarea:focus {
   padding: 8px 9px;
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -1669,7 +1673,7 @@ textarea:focus {
 
 .automation-mode-field .segmented-control button {
   padding: 0 6px;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .automation-field-grid {
@@ -1710,7 +1714,7 @@ textarea:focus {
   border-radius: 5px;
   background: var(--surface-1);
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -2375,7 +2379,7 @@ textarea:focus {
 
 .extension-runtime-state > span {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -2431,7 +2435,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--cyan);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2444,14 +2448,14 @@ textarea:focus {
 
 .extension-title-row code {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
   overflow-wrap: anywhere;
 }
 
 .extension-manifest p {
   margin: 0;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -2480,7 +2484,7 @@ textarea:focus {
 
 .extension-metadata dt {
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .extension-metadata dd {
@@ -2489,7 +2493,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2499,7 +2503,7 @@ textarea:focus {
   min-width: 0;
   justify-content: space-between;
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: 12px;
   gap: 8px;
 }
 
@@ -2514,7 +2518,7 @@ textarea:focus {
   min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2548,13 +2552,13 @@ textarea:focus {
 
 .extension-consent strong {
   color: var(--text);
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .extension-consent small,
 .extension-requirement {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .extension-actions {
@@ -2585,7 +2589,7 @@ textarea:focus {
   padding: 6px;
   border-right: 1px solid var(--border);
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: 12px;
   gap: 2px;
 }
 
@@ -2597,7 +2601,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2623,7 +2627,7 @@ textarea:focus {
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
   gap: 7px;
 }
 
@@ -2638,14 +2642,14 @@ textarea:focus {
 
 .processing-summary code {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .processing-counters {
   display: flex;
   justify-content: space-between;
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .processing-error {
@@ -2654,7 +2658,7 @@ textarea:focus {
   border-radius: 4px;
   background: var(--surface-1);
   color: var(--danger);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -2689,7 +2693,7 @@ textarea:focus {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2697,7 +2701,7 @@ textarea:focus {
 
 .processing-node > header code {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .processing-node-fields {
@@ -3897,7 +3901,7 @@ textarea:focus {
   border-radius: 4px;
   background: var(--surface-1);
   color: var(--text);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .spectrum-channel-control select {
@@ -3911,7 +3915,7 @@ textarea:focus {
   grid-template-columns: auto minmax(64px, 1fr) 18px;
   align-items: center;
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
   gap: 6px;
 }
 
@@ -3927,7 +3931,7 @@ textarea:focus {
 
 .spectrum-sample-rate-control small {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .spectrum-window-control {
@@ -3948,7 +3952,7 @@ textarea:focus {
   background: transparent;
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -3987,7 +3991,7 @@ textarea:focus {
 
 .spectrum-readouts dt {
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .spectrum-readouts dd {
@@ -3996,7 +4000,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4240,7 +4244,7 @@ textarea:focus {
   border-radius: 4px;
   background: rgb(17 21 19 / 82%);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
   pointer-events: none;
   gap: 9px;
 }
@@ -4311,7 +4315,7 @@ textarea:focus {
 
 .attitude-readouts dt {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .attitude-readouts dd {
@@ -4348,7 +4352,7 @@ textarea:focus {
 
 .attitude-state-overlay span {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .attitude-state-overlay .secondary-button {
@@ -4390,13 +4394,13 @@ textarea:focus {
 }
 
 .attitude-configuration > header strong {
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .attitude-configuration > header span {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .attitude-config-body {
@@ -4429,7 +4433,7 @@ textarea:focus {
 .attitude-channel-mapping label > span {
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
   text-align: center;
 }
@@ -4438,7 +4442,7 @@ textarea:focus {
   height: 31px;
   padding-right: 22px;
   padding-left: 6px;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .attitude-config-row {
@@ -4560,7 +4564,7 @@ textarea:focus {
   align-items: center;
   color: var(--accent);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   gap: 3px;
 }
@@ -4661,7 +4665,7 @@ textarea:focus {
 
 .measurement-readouts dt {
   color: var(--text-subtle);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
 }
 
@@ -4715,7 +4719,7 @@ textarea:focus {
   background: var(--surface-0);
   color: var(--amber);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   transform: translateX(-50%);
 }
@@ -4749,7 +4753,7 @@ textarea:focus {
   border-radius: 3px;
   background: var(--surface-0);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   transform: translateX(-50%);
 }
@@ -5568,7 +5572,7 @@ textarea:focus {
 }
 
 .modbus-builder-popover {
-  width: min(620px, calc(100% - 20px));
+  width: min(680px, calc(100% - 20px));
   max-height: min(560px, calc(100vh - 120px));
   margin: 0;
 }
@@ -5593,13 +5597,13 @@ textarea:focus {
 
 .modbus-builder-header strong {
   color: var(--text);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .modbus-builder-header span {
   color: var(--cyan);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .modbus-builder-grid {
@@ -5622,14 +5626,14 @@ textarea:focus {
 .modbus-field > span,
 .modbus-coil-field legend {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .modbus-field > small {
   overflow: hidden;
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
+  font-size: 12px;
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5647,7 +5651,7 @@ textarea:focus {
 .modbus-field > select {
   height: 32px;
   padding: 0 8px;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .modbus-field > textarea {
@@ -5656,7 +5660,7 @@ textarea:focus {
   resize: vertical;
   padding: 7px 8px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 16px;
 }
 
@@ -5705,14 +5709,14 @@ textarea:focus {
   align-items: center;
   justify-content: space-between;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 12px;
   gap: 8px;
 }
 
 .modbus-frame-preview small {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .modbus-frame-preview code {
@@ -5720,7 +5724,7 @@ textarea:focus {
   overflow-x: auto;
   color: var(--cyan);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 18px;
   white-space: nowrap;
 }
@@ -5731,8 +5735,8 @@ textarea:focus {
 
 .modbus-builder-error {
   color: var(--danger);
-  font-size: 9px;
-  line-height: 16px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .modbus-poll-status {
@@ -5761,14 +5765,14 @@ textarea:focus {
 
 .modbus-poll-status strong {
   color: var(--text);
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .modbus-poll-status span,
 .modbus-poll-status p,
 .modbus-poll-status code {
-  font-size: 8px;
-  line-height: 14px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .modbus-poll-status > header > div > span,
@@ -5839,7 +5843,7 @@ textarea:focus {
 .modbus-timeout-field > span {
   grid-column: 1 / -1;
   color: var(--text-muted);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .modbus-timeout-field input {
@@ -5847,13 +5851,13 @@ textarea:focus {
   min-width: 0;
   height: 30px;
   padding: 0 7px;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .modbus-timeout-field small {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .modbus-builder-actions > .modbus-builder-error {
@@ -5888,13 +5892,13 @@ textarea:focus {
 
 .modbus-transaction-section > header strong {
   color: var(--text);
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .modbus-transaction-section > header span {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .modbus-transaction-active {
@@ -5911,13 +5915,13 @@ textarea:focus {
 }
 
 .modbus-transaction-active strong {
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .modbus-transaction-active > span:last-child {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 8px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5979,14 +5983,14 @@ textarea:focus {
 }
 
 .modbus-transaction-result summary strong {
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .modbus-transaction-result summary > span:nth-child(3) {
   overflow: hidden;
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5994,7 +5998,7 @@ textarea:focus {
 .modbus-transaction-result summary time {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .modbus-transaction-detail {
@@ -6011,8 +6015,8 @@ textarea:focus {
   overflow-wrap: anywhere;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
-  line-height: 15px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .modbus-transaction-detail dl {
@@ -6033,8 +6037,8 @@ textarea:focus {
 .modbus-transaction-detail dd {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
-  line-height: 14px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .modbus-transaction-detail dt {
@@ -6173,7 +6177,7 @@ textarea:focus {
   border: 0;
   background: transparent;
   color: var(--text);
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
 }
 
@@ -6214,7 +6218,7 @@ textarea:focus {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .ascii-reference-table-scroll th,
@@ -6235,7 +6239,7 @@ textarea:focus {
   top: 0;
   background: var(--surface-1);
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -6266,7 +6270,7 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: 12px;
   gap: 7px;
 }
 
@@ -6299,7 +6303,7 @@ textarea:focus {
 .data-converter-toolbar > label > span,
 .data-converter-results > label > span:first-child {
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -6317,7 +6321,7 @@ textarea:focus {
   outline: 0;
   background: var(--surface-1);
   color: var(--text);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .data-converter-toolbar select:focus {
@@ -6353,7 +6357,7 @@ textarea:focus {
   background: var(--surface-1);
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -6371,8 +6375,8 @@ textarea:focus {
   margin: 2px 10px 4px;
   overflow-wrap: anywhere;
   color: var(--danger);
-  font-size: 9px;
-  line-height: 14px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .data-converter-results {
@@ -6414,7 +6418,7 @@ textarea:focus {
   background: var(--surface-1);
   color: var(--cyan);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -6443,7 +6447,7 @@ textarea:focus {
   border-top: 1px solid var(--border);
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 @media (max-width: 720px) {
@@ -6494,7 +6498,7 @@ textarea:focus {
 .checksum-reference-toolbar output {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -6517,7 +6521,7 @@ textarea:focus {
   background: var(--surface-1);
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -6534,8 +6538,8 @@ textarea:focus {
   flex: 0 0 auto;
   margin: 2px 10px 4px;
   color: var(--danger);
-  font-size: 9px;
-  line-height: 14px;
+  font-size: 12px;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
@@ -6563,7 +6567,7 @@ textarea:focus {
 
 .checksum-reference-results dt {
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -6578,7 +6582,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--cyan);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6586,7 +6590,7 @@ textarea:focus {
 .checksum-reference-results span {
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6798,9 +6802,18 @@ textarea:focus {
   flex: 1;
 }
 
-.transfer-rate,
-.transfer-stats {
+.transfer-summary {
   gap: 9px;
+}
+
+.transfer-direction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.transfer-total {
+  color: #7f8995;
 }
 
 @media (max-width: 1100px) {
@@ -6816,7 +6829,7 @@ textarea:focus {
     grid-template-columns: 106px 28px minmax(0, 1fr) 62px;
   }
 
-  .transfer-stats {
+  .transfer-total {
     display: none;
   }
 }
@@ -6853,6 +6866,24 @@ textarea:focus {
     transition: transform 150ms ease-out, visibility 0s linear;
   }
 
+  .sidebar-backdrop {
+    position: absolute;
+    z-index: 35;
+    top: 0;
+    right: 0;
+    bottom: 28px;
+    left: 56px;
+    display: block;
+    background: rgb(8 11 15 / 26%);
+    opacity: 1;
+    visibility: visible;
+    transition: opacity 150ms ease-out, visibility 0s linear;
+  }
+
+  :root[data-theme="light"] .sidebar-backdrop {
+    background: rgb(25 31 38 / 18%);
+  }
+
   .sidebar-close {
     position: absolute;
     z-index: 1;
@@ -6876,6 +6907,13 @@ textarea:focus {
     pointer-events: none;
     transform: translateX(calc(-100% - 58px));
     transition: transform 150ms ease-out, visibility 0s linear 150ms;
+  }
+
+  .app-shell[data-sidebar-open="false"] .sidebar-backdrop {
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+    transition: opacity 150ms ease-out, visibility 0s linear 150ms;
   }
 
   .sidebar-toggle {
@@ -6942,6 +6980,37 @@ textarea:focus {
 
   .send-composer textarea {
     resize: none;
+  }
+}
+
+@container workspace (max-width: 640px) {
+  .workspace-content,
+  .workspace-content[data-layout-mode="primary"],
+  .workspace-content[data-layout-mode="terminal"] {
+    grid-template-rows: minmax(235px, 0.8fr) minmax(340px, 1.2fr);
+  }
+
+  .send-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+    gap: 5px 7px;
+  }
+
+  .send-options > *,
+  .send-text-encoding-field,
+  .send-checksum-field,
+  .send-line-ending-field {
+    width: auto;
+    min-width: 0;
+    flex: 0 1 auto;
+  }
+
+  .send-options > .segmented-control,
+  .send-options select,
+  .send-text-encoding-field select,
+  .send-checksum-field select {
+    width: 100%;
   }
 }
 
@@ -7077,8 +7146,7 @@ textarea:focus {
   }
 
   .protocol-status,
-  .transfer-rate,
-  .transfer-stats span:last-child {
+  .transfer-total {
     display: none;
   }
 
@@ -7145,6 +7213,10 @@ textarea:focus {
     border-right: 0;
   }
 
+  .source-status {
+    display: none;
+  }
+
   .brand-mark {
     width: 52px;
     height: 51px;
@@ -7203,6 +7275,11 @@ textarea:focus {
     bottom: 80px;
     left: 0;
     width: min(310px, calc(100% - 36px));
+  }
+
+  .sidebar-backdrop {
+    bottom: 80px;
+    left: 0;
   }
 
   .channel-row {
@@ -7525,7 +7602,7 @@ textarea:focus {
   }
 
   .attitude-readouts dd {
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .attitude-configuration {
@@ -8032,6 +8109,10 @@ textarea:focus {
   }
 
   .sidebar {
+    bottom: 116px;
+  }
+
+  .sidebar-backdrop {
     bottom: 116px;
   }
 }

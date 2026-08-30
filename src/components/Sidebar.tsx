@@ -46,6 +46,7 @@ import {
 import { SIMULATOR_SIGNAL_DEFINITIONS } from "../core/simulator";
 import { isRecoveryActivePhase } from "../core/serialRecovery";
 import { presentSerialPort, sortSerialPorts } from "../core/serialPorts";
+import { getVerticalNavigationTarget } from "../core/tabNavigation";
 import type { ThemePreference } from "../App";
 import {
   BAUD_RATES,
@@ -97,6 +98,7 @@ const MIN_BAUD_RATE_OPTIONS_HEIGHT = 42;
 // 能完整展示至少四个常用值时，向下展开更符合字段阅读顺序。
 const PREFERRED_BAUD_RATE_OPTIONS_HEIGHT = 152;
 const BAUD_RATE_OPTIONS_GAP = 6;
+const PROTOCOL_IDS = BUILTIN_PROTOCOLS.map(({ id }) => id);
 
 interface SidebarProps {
   activePanel: SidebarPanel;
@@ -463,6 +465,7 @@ export function Sidebar({
 }
 
 function ConnectionPanel() {
+  const protocolOptionRefs = useRef<Partial<Record<ProtocolKind, HTMLButtonElement>>>({});
   const isNativeRuntime = useWorkbenchStore((state) => state.isNativeRuntime);
   const source = useWorkbenchStore((state) => state.source);
   const protocol = useWorkbenchStore((state) => state.protocol);
@@ -837,13 +840,26 @@ function ConnectionPanel() {
           {BUILTIN_PROTOCOLS.map(({ id, displayName, description }) => (
             <button
               key={id}
+              ref={(element) => {
+                protocolOptionRefs.current[id] = element ?? undefined;
+              }}
               className="protocol-option"
               type="button"
               role="radio"
               aria-checked={protocol === id}
               data-active={protocol === id}
+              tabIndex={protocol === id ? 0 : -1}
               disabled={configDisabled}
               onClick={() => setProtocol(id)}
+              onKeyDown={(event) => {
+                const target = getVerticalNavigationTarget(PROTOCOL_IDS, id, event.key);
+                if (!target) {
+                  return;
+                }
+                event.preventDefault();
+                setProtocol(target);
+                protocolOptionRefs.current[target]?.focus({ preventScroll: true });
+              }}
             >
               <span className="protocol-dot" />
               <span>
