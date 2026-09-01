@@ -40,7 +40,7 @@
     "tauri": "node scripts/tauri-cli.mjs"
   },
   "dependencies": {
-    "@kayahr/text-encoding": "2.1.0",
+    "@kayahr/text-encoding": "2.2.0",
     "@tanstack/react-virtual": "^3.13.12",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "2.7.2",
