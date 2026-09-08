@@ -11,6 +11,7 @@ import type {
 } from "../core/waveformMeasurement";
 
 interface WaveformMeasurementStripProps {
+  readonly sampleRateHz: number | null;
   readonly channels: readonly PresentedChannelSeries[];
   readonly selectedChannel: PresentedChannelSeries;
   readonly activeCursor: WaveformMeasurementCursor;
@@ -22,6 +23,7 @@ interface WaveformMeasurementStripProps {
 }
 
 export default function WaveformMeasurementStrip({
+  sampleRateHz,
   channels,
   selectedChannel,
   activeCursor,
@@ -44,6 +46,9 @@ export default function WaveformMeasurementStrip({
 
   return (
     <div className="waveform-measurement-strip">
+      <span className="measurement-timebase-label">
+        {sampleRateHz === null ? "主机到达间隔" : `采样间隔 · 按 ${sampleRateHz} Hz 推算`}
+      </span>
       <div className="measurement-controls">
         <div className="measurement-primary-controls">
           <span
@@ -117,11 +122,15 @@ export default function WaveformMeasurementStrip({
         >
           <MeasurementReadout
             label="tA"
-            value={formatCursorTime(measurement.pointA.timestampSeconds)}
+            value={sampleRateHz === null
+              ? formatCursorTime(measurement.pointA.timestampSeconds)
+              : formatDuration(measurement.pointA.timestampSeconds)}
           />
           <MeasurementReadout
             label="tB"
-            value={formatCursorTime(measurement.pointB.timestampSeconds)}
+            value={sampleRateHz === null
+              ? formatCursorTime(measurement.pointB.timestampSeconds)
+              : formatDuration(measurement.pointB.timestampSeconds)}
           />
           <MeasurementReadout label="Δt" value={formatDuration(measurement.deltaTimeSeconds)} />
           <MeasurementReadout label="1/Δt" value={formatFrequency(measurement.frequencyHz)} />

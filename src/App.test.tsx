@@ -77,6 +77,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   localStorage.removeItem("vofa-ultra-workspace-split");
 });
 
@@ -117,7 +118,7 @@ describe("App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /^设置$/ }));
-    const system_button = screen.getByRole("button", { name: "系统" });
+    const system_button = await screen.findByRole("button", { name: "系统" });
     const light_button = screen.getByRole("button", { name: "浅色" });
     expect(system_button).toHaveAttribute("aria-pressed", "true");
 
@@ -212,6 +213,83 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "数据处理" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "启用处理图" })).not.toBeChecked();
     expect(screen.getByRole("button", { name: "添加处理节点" })).toBeEnabled();
+  });
+
+  it("首次进入窄窗口和从活动导航打开面板时聚焦侧栏", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+    render(<App />);
+
+    const close = screen.getByRole("button", { name: "关闭侧栏" });
+    expect(close).toHaveFocus();
+    await user.click(close);
+    const channels = screen.getByRole("button", { name: "通道" });
+    await user.click(channels);
+    expect(close).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(channels).toHaveFocus();
+  });
+
+  it("缩窗进入抽屉时转移工作区焦点并在退出后恢复", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const waveformTab = screen.getByRole("tab", { name: "波形" });
+    waveformTab.focus();
+    act(() => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    expect(screen.getByRole("button", { name: "关闭侧栏" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(waveformTab).toHaveFocus();
+  });
+
+  it("抽屉内编辑时调整窗口不抢焦点，放大窗口移开隐藏的关闭按钮焦点", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "工作区" }));
+    const name = await screen.findByRole("textbox", { name: "工作区名称" });
+    name.focus();
+    act(() => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(name).toHaveFocus();
+    act(() => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(name).toHaveFocus();
+    screen.getByRole("button", { name: "关闭侧栏" }).focus();
+    screen.getByRole("button", { name: "关闭侧栏" }).blur();
+    act(() => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(screen.getByRole("button", { name: "显示或隐藏侧栏" })).toHaveFocus();
+  });
+
+  it("收起侧栏即禁止其获得焦点并同步入口的展开状态", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const connection = screen.getByRole("button", { name: "连接" });
+    const toggle = screen.getByRole("button", { name: "显示或隐藏侧栏" });
+    const sidebar = document.querySelector(".sidebar");
+    expect(connection).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveAttribute("aria-controls", sidebar?.id);
+    await user.click(connection);
+    expect(sidebar).toHaveAttribute("inert");
+    expect(sidebar).toHaveAttribute("aria-hidden", "true");
+    expect(connection).toHaveAttribute("aria-expanded", "false");
+    expect(connection).toHaveAttribute("aria-pressed", "false");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(connection).toHaveFocus();
+    await user.click(connection);
+    expect(sidebar).not.toHaveAttribute("inert");
+    expect(sidebar).not.toHaveAttribute("aria-hidden");
+    expect(connection).toHaveAttribute("aria-expanded", "true");
   });
 
   it("切换标签后按需加载监视与姿态视图", async () => {
@@ -356,12 +434,116 @@ describe("App", () => {
     );
   });
 
+  it.each([
+    { view: "监视", layout: "专注监视视图", mode: "primary", panel: "通道", open: true },
+    { view: "姿态", layout: "专注终端", mode: "terminal", panel: "设置", open: false },
+  ])("重挂载恢复 $view 视图、$layout 和侧栏状态", async ({ view, layout, mode, panel, open }) => {
+    const user = userEvent.setup();
+    const first = render(<App />);
+    await user.click(screen.getByRole("tab", { name: view }));
+    await user.click(screen.getByRole("button", { name: layout }));
+    await user.click(screen.getByRole("button", { name: panel }));
+    if (!open) {
+      await user.click(screen.getByRole("button", { name: "显示或隐藏侧栏" }));
+    }
+    first.unmount();
+
+    render(<App />);
+    expect(screen.getByRole("tab", { name: view })).toHaveAttribute("aria-selected", "true");
+    expect(document.querySelector(".workspace-content")).toHaveAttribute("data-layout-mode", mode);
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-sidebar-open", String(open));
+    expect(screen.getByRole("button", { name: layout })).toHaveAttribute("aria-pressed", "true");
+    if (!open) {
+      expect(document.querySelector(".sidebar")).toHaveAttribute("inert");
+      await user.click(screen.getByRole("button", { name: "显示或隐藏侧栏" }));
+    }
+    expect(screen.getByRole("button", { name: panel })).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByRole("heading", { name: panel === "通道" ? "数据通道" : "工作台设置" }))
+      .toBeInTheDocument();
+  });
+
+  it.each(["{broken", "null", "[]", "42", JSON.stringify({
+    workspaceView: "unknown", workspaceLayoutMode: "wide", sidebarPanel: 7, sidebarOpen: "false",
+  })])("损坏或未知的布局配置安全恢复默认值：%s", (saved) => {
+    localStorage.setItem("vofa-ultra-workspace-layout", saved);
+    render(<App />);
+
+    expect(screen.getByRole("tab", { name: "波形" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "分栏显示" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "连接" })).toHaveAttribute("aria-expanded", "true");
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
+  });
+
+  it("局部配置损坏时保留其余布局偏好并沿用分隔比例", () => {
+    localStorage.setItem("vofa-ultra-workspace-layout", JSON.stringify({
+      workspaceView: "monitor", workspaceLayoutMode: "unknown", sidebarPanel: "settings", sidebarOpen: false,
+    }));
+    localStorage.setItem("vofa-ultra-workspace-split", "0.5400");
+    render(<App />);
+
+    expect(screen.getByRole("tab", { name: "监视" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "分栏显示" })).toHaveAttribute("aria-pressed", "true");
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+    expect(screen.getByRole("separator")).toHaveAttribute("aria-valuenow", "54");
+  });
+
+  it("窄窗口恢复打开的侧栏后保持遮罩及焦点管理", async () => {
+    localStorage.setItem("vofa-ultra-workspace-layout", JSON.stringify({
+      workspaceView: "monitor", workspaceLayoutMode: "terminal", sidebarPanel: "settings", sidebarOpen: true,
+    }));
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+    const user = userEvent.setup();
+    const first = render(<App />);
+
+    expect(screen.getByRole("button", { name: "关闭侧栏" })).toHaveFocus();
+    expect(document.querySelector("main.workspace")).toHaveAttribute("inert");
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "显示或隐藏侧栏" })).toHaveFocus();
+    first.unmount();
+    render(<App />);
+
+    expect(document.querySelector("main.workspace")).not.toHaveAttribute("inert");
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+    expect(screen.getByRole("button", { name: "专注终端" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("偏好存储拒绝读写时仍可使用布局和主题控件", async () => {
+    const deniedKeys = new Set([
+      "vofa-ultra-workspace-layout", "vofa-ultra-workspace-split", "vofa-ultra-theme",
+    ]);
+    const originalGetItem = Storage.prototype.getItem;
+    const originalSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key: string) {
+      if (deniedKeys.has(key)) {
+        throw new DOMException("Storage access denied", "SecurityError");
+      }
+      return originalGetItem.call(this, key);
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {
+      if (deniedKeys.has(key)) {
+        throw new DOMException("Storage is full", "QuotaExceededError");
+      }
+      return originalSetItem.call(this, key, value);
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.getByRole("button", { name: "分栏显示" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "专注终端" }));
+    expect(document.querySelector(".workspace-content")).toHaveAttribute("data-layout-mode", "terminal");
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "浅色" }));
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    await user.click(screen.getByRole("button", { name: "显示或隐藏侧栏" }));
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+  });
+
   it("从侧栏保存命名工作区并更新标题", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "工作区" }));
-    expect(screen.getByRole("heading", { name: "工作区" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "工作区" })).toBeInTheDocument();
     const nameInput = screen.getByRole("textbox", { name: "工作区名称" });
     await user.clear(nameInput);
     await user.type(nameInput, "实验台 A");

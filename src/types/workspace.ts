@@ -113,7 +113,11 @@ export interface WorkspaceConfigV13 extends WorkspaceConfigV12 {
   terminalTxTextEncoding: TerminalTextEncoding;
 }
 
-export type WorkspaceConfig = WorkspaceConfigV13;
+export interface WorkspaceConfigV14 extends WorkspaceConfigV13 {
+  chartSampleRateHz: number | null;
+}
+
+export type WorkspaceConfig = WorkspaceConfigV14;
 
 export interface WorkspaceProfile {
   id: string;
@@ -212,4 +216,11 @@ export interface WorkspaceExportV13 {
   schemaVersion: 13;
   name: string;
   config: WorkspaceConfigV13;
+}
+
+export interface WorkspaceExportV14 {
+  format: "vofa-ultra.workspace";
+  schemaVersion: 14;
+  name: string;
+  config: WorkspaceConfigV14;
 }

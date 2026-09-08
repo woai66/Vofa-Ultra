@@ -2,6 +2,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -26,6 +27,7 @@ import {
   Search,
   SearchX,
   Send,
+  SlidersHorizontal,
   Square,
   TerminalSquare,
   Timer,
@@ -129,6 +131,15 @@ const TERMINAL_TIME_MODE_OPTIONS: readonly {
 
 const TERMINAL_LATEST_THRESHOLD_PX = 26;
 const MAX_ASCII_SEARCH_CHARACTERS = 32;
+const TERMINAL_PAUSE_DESCRIPTION = "暂停期间 RX/TX 不加入终端缓存，恢复不补录；原始录制不受影响";
+
+function readTerminalTimePreference(): TerminalTimeMode {
+  try {
+    return parseTerminalTimeMode(localStorage.getItem(TERMINAL_TIME_MODE_STORAGE_KEY));
+  } catch {
+    return parseTerminalTimeMode(null);
+  }
+}
 
 interface AsciiReferenceEntry {
   character: string;
@@ -422,10 +433,10 @@ export function TerminalPanel() {
   const [repeatCountText, setRepeatCountText] = useState("10");
   const [searchQuery, setSearchQuery] = useState("");
   const [directionFilter, setDirectionFilter] = useState<TerminalDirectionFilter>("all");
+  const [receiveOptionsOpen, setReceiveOptionsOpen] = useState(false);
+  const [sendOptionsOpen, setSendOptionsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
-  const [terminalTimeMode, setTerminalTimeMode] = useState<TerminalTimeMode>(() =>
-    parseTerminalTimeMode(localStorage.getItem(TERMINAL_TIME_MODE_STORAGE_KEY)),
-  );
+  const [terminalTimeMode, setTerminalTimeMode] = useState<TerminalTimeMode>(readTerminalTimePreference);
   const [terminalFollowSuspended, setTerminalFollowSuspended] = useState(false);
   const hasPayload = message.length > 0 || lineEnding !== "none";
   const hasFrameInput = hasPayload || commandChecksum !== "none";
@@ -596,7 +607,11 @@ export function TerminalPanel() {
   });
 
   useEffect(() => {
-    localStorage.setItem(TERMINAL_TIME_MODE_STORAGE_KEY, terminalTimeMode);
+    try {
+      localStorage.setItem(TERMINAL_TIME_MODE_STORAGE_KEY, terminalTimeMode);
+    } catch {
+      // 无法保存偏好时仍允许当前会话切换时间显示。
+    }
   }, [terminalTimeMode]);
 
   useEffect(() => {
@@ -674,6 +689,49 @@ export function TerminalPanel() {
       setTerminalFollowSuspended(!isTerminalViewportAtLatest(viewport));
     }
   }, [lastVisibleEntryId, terminalAutoScroll, visibleEntries.length]);
+
+  useLayoutEffect(() => {
+    const composer = composerRef.current;
+    const panel = composer?.closest<HTMLElement>(".terminal-panel");
+    const workspace = panel?.closest<HTMLElement>(".workspace-content");
+    if (!composer || !panel || !workspace) {
+      return;
+    }
+    const rows = [".terminal-toolbar", ".terminal-filter-bar", ".terminal-receive-options"]
+      .map((selector) => panel.querySelector<HTMLElement>(selector))
+      .filter((element): element is HTMLElement => element !== null);
+    let frame = 0;
+    const setSize = (element: HTMLElement, key: string, value: number) => {
+      const size = `${Math.ceil(value)}px`;
+      if (element.style.getPropertyValue(key) !== size) {
+        element.style.setProperty(key, size);
+      }
+    };
+    const update = () => {
+      const composerRect = composer.getBoundingClientRect();
+      const controlsHeight = rows.reduce((sum, row) => sum + row.getBoundingClientRect().height, 0);
+      setSize(workspace, "--workspace-terminal-min-height", composerRect.height + controlsHeight + 64);
+      setSize(composer, "--command-popover-max-height", Math.max(
+        64, composerRect.top - workspace.getBoundingClientRect().top - 12,
+      ));
+    };
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(update);
+    };
+    const observer = new ResizeObserver(schedule);
+    [composer, workspace, ...rows].forEach((element) => observer.observe(element));
+    workspace.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    update();
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      workspace.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      workspace.style.removeProperty("--workspace-terminal-min-height");
+    };
+  }, []);
 
   useEffect(() => {
     const wasAutoScrollEnabled = previousTerminalAutoScrollRef.current;
@@ -1063,6 +1121,11 @@ export function TerminalPanel() {
           <div>
             <h2 id="terminal-title">数据终端</h2>
             <span className="panel-subtitle">{recordSummary}</span>
+            {terminalPaused && (
+              <span className="terminal-recording-paused" role="status" title={TERMINAL_PAUSE_DESCRIPTION}>
+                记录已暂停
+              </span>
+            )}
           </div>
         </div>
         <div className="panel-actions">
@@ -1098,8 +1161,9 @@ export function TerminalPanel() {
           <button
             className="icon-button"
             type="button"
-            aria-label={terminalPaused ? "继续终端显示" : "暂停终端显示"}
-            title={terminalPaused ? "继续终端显示" : "暂停终端显示"}
+            aria-label={terminalPaused ? "继续终端记录" : "暂停终端记录"}
+            aria-pressed={terminalPaused}
+            title={`${terminalPaused ? "继续终端记录" : "暂停终端记录"}：${TERMINAL_PAUSE_DESCRIPTION}`}
             onClick={() => setTerminalPaused(!terminalPaused)}
           >
             {terminalPaused ? <Play size={16} /> : <CirclePause size={16} />}
@@ -1153,6 +1217,102 @@ export function TerminalPanel() {
       </header>
 
       <div className="terminal-filter-bar" role="search" aria-label="终端记录筛选">
+        <div className="terminal-search-field">
+          <Search size={15} aria-hidden="true" />
+          <input
+            id="terminal-search-query"
+            name="terminal-search-query"
+            type="search"
+            aria-label="搜索终端记录"
+            aria-controls="terminal-record-list"
+            maxLength={MAX_TERMINAL_SEARCH_CHARACTERS}
+            value={searchQuery}
+            spellCheck={false}
+            placeholder={displayMode === "text" ? "搜索 TEXT 内容" : "搜索 HEX 内容"}
+            onChange={(event) => setSearchQuery(event.target.value)}
+          />
+          <button
+            type="button"
+            aria-label="清空终端搜索"
+            title="清空终端搜索"
+            disabled={!searchQuery}
+            onClick={() => setSearchQuery("")}
+          >
+            <X size={14} />
+          </button>
+        </div>
+        <div
+          className="segmented-control compact-segments terminal-direction-filter"
+          role="group"
+          aria-label="终端方向筛选"
+        >
+          <button
+            type="button"
+            data-active={directionFilter === "all"}
+            aria-pressed={directionFilter === "all"}
+            onClick={() => setDirectionFilter("all")}
+          >
+            全部
+          </button>
+          <button
+            type="button"
+            data-active={directionFilter === "rx"}
+            aria-pressed={directionFilter === "rx"}
+            onClick={() => setDirectionFilter("rx")}
+          >
+            RX
+          </button>
+          <button
+            type="button"
+            data-active={directionFilter === "tx"}
+            aria-pressed={directionFilter === "tx"}
+            onClick={() => setDirectionFilter("tx")}
+          >
+            TX
+          </button>
+        </div>
+        <div className="terminal-mobile-filter-selects">
+          <label>
+            <span className="sr-only">终端方向筛选</span>
+            <select
+              id="terminal-mobile-direction-filter"
+              name="terminal-mobile-direction-filter"
+              aria-label="终端方向筛选"
+              title="终端方向筛选"
+              value={directionFilter}
+              onChange={(event) =>
+                setDirectionFilter(event.target.value as TerminalDirectionFilter)
+              }
+            >
+              <option value="all">全部</option>
+              <option value="rx">RX</option>
+              <option value="tx">TX</option>
+            </select>
+          </label>
+        </div>
+        <button
+          className="icon-button terminal-receive-options-trigger"
+          type="button"
+          aria-label="接收选项"
+          aria-expanded={receiveOptionsOpen}
+          aria-controls="terminal-receive-options"
+          data-active={receiveOptionsOpen}
+          title={`接收选项：${terminalRxRecordMode === "chunk" ? "按读取块" : "按文本行"} · ${
+            textEncodingLabel(terminalRxTextEncoding)
+          } · ${TERMINAL_TIME_MODE_OPTIONS.find((option) => option.mode === terminalTimeMode)?.description}`}
+          onClick={() => setReceiveOptionsOpen((open) => !open)}
+        >
+          <SlidersHorizontal size={16} />
+        </button>
+      </div>
+
+      <div
+        id="terminal-receive-options"
+        className="terminal-receive-options"
+        role="group"
+        aria-label="接收选项"
+        hidden={!receiveOptionsOpen}
+      >
         <div className="terminal-rx-record-controls">
           <div
             className="segmented-control compact-segments terminal-rx-record-mode"
@@ -1224,60 +1384,6 @@ export function TerminalPanel() {
             </select>
           </label>
         </div>
-        <div className="terminal-search-field">
-          <Search size={15} aria-hidden="true" />
-          <input
-            id="terminal-search-query"
-            name="terminal-search-query"
-            type="search"
-            aria-label="搜索终端记录"
-            aria-controls="terminal-record-list"
-            maxLength={MAX_TERMINAL_SEARCH_CHARACTERS}
-            value={searchQuery}
-            spellCheck={false}
-            placeholder={displayMode === "text" ? "搜索 TEXT 内容" : "搜索 HEX 内容"}
-            onChange={(event) => setSearchQuery(event.target.value)}
-          />
-          <button
-            type="button"
-            aria-label="清空终端搜索"
-            title="清空终端搜索"
-            disabled={!searchQuery}
-            onClick={() => setSearchQuery("")}
-          >
-            <X size={14} />
-          </button>
-        </div>
-        <div
-          className="segmented-control compact-segments terminal-direction-filter"
-          role="group"
-          aria-label="终端方向筛选"
-        >
-          <button
-            type="button"
-            data-active={directionFilter === "all"}
-            aria-pressed={directionFilter === "all"}
-            onClick={() => setDirectionFilter("all")}
-          >
-            全部
-          </button>
-          <button
-            type="button"
-            data-active={directionFilter === "rx"}
-            aria-pressed={directionFilter === "rx"}
-            onClick={() => setDirectionFilter("rx")}
-          >
-            RX
-          </button>
-          <button
-            type="button"
-            data-active={directionFilter === "tx"}
-            aria-pressed={directionFilter === "tx"}
-            onClick={() => setDirectionFilter("tx")}
-          >
-            TX
-          </button>
-        </div>
         <div
           className="segmented-control compact-segments terminal-time-mode"
           role="group"
@@ -1297,7 +1403,7 @@ export function TerminalPanel() {
             </button>
           ))}
         </div>
-        <div className="terminal-mobile-filter-selects">
+        <div className="terminal-mobile-filter-selects terminal-mobile-receive-selects">
           <label>
             <span className="sr-only">终端时间基准</span>
             <select
@@ -1315,23 +1421,6 @@ export function TerminalPanel() {
                   {option.label}
                 </option>
               ))}
-            </select>
-          </label>
-          <label>
-            <span className="sr-only">终端方向筛选</span>
-            <select
-              id="terminal-mobile-direction-filter"
-              name="terminal-mobile-direction-filter"
-              aria-label="终端方向筛选"
-              title="终端方向筛选"
-              value={directionFilter}
-              onChange={(event) =>
-                setDirectionFilter(event.target.value as TerminalDirectionFilter)
-              }
-            >
-              <option value="all">全部</option>
-              <option value="rx">RX</option>
-              <option value="tx">TX</option>
             </select>
           </label>
         </div>
@@ -1488,54 +1577,6 @@ export function TerminalPanel() {
                 HEX
               </button>
             </div>
-            <div className="send-text-encoding-field">
-              <label className="send-field-caption" htmlFor="send-text-encoding">
-                编码
-              </label>
-              <select
-                id="send-text-encoding"
-                name="send-text-encoding"
-                aria-label="发送文本编码"
-                value={terminalTxTextEncoding}
-                disabled={
-                  sendMode !== "text" || isWorkspaceTransitioning || autoResponderActive
-                }
-                onChange={(event) => {
-                  resetHistoryNavigation();
-                  setSendError("");
-                  setTerminalTxTextEncoding(event.target.value as TerminalTextEncoding);
-                }}
-              >
-                {TEXT_ENCODING_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="send-checksum-field">
-              <label className="send-field-caption" htmlFor="send-checksum">
-                校验
-              </label>
-              <select
-                id="send-checksum"
-                name="send-checksum"
-                aria-label="校验"
-                value={commandChecksum}
-                disabled={isWorkspaceTransitioning}
-                onChange={(event) => {
-                  resetHistoryNavigation();
-                  setSendError("");
-                  setCommandChecksum(event.target.value as CommandChecksumMode);
-                }}
-              >
-                {COMMAND_CHECKSUM_MODES.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
             <div className="send-line-ending-field">
               <label className="send-field-caption" htmlFor="send-line-ending">
                 行尾
@@ -1558,6 +1599,20 @@ export function TerminalPanel() {
                 <option value="crlf">CRLF</option>
               </select>
             </div>
+            <button
+              className="icon-button send-options-trigger"
+              type="button"
+              aria-label="发送选项"
+              aria-expanded={sendOptionsOpen}
+              aria-controls="send-advanced-options"
+              data-active={sendOptionsOpen || terminalTxTextEncoding !== "utf-8" || commandChecksum !== "none"}
+              title={`发送选项：${textEncodingLabel(terminalTxTextEncoding)} · 校验 ${
+                COMMAND_CHECKSUM_MODES.find((option) => option.value === commandChecksum)?.label
+              }`}
+              onClick={() => setSendOptionsOpen((open) => !open)}
+            >
+              <SlidersHorizontal size={16} />
+            </button>
           </div>
           <div className="send-payload-field">
             <label className="send-field-caption" htmlFor="send-payload">
@@ -1739,6 +1794,63 @@ export function TerminalPanel() {
               发送
             </button>
           )}
+        </div>
+
+        <div
+          id="send-advanced-options"
+          className="send-advanced-options"
+          role="group"
+          aria-label="发送选项"
+          hidden={!sendOptionsOpen}
+        >
+          <div className="send-text-encoding-field">
+            <label className="send-field-caption" htmlFor="send-text-encoding">
+              编码
+            </label>
+            <select
+              id="send-text-encoding"
+              name="send-text-encoding"
+              aria-label="发送文本编码"
+              value={terminalTxTextEncoding}
+              disabled={
+                sendMode !== "text" || isWorkspaceTransitioning || autoResponderActive
+              }
+              onChange={(event) => {
+                resetHistoryNavigation();
+                setSendError("");
+                setTerminalTxTextEncoding(event.target.value as TerminalTextEncoding);
+              }}
+            >
+              {TEXT_ENCODING_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="send-checksum-field">
+            <label className="send-field-caption" htmlFor="send-checksum">
+              校验
+            </label>
+            <select
+              id="send-checksum"
+              name="send-checksum"
+              aria-label="校验"
+              value={commandChecksum}
+              disabled={isWorkspaceTransitioning}
+              onChange={(event) => {
+                resetHistoryNavigation();
+                setSendError("");
+                setCommandChecksum(event.target.value as CommandChecksumMode);
+              }}
+            >
+              {COMMAND_CHECKSUM_MODES.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {hasFrameInput && templatePreview.loading && (

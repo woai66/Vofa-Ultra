@@ -232,8 +232,8 @@ function ChannelMonitorTableRow({ row }: { row: ChannelMonitorRow }) {
             aria-hidden="true"
           />
           <span className="channel-monitor-channel-label">
-            <strong>{row.name}</strong>
-            <small title={row.id}>{row.unit || row.id}</small>
+            <strong title={row.id}>{row.name}</strong>
+            {row.unit && <small>{row.unit}</small>}
           </span>
         </span>
       </th>

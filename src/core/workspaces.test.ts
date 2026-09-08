@@ -68,7 +68,7 @@ describe("工作区文件", () => {
     });
   });
 
-  it("以严格的 v13 格式往返发送编码、校验模式、模拟器及完整配置", () => {
+  it("以严格的 v14 格式往返发送编码、校验模式、模拟器及完整配置", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.serialConfig.portName = "COM7";
     config.protocol = "justfloat";
@@ -144,7 +144,7 @@ describe("工作区文件", () => {
 
     expect(parsed).toEqual({
       format: "vofa-ultra.workspace",
-      schemaVersion: 13,
+      schemaVersion: 14,
       name: "台架 A",
       config,
     });
@@ -180,11 +180,12 @@ describe("工作区文件", () => {
     delete config.attitudeConfig;
     delete config.autoResponderRules;
     delete config.quickCommands;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 1;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(13);
+    expect(parsed.schemaVersion).toBe(14);
     expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
@@ -214,11 +215,12 @@ describe("工作区文件", () => {
     delete config.attitudeConfig;
     delete config.autoResponderRules;
     delete config.quickCommands;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 2;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(13);
+    expect(parsed.schemaVersion).toBe(14);
     expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.processingGraph).toEqual({ enabled: false, nodes: [] });
@@ -239,11 +241,12 @@ describe("工作区文件", () => {
     removeCurrentTerminalRxFields(config);
     delete config.autoResponderRules;
     delete config.quickCommands;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 3;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(13);
+    expect(parsed.schemaVersion).toBe(14);
     expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.attitudeConfig.inputMode).toBe("euler");
@@ -260,18 +263,19 @@ describe("工作区文件", () => {
     const exportedConfig = exported.config as Record<string, unknown>;
     removeCurrentTerminalRxFields(exportedConfig);
     delete exportedConfig.quickCommands;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 4;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(13);
+    expect(parsed.schemaVersion).toBe(14);
     expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.autoResponderRules).toEqual(config.autoResponderRules);
     expect(parsed.config.quickCommands).toEqual([]);
   });
 
-  it("导入严格 v5 后无损迁移为 v13", () => {
+  it("导入严格 v5 后无损迁移为 v14", () => {
     const config = createDefaultWorkspaceConfig("serial");
     config.lineEnding = "crlf";
     config.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
@@ -289,11 +293,12 @@ describe("工作区文件", () => {
       serializeWorkspace(createWorkspaceProfile("v5 工作区", config, "legacy-v5", 100)),
     ) as Record<string, unknown>;
     removeCurrentTerminalRxFields(exported.config as Record<string, unknown>);
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 5;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(13);
+    expect(parsed.schemaVersion).toBe(14);
     expect(parsed.config).toEqual({ ...config, commandChecksum: "none" });
   });
 
@@ -303,11 +308,12 @@ describe("工作区文件", () => {
       serializeWorkspace(createWorkspaceProfile("v6 工作区", config, "legacy-v6", 100)),
     ) as Record<string, unknown>;
     removeCurrentTerminalRxFields(exported.config as Record<string, unknown>);
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 6;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(13);
+    expect(parsed.schemaVersion).toBe(14);
     expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config).toMatchObject({
       terminalRxRecordMode: "chunk",
@@ -327,17 +333,18 @@ describe("工作区文件", () => {
     delete exportedConfig.commandChecksum;
     delete exportedConfig.simulatorConfig;
     delete exportedConfig.terminalTxTextEncoding;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 7;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(13);
+    expect(parsed.schemaVersion).toBe(14);
     expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
     expect(parsed.config.terminalRxTextEncoding).toBe("utf-8");
   });
 
-  it("导入合法 v8 处理图后无损迁移为 v13", () => {
+  it("导入合法 v8 处理图后无损迁移为 v14", () => {
     const config = createDefaultWorkspaceConfig("simulator");
     config.processingGraph = {
       enabled: true,
@@ -353,11 +360,12 @@ describe("工作区文件", () => {
     delete (exported.config as Record<string, unknown>).commandChecksum;
     delete (exported.config as Record<string, unknown>).simulatorConfig;
     delete (exported.config as Record<string, unknown>).terminalTxTextEncoding;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 8;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(13);
+    expect(parsed.schemaVersion).toBe(14);
     expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.processingGraph).toEqual(config.processingGraph);
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
@@ -394,11 +402,12 @@ describe("工作区文件", () => {
     delete (exported.config as Record<string, unknown>).commandChecksum;
     delete (exported.config as Record<string, unknown>).simulatorConfig;
     delete (exported.config as Record<string, unknown>).terminalTxTextEncoding;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 9;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(13);
+    expect(parsed.schemaVersion).toBe(14);
     expect(parsed.config.commandChecksum).toBe("none");
     expect(parsed.config.processingGraph).toEqual(config.processingGraph);
     expect(parsed.config.channelPresentations).toEqual({ firewater: {}, justfloat: {} });
@@ -417,11 +426,12 @@ describe("工作区文件", () => {
     delete (exported.config as Record<string, unknown>).commandChecksum;
     delete (exported.config as Record<string, unknown>).simulatorConfig;
     delete (exported.config as Record<string, unknown>).terminalTxTextEncoding;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 10;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(13);
+    expect(parsed.schemaVersion).toBe(14);
     expect(parsed.config).toEqual({ ...config, commandChecksum: "none" });
   });
 
@@ -437,6 +447,7 @@ describe("工作区文件", () => {
       ),
     ) as Record<string, unknown>;
     delete (exported.config as Record<string, unknown>).terminalTxTextEncoding;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 10;
 
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/commandChecksum/);
@@ -450,11 +461,12 @@ describe("工作区文件", () => {
     ) as Record<string, unknown>;
     delete (exported.config as Record<string, unknown>).simulatorConfig;
     delete (exported.config as Record<string, unknown>).terminalTxTextEncoding;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 11;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(13);
+    expect(parsed.schemaVersion).toBe(14);
     expect(parsed.config.commandChecksum).toBe("xor8");
     expect(parsed.config.simulatorConfig).toEqual({
       signal: "sine",
@@ -475,6 +487,7 @@ describe("工作区文件", () => {
       ),
     ) as Record<string, unknown>;
     delete (exported.config as Record<string, unknown>).terminalTxTextEncoding;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 11;
 
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/simulatorConfig/);
@@ -487,13 +500,32 @@ describe("工作区文件", () => {
       serializeWorkspace(createWorkspaceProfile("v12 工作区", config, "legacy-v12", 100)),
     ) as Record<string, unknown>;
     delete (exported.config as Record<string, unknown>).terminalTxTextEncoding;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 12;
 
     const parsed = parseWorkspaceExport(JSON.stringify(exported));
 
-    expect(parsed.schemaVersion).toBe(13);
+    expect(parsed.schemaVersion).toBe(14);
     expect(parsed.config.terminalRxTextEncoding).toBe("gb18030");
     expect(parsed.config.terminalTxTextEncoding).toBe("utf-8");
+  });
+
+  it("严格 v13 迁移为接收时间，v14 固定采样率可往返且拒绝坏值", () => {
+    const config = createDefaultWorkspaceConfig("serial");
+    config.chartSampleRateHz = 1000;
+    const profile = createWorkspaceProfile("固定采样", config, "sampling", 100);
+    expect(parseWorkspaceExport(serializeWorkspace(profile)).config.chartSampleRateHz).toBe(1000);
+    const legacy = JSON.parse(serializeWorkspace(profile));
+    delete legacy.config.chartSampleRateHz;
+    legacy.schemaVersion = 13;
+    expect(parseWorkspaceExport(JSON.stringify(legacy)).config.chartSampleRateHz).toBeNull();
+    for (const invalid of [0, -1, "1000", 1000001]) {
+      const exported = JSON.parse(serializeWorkspace(profile));
+      exported.config.chartSampleRateHz = invalid;
+      expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/采样率/);
+    }
+    legacy.config.chartSampleRateHz = 1000;
+    expect(() => parseWorkspaceExport(JSON.stringify(legacy))).toThrow(/chartSampleRateHz/);
   });
 
   it("v12 严格拒绝提前出现的 v13 发送编码字段", () => {
@@ -507,6 +539,7 @@ describe("工作区文件", () => {
         ),
       ),
     ) as Record<string, unknown>;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 12;
 
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/terminalTxTextEncoding/);
@@ -518,6 +551,7 @@ describe("工作区文件", () => {
         createWorkspaceProfile("伪 v9", createDefaultWorkspaceConfig("simulator"), "invalid-v9", 100),
       ),
     ) as Record<string, unknown>;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 9;
 
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/未知字段/);
@@ -546,6 +580,7 @@ describe("工作区文件", () => {
     delete (exported.config as Record<string, unknown>).commandChecksum;
     delete (exported.config as Record<string, unknown>).simulatorConfig;
     delete (exported.config as Record<string, unknown>).terminalTxTextEncoding;
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = 8;
 
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/kind/);
@@ -577,6 +612,7 @@ describe("工作区文件", () => {
     if (schemaVersion < 2) {
       delete config.processingGraph;
     }
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = schemaVersion;
 
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/行尾/);
@@ -610,12 +646,13 @@ describe("工作区文件", () => {
     if (schemaVersion === 4) {
       delete (exported.config as Record<string, unknown>).quickCommands;
     }
+    delete (exported.config as Record<string, unknown>).chartSampleRateHz;
     exported.schemaVersion = schemaVersion;
 
     expect(() => parseWorkspaceExport(JSON.stringify(exported))).toThrow(/行尾/);
   });
 
-  it("严格校验 v13 姿态字段、快捷命令、接收配置及派生通道引用", () => {
+  it("严格校验 v14 姿态字段、快捷命令、接收配置及派生通道引用", () => {
     const profile = createWorkspaceProfile(
       "姿态工作区",
       createDefaultWorkspaceConfig("simulator"),
@@ -698,7 +735,7 @@ describe("工作区文件", () => {
     ).toThrow(/未知字段/);
   });
 
-  it("严格校验 v13 通道展示、命令校验、模拟器与发送编码字段", () => {
+  it("严格校验 v14 通道展示、命令校验、模拟器与发送编码字段", () => {
     const exported = JSON.parse(
       serializeWorkspace(
         createWorkspaceProfile(
@@ -790,7 +827,7 @@ describe("工作区文件", () => {
 
   it.each([
     ["错误格式", { format: "other", schemaVersion: 1 }],
-    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 14 }],
+    ["未知版本", { format: "vofa-ultra.workspace", schemaVersion: 15 }],
   ])("拒绝%s", (_label, overrides) => {
     const profile = createWorkspaceProfile(
       "默认工作区",

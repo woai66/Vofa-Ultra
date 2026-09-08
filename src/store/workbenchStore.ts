@@ -1,6 +1,7 @@
 import { create, type StoreApi } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 import { APP_BUILD_ID, APP_VERSION } from "../core/appMetadata";
+import { parseChartSampleRate, WaveformSampleClock } from "../core/waveformTimebase";
 import {
   AutoResponderRuntime,
   CommandSendArbiter,
@@ -256,7 +257,7 @@ import type {
   ChannelPresentationProtocol,
   ChannelPresentations,
   ChartWindowSeconds,
-  WorkspaceExportV13,
+  WorkspaceExportV14,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AutoResponderRule, AutoResponderSnapshot } from "../types/automation";
@@ -286,7 +287,7 @@ interface TerminalPresentationOverride {
 }
 
 export const WORKBENCH_STORAGE_KEY = "vofa-ultra-workbench";
-export const WORKBENCH_STORAGE_VERSION = 13;
+export const WORKBENCH_STORAGE_VERSION = 14;
 export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [
   0,
   1,
@@ -301,6 +302,7 @@ export const WORKBENCH_MIGRATABLE_STORAGE_VERSIONS = [
   10,
   11,
   12,
+  13,
 ] as const;
 const INITIAL_SERIAL_RECOVERY: SerialRecoverySnapshot = {
   enabled: false,
@@ -350,6 +352,8 @@ const terminalLineAssembler = new TerminalLineAssembler();
 let terminalEntryId = 0;
 let chartFrameSequence = 0;
 const channelBuffers = new Map<string, RingBuffer<DataPoint>>();
+const liveSampleClock = new WaveformSampleClock();
+const replaySampleClock = new WaveformSampleClock();
 const processingChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
 const extensionChannelBuffers = new Map<string, RingBuffer<DataPoint>>();
 let liveProcessingRuntime = new ProcessingGraphRuntime(
@@ -467,6 +471,7 @@ export interface WorkbenchStore {
   terminalAutoScroll: boolean;
   chartPaused: boolean;
   chartWindowSeconds: ChartWindowSeconds;
+  chartSampleRateHz: number | null;
   chartDataRevision: number;
   waveformTrigger: WaveformTriggerState;
   stats: TransferStats;
@@ -601,6 +606,7 @@ export interface WorkbenchStore {
   setTerminalAutoScroll(enabled: boolean): void;
   setChartPaused(paused: boolean): void;
   setChartWindowSeconds(seconds: ChartWindowSeconds): void;
+  setChartSampleRate(sampleRateHz: number | null): void;
   armWaveformTrigger(config: WaveformTriggerConfig): boolean;
   disarmWaveformTrigger(): void;
   setProcessingGraph(config: ProcessingGraphConfig): void;
@@ -656,7 +662,7 @@ export interface WorkbenchStore {
   saveWorkspaceAs(name: string): string;
   switchWorkspace(id: string): Promise<boolean>;
   deleteWorkspace(id: string): Promise<boolean>;
-  importWorkspace(workspace: WorkspaceExportV13): string;
+  importWorkspace(workspace: WorkspaceExportV14): string;
 }
 
 type PersistedWorkbenchState = Pick<
@@ -676,6 +682,7 @@ type PersistedWorkbenchState = Pick<
   | "quickCommands"
   | "terminalAutoScroll"
   | "chartWindowSeconds"
+  | "chartSampleRateHz"
   | "channelVisibility"
   | "channelPresentations"
   | "processingGraph"
@@ -755,6 +762,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
       terminalAutoScroll: INITIAL_WORKSPACE_CONFIG.terminalAutoScroll,
       chartPaused: false,
       chartWindowSeconds: INITIAL_WORKSPACE_CONFIG.chartWindowSeconds,
+      chartSampleRateHz: INITIAL_WORKSPACE_CONFIG.chartSampleRateHz,
       chartDataRevision: 0,
       waveformTrigger: createIdleWaveformTriggerState(),
       stats: emptyStats(),
@@ -913,6 +921,10 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         const state = get();
         if (!authorized) {
           set({ extensionMessage: "启用前需要授权读取实时接收数据" });
+          return false;
+        }
+        if (state.chartSampleRateHz !== null) {
+          set({ extensionMessage: "启用扩展前请将波形时基切换为主机接收时间" });
           return false;
         }
         if (
@@ -1584,6 +1596,15 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             revokeExtensionForBoundary(get, set, "连接边界已变化，扩展会话已撤销");
             resetProtocolState(state.protocol);
             set({
+              channels: [],
+              processedChannels: [],
+              chartFrozenChannels: null,
+              chartFrozenProcessedChannels: null,
+              chartFrozenExtensionChannels: null,
+              chartPaused: false,
+              attitudeSample: null,
+              chartDataRevision: state.chartDataRevision + 1,
+              processingStatus: liveProcessingRuntime.getSnapshot(),
               connectionStatus: "connected",
               connectionMessage: "模拟数据正在运行",
               statusMessage: "模拟数据正在运行",
@@ -2040,6 +2061,9 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         }
         ensureParser(state.protocol, state.terminalRxTextEncoding);
         const frames = protocolParser.push(bytes, timestamp);
+        const chartFrameTimestamps = state.chartSampleRateHz === null
+          ? createChartFrameTimestamps(frames, state.channels[0]?.points.at(-1)?.x)
+          : liveSampleClock.project(frames, state.chartSampleRateHz);
         const protocolHealth = protocolParser.getHealthSnapshot();
         const processedSamples = liveProcessingRuntime.process(frames);
         const processingStatus = liveProcessingRuntime.getSnapshot();
@@ -2057,6 +2081,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
               state.waveformTrigger,
               frames,
               processedSamples,
+              chartFrameTimestamps,
             );
         const attitudeSample = extractRuntimeAttitudeSample(
           state.attitudeConfig,
@@ -2070,10 +2095,6 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
             handleNumericLogQueueError,
           );
         }
-        const chartFrameTimestamps = createChartFrameTimestamps(
-          frames,
-          state.channels[0]?.points.at(-1)?.x,
-        );
         const chartFrameSequences = createChartFrameSequences(frames.length);
         const nextChannels = appendFrames(
           state.channels,
@@ -2531,6 +2552,23 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
           waveformTrigger: createIdleWaveformTriggerState(),
         });
       },
+      setChartSampleRate: (sampleRateHz) => {
+        const state = get();
+        if (state.workspaceTransitionStatus !== "idle") {
+          return;
+        }
+        assertWorkspaceStorageWritable(state);
+        const parsed = parseChartSampleRate(sampleRateHz);
+        if (parsed !== null &&
+            (state.extensionState.status === "active" || state.extensionOperation !== "idle")) {
+          throw new Error("请先停用扩展，再设置固定采样率时基");
+        }
+        if (parsed === state.chartSampleRateHz) {
+          return;
+        }
+        // 原始接收、文件与数值日志保留到达时间；只重置显示快照和触发时钟。
+        resetChartView(set, parsed);
+      },
       setChartWindowSeconds: (chartWindowSeconds) => {
         const state = get();
         if (
@@ -2685,24 +2723,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         resetTerminalPresentationState();
         set({ terminalEntries: [] });
       },
-      clearChart: () => {
-        channelBuffers.clear();
-        replayChannelBuffers.clear();
-        processingChannelBuffers.clear();
-        replayProcessingChannelBuffers.clear();
-        extensionChannelBuffers.clear();
-        getExtensionCoordinator().discardPendingOutputs();
-        set((state) => ({
-          channels: [],
-          processedChannels: [],
-          extensionChannels: [],
-          chartFrozenChannels: state.chartPaused ? [] : null,
-          chartFrozenProcessedChannels: state.chartPaused ? [] : null,
-          chartFrozenExtensionChannels: state.chartPaused ? [] : null,
-          chartDataRevision: state.chartDataRevision + 1,
-          waveformTrigger: createIdleWaveformTriggerState(),
-        }));
-      },
+      clearChart: () => resetChartView(set),
       resetStats: () => set({ stats: emptyStats() }),
       clearProtocolHealth: () => {
         if (hasReplaySession(get())) {
@@ -3785,6 +3806,7 @@ export const useWorkbenchStore = create<WorkbenchStore>()(
         quickCommands: state.quickCommands,
         terminalAutoScroll: state.terminalAutoScroll,
         chartWindowSeconds: state.chartWindowSeconds,
+        chartSampleRateHz: state.chartSampleRateHz,
         channelVisibility: state.channelVisibility,
         channelPresentations: state.channelPresentations,
         processingGraph: state.processingGraph,
@@ -4049,6 +4071,9 @@ function getSerialRecoveryCoordinator(): SerialReconnectCoordinator {
         "串口已重新连接，扩展会话已撤销",
       );
       resetLiveStreamBoundary(state.protocol);
+      if (state.chartSampleRateHz !== null) {
+        state.clearChart();
+      }
       useWorkbenchStore.setState({
         processingStatus: liveProcessingRuntime.getSnapshot(),
         attitudeSample: null,
@@ -5427,6 +5452,7 @@ async function applyWorkspaceSnapshot(
     quickCommands: config.quickCommands,
     terminalAutoScroll: config.terminalAutoScroll,
     chartWindowSeconds: config.chartWindowSeconds,
+    chartSampleRateHz: config.chartSampleRateHz,
     channelVisibility: config.channelVisibility,
     channelPresentations: config.channelPresentations,
     processingGraph,
@@ -5506,6 +5532,7 @@ function resetProtocolState(
   protocolParser = createProtocolParser(protocol);
   resetLiveTerminalPresentationState(encoding);
   channelBuffers.clear();
+  liveSampleClock.reset();
   processingChannelBuffers.clear();
   liveProcessingRuntime.reset();
 }
@@ -5515,6 +5542,29 @@ function resetLiveStreamBoundary(protocol: ProtocolKind): void {
   protocolParser = createProtocolParser(protocol);
   resetLiveTerminalPresentationState();
   liveProcessingRuntime.reset();
+}
+
+function resetChartView(set: WorkbenchSet, sampleRateHz?: number | null): void {
+  liveSampleClock.reset();
+  replaySampleClock.reset();
+  channelBuffers.clear();
+  replayChannelBuffers.clear();
+  processingChannelBuffers.clear();
+  replayProcessingChannelBuffers.clear();
+  extensionChannelBuffers.clear();
+  getExtensionCoordinator().discardPendingOutputs();
+  // 持久化可能在 set 更新内存后失败，时基与空图必须同时提交。
+  set((state) => ({
+    chartSampleRateHz: sampleRateHz === undefined ? state.chartSampleRateHz : sampleRateHz,
+    channels: [],
+    processedChannels: [],
+    extensionChannels: [],
+    chartFrozenChannels: state.chartPaused ? [] : null,
+    chartFrozenProcessedChannels: state.chartPaused ? [] : null,
+    chartFrozenExtensionChannels: state.chartPaused ? [] : null,
+    chartDataRevision: state.chartDataRevision + 1,
+    waveformTrigger: createIdleWaveformTriggerState(),
+  }));
 }
 
 function resetLiveView(protocol: ProtocolKind, set: WorkbenchSet): void {
@@ -5554,6 +5604,7 @@ function resetReplayProtocolState(
   replayProtocolParser = createProtocolParser(protocol);
   resetReplayTerminalPresentationState(encoding);
   replayChannelBuffers.clear();
+  replaySampleClock.reset();
   replayProcessingChannelBuffers.clear();
   replayProcessingRuntime.reset();
 }
@@ -5631,10 +5682,9 @@ function ingestReplayBatch(
       }
     }
   }
-  const chartFrameTimestamps = createChartFrameTimestamps(
-    processingFrames,
-    channels[0]?.points.at(-1)?.x,
-  );
+  const chartFrameTimestamps = state.chartSampleRateHz === null
+    ? createChartFrameTimestamps(processingFrames, channels[0]?.points.at(-1)?.x)
+    : replaySampleClock.project(processingFrames, state.chartSampleRateHz);
   const chartFrameSequences = createChartFrameSequences(processingFrames.length);
   channels = appendFrames(
     channels,
@@ -5868,6 +5918,7 @@ function advanceLiveWaveformTrigger(
   state: WaveformTriggerState,
   frames: readonly ParsedFrame[],
   processedSamples: readonly ProcessingOutputSample[],
+  chartFrameTimestamps: readonly number[],
 ): WaveformTriggerAdvanceResult {
   if ((state.phase !== "armed" && state.phase !== "triggered") || !state.config) {
     return { state, shouldFreeze: false };
@@ -5876,22 +5927,24 @@ function advanceLiveWaveformTrigger(
     state.config.channelId,
     frames,
     processedSamples,
+    chartFrameTimestamps,
   );
-  return advanceWaveformTrigger(state, observations, latestFrameTimestampSeconds(frames));
+  return advanceWaveformTrigger(state, observations, chartFrameTimestamps.at(-1) ?? null);
 }
 
 function createWaveformTriggerObservations(
   channelId: string,
   frames: readonly ParsedFrame[],
   processedSamples: readonly ProcessingOutputSample[],
+  chartFrameTimestamps: readonly number[],
 ): WaveformTriggerObservation[] {
   const baseChannelMatch = /^channel-(\d+)$/.exec(channelId);
   if (baseChannelMatch) {
     const channelIndex = Number(baseChannelMatch[1]);
-    return frames.map((frame) => {
+    return frames.map((frame, frameIndex) => {
       const value = frame.values[channelIndex];
       return {
-        timestampSeconds: frame.timestamp / 1_000,
+        timestampSeconds: chartFrameTimestamps[frameIndex] ?? frame.timestamp / 1_000,
         value: value !== undefined && Number.isFinite(value) ? value : null,
       };
     });
@@ -5906,21 +5959,10 @@ function createWaveformTriggerObservations(
   return frames.map((frame, frameIndex) => {
     const sample = sampleByFrameIndex.get(frameIndex);
     return {
-      timestampSeconds: (sample?.timestamp ?? frame.timestamp) / 1_000,
+      timestampSeconds: chartFrameTimestamps[frameIndex] ?? (sample?.timestamp ?? frame.timestamp) / 1_000,
       value: sample && Number.isFinite(sample.value) ? sample.value : null,
     };
   });
-}
-
-function latestFrameTimestampSeconds(frames: readonly ParsedFrame[]): number | null {
-  let latestTimestamp: number | null = null;
-  for (const frame of frames) {
-    const timestampSeconds = frame.timestamp / 1_000;
-    if (Number.isFinite(timestampSeconds)) {
-      latestTimestamp = Math.max(latestTimestamp ?? timestampSeconds, timestampSeconds);
-    }
-  }
-  return latestTimestamp;
 }
 
 function extractRuntimeAttitudeSample(

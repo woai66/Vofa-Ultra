@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type Ref,
 } from "react";
 import {
   Cable,
@@ -19,14 +20,10 @@ import {
   Eye,
   EyeOff,
   Gauge,
-  Monitor,
-  Moon,
   Pencil,
   Play,
   RefreshCw,
   RotateCcw,
-  Settings,
-  Sun,
   Trash2,
   TriangleAlert,
   Undo2,
@@ -37,7 +34,6 @@ import {
   presentChannelSeries,
   type PresentedChannelSeries,
 } from "../core/channelPresentation";
-import { APP_BUILD_ID, APP_DISPLAY_VERSION } from "../core/appMetadata";
 import { isModbusPollActive } from "../core/modbusPoller";
 import {
   BUILTIN_PROTOCOLS,
@@ -65,7 +61,6 @@ import type {
   BaseChannelId,
   ChannelPresentationOverride,
   ChannelPresentationProtocol,
-  ChartWindowSeconds,
 } from "../types/workspace";
 import type { ProtocolHealthSnapshot } from "../types/workbench";
 import {
@@ -76,7 +71,10 @@ import {
   type SimulatorSignalType,
 } from "../types/simulator";
 import type { SidebarPanel } from "./ActivityRail";
-import { WorkspacePanel } from "./WorkspacePanel";
+import type { TextSizePreference } from "./SettingsPanel";
+const WorkspacePanel = lazy(() =>
+  import("./WorkspacePanel").then(({ WorkspacePanel }) => ({ default: WorkspacePanel })),
+);
 
 const CapturePanel = lazy(() =>
   import("./CapturePanel").then(({ CapturePanel }) => ({ default: CapturePanel })),
@@ -90,6 +88,19 @@ const ProcessingPanel = lazy(() =>
 const ExtensionPanel = lazy(() =>
   import("./ExtensionPanel").then(({ ExtensionPanel }) => ({ default: ExtensionPanel })),
 );
+const SettingsPanel = lazy(() =>
+  import("./SettingsPanel").then(({ SettingsPanel }) => ({ default: SettingsPanel })),
+);
+
+const TEXT_SIZE_STORAGE_KEY = "vofa-ultra-text-size";
+
+function readTextSizePreference(): TextSizePreference {
+  try {
+    return localStorage.getItem(TEXT_SIZE_STORAGE_KEY) === "comfortable" ? "comfortable" : "standard";
+  } catch {
+    return "standard";
+  }
+}
 
 const MIN_BAUD_RATE = 1;
 const MAX_BAUD_RATE = 12_000_000;
@@ -101,6 +112,8 @@ const BAUD_RATE_OPTIONS_GAP = 6;
 const PROTOCOL_IDS = BUILTIN_PROTOCOLS.map(({ id }) => id);
 
 interface SidebarProps {
+  ref?: Ref<HTMLElement>;
+  open?: boolean;
   activePanel: SidebarPanel;
   themePreference: ThemePreference;
   onClose(): void;
@@ -399,13 +412,42 @@ function parseBaudRate(value: string): number | null {
 }
 
 export function Sidebar({
+  ref,
+  open = true,
   activePanel,
   themePreference,
   onClose,
   onThemePreferenceChange,
 }: SidebarProps) {
+  const [textSize, setTextSize] = useState<TextSizePreference>(readTextSizePreference);
+  const [workspaceVisited, setWorkspaceVisited] = useState(activePanel === "workspaces");
+
+  useEffect(() => {
+    if (activePanel === "workspaces") {
+      setWorkspaceVisited(true);
+    }
+  }, [activePanel]);
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.textSize = textSize;
+  }, [textSize]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TEXT_SIZE_STORAGE_KEY, textSize);
+    } catch {
+      // 偏好无法持久化时，当前会话的字号切换仍应生效。
+    }
+  }, [textSize]);
+
   return (
-    <aside className="sidebar">
+    <aside
+      ref={ref}
+      id="workbench-sidebar"
+      className="sidebar"
+      inert={!open}
+      aria-hidden={open ? undefined : true}
+    >
       <button
         className="icon-button sidebar-close"
         type="button"
@@ -452,13 +494,21 @@ export function Sidebar({
         </Suspense>
       )}
       <div className="workspace-panel-host" hidden={activePanel !== "workspaces"}>
-        <WorkspacePanel />
+        {(workspaceVisited || activePanel === "workspaces") && (
+          <Suspense fallback={<div className="sidebar-panel" aria-label="加载中" aria-busy="true" />}>
+            <WorkspacePanel />
+          </Suspense>
+        )}
       </div>
       {activePanel === "settings" && (
-        <SettingsPanel
-          themePreference={themePreference}
-          onThemePreferenceChange={onThemePreferenceChange}
-        />
+        <Suspense fallback={<div className="sidebar-panel" aria-label="加载中" aria-busy="true" />}>
+          <SettingsPanel
+            themePreference={themePreference}
+            onThemePreferenceChange={onThemePreferenceChange}
+            textSize={textSize}
+            onTextSizeChange={setTextSize}
+          />
+        </Suspense>
       )}
     </aside>
   );
@@ -1654,122 +1704,6 @@ function ChannelRow({
           </div>
         </form>
       )}
-    </div>
-  );
-}
-
-function SettingsPanel({
-  themePreference,
-  onThemePreferenceChange,
-}: Pick<SidebarProps, "themePreference" | "onThemePreferenceChange">) {
-  const chartWindowSeconds = useWorkbenchStore((state) => state.chartWindowSeconds);
-  const setChartWindowSeconds = useWorkbenchStore((state) => state.setChartWindowSeconds);
-  const terminalAutoScroll = useWorkbenchStore((state) => state.terminalAutoScroll);
-  const setTerminalAutoScroll = useWorkbenchStore((state) => state.setTerminalAutoScroll);
-  const resetStats = useWorkbenchStore((state) => state.resetStats);
-  const isTransitioning = useWorkbenchStore(
-    (state) => state.workspaceTransitionStatus !== "idle",
-  );
-
-  return (
-    <div className="sidebar-panel settings-sidebar-panel">
-      <div className="sidebar-heading">
-        <div>
-          <h1>工作台设置</h1>
-        </div>
-        <Settings size={20} />
-      </div>
-      <section className="sidebar-section">
-        <span className="field-label" id="appearance-label">外观</span>
-        <div
-          className="segmented-control icon-segments"
-          role="group"
-          aria-labelledby="appearance-label"
-        >
-          <button
-            type="button"
-            aria-pressed={themePreference === "system"}
-            data-active={themePreference === "system"}
-            onClick={() => onThemePreferenceChange("system")}
-          >
-            <Monitor size={15} /> 系统
-          </button>
-          <button
-            type="button"
-            aria-pressed={themePreference === "dark"}
-            data-active={themePreference === "dark"}
-            onClick={() => onThemePreferenceChange("dark")}
-          >
-            <Moon size={15} /> 深色
-          </button>
-          <button
-            type="button"
-            aria-pressed={themePreference === "light"}
-            data-active={themePreference === "light"}
-            onClick={() => onThemePreferenceChange("light")}
-          >
-            <Sun size={15} /> 浅色
-          </button>
-        </div>
-      </section>
-      <section className="sidebar-section">
-        <label className="field-label" htmlFor="chart-window-setting">
-          波形时间窗
-        </label>
-        <select
-          id="chart-window-setting"
-          name="chart-window-setting"
-          value={chartWindowSeconds}
-          disabled={isTransitioning}
-          onChange={(event) =>
-            setChartWindowSeconds(Number(event.target.value) as ChartWindowSeconds)
-          }
-        >
-          <option value={5}>5 秒</option>
-          <option value={15}>15 秒</option>
-          <option value={30}>30 秒</option>
-          <option value={60}>60 秒</option>
-        </select>
-        <label className="toggle-row standalone" htmlFor="terminal-auto-scroll">
-          <span>终端自动滚动</span>
-          <input
-            id="terminal-auto-scroll"
-            name="terminal-auto-scroll"
-            type="checkbox"
-            checked={terminalAutoScroll}
-            disabled={isTransitioning}
-            onChange={(event) => setTerminalAutoScroll(event.target.checked)}
-          />
-        </label>
-      </section>
-      <button className="secondary-button" type="button" onClick={resetStats}>
-        <RotateCcw size={16} />
-        重置传输统计
-      </button>
-      <section className="sidebar-section about-section" aria-labelledby="about-product-name">
-        <span className="field-label">关于</span>
-        <div className="about-product-line">
-          <strong id="about-product-name">Vofa-Ultra</strong>
-          <code>{APP_DISPLAY_VERSION}</code>
-        </div>
-        <p>面向嵌入式开发者的 Windows 串口与实时波形工作台。</p>
-        <dl className="about-meta">
-          <div>
-            <dt>支持平台</dt>
-            <dd>Windows 10/11 x64</dd>
-          </div>
-          <div>
-            <dt>许可证</dt>
-            <dd>MIT</dd>
-          </div>
-          <div>
-            <dt>构建</dt>
-            <dd>
-              <code>{APP_BUILD_ID}</code>
-            </dd>
-          </div>
-        </dl>
-      </section>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createInitialAutoResponderSnapshot } from "../core/autoResponder";
@@ -143,6 +143,7 @@ describe("TerminalPanel", () => {
     useWorkbenchStore.getState().stopModbusPolling();
     useWorkbenchStore.getState().stopPeriodicSend();
     cleanup();
+    vi.restoreAllMocks();
   });
 
   it("区分空终端和已有记录但零匹配的状态", async () => {
@@ -171,6 +172,7 @@ describe("TerminalPanel", () => {
     });
     const user = userEvent.setup();
     const firstRender = render(<TerminalPanel />);
+    await user.click(screen.getByRole("button", { name: "接收选项" }));
     const modeGroup = screen.getByRole("group", { name: "终端时间基准" });
     const timeLabels = () =>
       [...screen.getByRole("log", { name: "终端记录" }).querySelectorAll("time")].map(
@@ -213,6 +215,7 @@ describe("TerminalPanel", () => {
 
     firstRender.unmount();
     render(<TerminalPanel />);
+    await user.click(screen.getByRole("button", { name: "接收选项" }));
     expect(screen.getByRole("button", { name: "ΔT，距上一条可见记录" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -220,9 +223,52 @@ describe("TerminalPanel", () => {
     viewportHeight.mockRestore();
   });
 
+  it("时间偏好存储拒绝访问时仍可打开终端并切换时间基准", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("Storage access denied", "SecurityError");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage is full", "QuotaExceededError");
+    });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+
+    await user.click(screen.getByRole("button", { name: "接收选项" }));
+    expect(screen.getByRole("button", { name: "ABS，绝对时间" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "REL，相对缓存起点" }));
+    expect(screen.getByRole("button", { name: "REL，相对缓存起点" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("log", { name: "终端记录" })).toBeInTheDocument();
+  });
+
+  it("暂停记录时提供持续反馈，继续后不补录暂停期间的 RX", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const pause = screen.getByRole("button", { name: "暂停终端记录" });
+    expect(pause).toHaveAttribute("aria-pressed", "false");
+    expect(pause).toHaveAttribute("title", expect.stringContaining("暂停期间 RX/TX 不加入终端缓存"));
+    expect(screen.queryByText("记录已暂停")).not.toBeInTheDocument();
+
+    await user.click(pause);
+    expect(useWorkbenchStore.getState().terminalPaused).toBe(true);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("记录已暂停");
+    expect(status).toHaveAttribute("title", expect.stringContaining("恢复不补录；原始录制不受影响"));
+    expect(screen.getByRole("button", { name: "继续终端记录" })).toHaveAttribute("aria-pressed", "true");
+    act(() => useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("skipped"), 1_000));
+    expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
+
+    await user.click(screen.getByRole("button", { name: "继续终端记录" }));
+    expect(useWorkbenchStore.getState().terminalPaused).toBe(false);
+    expect(screen.queryByText("记录已暂停")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "暂停终端记录" })).toHaveAttribute("aria-pressed", "false");
+    act(() => useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("next"), 2_000));
+    expect(useWorkbenchStore.getState().terminalEntries.map(({ text }) => text)).toEqual(["next"]);
+  });
+
   it("切换接收记录方式并独立选择 RX 行尾与文本编码", async () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
+    await user.click(screen.getByRole("button", { name: "接收选项" }));
     const recordMode = screen.getByRole("group", { name: "接收记录方式" });
     const lineEnding = screen.getByRole("combobox", { name: "接收行尾" });
     const textEncoding = screen.getByRole("combobox", { name: "接收文本编码" });
@@ -248,6 +294,45 @@ describe("TerminalPanel", () => {
       terminalRxLineEnding: "cr",
       terminalRxTextEncoding: "gb18030",
     });
+  });
+
+  it("接收选项默认折叠，展开配置后收起不会改变接收或时间设置", async () => {
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const trigger = screen.getByRole("button", { name: "接收选项" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveAttribute("aria-controls", "terminal-receive-options");
+    expect(screen.queryByRole("group", { name: "接收选项" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "接收文本编码" })).not.toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: "搜索终端记录" })).toBeVisible();
+    expect(screen.getByRole("group", { name: "接收显示格式" })).toBeVisible();
+    expect(screen.getByRole("group", { name: "终端方向筛选" })).toBeVisible();
+
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("group", { name: "接收选项" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "按文本行记录" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "接收行尾" }), "crlf");
+    await user.selectOptions(screen.getByRole("combobox", { name: "接收文本编码" }), "gb18030");
+    await user.click(screen.getByRole("button", { name: "REL，相对缓存起点" }));
+    await user.click(trigger);
+
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute("title", "接收选项：按文本行 · GB18030 · 相对缓存起点");
+    expect(screen.queryByRole("group", { name: "接收选项" })).not.toBeInTheDocument();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      terminalRxRecordMode: "line",
+      terminalRxLineEnding: "crlf",
+      terminalRxTextEncoding: "gb18030",
+    });
+    expect(localStorage.getItem(TERMINAL_TIME_MODE_STORAGE_KEY)).toBe("relative");
+
+    await user.click(trigger);
+    expect(screen.getByRole("button", { name: "按文本行记录" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("combobox", { name: "接收行尾" })).toHaveValue("crlf");
+    expect(screen.getByRole("combobox", { name: "接收文本编码" })).toHaveValue("gb18030");
+    expect(screen.getByRole("button", { name: "REL，相对缓存起点" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("只有未结束 RX 行时仍可清空聚合残片", async () => {
@@ -371,6 +456,8 @@ describe("TerminalPanel", () => {
       terminalAutoScroll: true,
       terminalPaused: false,
     });
+    expect(screen.queryByText("记录已暂停")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "暂停终端记录" })).toHaveAttribute("aria-pressed", "false");
 
     useWorkbenchStore.setState({
       terminalEntries: [
@@ -620,7 +707,9 @@ describe("TerminalPanel", () => {
     await user.click(textDisplay);
 
     expect(useWorkbenchStore.getState().displayMode).toBe("text");
+    await user.click(screen.getByRole("button", { name: "接收选项" }));
     expect(screen.getByRole("combobox", { name: "接收文本编码" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "发送选项" }));
     expect(screen.getByRole("combobox", { name: "发送文本编码" })).toBeDisabled();
   });
 
@@ -637,6 +726,7 @@ describe("TerminalPanel", () => {
     useWorkbenchStore.getState().setTerminalTxTextEncoding("windows-1252");
     const user = userEvent.setup();
     render(<TerminalPanel />);
+    await user.click(screen.getByRole("button", { name: "发送选项" }));
     const input = screen.getByRole("textbox", {
       name: "发送内容",
     }) as HTMLTextAreaElement;
@@ -717,6 +807,7 @@ describe("TerminalPanel", () => {
     useWorkbenchStore.getState().setCommandChecksum("none");
     const user = userEvent.setup();
     render(<TerminalPanel />);
+    await user.click(screen.getByRole("button", { name: "发送选项" }));
 
     const historyTrigger = screen.getByRole("button", { name: "命令历史，1 条" });
     await user.click(historyTrigger);
@@ -980,6 +1071,7 @@ describe("TerminalPanel", () => {
   it("选择 GB18030 后按实际字节预览、发送并从历史恢复编码", async () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
+    await user.click(screen.getByRole("button", { name: "发送选项" }));
     const input = screen.getByRole("textbox", { name: "发送内容" });
     const encoding = screen.getByRole("combobox", { name: "发送文本编码" });
     const send = screen.getByRole("button", { name: "发送" });
@@ -1014,6 +1106,7 @@ describe("TerminalPanel", () => {
   it("自动附加所选校验尾并在预览中展示最终帧", async () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
+    await user.click(screen.getByRole("button", { name: "发送选项" }));
     const checksum = screen.getByRole("combobox", { name: "校验" });
     const input = screen.getByRole("textbox", { name: "发送内容" });
 
@@ -1043,10 +1136,63 @@ describe("TerminalPanel", () => {
     });
   });
 
+  it("发送选项收起后提示非默认编码和校验，且只有点击发送才发送带 CRC 的完整帧", async () => {
+    const sendSpy = vi.fn(DEFAULT_SEND);
+    useWorkbenchStore.setState({ send: sendSpy });
+    const user = userEvent.setup();
+    render(<TerminalPanel />);
+    const trigger = screen.getByRole("button", { name: "发送选项" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveAttribute("aria-controls", "send-advanced-options");
+    expect(trigger).toHaveAttribute("data-active", "false");
+    expect(screen.queryByRole("group", { name: "发送选项" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "校验" })).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "行尾" })).toBeVisible();
+    expect(screen.getByRole("group", { name: "发送格式" })).toBeVisible();
+
+    await user.click(trigger);
+    await user.selectOptions(screen.getByRole("combobox", { name: "发送文本编码" }), "windows-1252");
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("data-active", "true");
+    expect(trigger).toHaveAttribute("title", "发送选项：Windows-1252 · 校验 无");
+    await user.click(trigger);
+    await user.selectOptions(screen.getByRole("combobox", { name: "校验" }), "crc16-modbus-le");
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveAttribute("data-active", "true");
+    expect(trigger).toHaveAttribute("title", "发送选项：Windows-1252 · 校验 CRC-16/MODBUS（低字节在前）");
+    expect(screen.queryByRole("group", { name: "发送选项" })).not.toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox", { name: "发送内容" }), "123456789");
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState().terminalEntries).toEqual([]);
+    expect(useWorkbenchStore.getState().commandHistory).toEqual([]);
+
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.hex)
+        .toBe("31 32 33 34 35 36 37 38 39 37 4B");
+    });
+    expect(sendSpy).toHaveBeenCalledOnce();
+    expect(useWorkbenchStore.getState().commandHistory[0]).toMatchObject({
+      checksumMode: "crc16-modbus-le", textEncoding: "windows-1252", encodedBytes: 11,
+    });
+
+    await user.click(trigger);
+    expect(screen.getByRole("combobox", { name: "校验" })).toHaveValue("crc16-modbus-le");
+    await user.selectOptions(screen.getByRole("combobox", { name: "校验" }), "none");
+    await user.selectOptions(screen.getByRole("combobox", { name: "发送文本编码" }), "utf-8");
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("data-active", "false");
+    expect(sendSpy).toHaveBeenCalledOnce();
+  });
+
   it("允许空 payload 仅发送校验尾", async () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
 
+    await user.click(screen.getByRole("button", { name: "发送选项" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "校验" }), "sum8");
     expect(
       screen.getByLabelText("命令模板包含 0 个变量，最终 1 字节，校验尾 00"),
@@ -1403,6 +1549,7 @@ describe("TerminalPanel", () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
 
+    await user.click(screen.getByRole("button", { name: "发送选项" }));
     await user.click(screen.getByRole("button", { name: "打开 Modbus RTU 构帧器" }));
     const builder = await screen.findByRole("dialog", { name: "Modbus RTU 构帧器" });
     const operation = within(builder).getByRole("combobox", { name: "Modbus 功能" });
@@ -1614,6 +1761,7 @@ describe("TerminalPanel", () => {
   it("保存并载入快捷命令时保留模板格式且不产生 TX", async () => {
     const user = userEvent.setup();
     render(<TerminalPanel />);
+    await user.click(screen.getByRole("button", { name: "发送选项" }));
     const input = screen.getByRole("textbox", { name: "发送内容" });
 
     fireEvent.change(input, { target: { value: "SET ${seq}" } });

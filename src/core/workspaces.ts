@@ -45,6 +45,7 @@ import {
   parseSimulatorConfig,
   tryParseSimulatorConfig,
 } from "./simulator";
+import { parseChartSampleRate } from "./waveformTimebase";
 import {
   TERMINAL_RX_LINE_ENDINGS,
   TERMINAL_RX_RECORD_MODES,
@@ -67,7 +68,7 @@ import type {
   WorkspaceConfigV11,
   WorkspaceConfigV12,
   WorkspaceConfigV13,
-  WorkspaceExportV13,
+  WorkspaceExportV14,
   WorkspaceProfile,
 } from "../types/workspace";
 import type { AttitudeConfig } from "../types/attitude";
@@ -75,7 +76,7 @@ import type { ProcessingGraphConfig } from "../types/processingGraph";
 import type { LineEnding } from "../types/serial";
 
 export const WORKSPACE_FILE_FORMAT = "vofa-ultra.workspace";
-export const WORKSPACE_SCHEMA_VERSION = 13;
+export const WORKSPACE_SCHEMA_VERSION = 14;
 export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   1,
   2,
@@ -89,6 +90,7 @@ export const WORKSPACE_READABLE_SCHEMA_VERSIONS = [
   10,
   11,
   12,
+  13,
   WORKSPACE_SCHEMA_VERSION,
 ] as const;
 export const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
@@ -143,6 +145,7 @@ const WORKSPACE_CONFIG_V13_KEYS = [
   ...WORKSPACE_CONFIG_V12_KEYS,
   "terminalTxTextEncoding",
 ] as const;
+const WORKSPACE_CONFIG_V14_KEYS = [...WORKSPACE_CONFIG_V13_KEYS, "chartSampleRateHz"] as const;
 const SERIAL_CONFIG_KEYS = [
   "portName",
   "baudRate",
@@ -177,6 +180,7 @@ export function createDefaultWorkspaceConfig(source: WorkspaceConfig["source"]):
     terminalTxTextEncoding: "utf-8",
     terminalAutoScroll: true,
     chartWindowSeconds: 15,
+    chartSampleRateHz: null,
     channelVisibility: {},
     processingGraph: { enabled: false, nodes: [] },
     attitudeConfig: createDefaultAttitudeConfig(),
@@ -206,6 +210,7 @@ export function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
     terminalTxTextEncoding: config.terminalTxTextEncoding,
     terminalAutoScroll: config.terminalAutoScroll,
     chartWindowSeconds: config.chartWindowSeconds,
+    chartSampleRateHz: config.chartSampleRateHz,
     channelVisibility: { ...config.channelVisibility },
     processingGraph: cloneProcessingGraph(config.processingGraph),
     attitudeConfig: cloneAttitudeConfig(config.attitudeConfig),
@@ -248,6 +253,7 @@ export function areWorkspaceConfigsEqual(
     left.terminalTxTextEncoding === right.terminalTxTextEncoding &&
     left.terminalAutoScroll === right.terminalAutoScroll &&
     left.chartWindowSeconds === right.chartWindowSeconds &&
+    left.chartSampleRateHz === right.chartSampleRateHz &&
     JSON.stringify(leftVisibility) === JSON.stringify(rightVisibility) &&
     JSON.stringify(left.processingGraph) === JSON.stringify(right.processingGraph) &&
     areAttitudeConfigsEqual(left.attitudeConfig, right.attitudeConfig) &&
@@ -333,7 +339,7 @@ export function assertWorkspaceNameAvailable(
 }
 
 export function serializeWorkspace(profile: WorkspaceProfile): string {
-  const exported: WorkspaceExportV13 = {
+  const exported: WorkspaceExportV14 = {
     format: WORKSPACE_FILE_FORMAT,
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     name: profile.name,
@@ -344,7 +350,7 @@ export function serializeWorkspace(profile: WorkspaceProfile): string {
   return serialized;
 }
 
-export function parseWorkspaceExport(text: string): WorkspaceExportV13 {
+export function parseWorkspaceExport(text: string): WorkspaceExportV14 {
   assertWorkspaceFileSize(text);
 
   let parsed: unknown;
@@ -385,9 +391,19 @@ export function parseWorkspaceConfig(value: unknown): WorkspaceConfig {
 function parseWorkspaceConfigWithLineEndings(
   value: unknown,
   allowedLineEndings: readonly LineEnding[],
-): WorkspaceConfigV13 {
+): WorkspaceConfig {
   const record = requireRecord(value, "工作区配置");
-  assertExactKeys(record, WORKSPACE_CONFIG_V13_KEYS, "工作区配置");
+  assertExactKeys(record, WORKSPACE_CONFIG_V14_KEYS, "工作区配置");
+  return {
+    ...parseWorkspaceConfigV13Record(record, allowedLineEndings),
+    chartSampleRateHz: parseChartSampleRate(record.chartSampleRateHz),
+  };
+}
+
+function parseWorkspaceConfigV13Record(
+  record: Record<string, unknown>,
+  allowedLineEndings: readonly LineEnding[],
+): WorkspaceConfigV13 {
   return {
     ...parseWorkspaceConfigV12Record(record, allowedLineEndings),
     terminalTxTextEncoding: requireEnum(
@@ -782,7 +798,15 @@ function parseVersionedWorkspaceConfig(version: unknown, value: unknown): Worksp
   if (version === WORKSPACE_SCHEMA_VERSION) {
     return parseWorkspaceConfig(value);
   }
-  return migrateWorkspaceConfigV12(parseVersionedWorkspaceConfigV12(version, value));
+  let previous: WorkspaceConfigV13;
+  if (version === 13) {
+    const record = requireRecord(value, "工作区配置");
+    assertExactKeys(record, WORKSPACE_CONFIG_V13_KEYS, "工作区配置");
+    previous = parseWorkspaceConfigV13Record(record, LINE_ENDINGS);
+  } else {
+    previous = migrateWorkspaceConfigV12(parseVersionedWorkspaceConfigV12(version, value));
+  }
+  return { ...previous, chartSampleRateHz: null };
 }
 
 function parseVersionedWorkspaceConfigV12(version: unknown, value: unknown): WorkspaceConfigV12 {
@@ -965,6 +989,7 @@ export function restoreWorkspaceConfig(
     chartWindowSeconds: isChartWindow(record.chartWindowSeconds)
       ? record.chartWindowSeconds
       : fallback.chartWindowSeconds,
+    chartSampleRateHz: restoreChartSampleRate(record.chartSampleRateHz),
     channelVisibility: tryParseChannelVisibility(record.channelVisibility, processingGraph) ?? {
       ...fallback.channelVisibility,
     },
@@ -976,6 +1001,14 @@ export function restoreWorkspaceConfig(
     commandChecksum,
     simulatorConfig,
   };
+}
+
+function restoreChartSampleRate(value: unknown): number | null {
+  try {
+    return parseChartSampleRate(value);
+  } catch {
+    return null;
+  }
 }
 
 export function restoreWorkspaceProfiles(
@@ -1043,15 +1076,20 @@ function parseWorkspaceProfileConfig(
   allowedLineEndings: readonly LineEnding[],
   processingGraphSchema: ProcessingGraphSchemaMode,
 ): WorkspaceConfig {
-  if (Object.hasOwn(configRecord, "terminalTxTextEncoding")) {
+  if (Object.hasOwn(configRecord, "chartSampleRateHz")) {
     return parseWorkspaceConfigWithLineEndings(configRecord, allowedLineEndings);
   }
-  if (Object.hasOwn(configRecord, "simulatorConfig")) {
-    return migrateWorkspaceConfigV12(
-      parseWorkspaceConfigV12(configRecord, allowedLineEndings),
-    );
+  if (Object.hasOwn(configRecord, "terminalTxTextEncoding")) {
+    assertExactKeys(configRecord, WORKSPACE_CONFIG_V13_KEYS, "工作区配置");
+    return { ...parseWorkspaceConfigV13Record(configRecord, allowedLineEndings), chartSampleRateHz: null };
   }
-  return migrateWorkspaceConfigV12(
+  if (Object.hasOwn(configRecord, "simulatorConfig")) {
+    return {
+      ...migrateWorkspaceConfigV12(parseWorkspaceConfigV12(configRecord, allowedLineEndings)),
+      chartSampleRateHz: null,
+    };
+  }
+  const migrated = migrateWorkspaceConfigV12(
     migrateWorkspaceConfigV11(
       parseWorkspaceProfileConfigV11(
         configRecord,
@@ -1060,6 +1098,7 @@ function parseWorkspaceProfileConfig(
       ),
     ),
   );
+  return { ...migrated, chartSampleRateHz: null };
 }
 
 function parseWorkspaceProfileConfigV11(

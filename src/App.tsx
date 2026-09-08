@@ -2,6 +2,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -44,6 +45,23 @@ type WorkspaceView = (typeof WORKSPACE_VIEW_TABS)[number][0];
 const WORKSPACE_VIEWS: readonly WorkspaceView[] = WORKSPACE_VIEW_TABS.map(([view]) => view);
 type WorkspaceLayoutMode = "split" | "primary" | "terminal";
 
+const WORKSPACE_LAYOUT_STORAGE_KEY = "vofa-ultra-workspace-layout";
+const SIDEBAR_PANELS: readonly SidebarPanel[] = [
+  "connection", "channels", "processing", "extensions", "automation", "capture", "workspaces", "settings",
+];
+interface WorkspaceLayoutPreferences {
+  workspaceView: WorkspaceView;
+  workspaceLayoutMode: WorkspaceLayoutMode;
+  sidebarPanel: SidebarPanel;
+  sidebarOpen: boolean;
+}
+const DEFAULT_LAYOUT_PREFERENCES: WorkspaceLayoutPreferences = {
+  workspaceView: "waveform",
+  workspaceLayoutMode: "split",
+  sidebarPanel: "connection",
+  sidebarOpen: true,
+};
+
 const WORKSPACE_SPLIT_STORAGE_KEY = "vofa-ultra-workspace-split";
 const DEFAULT_WORKSPACE_SPLIT = 1.35 / (1.35 + 0.85);
 const MIN_WORKSPACE_SPLIT = 0.4;
@@ -62,7 +80,7 @@ const THEME_STORAGE_KEY = "vofa-ultra-theme";
 const SYSTEM_THEME_QUERY = "(prefers-color-scheme: light)";
 
 function readThemePreference(): ThemePreference {
-  const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+  const savedTheme = readLocalPreference(THEME_STORAGE_KEY);
   return savedTheme === "dark" || savedTheme === "light" || savedTheme === "system"
     ? savedTheme
     : "system";
@@ -84,19 +102,23 @@ const ChannelMonitorPanel = lazy(() =>
 );
 
 export default function App() {
-  const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>("connection");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [initialLayout] = useState(readWorkspaceLayoutPreferences);
+  const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>(initialLayout.sidebarPanel);
+  const [sidebarOpen, setSidebarOpen] = useState(initialLayout.sidebarOpen);
   const [sidebarOverlay, setSidebarOverlay] = useState(
     () => window.innerWidth <= SIDEBAR_OVERLAY_MAX_WIDTH,
   );
   const [waveformMeasuring, setWaveformMeasuring] = useState(false);
-  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("waveform");
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(initialLayout.workspaceView);
   const [workspaceLayoutMode, setWorkspaceLayoutMode] =
-    useState<WorkspaceLayoutMode>("split");
+    useState<WorkspaceLayoutMode>(initialLayout.workspaceLayoutMode);
   const [workspaceSplit, setWorkspaceSplit] = useState(readWorkspaceSplit);
   const [workspaceResizing, setWorkspaceResizing] = useState(false);
   const workspaceTabRefs = useRef<Partial<Record<WorkspaceView, HTMLButtonElement>>>({});
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const sidebarReturnFocusRef = useRef<HTMLElement | null>(null);
+  const lastFocusedElementRef = useRef<HTMLElement | null>(null);
   const workspaceContentRef = useRef<HTMLDivElement>(null);
   const workspaceResizeRef = useRef<WorkspaceResizeState | null>(null);
   const activeWorkspace = useWorkbenchStore(selectActiveWorkspace);
@@ -128,17 +150,58 @@ export default function App() {
     return () => media_query.removeListener(handle_change);
   }, []);
 
+  useLayoutEffect(() => {
+    const sidebar = sidebarRef.current;
+    const closeButton = sidebar?.querySelector<HTMLButtonElement>(".sidebar-close");
+    // 媒体查询可能在 resize 回调前隐藏控件，浏览器此时已经把焦点移到 body。
+    const focused = document.activeElement === document.body
+      ? lastFocusedElementRef.current
+      : document.activeElement;
+    if (!sidebar || !closeButton) {
+      return;
+    }
+    if (sidebarOpen && sidebarOverlay) {
+      if (!sidebar.contains(focused)) {
+        sidebarReturnFocusRef.current =
+          focused instanceof HTMLElement && focused !== document.body
+            ? focused
+            : sidebarToggleRef.current;
+        closeButton.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (!sidebarOpen && (sidebar.contains(focused) || document.activeElement === document.body)) {
+      const previousFocus = sidebarReturnFocusRef.current;
+      const target =
+        previousFocus?.isConnected && !previousFocus.closest("[inert], [hidden]")
+          ? previousFocus
+          : sidebarToggleRef.current;
+      target?.focus({ preventScroll: true });
+    } else if (!sidebarOverlay && focused === closeButton) {
+      sidebarToggleRef.current?.focus({ preventScroll: true });
+    }
+  }, [sidebarOpen, sidebarOverlay, sidebarPanel]);
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
   useEffect(() => {
-    localStorage.setItem(WORKSPACE_SPLIT_STORAGE_KEY, workspaceSplit.toFixed(4));
+    saveLocalPreference(WORKSPACE_SPLIT_STORAGE_KEY, workspaceSplit.toFixed(4));
   }, [workspaceSplit]);
 
   useEffect(() => {
-    localStorage.setItem(THEME_STORAGE_KEY, themePreference);
+    saveLocalPreference(THEME_STORAGE_KEY, themePreference);
   }, [themePreference]);
+
+  useEffect(() => {
+    saveLocalPreference(WORKSPACE_LAYOUT_STORAGE_KEY, JSON.stringify({
+      workspaceView,
+      workspaceLayoutMode,
+      sidebarPanel,
+      sidebarOpen,
+    }));
+  }, [workspaceView, workspaceLayoutMode, sidebarPanel, sidebarOpen]);
 
   useEffect(() => {
     const updateSidebarLayout = () => {
@@ -154,18 +217,17 @@ export default function App() {
     }
 
     const closeOverlaySidebar = (event: globalThis.KeyboardEvent) => {
+      // 原生对话框在 keydown 之后处理取消，不能在这里拦截其 Escape。
       if (
         event.defaultPrevented ||
         event.key !== "Escape" ||
-        window.innerWidth > SIDEBAR_OVERLAY_MAX_WIDTH
+        window.innerWidth > SIDEBAR_OVERLAY_MAX_WIDTH ||
+        document.querySelector("dialog[open]")
       ) {
         return;
       }
       event.preventDefault();
       setSidebarOpen(false);
-      window.requestAnimationFrame(() => {
-        sidebarToggleRef.current?.focus({ preventScroll: true });
-      });
     };
 
     document.addEventListener("keydown", closeOverlaySidebar);
@@ -174,9 +236,6 @@ export default function App() {
 
   const closeSidebar = () => {
     setSidebarOpen(false);
-    window.requestAnimationFrame(() => {
-      sidebarToggleRef.current?.focus({ preventScroll: true });
-    });
   };
 
   const toggleSidebar = () => {
@@ -185,13 +244,6 @@ export default function App() {
       return;
     }
     setSidebarOpen(true);
-    if (sidebarOverlay) {
-      window.requestAnimationFrame(() => {
-        document.querySelector<HTMLButtonElement>(".sidebar-close")?.focus({
-          preventScroll: true,
-        });
-      });
-    }
   };
 
   const selectSidebarPanel = (panel: SidebarPanel) => {
@@ -314,9 +366,21 @@ export default function App() {
   }视图`;
 
   return (
-    <div className="app-shell" data-sidebar-open={sidebarOpen}>
-      <ActivityRail activePanel={sidebarPanel} onSelect={selectSidebarPanel} />
+    <div
+      className="app-shell"
+      data-sidebar-open={sidebarOpen}
+      onFocusCapture={(event) => {
+        lastFocusedElementRef.current = event.target;
+      }}
+    >
+      <ActivityRail
+        activePanel={sidebarPanel}
+        sidebarOpen={sidebarOpen}
+        onSelect={selectSidebarPanel}
+      />
       <Sidebar
+        ref={sidebarRef}
+        open={sidebarOpen}
         activePanel={sidebarPanel}
         themePreference={themePreference}
         onClose={closeSidebar}
@@ -325,7 +389,10 @@ export default function App() {
       <div
         className="sidebar-backdrop"
         aria-hidden="true"
-        onPointerDown={closeSidebar}
+        onPointerDown={(event) => {
+          event.preventDefault();
+          closeSidebar();
+        }}
       />
 
       <main
@@ -339,6 +406,8 @@ export default function App() {
             className="icon-button sidebar-toggle"
             type="button"
             aria-label="显示或隐藏侧栏"
+            aria-controls="workbench-sidebar"
+            aria-expanded={sidebarOpen}
             title="显示或隐藏侧栏"
             onClick={toggleSidebar}
           >
@@ -471,7 +540,7 @@ export default function App() {
 }
 
 function readWorkspaceSplit(): number {
-  const savedSplit = localStorage.getItem(WORKSPACE_SPLIT_STORAGE_KEY);
+  const savedSplit = readLocalPreference(WORKSPACE_SPLIT_STORAGE_KEY);
   if (savedSplit === null) {
     return DEFAULT_WORKSPACE_SPLIT;
   }
@@ -479,6 +548,51 @@ function readWorkspaceSplit(): number {
   return Number.isFinite(parsedSplit)
     ? clampWorkspaceSplit(parsedSplit)
     : DEFAULT_WORKSPACE_SPLIT;
+}
+
+function readLocalPreference(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function saveLocalPreference(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // 界面偏好写入失败时，仍允许用户在当前会话调整布局和主题。
+  }
+}
+
+function readWorkspaceLayoutPreferences(): WorkspaceLayoutPreferences {
+  try {
+    const saved: unknown = JSON.parse(readLocalPreference(WORKSPACE_LAYOUT_STORAGE_KEY) ?? "null");
+    if (typeof saved !== "object" || saved === null || Array.isArray(saved)) {
+      return DEFAULT_LAYOUT_PREFERENCES;
+    }
+    const preferences = saved as Record<string, unknown>;
+    return {
+      workspaceView: WORKSPACE_VIEWS.includes(preferences.workspaceView as WorkspaceView)
+        ? preferences.workspaceView as WorkspaceView
+        : DEFAULT_LAYOUT_PREFERENCES.workspaceView,
+      workspaceLayoutMode:
+        preferences.workspaceLayoutMode === "primary" ||
+        preferences.workspaceLayoutMode === "terminal" ||
+        preferences.workspaceLayoutMode === "split"
+          ? preferences.workspaceLayoutMode
+          : DEFAULT_LAYOUT_PREFERENCES.workspaceLayoutMode,
+      sidebarPanel: SIDEBAR_PANELS.includes(preferences.sidebarPanel as SidebarPanel)
+        ? preferences.sidebarPanel as SidebarPanel
+        : DEFAULT_LAYOUT_PREFERENCES.sidebarPanel,
+      sidebarOpen: typeof preferences.sidebarOpen === "boolean"
+        ? preferences.sidebarOpen
+        : DEFAULT_LAYOUT_PREFERENCES.sidebarOpen,
+    };
+  } catch {
+    return DEFAULT_LAYOUT_PREFERENCES;
+  }
 }
 
 function clampWorkspaceSplit(value: number): number {

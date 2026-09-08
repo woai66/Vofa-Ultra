@@ -21,6 +21,7 @@ export type SidebarPanel =
 
 interface ActivityRailProps {
   activePanel: SidebarPanel;
+  sidebarOpen: boolean;
   onSelect(panel: SidebarPanel): void;
 }
 
@@ -41,7 +42,7 @@ const RAIL_ITEMS = [
   { id: "settings" as const, label: "设置", icon: Settings, group: "settings" as const },
 ];
 
-export function ActivityRail({ activePanel, onSelect }: ActivityRailProps) {
+export function ActivityRail({ activePanel, sidebarOpen, onSelect }: ActivityRailProps) {
   return (
     <nav className="activity-rail" aria-label="工作台导航">
       <div className="brand-mark" role="img" aria-label="Vofa-Ultra" title="Vofa-Ultra">
@@ -52,12 +53,14 @@ export function ActivityRail({ activePanel, onSelect }: ActivityRailProps) {
           <button
             key={id}
             className="rail-button"
-            data-active={activePanel === id}
+            data-active={sidebarOpen && activePanel === id}
             data-group={group}
             data-group-start={"groupStart" in item ? item.groupStart : undefined}
             type="button"
             aria-label={label}
-            aria-pressed={activePanel === id}
+            aria-pressed={sidebarOpen && activePanel === id}
+            aria-expanded={sidebarOpen && activePanel === id}
+            aria-controls="workbench-sidebar"
             title={label}
             onClick={() => onSelect(id)}
           >
