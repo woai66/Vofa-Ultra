@@ -1,4 +1,6 @@
 :root {
+  --font-ui: 13px;
+  --font-small: 12px;
   color-scheme: dark;
   font-family:
     "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
@@ -28,6 +30,11 @@
   --chart-grid: rgb(163 174 188 / 10%);
   --chart-grid-strong: rgb(163 174 188 / 24%);
   --shadow: 0 12px 32px rgb(0 0 0 / 28%);
+}
+
+:root[data-text-size="comfortable"] {
+  --font-ui: 14px;
+  --font-small: 13px;
 }
 
 :root[data-theme="light"] {
@@ -85,7 +92,7 @@ body {
   min-width: 320px;
   background: var(--bg);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-ui);
   line-height: 1.45;
 }
 
@@ -260,6 +267,10 @@ textarea:disabled {
   display: none;
 }
 
+.sidebar-backdrop {
+  display: none;
+}
+
 .sidebar-panel {
   display: flex;
   width: 100%;
@@ -311,7 +322,7 @@ textarea:disabled {
   border-radius: 4px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 600;
   cursor: pointer;
 }
@@ -400,7 +411,7 @@ textarea:disabled {
 
 .capture-state span:last-child {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   line-height: 1.35;
 }
 
@@ -445,7 +456,7 @@ textarea:disabled {
 }
 
 .capture-metrics span {
-  font-size: 12px;
+  font-size: var(--font-small);
   line-height: 1.2;
 }
 
@@ -453,7 +464,7 @@ textarea:disabled {
   overflow: hidden;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
   font-weight: 600;
   line-height: 1.25;
   text-overflow: ellipsis;
@@ -461,7 +472,7 @@ textarea:disabled {
 }
 
 .capture-metrics[data-wide="true"] > div:first-child strong {
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .capture-metrics[data-markers="true"] > div {
@@ -497,7 +508,7 @@ textarea:disabled {
 
 .recording-directory-value strong {
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--font-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -505,7 +516,7 @@ textarea:disabled {
 .recording-directory-value code {
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
   overflow-wrap: anywhere;
 }
 
@@ -568,7 +579,7 @@ textarea:disabled {
 
 .capture-availability {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   line-height: 1.4;
   text-align: center;
 }
@@ -576,13 +587,13 @@ textarea:disabled {
 .capture-file-section code {
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
   overflow-wrap: anywhere;
 }
 
 .capture-file-section strong {
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--font-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -713,7 +724,7 @@ textarea:disabled {
   min-width: 0;
   align-items: center;
   color: var(--amber);
-  font-size: 12px;
+  font-size: var(--font-small);
   gap: 6px;
 }
 
@@ -757,7 +768,7 @@ textarea:disabled {
 .replay-marker-heading strong {
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .replay-marker-list {
@@ -794,7 +805,7 @@ textarea:disabled {
 .replay-marker-list button > span:nth-child(2) {
   min-width: 0;
   overflow: hidden;
-  font-size: 12px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -802,7 +813,7 @@ textarea:disabled {
 .replay-marker-list time {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .replay-marker-swatch {
@@ -979,18 +990,18 @@ textarea:disabled {
 }
 
 .about-product-line strong {
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .about-product-line code {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .about-section > p {
   margin: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
   line-height: 1.5;
 }
 
@@ -1004,7 +1015,7 @@ textarea:disabled {
 .about-meta dd {
   margin: 0;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .about-meta dd {
@@ -1015,13 +1026,13 @@ textarea:disabled {
 .field-label {
   display: block;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 600;
   line-height: 1.35;
 }
 
 .connection-panel .field-label {
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .baud-rate-field {
@@ -1135,7 +1146,7 @@ textarea:disabled {
   border-radius: 4px;
   background: transparent;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-ui);
   font-variant-numeric: tabular-nums;
   text-align: left;
   cursor: pointer;
@@ -1154,7 +1165,7 @@ textarea:disabled {
 
 .baud-rate-field .field-hint {
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
   line-height: 1.4;
 }
 
@@ -1221,7 +1232,7 @@ textarea:focus {
   border-radius: 4px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
   white-space: nowrap;
   cursor: pointer;
   gap: 5px;
@@ -1242,7 +1253,7 @@ textarea:focus {
 }
 
 .connection-panel .segmented-control button {
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .connection-panel input:disabled,
@@ -1284,7 +1295,7 @@ textarea:focus {
 
 .serial-port-summary-name strong {
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--font-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1295,7 +1306,7 @@ textarea:focus {
   align-items: center;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
   gap: 5px;
 }
 
@@ -1356,7 +1367,7 @@ textarea:focus {
 }
 
 .serial-advanced-section > summary > span:first-child {
-  font-size: 13px;
+  font-size: var(--font-ui);
   font-weight: 600;
 }
 
@@ -1428,19 +1439,19 @@ textarea:focus {
 
 .recovery-state strong {
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .recovery-state span:last-child {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
 .recovery-state code {
   color: var(--amber);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .recovery-diagnostics {
@@ -1449,7 +1460,7 @@ textarea:focus {
   align-items: center;
   justify-content: space-between;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   gap: 8px;
 }
 
@@ -1513,12 +1524,12 @@ textarea:focus {
 
 .automation-state strong {
   color: var(--text);
-  font-size: 11px;
+  font-size: var(--font-ui);
 }
 
 .automation-state span:last-child {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: var(--font-small);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -1527,7 +1538,7 @@ textarea:focus {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: var(--font-small);
   gap: 6px;
 }
 
@@ -1557,7 +1568,7 @@ textarea:focus {
   display: flex;
   align-items: baseline;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-ui);
   font-weight: 600;
   gap: 6px;
 }
@@ -1565,7 +1576,7 @@ textarea:focus {
 .automation-rules-heading strong {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: var(--font-small);
 }
 
 .automation-rule-list {
@@ -1622,12 +1633,12 @@ textarea:focus {
 
 .automation-rule-select strong {
   color: var(--text);
-  font-size: 11px;
+  font-size: var(--font-ui);
 }
 
 .automation-rule-select span {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .automation-rule-toggle {
@@ -1656,7 +1667,7 @@ textarea:focus {
   padding: 8px 9px;
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: var(--font-small);
   line-height: 1.45;
 }
 
@@ -1669,7 +1680,7 @@ textarea:focus {
 
 .automation-mode-field .segmented-control button {
   padding: 0 6px;
-  font-size: 10px;
+  font-size: var(--font-small);
 }
 
 .automation-field-grid {
@@ -1710,7 +1721,7 @@ textarea:focus {
   border-radius: 5px;
   background: var(--surface-1);
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--font-small);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -1752,7 +1763,7 @@ textarea:focus {
   justify-content: space-between;
   padding: 0 9px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .toggle-row + .toggle-row {
@@ -1796,7 +1807,7 @@ textarea:focus {
 .modem-status-item dt {
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 600;
 }
 
@@ -1806,7 +1817,7 @@ textarea:focus {
   align-items: center;
   margin: 0;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   white-space: nowrap;
   gap: 5px;
 }
@@ -1893,7 +1904,7 @@ textarea:focus {
 
 .protocol-option small {
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 :root[data-theme="light"] .protocol-option[data-active="true"] small {
@@ -1914,7 +1925,7 @@ textarea:focus {
   min-width: 0;
   align-items: flex-start;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--font-ui);
   gap: 7px;
 }
 
@@ -2045,7 +2056,7 @@ textarea:focus {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .channel-summary strong {
@@ -2078,7 +2089,7 @@ textarea:focus {
   min-width: 0;
   align-items: center;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 700;
   gap: 6px;
 }
@@ -2096,7 +2107,7 @@ textarea:focus {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2111,7 +2122,7 @@ textarea:focus {
   margin-top: 9px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   gap: 8px;
 }
 
@@ -2126,7 +2137,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
 }
 
@@ -2138,7 +2149,7 @@ textarea:focus {
   padding-top: 8px;
   border-top: 1px solid var(--border);
   color: var(--amber);
-  font-size: 12px;
+  font-size: var(--font-small);
   gap: 3px;
 }
 
@@ -2151,7 +2162,7 @@ textarea:focus {
 .protocol-health-detail small,
 .protocol-health-inactive {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   line-height: 1.45;
 }
 
@@ -2174,7 +2185,7 @@ textarea:focus {
   border-bottom: 1px solid var(--border);
   background: var(--surface-1);
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 700;
 }
 
@@ -2247,7 +2258,7 @@ textarea:focus {
 .channel-labels small {
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2257,7 +2268,7 @@ textarea:focus {
   align-items: baseline;
   justify-content: flex-end;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
   font-weight: 500;
   gap: 4px;
 }
@@ -2266,7 +2277,7 @@ textarea:focus {
   max-width: 48px;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2296,7 +2307,7 @@ textarea:focus {
   min-width: 0;
   flex-direction: column;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   gap: 4px;
 }
 
@@ -2329,7 +2340,7 @@ textarea:focus {
 }
 
 .channel-editor-error {
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .primary-icon-button {
@@ -2344,7 +2355,7 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   gap: 9px;
 }
 
@@ -2370,12 +2381,12 @@ textarea:focus {
 
 .extension-runtime-state strong {
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .extension-runtime-state > span {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: var(--font-small);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -2419,7 +2430,7 @@ textarea:focus {
 .extension-title-row strong {
   min-width: 0;
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--font-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2431,7 +2442,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--cyan);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2444,14 +2455,14 @@ textarea:focus {
 
 .extension-title-row code {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: var(--font-small);
   overflow-wrap: anywhere;
 }
 
 .extension-manifest p {
   margin: 0;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--font-small);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -2480,7 +2491,7 @@ textarea:focus {
 
 .extension-metadata dt {
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: var(--font-small);
 }
 
 .extension-metadata dd {
@@ -2489,7 +2500,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2499,7 +2510,7 @@ textarea:focus {
   min-width: 0;
   justify-content: space-between;
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: var(--font-small);
   gap: 8px;
 }
 
@@ -2514,7 +2525,7 @@ textarea:focus {
   min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2548,13 +2559,13 @@ textarea:focus {
 
 .extension-consent strong {
   color: var(--text);
-  font-size: 10px;
+  font-size: var(--font-ui);
 }
 
 .extension-consent small,
 .extension-requirement {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .extension-actions {
@@ -2585,7 +2596,7 @@ textarea:focus {
   padding: 6px;
   border-right: 1px solid var(--border);
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: var(--font-small);
   gap: 2px;
 }
 
@@ -2597,7 +2608,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2623,7 +2634,7 @@ textarea:focus {
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--font-small);
   gap: 7px;
 }
 
@@ -2638,14 +2649,14 @@ textarea:focus {
 
 .processing-summary code {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .processing-counters {
   display: flex;
   justify-content: space-between;
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .processing-error {
@@ -2654,7 +2665,7 @@ textarea:focus {
   border-radius: 4px;
   background: var(--surface-1);
   color: var(--danger);
-  font-size: 10px;
+  font-size: var(--font-small);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -2689,7 +2700,7 @@ textarea:focus {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
-  font-size: 10px;
+  font-size: var(--font-ui);
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2697,7 +2708,7 @@ textarea:focus {
 
 .processing-node > header code {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .processing-node-fields {
@@ -2774,13 +2785,13 @@ textarea:focus {
   padding: 0 16px;
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .workspace-list-heading strong {
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .workspace-list {
@@ -2826,7 +2837,7 @@ textarea:focus {
 .workspace-select > span:last-child {
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2842,7 +2853,7 @@ textarea:focus {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-ui);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2851,7 +2862,7 @@ textarea:focus {
 .workspace-row-title small {
   flex: 0 0 auto;
   color: var(--amber);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .workspace-row > .icon-button {
@@ -2874,7 +2885,7 @@ textarea:focus {
 .workspace-feedback {
   padding: 0 16px 12px;
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--font-small);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -2886,7 +2897,7 @@ textarea:focus {
 .capture-sidebar-panel .field-label,
 .workspace-sidebar-panel .field-label,
 .settings-sidebar-panel .field-label {
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .confirm-dialog {
@@ -2911,7 +2922,7 @@ textarea:focus {
 .confirm-dialog p {
   margin: 10px 0 18px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
   overflow-wrap: anywhere;
 }
 
@@ -3000,7 +3011,7 @@ textarea:focus {
   flex: 1 1 auto;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3028,7 +3039,7 @@ textarea:focus {
   border-radius: 4px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--font-ui);
   cursor: pointer;
   gap: 5px;
 }
@@ -3085,9 +3096,9 @@ textarea:focus {
   min-width: 0;
   min-height: 0;
   grid-template-rows:
-    minmax(280px, var(--workspace-primary-share)) 7px
-    minmax(230px, var(--workspace-terminal-share));
-  overflow: hidden;
+    minmax(220px, var(--workspace-primary-share)) 7px
+    minmax(var(--workspace-terminal-min-height, 230px), var(--workspace-terminal-share));
+  overflow: auto;
   background: var(--border);
 }
 
@@ -3234,7 +3245,7 @@ textarea:focus {
 
 .panel-subtitle {
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
   white-space: nowrap;
 }
 
@@ -3304,7 +3315,7 @@ textarea:focus {
 
 .terminal-export-menu span {
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--font-ui);
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3313,14 +3324,14 @@ textarea:focus {
 .terminal-export-menu small {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
   white-space: nowrap;
 }
 
 .terminal-export-menu .terminal-export-error {
   padding: 7px 9px;
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 500;
   line-height: 1.45;
   white-space: normal;
@@ -3332,7 +3343,7 @@ textarea:focus {
   margin-left: 7px;
   color: var(--accent);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
   font-weight: 700;
   gap: 5px;
 }
@@ -3383,7 +3394,7 @@ textarea:focus {
 .channel-monitor-scope button {
   height: 30px;
   padding: 0 7px;
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .channel-monitor-scroll {
@@ -3444,7 +3455,7 @@ textarea:focus {
   padding-bottom: 0;
   background: var(--surface-0);
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 650;
   text-transform: uppercase;
 }
@@ -3459,7 +3470,7 @@ textarea:focus {
   padding: 0 10px;
   background: var(--surface-2);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 650;
   text-align: left;
 }
@@ -3471,7 +3482,7 @@ textarea:focus {
 .channel-monitor-group-row small {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 500;
 }
 
@@ -3483,7 +3494,7 @@ textarea:focus {
 .channel-monitor-data-row td {
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .channel-monitor-data-row .channel-monitor-current-cell {
@@ -3531,14 +3542,14 @@ textarea:focus {
 
 .channel-monitor-channel-label strong {
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-ui);
   font-weight: 650;
 }
 
 .channel-monitor-channel-label small {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 500;
 }
 
@@ -3550,7 +3561,7 @@ textarea:focus {
   height: 32px;
   margin: 6px 0 0;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .waveform-view-control {
@@ -3579,7 +3590,7 @@ textarea:focus {
   background: transparent;
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
   cursor: pointer;
 }
 
@@ -3634,7 +3645,7 @@ textarea:focus {
   border: 0;
   background: transparent;
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
   cursor: pointer;
 }
 
@@ -3676,7 +3687,7 @@ textarea:focus {
   border-radius: 4px;
   background: var(--surface-1);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .waveform-range-button {
@@ -3729,7 +3740,7 @@ textarea:focus {
 .waveform-range-target strong {
   overflow: hidden;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3737,7 +3748,7 @@ textarea:focus {
 .waveform-range-target small {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
   font-weight: 700;
 }
 
@@ -3751,7 +3762,7 @@ textarea:focus {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
   gap: 6px;
 }
 
@@ -3765,7 +3776,7 @@ textarea:focus {
   background: var(--surface-1);
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .waveform-range-field input:focus {
@@ -3778,7 +3789,7 @@ textarea:focus {
   min-width: 0;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3835,7 +3846,7 @@ textarea:focus {
 .channel-readout small {
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3846,7 +3857,7 @@ textarea:focus {
   justify-content: flex-end;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
   font-weight: 500;
   text-align: right;
   gap: 3px;
@@ -3856,7 +3867,7 @@ textarea:focus {
   max-width: 40px;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3897,7 +3908,7 @@ textarea:focus {
   border-radius: 4px;
   background: var(--surface-1);
   color: var(--text);
-  font-size: 10px;
+  font-size: var(--font-small);
 }
 
 .spectrum-channel-control select {
@@ -3911,7 +3922,7 @@ textarea:focus {
   grid-template-columns: auto minmax(64px, 1fr) 18px;
   align-items: center;
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: var(--font-small);
   gap: 6px;
 }
 
@@ -3927,7 +3938,7 @@ textarea:focus {
 
 .spectrum-sample-rate-control small {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .spectrum-window-control {
@@ -3948,7 +3959,7 @@ textarea:focus {
   background: transparent;
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: var(--font-small);
   cursor: pointer;
 }
 
@@ -3987,7 +3998,7 @@ textarea:focus {
 
 .spectrum-readouts dt {
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: var(--font-small);
 }
 
 .spectrum-readouts dd {
@@ -3996,7 +4007,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: var(--font-small);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4038,7 +4049,7 @@ textarea:focus {
   border-radius: 4px;
   background: var(--surface-1);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .trigger-channel-control select {
@@ -4082,7 +4093,7 @@ textarea:focus {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   gap: 6px;
 }
 
@@ -4097,7 +4108,7 @@ textarea:focus {
   min-width: 48px;
   align-items: center;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 650;
   white-space: nowrap;
   gap: 6px;
@@ -4132,7 +4143,7 @@ textarea:focus {
   border-radius: 4px;
   background: var(--accent-strong);
   color: #07110d;
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
@@ -4240,7 +4251,7 @@ textarea:focus {
   border-radius: 4px;
   background: rgb(17 21 19 / 82%);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: var(--font-small);
   pointer-events: none;
   gap: 9px;
 }
@@ -4311,7 +4322,7 @@ textarea:focus {
 
 .attitude-readouts dt {
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .attitude-readouts dd {
@@ -4320,7 +4331,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4343,12 +4354,12 @@ textarea:focus {
 
 .attitude-state-overlay strong {
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .attitude-state-overlay span {
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: var(--font-small);
 }
 
 .attitude-state-overlay .secondary-button {
@@ -4390,13 +4401,13 @@ textarea:focus {
 }
 
 .attitude-configuration > header strong {
-  font-size: 11px;
+  font-size: var(--font-ui);
 }
 
 .attitude-configuration > header span {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .attitude-config-body {
@@ -4429,7 +4440,7 @@ textarea:focus {
 .attitude-channel-mapping label > span {
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: var(--font-small);
   font-weight: 700;
   text-align: center;
 }
@@ -4438,7 +4449,7 @@ textarea:focus {
   height: 31px;
   padding-right: 22px;
   padding-left: 6px;
-  font-size: 10px;
+  font-size: var(--font-small);
 }
 
 .attitude-config-row {
@@ -4462,6 +4473,62 @@ textarea:focus {
   height: 34px;
   border-color: var(--border);
   background: var(--surface-1);
+}
+
+.waveform-timebase-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: end;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-0);
+  gap: 8px 12px;
+}
+
+.waveform-timebase-controls label {
+  display: grid;
+  flex: 1 1 150px;
+  min-width: 0;
+  gap: 4px;
+  color: var(--text-muted);
+}
+
+.waveform-timebase-controls input,
+.waveform-timebase-controls select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface-1);
+  color: var(--text);
+}
+
+.waveform-timebase-note,
+.waveform-timebase-error {
+  flex-basis: 100%;
+  color: var(--text-subtle);
+  font-size: var(--font-small);
+}
+
+.waveform-timebase-error {
+  color: var(--danger);
+}
+
+.terminal-recording-paused {
+  display: inline-block;
+  margin-left: 8px;
+  color: var(--amber);
+  font-size: var(--font-small);
+}
+
+.measurement-timebase-label {
+  grid-column: 1 / -1;
+  color: var(--text-subtle);
+  font-size: var(--font-small);
 }
 
 .waveform-measurement-strip {
@@ -4507,7 +4574,7 @@ textarea:focus {
   border-radius: 4px;
   background: var(--surface-1);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .measurement-cursor-selector {
@@ -4526,7 +4593,7 @@ textarea:focus {
   background: transparent;
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 700;
   cursor: pointer;
 }
@@ -4560,7 +4627,7 @@ textarea:focus {
   align-items: center;
   color: var(--accent);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: var(--font-small);
   font-weight: 700;
   gap: 3px;
 }
@@ -4661,7 +4728,7 @@ textarea:focus {
 
 .measurement-readouts dt {
   color: var(--text-subtle);
-  font-size: 11px;
+  font-size: var(--font-small);
   font-weight: 650;
 }
 
@@ -4671,7 +4738,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4715,7 +4782,7 @@ textarea:focus {
   background: var(--surface-0);
   color: var(--amber);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: var(--font-small);
   font-weight: 700;
   transform: translateX(-50%);
 }
@@ -4749,7 +4816,7 @@ textarea:focus {
   border-radius: 3px;
   background: var(--surface-0);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: var(--font-small);
   font-weight: 700;
   transform: translateX(-50%);
 }
@@ -4788,7 +4855,7 @@ textarea:focus {
 }
 
 .panel-empty-state span {
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .compact-segments {
@@ -4802,7 +4869,7 @@ textarea:focus {
   height: 32px;
   padding: 0 8px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .terminal-filter-bar {
@@ -4811,7 +4878,7 @@ textarea:focus {
   min-height: 46px;
   flex: 0 0 46px;
   align-items: center;
-  grid-template-columns: auto auto minmax(140px, 1fr) auto;
+  grid-template-columns: minmax(120px, 1fr) auto 34px;
   padding: 5px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-0);
@@ -4826,14 +4893,35 @@ textarea:focus {
   gap: 4px;
 }
 
+.terminal-receive-options {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-0);
+  gap: 8px 12px;
+}
+
+.terminal-receive-options[hidden] {
+  display: none;
+}
+
+.terminal-receive-options-trigger {
+  grid-column: 3;
+  grid-row: 1;
+  width: 34px;
+  height: 34px;
+}
+
 .terminal-rx-record-mode {
   grid-template-columns: repeat(2, minmax(32px, 1fr));
 }
 
 .terminal-time-mode {
   display: grid;
-  grid-column: 2;
-  grid-row: 1;
   grid-template-columns: repeat(3, minmax(34px, 1fr));
 }
 
@@ -4847,7 +4935,7 @@ textarea:focus {
   height: 32px;
   padding: 0 5px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .terminal-rx-line-ending select:disabled {
@@ -4859,7 +4947,7 @@ textarea:focus {
   min-width: 0;
   height: 34px;
   align-items: center;
-  grid-column: 3;
+  grid-column: 1;
   grid-row: 1;
   grid-template-columns: 22px minmax(0, 1fr) 32px;
   border: 1px solid var(--border);
@@ -4886,7 +4974,7 @@ textarea:focus {
   background: transparent;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .terminal-search-field input::placeholder {
@@ -4921,7 +5009,7 @@ textarea:focus {
 
 .terminal-direction-filter {
   display: grid;
-  grid-column: 4;
+  grid-column: 2;
   grid-row: 1;
   grid-template-columns: repeat(3, minmax(36px, 1fr));
 }
@@ -4942,7 +5030,7 @@ textarea:focus {
   background: var(--surface-1);
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
   user-select: text;
 }
 
@@ -4992,7 +5080,7 @@ textarea:focus {
 .terminal-line time,
 .terminal-line small {
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
   white-space: nowrap;
 }
 
@@ -5010,7 +5098,7 @@ textarea:focus {
 
 .direction-label {
   color: var(--cyan);
-  font-size: 13px;
+  font-size: var(--font-ui);
   font-weight: 700;
 }
 
@@ -5072,7 +5160,7 @@ textarea:focus {
   justify-content: center;
   color: var(--text-subtle);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--font-ui);
   gap: 7px;
 }
 
@@ -5109,7 +5197,7 @@ textarea:focus {
   width: 76px;
   height: 32px;
   padding: 0 6px;
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .send-line-ending-field {
@@ -5144,6 +5232,24 @@ textarea:focus {
   width: 164px;
 }
 
+.send-advanced-options {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.send-advanced-options[hidden] {
+  display: none;
+}
+
+.send-options-trigger {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+}
+
 .send-payload-field {
   display: grid;
   min-width: 0;
@@ -5155,7 +5261,7 @@ textarea:focus {
 
 .send-field-caption {
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
   white-space: nowrap;
 }
 
@@ -5165,7 +5271,7 @@ textarea:focus {
   resize: vertical;
   padding: 6px 9px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
   line-height: 18px;
 }
 
@@ -5204,7 +5310,7 @@ textarea:focus {
   border-radius: 10px;
   background: var(--border-strong);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-ui);
   font-weight: 700;
 }
 
@@ -5232,7 +5338,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
   line-height: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5264,13 +5370,13 @@ textarea:focus {
   width: 82px;
   height: 32px;
   padding: 0 7px;
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .command-interval-field > span,
 .command-interval-field small {
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--font-ui);
   white-space: nowrap;
 }
 
@@ -5287,7 +5393,7 @@ textarea:focus {
   width: 68px;
   height: 32px;
   padding: 0 7px;
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .command-task-status {
@@ -5299,7 +5405,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
   gap: 6px;
 }
 
@@ -5369,7 +5475,7 @@ textarea:focus {
   bottom: calc(100% + 6px);
   display: flex;
   width: min(360px, calc(100% - 20px));
-  max-height: min(310px, calc(100vh - 120px));
+  max-height: min(310px, var(--command-popover-max-height, calc(100vh - 120px)));
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border-strong);
@@ -5380,7 +5486,7 @@ textarea:focus {
 
 .serial-file-send-popover {
   width: min(430px, calc(100% - 20px));
-  max-height: min(390px, calc(100vh - 120px));
+  max-height: min(390px, var(--command-popover-max-height, calc(100vh - 120px)));
 }
 
 .serial-file-send-header {
@@ -5403,7 +5509,7 @@ textarea:focus {
 
 .serial-file-send-header strong {
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .serial-file-send-body {
@@ -5444,12 +5550,12 @@ textarea:focus {
 
 .serial-file-selection strong {
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .serial-file-selection span {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .serial-file-selection .secondary-button {
@@ -5484,13 +5590,13 @@ textarea:focus {
 
 .serial-file-send-progress > div:first-child span,
 .serial-file-send-progress > div:first-child strong {
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .serial-file-send-progress > div:last-child {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .serial-file-send-progress > div:last-child span {
@@ -5515,7 +5621,7 @@ textarea:focus {
   padding: 0 10px 10px;
   overflow-wrap: anywhere;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
   line-height: 18px;
 }
 
@@ -5538,7 +5644,7 @@ textarea:focus {
   min-width: 0;
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5554,22 +5660,22 @@ textarea:focus {
 }
 
 .command-variable-popover[data-view="checksum"] {
-  max-height: min(360px, calc(100vh - 120px));
+  max-height: min(360px, var(--command-popover-max-height, calc(100vh - 120px)));
 }
 
 .command-variable-popover[data-view="converter"] {
   width: min(560px, calc(100% - 20px));
-  max-height: min(490px, calc(100vh - 120px));
+  max-height: min(490px, var(--command-popover-max-height, calc(100vh - 120px)));
 }
 
 .quick-command-popover {
   width: min(480px, calc(100% - 20px));
-  max-height: min(420px, calc(100vh - 120px));
+  max-height: min(420px, var(--command-popover-max-height, calc(100vh - 120px)));
 }
 
 .modbus-builder-popover {
-  width: min(620px, calc(100% - 20px));
-  max-height: min(560px, calc(100vh - 120px));
+  width: min(680px, calc(100% - 20px));
+  max-height: min(560px, var(--command-popover-max-height, calc(100vh - 120px)));
   margin: 0;
 }
 
@@ -5593,13 +5699,13 @@ textarea:focus {
 
 .modbus-builder-header strong {
   color: var(--text);
-  font-size: 11px;
+  font-size: var(--font-ui);
 }
 
 .modbus-builder-header span {
   color: var(--cyan);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .modbus-builder-grid {
@@ -5622,14 +5728,14 @@ textarea:focus {
 .modbus-field > span,
 .modbus-coil-field legend {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .modbus-field > small {
   overflow: hidden;
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
+  font-size: var(--font-small);
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5647,7 +5753,7 @@ textarea:focus {
 .modbus-field > select {
   height: 32px;
   padding: 0 8px;
-  font-size: 10px;
+  font-size: var(--font-small);
 }
 
 .modbus-field > textarea {
@@ -5656,7 +5762,7 @@ textarea:focus {
   resize: vertical;
   padding: 7px 8px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: var(--font-small);
   line-height: 16px;
 }
 
@@ -5705,14 +5811,14 @@ textarea:focus {
   align-items: center;
   justify-content: space-between;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: var(--font-small);
   gap: 8px;
 }
 
 .modbus-frame-preview small {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
+  font-size: var(--font-small);
 }
 
 .modbus-frame-preview code {
@@ -5720,7 +5826,7 @@ textarea:focus {
   overflow-x: auto;
   color: var(--cyan);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: var(--font-small);
   line-height: 18px;
   white-space: nowrap;
 }
@@ -5731,8 +5837,8 @@ textarea:focus {
 
 .modbus-builder-error {
   color: var(--danger);
-  font-size: 9px;
-  line-height: 16px;
+  font-size: var(--font-small);
+  line-height: 1.4;
 }
 
 .modbus-poll-status {
@@ -5761,14 +5867,14 @@ textarea:focus {
 
 .modbus-poll-status strong {
   color: var(--text);
-  font-size: 9px;
+  font-size: var(--font-ui);
 }
 
 .modbus-poll-status span,
 .modbus-poll-status p,
 .modbus-poll-status code {
-  font-size: 8px;
-  line-height: 14px;
+  font-size: var(--font-small);
+  line-height: 1.4;
 }
 
 .modbus-poll-status > header > div > span,
@@ -5839,7 +5945,7 @@ textarea:focus {
 .modbus-timeout-field > span {
   grid-column: 1 / -1;
   color: var(--text-muted);
-  font-size: 8px;
+  font-size: var(--font-small);
 }
 
 .modbus-timeout-field input {
@@ -5847,13 +5953,13 @@ textarea:focus {
   min-width: 0;
   height: 30px;
   padding: 0 7px;
-  font-size: 10px;
+  font-size: var(--font-small);
 }
 
 .modbus-timeout-field small {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
+  font-size: var(--font-small);
 }
 
 .modbus-builder-actions > .modbus-builder-error {
@@ -5888,13 +5994,13 @@ textarea:focus {
 
 .modbus-transaction-section > header strong {
   color: var(--text);
-  font-size: 9px;
+  font-size: var(--font-ui);
 }
 
 .modbus-transaction-section > header span {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
+  font-size: var(--font-small);
 }
 
 .modbus-transaction-active {
@@ -5911,13 +6017,13 @@ textarea:focus {
 }
 
 .modbus-transaction-active strong {
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .modbus-transaction-active > span:last-child {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 8px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5979,14 +6085,14 @@ textarea:focus {
 }
 
 .modbus-transaction-result summary strong {
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .modbus-transaction-result summary > span:nth-child(3) {
   overflow: hidden;
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5994,7 +6100,7 @@ textarea:focus {
 .modbus-transaction-result summary time {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
+  font-size: var(--font-small);
 }
 
 .modbus-transaction-detail {
@@ -6011,8 +6117,8 @@ textarea:focus {
   overflow-wrap: anywhere;
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
-  line-height: 15px;
+  font-size: var(--font-small);
+  line-height: 1.4;
 }
 
 .modbus-transaction-detail dl {
@@ -6033,8 +6139,8 @@ textarea:focus {
 .modbus-transaction-detail dd {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 8px;
-  line-height: 14px;
+  font-size: var(--font-small);
+  line-height: 1.4;
 }
 
 .modbus-transaction-detail dt {
@@ -6071,14 +6177,14 @@ textarea:focus {
 .command-variable-header strong,
 .quick-command-header strong {
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .command-history-header span,
 .command-variable-header span,
 .quick-command-header span {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .command-reference-tabs {
@@ -6132,12 +6238,12 @@ textarea:focus {
 .command-variable-list code {
   color: var(--cyan);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .command-variable-list span {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .ascii-reference-panel {
@@ -6173,7 +6279,7 @@ textarea:focus {
   border: 0;
   background: transparent;
   color: var(--text);
-  font-size: 10px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
 }
 
@@ -6214,7 +6320,7 @@ textarea:focus {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: 10px;
+  font-size: var(--font-small);
 }
 
 .ascii-reference-table-scroll th,
@@ -6235,7 +6341,7 @@ textarea:focus {
   top: 0;
   background: var(--surface-1);
   color: var(--text-subtle);
-  font-size: 9px;
+  font-size: var(--font-small);
   font-weight: 600;
 }
 
@@ -6266,7 +6372,7 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   color: var(--text-subtle);
-  font-size: 10px;
+  font-size: var(--font-small);
   gap: 7px;
 }
 
@@ -6299,7 +6405,7 @@ textarea:focus {
 .data-converter-toolbar > label > span,
 .data-converter-results > label > span:first-child {
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: var(--font-small);
   font-weight: 600;
 }
 
@@ -6317,7 +6423,7 @@ textarea:focus {
   outline: 0;
   background: var(--surface-1);
   color: var(--text);
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 .data-converter-toolbar select:focus {
@@ -6353,7 +6459,7 @@ textarea:focus {
   background: var(--surface-1);
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: var(--font-small);
   line-height: 1.45;
 }
 
@@ -6371,8 +6477,8 @@ textarea:focus {
   margin: 2px 10px 4px;
   overflow-wrap: anywhere;
   color: var(--danger);
-  font-size: 9px;
-  line-height: 14px;
+  font-size: var(--font-small);
+  line-height: 1.4;
 }
 
 .data-converter-results {
@@ -6414,7 +6520,7 @@ textarea:focus {
   background: var(--surface-1);
   color: var(--cyan);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: var(--font-small);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -6443,7 +6549,7 @@ textarea:focus {
   border-top: 1px solid var(--border);
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: var(--font-small);
 }
 
 @media (max-width: 720px) {
@@ -6494,7 +6600,7 @@ textarea:focus {
 .checksum-reference-toolbar output {
   color: var(--text-subtle);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: var(--font-small);
   white-space: nowrap;
 }
 
@@ -6517,7 +6623,7 @@ textarea:focus {
   background: var(--surface-1);
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: var(--font-small);
   line-height: 1.45;
 }
 
@@ -6534,8 +6640,8 @@ textarea:focus {
   flex: 0 0 auto;
   margin: 2px 10px 4px;
   color: var(--danger);
-  font-size: 9px;
-  line-height: 14px;
+  font-size: var(--font-small);
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
@@ -6563,7 +6669,7 @@ textarea:focus {
 
 .checksum-reference-results dt {
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: var(--font-small);
   font-weight: 600;
 }
 
@@ -6578,7 +6684,7 @@ textarea:focus {
   overflow: hidden;
   color: var(--cyan);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 10px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6586,7 +6692,7 @@ textarea:focus {
 .checksum-reference-results span {
   overflow: hidden;
   color: var(--text-subtle);
-  font-size: 8px;
+  font-size: var(--font-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6625,12 +6731,12 @@ textarea:focus {
 
 .command-history-list code {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .command-history-list span {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .quick-command-save-row {
@@ -6648,7 +6754,7 @@ textarea:focus {
   min-width: 0;
   height: 30px;
   padding: 0 8px;
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .quick-command-list {
@@ -6662,7 +6768,7 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
   gap: 8px;
 }
 
@@ -6702,17 +6808,17 @@ textarea:focus {
 }
 
 .quick-command-load strong {
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 .quick-command-load code {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .quick-command-load span {
   color: var(--text-subtle);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .quick-command-actions {
@@ -6739,7 +6845,7 @@ textarea:focus {
   padding: 7px 10px;
   border-top: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-small);
 }
 
 .quick-command-feedback[role="alert"] {
@@ -6754,7 +6860,7 @@ textarea:focus {
   border-radius: 4px;
   background: var(--surface-0);
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--font-small);
   box-shadow: var(--shadow);
 }
 
@@ -6769,7 +6875,7 @@ textarea:focus {
   background: #171a1f;
   color: #abb3bd;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--font-ui);
 }
 
 :root[data-theme="light"] .status-bar {
@@ -6798,9 +6904,18 @@ textarea:focus {
   flex: 1;
 }
 
-.transfer-rate,
-.transfer-stats {
+.transfer-summary {
   gap: 9px;
+}
+
+.transfer-direction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.transfer-total {
+  color: #7f8995;
 }
 
 @media (max-width: 1100px) {
@@ -6816,7 +6931,7 @@ textarea:focus {
     grid-template-columns: 106px 28px minmax(0, 1fr) 62px;
   }
 
-  .transfer-stats {
+  .transfer-total {
     display: none;
   }
 }
@@ -6853,6 +6968,24 @@ textarea:focus {
     transition: transform 150ms ease-out, visibility 0s linear;
   }
 
+  .sidebar-backdrop {
+    position: absolute;
+    z-index: 35;
+    top: 0;
+    right: 0;
+    bottom: 28px;
+    left: 56px;
+    display: block;
+    background: rgb(8 11 15 / 26%);
+    opacity: 1;
+    visibility: visible;
+    transition: opacity 150ms ease-out, visibility 0s linear;
+  }
+
+  :root[data-theme="light"] .sidebar-backdrop {
+    background: rgb(25 31 38 / 18%);
+  }
+
   .sidebar-close {
     position: absolute;
     z-index: 1;
@@ -6876,6 +7009,13 @@ textarea:focus {
     pointer-events: none;
     transform: translateX(calc(-100% - 58px));
     transition: transform 150ms ease-out, visibility 0s linear 150ms;
+  }
+
+  .app-shell[data-sidebar-open="false"] .sidebar-backdrop {
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+    transition: opacity 150ms ease-out, visibility 0s linear 150ms;
   }
 
   .sidebar-toggle {
@@ -6945,6 +7085,37 @@ textarea:focus {
   }
 }
 
+@container workspace (max-width: 640px) {
+  .workspace-content,
+  .workspace-content[data-layout-mode="primary"],
+  .workspace-content[data-layout-mode="terminal"] {
+    grid-template-rows: minmax(235px, 0.8fr) minmax(340px, 1.2fr);
+  }
+
+  .send-options {
+    display: grid;
+    grid-template-columns: minmax(88px, 1fr) minmax(0, 1fr) 34px;
+    overflow: visible;
+    gap: 5px 7px;
+  }
+
+  .send-options > *,
+  .send-text-encoding-field,
+  .send-checksum-field,
+  .send-line-ending-field {
+    width: auto;
+    min-width: 0;
+    flex: 0 1 auto;
+  }
+
+  .send-options > .segmented-control,
+  .send-options select,
+  .send-text-encoding-field select,
+  .send-checksum-field select {
+    width: 100%;
+  }
+}
+
 @container workspace (max-width: 760px) {
   .panel-subtitle {
     display: none;
@@ -6983,8 +7154,8 @@ textarea:focus {
 @media (min-width: 721px) and (max-height: 780px) {
   .workspace-content:has(.send-composer[data-workflow-open="true"]) {
     grid-template-rows:
-      minmax(260px, var(--workspace-primary-share)) 7px
-      minmax(280px, var(--workspace-terminal-share));
+      minmax(220px, var(--workspace-primary-share)) 7px
+      minmax(var(--workspace-terminal-min-height, 280px), var(--workspace-terminal-share));
   }
 }
 
@@ -7077,24 +7248,22 @@ textarea:focus {
   }
 
   .protocol-status,
-  .transfer-rate,
-  .transfer-stats span:last-child {
+  .transfer-total {
     display: none;
   }
 
   .terminal-filter-bar {
-    min-height: 88px;
-    flex-basis: 88px;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: 36px 36px;
+    min-height: 46px;
+    flex-basis: 46px;
+    grid-template-columns: minmax(0, 1fr) 64px 34px;
+    grid-template-rows: 36px;
     padding: 5px 7px;
     gap: 6px;
   }
 
   .terminal-rx-record-controls {
-    grid-column: 1 / 3;
-    grid-row: 1;
-    grid-template-columns: 92px 56px minmax(100px, 1fr);
+    flex: 1 1 280px;
+    grid-template-columns: 92px 56px minmax(0, 1fr);
   }
 
   .terminal-time-mode,
@@ -7106,9 +7275,13 @@ textarea:focus {
     display: grid;
     height: 36px;
     grid-column: 2;
-    grid-row: 2;
-    grid-template-columns: 72px 64px;
+    grid-row: 1;
+    grid-template-columns: 64px;
     gap: 4px;
+  }
+
+  .terminal-mobile-receive-selects {
+    grid-template-columns: 80px;
   }
 
   .terminal-mobile-filter-selects label {
@@ -7120,12 +7293,12 @@ textarea:focus {
     height: 34px;
     padding: 0 5px;
     font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-    font-size: 12px;
+    font-size: var(--font-small);
   }
 
   .terminal-search-field {
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 1;
   }
 }
 
@@ -7143,6 +7316,10 @@ textarea:focus {
     flex-direction: row;
     border-top: 1px solid #242930;
     border-right: 0;
+  }
+
+  .source-status {
+    display: none;
   }
 
   .brand-mark {
@@ -7203,6 +7380,11 @@ textarea:focus {
     bottom: 80px;
     left: 0;
     width: min(310px, calc(100% - 36px));
+  }
+
+  .sidebar-backdrop {
+    bottom: 80px;
+    left: 0;
   }
 
   .channel-row {
@@ -7525,7 +7707,7 @@ textarea:focus {
   }
 
   .attitude-readouts dd {
-    font-size: 10px;
+    font-size: var(--font-small);
   }
 
   .attitude-configuration {
@@ -7735,18 +7917,41 @@ textarea:focus {
   }
 
   .terminal-filter-bar {
-    min-height: 104px;
-    flex-basis: 104px;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: 44px 46px;
+    min-height: 54px;
+    flex-basis: 54px;
+    grid-template-columns: minmax(0, 1fr) 64px 44px;
+    grid-template-rows: 46px;
     padding: 4px 7px;
     gap: 6px;
   }
 
   .terminal-rx-record-controls {
-    grid-column: 1 / 3;
-    grid-row: 1;
-    grid-template-columns: 92px 56px minmax(100px, 1fr);
+    grid-template-columns: 92px 56px minmax(0, 1fr);
+  }
+
+  .terminal-receive-options-trigger {
+    width: 44px;
+    height: 44px;
+  }
+
+  .send-options {
+    grid-template-columns: minmax(88px, 1fr) minmax(0, 1fr) 44px;
+  }
+
+  .send-options-trigger {
+    width: 44px;
+    height: 44px;
+  }
+
+  .send-advanced-options > * {
+    flex: 1 1 240px;
+  }
+
+  .send-advanced-options select {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+    height: 44px;
   }
 
   .terminal-rx-line-ending select,
@@ -7760,7 +7965,7 @@ textarea:focus {
 
   .terminal-search-field {
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 1;
     height: 46px;
     grid-template-columns: 22px minmax(0, 1fr) 44px;
   }
@@ -8032,6 +8237,10 @@ textarea:focus {
   }
 
   .sidebar {
+    bottom: 116px;
+  }
+
+  .sidebar-backdrop {
     bottom: 116px;
   }
 }

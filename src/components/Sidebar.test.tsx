@@ -743,6 +743,45 @@ describe("Sidebar 串口恢复界面", () => {
     );
   });
 
+  it("协议单选组使用单一 Tab 停靠点并支持垂直键盘导航", async () => {
+    const user = userEvent.setup();
+    useWorkbenchStore.setState((state) => ({
+      source: "simulator",
+      connectionStatus: "disconnected",
+      protocol: "firewater",
+      serialRecovery: { ...state.serialRecovery, phase: "off" },
+    }));
+    render(
+      <Sidebar
+        activePanel="connection"
+        themePreference="dark"
+        onClose={vi.fn()}
+        onThemePreferenceChange={vi.fn()}
+      />,
+    );
+
+    const firewater = screen.getByRole("radio", { name: /FireWater/ });
+    const justfloat = screen.getByRole("radio", { name: /JustFloat/ });
+    const raw = screen.getByRole("radio", { name: /Raw Data/ });
+    expect(firewater).toHaveAttribute("tabindex", "0");
+    expect(justfloat).toHaveAttribute("tabindex", "-1");
+    expect(raw).toHaveAttribute("tabindex", "-1");
+
+    firewater.focus();
+    await user.keyboard("{ArrowDown}");
+    expect(justfloat).toHaveFocus();
+    expect(justfloat).toHaveAttribute("aria-checked", "true");
+    expect(useWorkbenchStore.getState().protocol).toBe("justfloat");
+
+    await user.keyboard("{End}");
+    expect(raw).toHaveFocus();
+    expect(raw).toHaveAttribute("aria-checked", "true");
+
+    await user.keyboard("{ArrowDown}");
+    expect(firewater).toHaveFocus();
+    expect(firewater).toHaveAttribute("aria-checked", "true");
+  });
+
   it("用无步进文本框提交自定义波特率并可从下拉切回预设", () => {
     useWorkbenchStore.setState((state) => ({
       connectionStatus: "disconnected",
@@ -1002,7 +1041,7 @@ describe("Sidebar 外观设置", () => {
     cleanup();
   });
 
-  it("向辅助技术暴露当前主题选项", () => {
+  it("向辅助技术暴露当前主题选项", async () => {
     render(
       <Sidebar
         activePanel="settings"
@@ -1012,7 +1051,7 @@ describe("Sidebar 外观设置", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /深色/ })).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByRole("button", { name: /深色/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /浅色/ })).toHaveAttribute("aria-pressed", "false");
   });
 });
@@ -1274,7 +1313,7 @@ describe("Sidebar 主题偏好", () => {
     cleanup();
   });
 
-  it("显示三种主题模式并提交用户选择", () => {
+  it("显示三种主题模式并提交用户选择", async () => {
     const on_theme_preference_change = vi.fn();
     const { rerender } = render(
       <Sidebar
@@ -1284,7 +1323,7 @@ describe("Sidebar 主题偏好", () => {
         onThemePreferenceChange={on_theme_preference_change}
       />,
     );
-    const appearance = screen.getByRole("group", { name: "外观" });
+    const appearance = await screen.findByRole("group", { name: "外观" });
     const system_button = within(appearance).getByRole("button", { name: "系统" });
     const dark_button = within(appearance).getByRole("button", { name: "深色" });
     const light_button = within(appearance).getByRole("button", { name: "浅色" });
@@ -1306,7 +1345,7 @@ describe("Sidebar 主题偏好", () => {
     expect(light_button).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("显示当前版本、构建、Windows 支持范围和许可证", () => {
+  it("显示当前版本、构建、Windows 支持范围和许可证", async () => {
     render(
       <Sidebar
         activePanel="settings"
@@ -1316,14 +1355,14 @@ describe("Sidebar 主题偏好", () => {
       />,
     );
 
-    const about = screen.getByRole("region", { name: "Vofa-Ultra" });
+    const about = await screen.findByRole("region", { name: "Vofa-Ultra" });
     expect(about).toHaveTextContent(APP_DISPLAY_VERSION);
     expect(about).toHaveTextContent(APP_BUILD_ID);
     expect(about).toHaveTextContent("Windows 10/11 x64");
     expect(about).toHaveTextContent("MIT");
   });
 
-  it("为设置字段提供稳定表单标识", () => {
+  it("为设置字段提供稳定表单标识", async () => {
     render(
       <Sidebar
         activePanel="settings"
@@ -1333,7 +1372,7 @@ describe("Sidebar 主题偏好", () => {
       />,
     );
 
-    expect(screen.getByLabelText("波形时间窗")).toHaveAttribute(
+    expect(await screen.findByLabelText("波形时间窗")).toHaveAttribute(
       "name",
       "chart-window-setting",
     );
@@ -1341,5 +1380,81 @@ describe("Sidebar 主题偏好", () => {
       "name",
       "terminal-auto-scroll",
     );
+  });
+});
+
+describe("Sidebar 字号偏好", () => {
+  const textSizeKey = "vofa-ultra-text-size";
+  const props = {
+    themePreference: "system" as const,
+    onClose: vi.fn(),
+    onThemePreferenceChange: vi.fn(),
+  };
+
+  beforeEach(() => {
+    localStorage.removeItem(textSizeKey);
+    delete document.documentElement.dataset.textSize;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    localStorage.removeItem(textSizeKey);
+    delete document.documentElement.dataset.textSize;
+  });
+
+  it("设置页尚未打开且侧栏关闭时就恢复保存的舒适字号", () => {
+    localStorage.setItem(textSizeKey, "comfortable");
+    render(<Sidebar {...props} activePanel="connection" open={false} />);
+
+    expect(document.documentElement).toHaveAttribute("data-text-size", "comfortable");
+    expect(screen.queryByRole("group", { name: "界面字号" })).not.toBeInTheDocument();
+  });
+
+  it("切换字号后保存偏好并在重新挂载和打开设置时恢复", async () => {
+    const user = userEvent.setup();
+    const first = render(<Sidebar {...props} activePanel="settings" />);
+    const sizeGroup = await screen.findByRole("group", { name: "界面字号" });
+    expect(within(sizeGroup).getByRole("button", { name: "标准" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(within(sizeGroup).getByRole("button", { name: "舒适" }));
+    expect(document.documentElement).toHaveAttribute("data-text-size", "comfortable");
+    expect(localStorage.getItem(textSizeKey)).toBe("comfortable");
+    first.unmount();
+
+    const second = render(<Sidebar {...props} activePanel="connection" />);
+    expect(document.documentElement).toHaveAttribute("data-text-size", "comfortable");
+    second.rerender(<Sidebar {...props} activePanel="settings" />);
+    const restoredGroup = await screen.findByRole("group", { name: "界面字号" });
+    expect(within(restoredGroup).getByRole("button", { name: "舒适" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(within(restoredGroup).getByRole("button", { name: "标准" }));
+    expect(document.documentElement).toHaveAttribute("data-text-size", "standard");
+    expect(localStorage.getItem(textSizeKey)).toBe("standard");
+  });
+
+  it("未知字号回退标准且设置中的选中状态一致", async () => {
+    localStorage.setItem(textSizeKey, "oversized");
+    render(<Sidebar {...props} activePanel="settings" />);
+
+    const sizeGroup = await screen.findByRole("group", { name: "界面字号" });
+    expect(document.documentElement).toHaveAttribute("data-text-size", "standard");
+    expect(within(sizeGroup).getByRole("button", { name: "标准" })).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem(textSizeKey)).toBe("standard");
+  });
+
+  it("存储拒绝读写时仍能打开设置并调整当前会话字号", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("Storage access denied", "SecurityError");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage is full", "QuotaExceededError");
+    });
+    const user = userEvent.setup();
+    render(<Sidebar {...props} activePanel="settings" />);
+
+    const sizeGroup = await screen.findByRole("group", { name: "界面字号" });
+    expect(document.documentElement).toHaveAttribute("data-text-size", "standard");
+    await user.click(within(sizeGroup).getByRole("button", { name: "舒适" }));
+    expect(document.documentElement).toHaveAttribute("data-text-size", "comfortable");
+    expect(within(sizeGroup).getByRole("button", { name: "舒适" })).toHaveAttribute("aria-pressed", "true");
   });
 });

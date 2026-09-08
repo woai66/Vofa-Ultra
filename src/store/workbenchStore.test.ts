@@ -550,6 +550,181 @@ describe("workbenchStore", () => {
     });
   });
 
+  it("固定采样率为同块多帧提供真实可区分的采样间隔，但原始终端仍保留接收时间", () => {
+    const encoder = new TextEncoder();
+    const store = useWorkbenchStore.getState();
+    store.setChartSampleRate(1000);
+    store.ingestBytes(encoder.encode("1\n2\n3\n"), 1000);
+    const channel = useWorkbenchStore.getState().channels[0]!;
+    expect(channel.points.map(({ x }) => x)).toEqual([0, 0.001, 0.002]);
+    expect(calculateWaveformMeasurement(channel.points, 15, { aIndex: 0, bIndex: 2 }))
+      .toMatchObject({ deltaTimeSeconds: 0.002, frequencyHz: 500, deltaY: 2 });
+    expect(useWorkbenchStore.getState().terminalEntries[0]?.timestamp).toBe(1000);
+    store.ingestBytes(encoder.encode("4\n"), 4000);
+    expect(useWorkbenchStore.getState().channels[0]?.points.at(-1)?.x).toBe(0.003);
+  });
+
+  it("触发和波形共用固定采样时钟，不被同块接收时间卡住", () => {
+    useWorkbenchStore.setState({ connectionStatus: "connected", chartWindowSeconds: 5 });
+    const store = useWorkbenchStore.getState();
+    store.setChartSampleRate(2);
+    store.ingestBytes(new TextEncoder().encode("0\n"), 1000);
+    store.armWaveformTrigger({ channelId: "channel-0", edge: "rising", threshold: 0.5 });
+    store.ingestBytes(new TextEncoder().encode("0\n1\n1\n1\n1\n1\n1\n"), 1000);
+    expect(useWorkbenchStore.getState().waveformTrigger).toMatchObject({
+      phase: "frozen", triggerTimestampSeconds: 1, freezeTimestampSeconds: 3.5,
+    });
+    expect(useWorkbenchStore.getState().chartPaused).toBe(true);
+    expect(useWorkbenchStore.getState().channels[0]?.points.at(-1)?.x).toBe(3.5);
+  });
+
+  it("改变时基只清空绘图，保存工作区保留采样率并可切回接收时间", () => {
+    const store = useWorkbenchStore.getState();
+    store.ingestBytes(new TextEncoder().encode("1\n2\n"), 1000);
+    store.setChartSampleRate(1000);
+    expect(useWorkbenchStore.getState().channels).toEqual([]);
+    expect(useWorkbenchStore.getState().terminalEntries).toHaveLength(1);
+    store.saveActiveWorkspace("固定采样");
+    expect(store.createActiveWorkspaceExport("固定采样").config.chartSampleRateHz).toBe(1000);
+    store.ingestBytes(new TextEncoder().encode("3\n"), 5000);
+    expect(useWorkbenchStore.getState().channels[0]?.points[0]?.x).toBe(0);
+    store.setChartSampleRate(null);
+    store.ingestBytes(new TextEncoder().encode("4\n5\n"), 6000);
+    expect(useWorkbenchStore.getState().channels[0]?.points.map(({ x }) => x)).toEqual([6, 6]);
+  });
+
+  it("非法采样率不清图、不修改当前时基", () => {
+    const store = useWorkbenchStore.getState();
+    store.ingestBytes(new TextEncoder().encode("1\n"), 1000);
+    expect(() => store.setChartSampleRate(0)).toThrow(/采样率/);
+    expect(useWorkbenchStore.getState().chartSampleRateHz).toBeNull();
+    expect(useWorkbenchStore.getState().channels[0]?.points).toHaveLength(1);
+  });
+
+  it("保存时基遇到存储满额时仍原子清图，不把固定采样点拼到接收时间轴", () => {
+    const store = useWorkbenchStore.getState();
+    const encoder = new TextEncoder();
+    store.ingestBytes(encoder.encode("1\n2\n"), 1_700_000_000_000);
+    const originalEntries = useWorkbenchStore.getState().terminalEntries;
+    store.setChartPaused(true);
+    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+      throw new DOMException("Storage is full", "QuotaExceededError");
+    });
+    try {
+      expect(() => store.setChartSampleRate(1000)).toThrow("Storage is full");
+      expect(useWorkbenchStore.getState()).toMatchObject({
+        chartSampleRateHz: 1000,
+        channels: [],
+        processedChannels: [],
+        chartFrozenChannels: [],
+        chartFrozenProcessedChannels: [],
+        waveformTrigger: { phase: "idle" },
+      });
+      expect(useWorkbenchStore.getState().terminalEntries).toEqual(originalEntries);
+    } finally {
+      write.mockRestore();
+    }
+    store.setChartPaused(false);
+    store.ingestBytes(encoder.encode("3\n4\n"), 1_700_000_005_000);
+    expect(useWorkbenchStore.getState().channels[0]?.points.map(({ x }) => x)).toEqual([0, 0.001]);
+  });
+
+  it.each([null, 1000])("模拟器缩减通道后重启同步清除旧波形与冻结快照，采样率 %s", async (sampleRateHz) => {
+    useWorkbenchStore.setState({ source: "simulator", connectionStatus: "disconnected" });
+    const store = useWorkbenchStore.getState();
+    const encoder = new TextEncoder();
+    store.setChartSampleRate(sampleRateHz);
+    store.updateSimulatorConfig("channelCount", 2);
+    store.setProcessingGraph({
+      enabled: true,
+      nodes: [
+        { id: "second-input", kind: "input", channelIndex: 1 },
+        { id: "second-output", kind: "output", input: "second-input", name: "Second", color: "#46d89c" },
+      ],
+    });
+    const attitudeConfig = useWorkbenchStore.getState().attitudeConfig;
+    store.setAttitudeConfig({
+      ...attitudeConfig,
+      channels: { ...attitudeConfig.channels, roll: "channel-0", pitch: "channel-1", yaw: "derived:second-output" },
+    });
+    await store.connect();
+    store.ingestBytes(encoder.encode("1,10\n2,20\n"), 1000);
+    store.setChartPaused(true);
+    expect(useWorkbenchStore.getState().chartFrozenChannels).toHaveLength(2);
+    expect(useWorkbenchStore.getState().chartFrozenProcessedChannels).toHaveLength(1);
+    expect(useWorkbenchStore.getState().attitudeSample).not.toBeNull();
+    await expect(store.disconnect()).resolves.toBe(true);
+    store.updateSimulatorConfig("channelCount", 1);
+    const previous = useWorkbenchStore.getState();
+    const originalEntries = previous.terminalEntries;
+
+    await store.connect();
+    expect(useWorkbenchStore.getState()).toMatchObject({
+      channels: [],
+      processedChannels: [],
+      chartPaused: false,
+      chartFrozenChannels: null,
+      chartFrozenProcessedChannels: null,
+      chartFrozenExtensionChannels: null,
+      attitudeSample: null,
+      chartDataRevision: previous.chartDataRevision + 1,
+      processingStatus: { processedFrames: 0 },
+      waveformTrigger: { phase: "idle" },
+      stats: { rxBytes: 0, txBytes: 0, rxFrames: 0 },
+    });
+    expect(useWorkbenchStore.getState().terminalEntries).toEqual(originalEntries);
+    store.ingestBytes(encoder.encode("3\n"), 2000);
+    const restarted = useWorkbenchStore.getState();
+    expect(restarted.channels).toHaveLength(1);
+    expect(restarted.channels[0]?.points).toEqual([
+      expect.objectContaining({ x: sampleRateHz === null ? 2 : 0, y: 3 }),
+    ]);
+    expect(restarted.processedChannels).toEqual([]);
+    expect(restarted.attitudeSample).toBeNull();
+    expect(restarted.terminalEntries.slice(0, originalEntries.length)).toEqual(originalEntries);
+    expect(connectSerialMock).not.toHaveBeenCalled();
+    expect(disconnectSerialMock).not.toHaveBeenCalled();
+  });
+
+  it("处理图重新配置不会把已保留基础波形的采样时钟倒回零", () => {
+    const store = useWorkbenchStore.getState();
+    store.setChartSampleRate(1000);
+    store.ingestBytes(new TextEncoder().encode("1\n2\n"), 1000);
+    store.setProcessingGraph({ enabled: false, nodes: [] });
+    store.ingestBytes(new TextEncoder().encode("3\n"), 2000);
+    expect(useWorkbenchStore.getState().channels[0]?.points.map(({ x }) => x))
+      .toEqual([0, 0.001, 0.002]);
+  });
+
+  it("固定采样率回放跨批连续计时，seek 新时间线重新归零且保留原始记录时间", () => {
+    const store = useWorkbenchStore.getState();
+    store.setChartSampleRate(1000);
+    store.handleReplayState(replayState("playing", { generation: 1 }));
+    store.handleReplayBatch({
+      sessionId: 7, generation: 1, sequence: 1,
+      startUs: 1000, endUs: 1000, dataBytes: 4,
+      records: [{ direction: "rx", timestampUs: 1000, data: [49, 10, 50, 10] }],
+    });
+    store.handleReplayBatch({
+      sessionId: 7, generation: 1, sequence: 2,
+      startUs: 4000, endUs: 4000, dataBytes: 2,
+      records: [{ direction: "rx", timestampUs: 4000, data: [51, 10] }],
+    });
+    expect(useWorkbenchStore.getState().channels[0]?.points.map(({ x }) => x))
+      .toEqual([0, 0.001, 0.002]);
+    expect(useWorkbenchStore.getState().terminalEntries.at(-1)?.timestamp).toBe(1004);
+    store.handleReplayState(replayState("playing", {
+      generation: 2, revision: 2, timelineRevision: 1, positionUs: 2000,
+    }));
+    store.handleReplayBatch({
+      sessionId: 7, generation: 2, sequence: 1,
+      startUs: 2000, endUs: 2000, dataBytes: 2,
+      records: [{ direction: "rx", timestampUs: 2000, data: [50, 10] }],
+    });
+    expect(useWorkbenchStore.getState().channels[0]?.points.map(({ x }) => x)).toEqual([0]);
+    expect(ackReplayBatchMock).toHaveBeenLastCalledWith(7, 2, 1);
+  });
+
   it("读取块模式保持每次 ingest 一条终端记录", () => {
     const encoder = new TextEncoder();
 
@@ -4495,7 +4670,7 @@ describe("workbenchStore", () => {
     const beforeActiveId = useWorkbenchStore.getState().activeWorkspaceId;
     const importedId = useWorkbenchStore.getState().importWorkspace({
       format: "vofa-ultra.workspace",
-      schemaVersion: 13,
+      schemaVersion: 14,
       name: "默认工作区",
       config: createDefaultWorkspaceConfig("serial"),
     });
@@ -4580,10 +4755,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 13 });
+    ).toMatchObject({ version: 14 });
   });
 
-  it("通过 rehydrate 把 v1 工作区写回 v13 且保留快照", async () => {
+  it("通过 rehydrate 把 v1 工作区写回 v14 且保留快照", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.processingGraph;
@@ -4597,6 +4772,7 @@ describe("workbenchStore", () => {
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
     delete legacyConfig.terminalTxTextEncoding;
+    delete legacyConfig.chartSampleRateHz;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4640,10 +4816,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 13 });
+    ).toMatchObject({ version: 14 });
   });
 
-  it("通过 rehydrate 把 v3 工作区补充默认配置并写回 v13", async () => {
+  it("通过 rehydrate 把 v3 工作区补充默认配置并写回 v14", async () => {
     const config = createDefaultWorkspaceConfig("simulator");
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.autoResponderRules;
@@ -4655,6 +4831,7 @@ describe("workbenchStore", () => {
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
     delete legacyConfig.terminalTxTextEncoding;
+    delete legacyConfig.chartSampleRateHz;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4688,7 +4865,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 13 });
+    ).toMatchObject({ version: 14 });
   });
 
   it("通过 rehydrate 从 v4 补充空快捷命令并保留全部工作区", async () => {
@@ -4706,6 +4883,7 @@ describe("workbenchStore", () => {
     delete legacyFirst.commandChecksum;
     delete legacyFirst.simulatorConfig;
     delete legacyFirst.terminalTxTextEncoding;
+    delete legacyFirst.chartSampleRateHz;
     delete legacySecond.terminalRxRecordMode;
     delete legacySecond.terminalRxLineEnding;
     delete legacySecond.terminalRxTextEncoding;
@@ -4713,6 +4891,7 @@ describe("workbenchStore", () => {
     delete legacySecond.commandChecksum;
     delete legacySecond.simulatorConfig;
     delete legacySecond.terminalTxTextEncoding;
+    delete legacySecond.chartSampleRateHz;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4756,10 +4935,10 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 13 });
+    ).toMatchObject({ version: 14 });
   });
 
-  it("通过 rehydrate 把 v5 的全部工作区无损迁移并写回 v13", async () => {
+  it("通过 rehydrate 把 v5 的全部工作区无损迁移并写回 v14", async () => {
     const firstConfig = createDefaultWorkspaceConfig("simulator");
     firstConfig.lineEnding = "crlf";
     firstConfig.autoResponderRules = [createDefaultAutoResponderRule("legacy-rule")];
@@ -4776,6 +4955,7 @@ describe("workbenchStore", () => {
     delete (first.config as Partial<typeof first.config>).commandChecksum;
     delete (first.config as Partial<typeof first.config>).simulatorConfig;
     delete (first.config as Partial<typeof first.config>).terminalTxTextEncoding;
+    delete (first.config as Partial<typeof first.config>).chartSampleRateHz;
     delete (second.config as Partial<typeof second.config>).terminalRxRecordMode;
     delete (second.config as Partial<typeof second.config>).terminalRxLineEnding;
     delete (second.config as Partial<typeof second.config>).terminalRxTextEncoding;
@@ -4783,6 +4963,7 @@ describe("workbenchStore", () => {
     delete (second.config as Partial<typeof second.config>).commandChecksum;
     delete (second.config as Partial<typeof second.config>).simulatorConfig;
     delete (second.config as Partial<typeof second.config>).terminalTxTextEncoding;
+    delete (second.config as Partial<typeof second.config>).chartSampleRateHz;
     const legacySecondConfig = JSON.parse(JSON.stringify(secondConfig)) as Record<string, unknown>;
     delete legacySecondConfig.terminalRxRecordMode;
     delete legacySecondConfig.terminalRxLineEnding;
@@ -4791,6 +4972,7 @@ describe("workbenchStore", () => {
     delete legacySecondConfig.commandChecksum;
     delete legacySecondConfig.simulatorConfig;
     delete legacySecondConfig.terminalTxTextEncoding;
+    delete legacySecondConfig.chartSampleRateHz;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4823,7 +5005,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 13 });
+    ).toMatchObject({ version: 14 });
   });
 
   it("迁移 v6 本地状态并保留工作区内的 CR 发送行尾", async () => {
@@ -4840,6 +5022,7 @@ describe("workbenchStore", () => {
     delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
     delete (workspace.config as Partial<typeof workspace.config>).simulatorConfig;
     delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
+    delete (workspace.config as Partial<typeof workspace.config>).chartSampleRateHz;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.terminalRxRecordMode;
     delete legacyConfig.terminalRxLineEnding;
@@ -4848,6 +5031,7 @@ describe("workbenchStore", () => {
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
     delete legacyConfig.terminalTxTextEncoding;
+    delete legacyConfig.chartSampleRateHz;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4895,12 +5079,14 @@ describe("workbenchStore", () => {
     delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
     delete (workspace.config as Partial<typeof workspace.config>).simulatorConfig;
     delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
+    delete (workspace.config as Partial<typeof workspace.config>).chartSampleRateHz;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.terminalRxTextEncoding;
     delete legacyConfig.channelPresentations;
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
     delete legacyConfig.terminalTxTextEncoding;
+    delete legacyConfig.chartSampleRateHz;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4925,7 +5111,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 13 });
+    ).toMatchObject({ version: 14 });
   });
 
   it("迁移 v8 本地状态并保留活动处理图与工作区快照", async () => {
@@ -4942,11 +5128,13 @@ describe("workbenchStore", () => {
     delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
     delete (workspace.config as Partial<typeof workspace.config>).simulatorConfig;
     delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
+    delete (workspace.config as Partial<typeof workspace.config>).chartSampleRateHz;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.channelPresentations;
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
     delete legacyConfig.terminalTxTextEncoding;
+    delete legacyConfig.chartSampleRateHz;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -4969,7 +5157,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 13 });
+    ).toMatchObject({ version: 14 });
   });
 
   it("迁移 v9 转换节点并补充空通道展示配置", async () => {
@@ -4993,11 +5181,13 @@ describe("workbenchStore", () => {
     delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
     delete (workspace.config as Partial<typeof workspace.config>).simulatorConfig;
     delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
+    delete (workspace.config as Partial<typeof workspace.config>).chartSampleRateHz;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.channelPresentations;
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
     delete legacyConfig.terminalTxTextEncoding;
+    delete legacyConfig.chartSampleRateHz;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -5036,10 +5226,12 @@ describe("workbenchStore", () => {
     delete (workspace.config as Partial<typeof workspace.config>).commandChecksum;
     delete (workspace.config as Partial<typeof workspace.config>).simulatorConfig;
     delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
+    delete (workspace.config as Partial<typeof workspace.config>).chartSampleRateHz;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.commandChecksum;
     delete legacyConfig.simulatorConfig;
     delete legacyConfig.terminalTxTextEncoding;
+    delete legacyConfig.chartSampleRateHz;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -5061,7 +5253,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 13 });
+    ).toMatchObject({ version: 14 });
   });
 
   it("迁移 v11 本地状态并为活动配置与工作区补充默认模拟器配置", async () => {
@@ -5070,9 +5262,11 @@ describe("workbenchStore", () => {
     const workspace = createWorkspaceProfile("v11 工作区", config, "legacy-v11", 100);
     delete (workspace.config as Partial<typeof workspace.config>).simulatorConfig;
     delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
+    delete (workspace.config as Partial<typeof workspace.config>).chartSampleRateHz;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.simulatorConfig;
     delete legacyConfig.terminalTxTextEncoding;
+    delete legacyConfig.chartSampleRateHz;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -5103,7 +5297,7 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 13 });
+    ).toMatchObject({ version: 14 });
   });
 
   it("迁移 v12 本地状态并为活动配置与工作区补充 UTF-8 发送编码", async () => {
@@ -5111,8 +5305,10 @@ describe("workbenchStore", () => {
     config.terminalRxTextEncoding = "gb18030";
     const workspace = createWorkspaceProfile("v12 工作区", config, "legacy-v12", 100);
     delete (workspace.config as Partial<typeof workspace.config>).terminalTxTextEncoding;
+    delete (workspace.config as Partial<typeof workspace.config>).chartSampleRateHz;
     const legacyConfig = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
     delete legacyConfig.terminalTxTextEncoding;
+    delete legacyConfig.chartSampleRateHz;
     localStorage.setItem(
       "vofa-ultra-workbench",
       JSON.stringify({
@@ -5143,12 +5339,12 @@ describe("workbenchStore", () => {
     });
     expect(
       JSON.parse(localStorage.getItem("vofa-ultra-workbench") ?? "null"),
-    ).toMatchObject({ version: 13 });
+    ).toMatchObject({ version: 14 });
   });
 
   it("拒绝并保留更高版本的持久化数据", async () => {
     const futureValue = JSON.stringify({
-      version: 14,
+      version: 15,
       state: {
         futureWorkspaceFormat: true,
         workspaces: [{ id: "future-only" }],
@@ -5161,13 +5357,13 @@ describe("workbenchStore", () => {
 
     expect(useWorkbenchStore.getState()).toMatchObject({
       workspaceStorageStatus: "newer-version",
-      incompatibleStorageVersion: 14,
+      incompatibleStorageVersion: 15,
     });
     expect(() => useWorkbenchStore.getState().saveActiveWorkspace("不会保存")).toThrow(
-      /版本 14.*不能保存/,
+      /版本 15.*不能保存/,
     );
     expect(() => useWorkbenchStore.getState().setQuickCommands([quickCommand()])).toThrow(
-      /版本 14.*不能保存/,
+      /版本 15.*不能保存/,
     );
     expect(() =>
       useWorkbenchStore.getState().setChannelPresentation("firewater", "channel-0", {
@@ -5175,7 +5371,7 @@ describe("workbenchStore", () => {
         unit: "",
         color: null,
       }),
-    ).toThrow(/版本 14.*不能保存/);
+    ).toThrow(/版本 15.*不能保存/);
     const beforeExport = useWorkbenchStore.getState();
     expect(beforeExport.createActiveWorkspaceExport("只读工作副本")).toMatchObject({
       name: "只读工作副本",

@@ -27,6 +27,7 @@ interface WaveformSpectrumProps {
   channelId: string;
   windowSize: SpectrumWindowSize;
   sampleRateInput: string;
+  sampleRateReadOnly?: boolean;
   onChannelChange(channelId: string): void;
   onWindowSizeChange(windowSize: SpectrumWindowSize): void;
   onSampleRateChange(value: string): void;
@@ -50,6 +51,7 @@ export default function WaveformSpectrum({
   channelId,
   windowSize,
   sampleRateInput,
+  sampleRateReadOnly = false,
   onChannelChange,
   onWindowSizeChange,
   onSampleRateChange,
@@ -83,6 +85,7 @@ export default function WaveformSpectrum({
   return (
     <>
       <SpectrumControls
+        sampleRateReadOnly={sampleRateReadOnly}
         channels={channels}
         selectedChannel={selectedChannel}
         sampleRateInput={sampleRateInput}
@@ -121,6 +124,7 @@ export default function WaveformSpectrum({
 }
 
 interface SpectrumControlsProps {
+  sampleRateReadOnly: boolean;
   channels: PresentedChannelSeries[];
   selectedChannel: PresentedChannelSeries | undefined;
   sampleRateInput: string;
@@ -133,6 +137,7 @@ interface SpectrumControlsProps {
 }
 
 function SpectrumControls({
+  sampleRateReadOnly,
   channels,
   selectedChannel,
   sampleRateInput,
@@ -181,6 +186,8 @@ function SpectrumControls({
           max={MAX_SPECTRUM_SAMPLE_RATE_HZ}
           step="any"
           aria-label="频谱采样率"
+          readOnly={sampleRateReadOnly}
+          title={sampleRateReadOnly ? "使用波形固定采样率；可在时基设置中修改" : undefined}
           aria-invalid={sampleRateInvalid}
           value={sampleRateInput}
           onChange={(event) => onSampleRateChange(event.target.value)}

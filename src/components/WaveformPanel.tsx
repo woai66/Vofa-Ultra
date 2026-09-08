@@ -10,6 +10,7 @@ import {
 } from "react";
 import {
   Check,
+  Clock3,
   CirclePause,
   Crosshair,
   LocateFixed,
@@ -49,6 +50,7 @@ import type { ChartWindowSeconds } from "../types/workspace";
 
 const MeasurementStrip = lazy(() => import("./WaveformMeasurementStrip"));
 const WaveformSpectrum = lazy(() => import("./WaveformSpectrum"));
+const WaveformTimebaseControls = lazy(() => import("./WaveformTimebaseControls"));
 const MIN_WAVEFORM_CHART_HEIGHT = 64;
 
 interface WaveformPanelProps {
@@ -125,6 +127,8 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
     .join("|");
   const channelIdSignature = channels.map((channel) => channel.id).join("\u001f");
   const chartWindowSeconds = useWorkbenchStore((state) => state.chartWindowSeconds);
+  const chartSampleRateHz = useWorkbenchStore((state) => state.chartSampleRateHz);
+  const setChartSampleRate = useWorkbenchStore((state) => state.setChartSampleRate);
   const waveformTrigger = useWorkbenchStore((state) => state.waveformTrigger);
   const setChartPaused = useWorkbenchStore((state) => state.setChartPaused);
   const setChartWindowSeconds = useWorkbenchStore((state) => state.setChartWindowSeconds);
@@ -139,6 +143,8 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   const clearChart = useWorkbenchStore((state) => state.clearChart);
   const [measurementEnabled, setMeasurementEnabled] = useState(false);
   const [viewMode, setViewMode] = useState<WaveformViewMode>("time");
+  const [timebaseControlsOpen, setTimebaseControlsOpen] = useState(false);
+  const timebaseButtonRef = useRef<HTMLButtonElement>(null);
   const [triggerControlsOpen, setTriggerControlsOpen] = useState(false);
   const [triggerChannelId, setTriggerChannelId] = useState("");
   const [triggerEdge, setTriggerEdge] = useState<WaveformTriggerEdge>("rising");
@@ -357,6 +363,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   ]);
 
   const handleMeasurementToggle = () => {
+    setTimebaseControlsOpen(false);
     setWaveformFollowSuspended(false);
     setRangeControlsOpen(false);
     if (measurementEnabled) {
@@ -448,6 +455,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   };
 
   const handleRangeControlsToggle = () => {
+    setTimebaseControlsOpen(false);
     if (rangeControlsOpen) {
       closeRangeControls(true);
       return;
@@ -583,6 +591,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
   };
 
   const handleViewModeChange = (mode: WaveformViewMode) => {
+    setTimebaseControlsOpen(false);
     if (mode === viewMode) {
       return;
     }
@@ -620,7 +629,9 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
           <Waves size={17} />
           <div>
             <h2 id="waveform-title">{viewMode === "time" ? "实时波形" : "频谱分析"}</h2>
-            <span className="panel-subtitle">{channels.length} 个通道</span>
+            <span className="panel-subtitle">
+              {channels.length} 个通道 · {chartSampleRateHz === null ? "接收时间" : `${chartSampleRateHz} Hz 推算`}
+            </span>
           </div>
           <span className="live-state" data-state={liveState}>
             <span />
@@ -652,6 +663,24 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
           </div>
           {viewMode === "time" && (
             <>
+              <button
+                ref={timebaseButtonRef}
+                type="button"
+                className="icon-button"
+                aria-label="设置波形时基"
+                title={chartSampleRateHz === null ? "时基：主机接收时间" : `时基：固定 ${chartSampleRateHz} Hz`}
+                aria-controls="waveform-timebase-controls"
+                aria-expanded={timebaseControlsOpen}
+                data-active={timebaseControlsOpen || chartSampleRateHz !== null}
+                disabled={isWorkspaceTransitioning || activeProtocol === "raw"}
+                onClick={() => {
+                  setTriggerControlsOpen(false);
+                  setRangeControlsOpen(false);
+                  setTimebaseControlsOpen((open) => !open);
+                }}
+              >
+                <Clock3 size={16} />
+              </button>
               <div className="time-window-control" role="group" aria-label="波形时间窗">
                 {[5, 15, 30, 60].map((seconds) => (
                   <button
@@ -689,6 +718,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
                 data-active={triggerControlsOpen || waveformTrigger.phase !== "idle"}
                 disabled={measurementEnabled}
                 onClick={() => {
+                  setTimebaseControlsOpen(false);
                   setRangeControlsOpen(false);
                   setTriggerControlsOpen((open) => !open);
                 }}
@@ -908,6 +938,19 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
         </form>
       )}
 
+      {viewMode === "time" && timebaseControlsOpen && (
+        <Suspense fallback={null}>
+          <WaveformTimebaseControls
+            sampleRateHz={chartSampleRateHz}
+            disabled={isWorkspaceTransitioning}
+            onApply={setChartSampleRate}
+            onClose={() => {
+              setTimebaseControlsOpen(false);
+              timebaseButtonRef.current?.focus({ preventScroll: true });
+            }}
+          />
+        </Suspense>
+      )}
       {viewMode === "spectrum" && (
         <Suspense
           fallback={
@@ -934,7 +977,8 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
             chartDataRevision={chartDataRevision}
             channelId={spectrumChannelId}
             windowSize={spectrumWindowSize}
-            sampleRateInput={spectrumSampleRateInput}
+            sampleRateInput={chartSampleRateHz === null ? spectrumSampleRateInput : String(chartSampleRateHz)}
+            sampleRateReadOnly={chartSampleRateHz !== null}
             onChannelChange={setSpectrumChannelId}
             onWindowSizeChange={setSpectrumWindowSize}
             onSampleRateChange={setSpectrumSampleRateInput}
@@ -1029,6 +1073,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
           }
         >
           <MeasurementStrip
+            sampleRateHz={chartSampleRateHz}
             channels={measurementChannels}
             selectedChannel={selectedChannel}
             activeCursor={activeCursor}
@@ -1051,6 +1096,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
             </div>
           ) : (
             <WaveformChart
+              sampleRateHz={chartSampleRateHz}
               channels={channels}
               windowSeconds={chartWindowSeconds}
               theme={theme}
@@ -1080,6 +1126,7 @@ export function WaveformPanel({ theme, onMeasurementModeChange }: WaveformPanelP
 }
 
 interface WaveformChartProps {
+  sampleRateHz: number | null;
   channels: ChannelSeries[];
   windowSeconds: number;
   theme: ThemeMode;
@@ -1107,6 +1154,7 @@ interface WaveformOverlayElements {
 }
 
 function WaveformChart({
+  sampleRateHz,
   channels,
   windowSeconds,
   theme,
@@ -1239,11 +1287,11 @@ function WaveformChart({
       scales:
         scaleMode === "shared"
           ? {
-              x: { time: true },
+              x: { time: sampleRateHz === null },
               y: createWaveformScaleOptions(sharedFixedRange),
             }
           : {
-              x: { time: true },
+              x: { time: sampleRateHz === null },
               ...Object.fromEntries(
                 channelMetadata.map((channel) => [
                   waveformScaleKey(scaleMode, channel.id),
@@ -1256,6 +1304,7 @@ function WaveformChart({
       axes: [
         {
           scale: "x",
+          values: sampleRateHz === null ? undefined : (_chart, ticks) => formatSampleTimeTicks(ticks),
           stroke: computed.getPropertyValue("--text-muted").trim(),
           grid: { stroke: computed.getPropertyValue("--chart-grid").trim(), width: 1 },
           ticks: { stroke: computed.getPropertyValue("--chart-grid-strong").trim(), width: 1 },
@@ -1394,6 +1443,7 @@ function WaveformChart({
     measurementEnabled,
     scaleMode,
     sharedFixedRange,
+    sampleRateHz,
     theme,
   ]);
 
@@ -1640,6 +1690,13 @@ function createAlignedData(channels: ChannelSeries[], windowSeconds: number): Al
     return visibleSlots.map((slot) => valueBySlot.get(slot.key) ?? null);
   });
   return [timestamps, ...values] as AlignedData;
+}
+
+function formatSampleTimeTicks(ticks: number[]): string[] {
+  const extent = Math.max(...ticks.map(Math.abs));
+  const scale = extent >= 1 ? 1 : extent >= 0.001 ? 1000 : 1000000;
+  const unit = scale === 1 ? "s" : scale === 1000 ? "ms" : "us";
+  return ticks.map((tick) => `${Number((tick * scale).toPrecision(5))} ${unit}`);
 }
 
 function waveformPointKey(point: DataPoint): string {

@@ -674,6 +674,151 @@ async function readWaveformColorBounds(
     };
   }, target);
 }
+async function openTerminalReceiveOptions(page: Page) {
+  const toggle = page.getByRole("button", { name: "接收选项", exact: true });
+  if (await toggle.getAttribute("aria-expanded") !== "true") {
+    await toggle.click();
+  }
+}
+
+async function openSendOptions(page: Page) {
+  const toggle = page.getByRole("button", { name: "发送选项", exact: true });
+  if (await toggle.getAttribute("aria-expanded") !== "true") {
+    await toggle.click();
+  }
+}
+
+test("固定采样时基贯通同批波形与测量，并随工作区恢复", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置波形时基" }).click();
+  const settings = page.getByRole("region", { name: "波形时基" });
+  await settings.getByRole("combobox", { name: "时基", exact: true }).selectOption("fixed");
+  await settings.getByRole("textbox", { name: "设备采样率 (Hz)" }).fill("1000");
+  await settings.getByRole("button", { name: "应用并清空波形" }).click();
+  await ingestProtocolBytes(page, Array.from(new TextEncoder().encode("1\n2\n3\n")), 1000);
+  await expect(page.locator(".terminal-line time")).toHaveAttribute("title", /绝对时间/);
+  await page.getByRole("button", { name: "开启波形测量" }).click();
+  await page.getByRole("slider", { name: "游标 A 采样点" }).focus();
+  await page.keyboard.press("Home");
+  await expect(page.getByLabel("波形测量结果")).toContainText("2.000 ms");
+  await expect(page.getByLabel("波形测量结果")).toContainText("500.000 Hz");
+  await expect(page.getByText("采样间隔 · 按 1000 Hz 推算")).toBeVisible();
+  await expectVisibleInteractiveLayout(page);
+  await page.screenshot({ path: testInfo.outputPath("fixed-sampling-measurement.png") });
+  await page.getByRole("button", { name: "关闭波形测量" }).click();
+  await page.getByRole("button", { name: "频谱", exact: true }).click();
+  await expect(page.getByRole("spinbutton", { name: "频谱采样率" })).toHaveValue("1000");
+  await expect(page.getByRole("spinbutton", { name: "频谱采样率" })).toHaveAttribute("readonly", "");
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  await page.getByRole("textbox", { name: "工作区名称" }).fill("1 kHz 台架");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.reload();
+  await expect(page.getByRole("button", { name: "设置波形时基" })).toHaveAttribute("title", /1000 Hz/);
+  await ingestProtocolBytes(page, Array.from(new TextEncoder().encode("4\n5\n")), 5000);
+  const coordinates = await page.evaluate(async () => {
+    const { useWorkbenchStore } = await import("/src/store/workbenchStore.ts");
+    return useWorkbenchStore.getState().channels[0]?.points.map(({ x }) => x);
+  });
+  expect(coordinates).toEqual([0, 0.001]);
+});
+
+test("Windows 舒适字号与布局记忆下基础操作直接可用且选项展开不遮挡", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1024, height: 680 });
+  await page.goto("/");
+  await expect(page.locator("#terminal-receive-options")).toBeHidden();
+  await expect(page.locator("#send-advanced-options")).toBeHidden();
+  await expect(page.getByRole("searchbox", { name: "搜索终端记录" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "行尾", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "舒适", exact: true }).click();
+  await expect(page.locator("body")).toHaveCSS("font-size", "14px");
+  await page.getByRole("button", { name: "专注终端" }).click();
+  await page.reload();
+  await expect(page.locator(".workspace-content")).toHaveAttribute("data-layout-mode", "terminal");
+  await expect(page.locator("body")).toHaveCSS("font-size", "14px");
+  await expect(page.getByRole("heading", { name: "工作台设置" })).toBeVisible();
+  await page.getByRole("button", { name: "分栏显示" }).click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await openTerminalReceiveOptions(page);
+  await openSendOptions(page);
+  await page.getByRole("textbox", { name: "发送内容" }).fill("PING");
+  for (const width of [1440, 1366, 1024]) {
+    await page.setViewportSize({ width, height: 680 });
+    await expectVisibleInteractiveLayout(page);
+    await expect.poll(() => page.locator(".terminal-log-shell").evaluate(e=>e.clientHeight))
+      .toBeGreaterThanOrEqual(64);
+  }
+  await page.screenshot({ path: testInfo.outputPath("windows-comfortable-expanded-options.png") });
+});
+
+test("暂停终端记录持续提示不补录，后台解析继续", async ({ page }) => {
+  await page.goto("/");
+  await ingestProtocolBytes(page, [49, 10], 1000);
+  await page.getByRole("button", { name: "暂停终端记录" }).click();
+  await expect(page.getByText("记录已暂停", { exact: true })).toBeVisible();
+  await ingestProtocolBytes(page, [50, 10], 2000);
+  await page.getByRole("button", { name: "继续终端记录" }).click();
+  await expect(page.getByText("记录已暂停", { exact: true })).toHaveCount(0);
+  await ingestProtocolBytes(page, [51, 10], 3000);
+  await expect(page.locator('.terminal-line[data-direction="rx"] code')).toHaveText(["1\\n", "3\\n"]);
+});
+
+test("抽屉焦点覆盖首次加载、活动导航和窗口模式切换", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 800, height: 800 });
+  await page.goto("/");
+  const close = page.getByRole("button", { name: "关闭侧栏" });
+  const toggle = page.getByRole("button", { name: "显示或隐藏侧栏" });
+  const sidebar = page.locator(".sidebar");
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(toggle).toBeFocused();
+  await expect(sidebar).toHaveAttribute("inert", "");
+
+  const workspaces = page.getByRole("button", { name: "工作区", exact: true });
+  await workspaces.click();
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(workspaces).toBeFocused();
+  await expect(workspaces).toHaveAttribute("aria-expanded", "false");
+  await workspaces.click();
+  const name = page.getByRole("textbox", { name: "工作区名称" });
+  await name.focus();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(name).toBeFocused();
+  await page.setViewportSize({ width: 800, height: 800 });
+  await expect(name).toBeFocused();
+  await close.focus();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(toggle).toBeFocused();
+
+  const waveform = page.getByRole("tab", { name: "波形", exact: true });
+  await waveform.focus();
+  await page.setViewportSize({ width: 800, height: 800 });
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(waveform).toBeFocused();
+  await page.screenshot({ path: testInfo.outputPath("drawer-focus-800.png") });
+});
+
+test("抽屉 Escape 优先取消工作区确认对话框且保留编辑草稿", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 800 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "工作区", exact: true }).click();
+  const name = page.getByRole("textbox", { name: "工作区名称" });
+  await name.fill("未保存草稿");
+  const original = page.getByRole("button", { name: /^默认工作区.*模拟器 · FireWater$/ });
+  await original.click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
+  await expect(name).toHaveValue("未保存草稿");
+  await expect(original).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "false");
+});
+
 test("主题偏好跟随系统并持久化固定选择", async ({ page }, testInfo) => {
   await page.emulateMedia({ colorScheme: "dark" });
   await page.goto("/");
@@ -701,7 +846,7 @@ test("主题偏好跟随系统并持久化固定选择", async ({ page }, testIn
 
   await page.reload();
   await expect(root).toHaveAttribute("data-theme", "dark");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "工作台设置" })).toBeVisible();
   await expect(appearance.getByRole("button", { name: "深色" })).toHaveAttribute(
     "aria-pressed",
     "true",
@@ -741,7 +886,7 @@ test("状态栏显示当前双向吞吐并在空闲后归零", async ({ page }) 
     stats: { rxBytes: 0, txBytes: 0, rxFrames: 0, startedAt },
   });
 
-  const rate = page.locator(".transfer-rate");
+  const rate = page.locator(".transfer-summary");
   await expect(rate).toContainText("RX 0 B/s");
   await expect(rate).toContainText("TX 0 B/s");
   await setWorkbenchState(page, {
@@ -768,7 +913,12 @@ test("状态栏显示当前双向吞吐并在空闲后归零", async ({ page }) 
     .toEqual({ rxIdle: true, txIdle: true });
 
   await page.setViewportSize({ width: 320, height: 568 });
-  await expect(rate).toHaveAttribute("aria-label", /RX 0 B\/s，TX 0 B\/s/);
+  await expect(rate).toHaveAttribute(
+    "aria-label",
+    "实时传输：RX 0 B/s，累计 4.0 KB；TX 0 B/s，累计 2.0 KB",
+  );
+  await expect(rate).toContainText("RX 0 B/s");
+  await expect(rate).toContainText("TX 0 B/s");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 });
 
@@ -824,6 +974,7 @@ test("模拟器只生成结构化协议并明确 Raw Data 边界", async ({ page
   await page.goto("/");
   await expect(page.locator(".app-shell")).toHaveAttribute("data-sidebar-open", "true");
   const receive_display = page.getByRole("group", { name: "接收显示格式" });
+  await openTerminalReceiveOptions(page);
   const receive_records = page.getByRole("group", { name: "接收记录方式" });
   await expect(receive_display.getByRole("button", { name: "TEXT" })).toHaveAttribute(
     "aria-pressed",
@@ -1405,6 +1556,7 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
   }
 
   await page.setViewportSize({ width: 900, height: 520 });
+  await page.getByRole("button", { name: "关闭侧栏" }).click();
   const message = page.getByRole("textbox", { name: "发送内容" });
   await message.fill("PING");
   await page.getByRole("button", { name: "展开周期发送设置" }).click();
@@ -1453,6 +1605,7 @@ test("Windows 支持窗口内发送栏、周期设置和频谱控件保持分离
   expect(spectrum_layout.outside).toEqual([]);
 
   const sidebar_toggle = page.getByRole("button", { name: "显示或隐藏侧栏" });
+  await sidebar_toggle.click();
   await expect(sidebar_toggle).toBeHidden();
   await page.getByRole("button", { name: "关闭侧栏" }).click();
   await expect(app_shell).toHaveAttribute("data-sidebar-open", "false");
@@ -2371,6 +2524,7 @@ test("终端时间基准按缓存和可见记录计算并跨刷新保留", async
     },
   ]);
 
+  await openTerminalReceiveOptions(page);
   const timeMode = page.getByRole("group", { name: "终端时间基准" });
   const timeCells = page.locator(".terminal-line time");
   await expect(
@@ -2429,6 +2583,7 @@ test("终端时间基准按缓存和可见记录计算并跨刷新保留", async
     .toBe(true);
 
   await page.reload();
+  await openTerminalReceiveOptions(page);
   await expect(
     page.getByRole("group", { name: "终端时间基准" }).getByRole("button", {
       name: "ΔT，距上一条可见记录",
@@ -2465,7 +2620,7 @@ test("终端时间基准按缓存和可见记录计算并跨刷新保留", async
   const mobileBounds = await compactTimeMode
     .evaluate((control) => {
       const controlRect = control.getBoundingClientRect();
-      const filterRect = control.closest(".terminal-filter-bar")?.getBoundingClientRect();
+      const filterRect = control.closest(".terminal-receive-options")?.getBoundingClientRect();
       return {
         controlLeft: controlRect.left,
         controlRight: controlRect.right,
@@ -2529,6 +2684,7 @@ test("终端按全部缓存或当前筛选视图导出", async ({ page }, testIn
   ];
   await replaceTerminalEntries(page, entries);
 
+  await openTerminalReceiveOptions(page);
   await page
     .getByRole("group", { name: "终端时间基准" })
     .getByRole("button", { name: "相对缓存起点" })
@@ -2949,11 +3105,9 @@ test("终端按当前显示内容执行字面量搜索和方向过滤", async ({
   );
   await search.fill("needle");
   await expect(page.locator(".terminal-toolbar .panel-subtitle")).toHaveText("400 / 800 条记录");
-  await expect.poll(() => page.locator(".terminal-line").count()).toBeGreaterThan(0);
-  expect(await page.locator(".terminal-line").count()).toBeLessThan(400);
-  expect(await page.locator('.terminal-line[data-direction="rx"]').count()).toBe(
-    await page.locator(".terminal-line").count(),
-  );
+  await expect.poll(() => page.locator(".terminal-line").evaluateAll((rows) =>
+    rows.length > 0 && rows.length < 400 && rows.every((row) => row.getAttribute("data-direction") === "rx"),
+  )).toBe(true);
   await expect(page.locator(".terminal-search-match").first()).toHaveText("needle");
   await page.screenshot({
     path: testInfo.outputPath("terminal-search-desktop.png"),
@@ -2985,7 +3139,8 @@ test("终端按当前显示内容执行字面量搜索和方向过滤", async ({
   expect(mobileLayout.searchHeight).toBeGreaterThanOrEqual(44);
   expect(mobileLayout.searchInputHeight).toBeGreaterThanOrEqual(44);
   expect(mobileLayout.clearButtonHeight).toBeGreaterThanOrEqual(44);
-  expect(mobileLayout.selectHeights).toHaveLength(2);
+  expect(mobileLayout.selectHeights).toHaveLength(1);
+  await expect(page.getByRole("button", { name: "接收选项", exact: true })).toBeVisible();
   expect(mobileLayout.selectHeights.every((height) => height >= 44)).toBe(true);
   expect(pageErrors).toEqual([]);
 
@@ -3053,6 +3208,7 @@ test("终端跨行原生选择只包含当前显示的 payload", async ({ page }
 
 test("终端 RX 行记录按所选编码显示并保持原始字节及窄屏布局", async ({ page }, testInfo) => {
   await page.goto("/");
+  await openTerminalReceiveOptions(page);
   const recordMode = page.getByRole("group", { name: "接收记录方式" });
   const lineEnding = page.getByRole("combobox", { name: "接收行尾" });
   const textEncoding = page.getByRole("combobox", { name: "接收文本编码" });
@@ -3066,7 +3222,7 @@ test("终端 RX 行记录按所选编码显示并保持原始字节及窄屏布�
   await expect(textEncoding).toHaveValue("utf-8");
   await textEncoding.focus();
   await page.keyboard.press("Tab");
-  await expect(page.getByRole("searchbox", { name: "搜索终端记录" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "ABS，绝对时间" })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   await expect(textEncoding).toBeFocused();
   await ingestProtocolBytes(page, [0x41], 1_000);
@@ -3107,7 +3263,7 @@ test("终端 RX 行记录按所选编码显示并保持原始字节及窄屏布�
   await textEncoding.selectOption("windows-1252");
 
   await page.setViewportSize({ width: 390, height: 844 });
-  const mobileLayout = await page.locator(".terminal-filter-bar").evaluate((bar) => {
+  const mobileLayout = await page.locator(".terminal-receive-options").evaluate((bar) => {
     const modeButtons = [...bar.querySelectorAll<HTMLElement>(".terminal-rx-record-mode button")];
     const lineEndingSelect = bar.querySelector<HTMLElement>(".terminal-rx-line-ending select");
     const encodingSelect = bar.querySelector<HTMLElement>(".terminal-rx-text-encoding select");
@@ -3225,7 +3381,7 @@ test("协议坏帧提供可清除诊断并在后续合法帧恢复", async ({ pa
   expect(layout.documentWidth).toBeLessThanOrEqual(320);
 });
 
-test("通道展示配置按协议隔离并随 v13 工作区往返", async ({ page }, testInfo) => {
+test("通道展示配置按协议隔离并随 v14 工作区往返", async ({ page }, testInfo) => {
   await page.goto("/");
   await ingestProtocolText(page, "voltage:12.5,current:2\n", 1_000);
   await page.getByRole("button", { name: "通道", exact: true }).click();
@@ -3282,7 +3438,7 @@ test("通道展示配置按协议隔离并随 v13 工作区往返", async ({ pag
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 13,
+    schemaVersion: 14,
     config: {
       channelPresentations: {
         firewater: {
@@ -3339,7 +3495,7 @@ test("通道展示配置按协议隔离并随 v13 工作区往返", async ({ pag
   }
 });
 
-test("处理图预设与转换节点生成派生通道并随 v13 工作区往返", async ({ page }, testInfo) => {
+test("处理图预设与转换节点生成派生通道并随 v14 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -3402,7 +3558,7 @@ test("处理图预设与转换节点生成派生通道并随 v13 工作区往返
     schemaVersion: number;
     config: { processingGraph: ProcessingGraphConfig };
   };
-  expect(exported.schemaVersion).toBe(13);
+  expect(exported.schemaVersion).toBe(14);
   expect(exported.config.processingGraph).toMatchObject({
     enabled: true,
     nodes: [
@@ -3429,7 +3585,7 @@ test("处理图预设与转换节点生成派生通道并随 v13 工作区往返
   expect(pageErrors).toEqual([]);
 });
 
-test("实时 RX 自动应答保持有界运行并随 v13 工作区往返", async ({ page }, testInfo) => {
+test("实时 RX 自动应答保持有界运行并随 v14 工作区往返", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
@@ -3497,7 +3653,7 @@ test("实时 RX 自动应答保持有界运行并随 v13 工作区往返", async
     };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 13,
+    schemaVersion: 14,
     config: {
       autoResponderRules: [
         {
@@ -3700,7 +3856,6 @@ test("通道监视显示有界统计并支持本地冻结与窄屏布局", async
       groupDetail: fontSize(".channel-monitor-group-row small"),
       value: fontSize(".channel-monitor-data-row td"),
       channel: fontSize(".channel-monitor-channel-label strong"),
-      detail: fontSize(".channel-monitor-channel-label small"),
     };
   });
   expect(monitorTypography).toEqual({
@@ -3710,8 +3865,8 @@ test("通道监视显示有界统计并支持本地冻结与窄屏布局", async
     groupDetail: 12,
     value: 12,
     channel: 13,
-    detail: 12,
   });
+  await expect(monitor.locator(".channel-monitor-channel-label small")).toHaveCount(0);
 
   await page.getByRole("button", { name: "冻结通道监视" }).click();
   await expect(monitor.locator(".live-state")).toContainText("HOLD");
@@ -3904,6 +4059,7 @@ test("GB18030 文本发送使用实际字节并从历史恢复编码", async ({ 
   await page.getByRole("button", { name: "启动模拟" }).click();
   await expect(page.getByText("模拟数据正在运行")).toBeVisible();
 
+  await openSendOptions(page);
   const encoding = page.getByRole("combobox", { name: "发送文本编码" });
   const input = page.getByRole("textbox", { name: "发送内容" });
   await encoding.selectOption("gb18030");
@@ -3927,7 +4083,7 @@ test("GB18030 文本发送使用实际字节并从历史恢复编码", async ({ 
   await expect(encoding).toHaveValue("gb18030");
 });
 
-test("发送栏自动校验尾按帧顺序发送并随 v13 工作区往返", async ({ page }, testInfo) => {
+test("发送栏自动校验尾按帧顺序发送并随 v14 工作区往返", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByRole("button", { name: "启动模拟" }).click();
   await expect(page.getByText("模拟数据正在运行")).toBeVisible();
@@ -3936,6 +4092,7 @@ test("发送栏自动校验尾按帧顺序发送并随 v13 工作区往返", asy
     .getByRole("group", { name: "发送格式" })
     .getByRole("button", { name: "HEX" })
     .click();
+  await openSendOptions(page);
   const checksum = page.getByRole("combobox", { name: "校验" });
   await checksum.selectOption("crc16-modbus-le");
   await page.getByRole("combobox", { name: "行尾", exact: true }).selectOption("lf");
@@ -3975,7 +4132,7 @@ test("发送栏自动校验尾按帧顺序发送并随 v13 工作区往返", asy
     config: { commandChecksum: string };
   };
   expect(exported).toMatchObject({
-    schemaVersion: 13,
+    schemaVersion: 14,
     config: { commandChecksum: "crc16-modbus-le" },
   });
 
@@ -4000,6 +4157,7 @@ test("Modbus RTU 构帧、单事务和只读轮询经统一链路工作且窄屏
   await page.goto("/");
   await page.getByRole("button", { name: "启动模拟" }).click();
   await expect(page.getByText("模拟数据正在运行")).toBeVisible();
+  await openSendOptions(page);
   await page.getByRole("combobox", { name: "校验" }).selectOption("crc16-modbus-le");
   await page.getByRole("button", { name: "打开 Modbus RTU 构帧器" }).click();
   let builder = page.getByRole("dialog", { name: "Modbus RTU 构帧器" });
@@ -4223,9 +4381,9 @@ test("安全命令变量逐次展开且非法表达式零发送", async ({ page 
     .click();
   await page.getByRole("button", { name: "清空终端", exact: true }).click();
   await page.getByRole("button", { name: "发送", exact: true }).click();
-  await page.getByRole("button", { name: "暂停终端显示" }).click();
+  await page.getByRole("button", { name: "暂停终端记录" }).click();
   await expect(txLines.locator("code")).toHaveText("01 00");
-  const txStats = page.locator(".transfer-stats span").filter({ hasText: "TX" });
+  const txStats = page.locator(".transfer-direction").filter({ hasText: /^TX / }).locator(".transfer-total");
   const transmittedBeforeInvalidTemplate = await txStats.textContent();
 
   await sendFormat.getByRole("button", { name: "文本" }).click();
@@ -4353,7 +4511,7 @@ test("窄屏布局无页面级横向溢出", async ({ page }, testInfo) => {
   await lineEnding.selectOption("none");
   await page.getByRole("button", { name: "展开周期发送设置" }).click();
   await expect(page.locator(".command-workflow")).toBeVisible();
-  const converterTxStats = page.locator(".transfer-stats span").filter({ hasText: "TX" });
+  const converterTxStats = page.locator(".transfer-direction").filter({ hasText: /^TX / }).locator(".transfer-total");
   const txStatsBeforeConverter = await converterTxStats.textContent();
   await page.getByRole("button", { name: "打开命令参考与校验" }).click();
   const variableDialog = page.getByRole("dialog", { name: "命令参考与校验" });
@@ -4771,7 +4929,7 @@ test("命名工作区可保存、切换、导出并重新导入", async ({ page 
   };
   expect(exported).toMatchObject({
     format: "vofa-ultra.workspace",
-    schemaVersion: 13,
+    schemaVersion: 14,
     name: "台架导出草稿",
     config: { protocol: "justfloat" },
   });
@@ -4806,7 +4964,7 @@ test("命名工作区可保存、切换、导出并重新导入", async ({ page 
 
   await page.reload();
   await expect(page.locator(".workspace-title span")).toContainText("台架副本");
-  await page.getByRole("button", { name: "工作区" }).click();
+  await expect(page.getByRole("heading", { name: "工作区", exact: true })).toBeVisible();
   await expect(
     page.getByRole("button", { name: "台架副本 模拟器 · FireWater" }),
   ).toBeVisible();
@@ -4936,7 +5094,7 @@ async function canvasScreenshotStats(locator: Locator): Promise<{
 
 test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) => {
   const futureValue = JSON.stringify({
-    version: 14,
+    version: 15,
     state: { futureWorkspaceFormat: true, workspaces: [{ id: "future-only" }] },
   });
   await page.addInitScript((value) => {
@@ -4945,7 +5103,7 @@ test("较新版本配置进入只读模式且不会被覆盖", async ({ page }) 
 
   await page.goto("/");
   await page.getByRole("button", { name: "工作区" }).click();
-  await expect(page.getByRole("alert")).toContainText("版本 14 的较新配置");
+  await expect(page.getByRole("alert")).toContainText("版本 15 的较新配置");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "导入" })).toBeDisabled();
@@ -5412,10 +5570,10 @@ test("桌面串口原始文件需显式开始并可观察地取消", async ({ pa
   const fileSendTrigger = page.getByRole("button", { name: "打开文件发送" });
   await fileSendTrigger.click();
   const dialog = page.getByRole("dialog", { name: "原始文件发送" });
-  const txStats = page.locator(".transfer-stats span").filter({ hasText: "TX" });
+  const txStats = page.locator(".transfer-direction").filter({ hasText: /^TX / }).locator(".transfer-total");
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("button", { name: "开始发送" })).toBeDisabled();
-  await expect(txStats).toHaveText("TX 0 B");
+  await expect(txStats).toHaveText("· 0 B");
 
   await dialog.getByRole("button", { name: "选择", exact: true }).click();
   await expect(dialog.getByText("firmware.bin", { exact: true })).toBeVisible();
@@ -5423,7 +5581,7 @@ test("桌面串口原始文件需显式开始并可观察地取消", async ({ pa
   await expect(dialog.getByRole("button", { name: "开始发送" })).toBeEnabled();
   await expect(dialog.getByRole("progressbar")).toHaveCount(0);
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(0);
-  await expect(txStats).toHaveText("TX 0 B");
+  await expect(txStats).toHaveText("· 0 B");
 
   await dialog.getByRole("button", { name: "开始发送" }).click();
   const progress = dialog.getByRole("progressbar", { name: "firmware.bin 发送进度" });
@@ -5431,7 +5589,7 @@ test("桌面串口原始文件需显式开始并可观察地取消", async ({ pa
   await expect(dialog.getByText("正在发送", { exact: true })).toBeVisible();
   await expect(dialog.getByText("50.0%", { exact: true })).toBeVisible();
   await expect(dialog.getByText("2.0 KiB / 4.0 KiB", { exact: true })).toBeVisible();
-  await expect(txStats).toHaveText("TX 2.0 KB");
+  await expect(txStats).toHaveText("· 2.0 KB");
   await expect(page.locator('.terminal-line[data-direction="tx"]')).toHaveCount(1);
   expect(await findVisibleTextBelow(dialog)).toEqual([]);
 
@@ -5481,7 +5639,7 @@ test("桌面串口原始文件需显式开始并可观察地取消", async ({ pa
   await expect(dialog.getByText("已取消", { exact: true })).toBeVisible();
   await expect(dialog.getByText("文件发送已取消；驱动已缓冲的字节仍可能发出")).toBeVisible();
   await expect(dialog.getByRole("button", { name: "开始发送" })).toBeEnabled();
-  await expect(txStats).toHaveText("TX 2.0 KB");
+  await expect(txStats).toHaveText("· 2.0 KB");
   expect(pageErrors).toEqual([]);
 
   await page.screenshot({

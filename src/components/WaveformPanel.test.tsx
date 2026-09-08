@@ -202,6 +202,7 @@ describe("WaveformPanel 波形测量", () => {
       chartFrozenProcessedChannels: null,
       chartFrozenExtensionChannels: null,
       chartWindowSeconds: 5,
+      chartSampleRateHz: null,
       chartDataRevision: 0,
       waveformTrigger: createIdleWaveformTriggerState(),
       connectionStatus: "connected",
@@ -225,6 +226,50 @@ describe("WaveformPanel 波形测量", () => {
     render(<WaveformPanel theme="dark" />);
 
     expect(screen.getByRole("button", { name: "开启波形测量" })).toBeDisabled();
+  });
+
+  it("显式设置固定采样时基后，图表和游标显示同批三帧的 2 ms 间隔", async () => {
+    const user = userEvent.setup();
+    render(<WaveformPanel theme="dark" />);
+    await user.click(screen.getByRole("button", { name: "设置波形时基" }));
+    const controls = await screen.findByRole("region", { name: "波形时基" });
+    await user.selectOptions(within(controls).getByRole("combobox", { name: "时基" }), "fixed");
+    const rate = within(controls).getByRole("textbox", { name: "设备采样率 (Hz)" });
+    await user.clear(rate);
+    await user.type(rate, "1000");
+    await user.click(within(controls).getByRole("button", { name: "应用并清空波形" }));
+    expect(screen.queryByRole("region", { name: "波形时基" })).not.toBeInTheDocument();
+    expect(useWorkbenchStore.getState().chartSampleRateHz).toBe(1000);
+    act(() => useWorkbenchStore.getState().ingestBytes(new TextEncoder().encode("1\n2\n3\n"), 1000));
+    expect(latestUPlotMock().options.scales?.x?.time).toBe(false);
+    await user.click(screen.getByRole("button", { name: "开启波形测量" }));
+    const a = await screen.findByRole("slider", { name: "游标 A 采样点" });
+    fireEvent.change(a, { target: { value: "0" } });
+    expect(screen.getByText("采样间隔 · 按 1000 Hz 推算")).toBeVisible();
+    expect(screen.getByLabelText("波形测量结果")).toHaveTextContent("2.000 ms");
+    expect(screen.getByLabelText("波形测量结果")).toHaveTextContent("500.000 Hz");
+    await user.click(screen.getByRole("button", { name: "频谱" }));
+    const spectrumRate = await screen.findByRole("spinbutton", { name: "频谱采样率" });
+    expect(spectrumRate).toHaveValue(1000);
+    expect(spectrumRate).toHaveAttribute("readonly");
+  });
+
+  it("无效采样率不清空波形，Escape 取消并恢复入口焦点", async () => {
+    const user = userEvent.setup();
+    render(<WaveformPanel theme="dark" />);
+    const trigger = screen.getByRole("button", { name: "设置波形时基" });
+    await user.click(trigger);
+    const controls = await screen.findByRole("region", { name: "波形时基" });
+    await user.selectOptions(within(controls).getByRole("combobox", { name: "时基" }), "fixed");
+    const rate = within(controls).getByRole("textbox", { name: "设备采样率 (Hz)" });
+    await user.clear(rate);
+    await user.type(rate, "0");
+    await user.click(within(controls).getByRole("button", { name: "应用并清空波形" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("采样率");
+    expect(useWorkbenchStore.getState().channels[0]?.points).toHaveLength(5);
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+    expect(useWorkbenchStore.getState().chartSampleRateHz).toBeNull();
   });
 
   it("Raw Data 空态明确原始字节不会生成波形", () => {
